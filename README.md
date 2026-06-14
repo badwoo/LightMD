@@ -2,13 +2,7 @@
 
 > 一款**轻量级**、**高性能**、**所见即所得**的 Windows Markdown 编辑器，基于 Tauri v2 + React + ProseMirror 构建。
 
-<p align="center">
-  <img alt="LightMD" src="https://img.shields.io/badge/LightMD-v0.1.0-5c9dff?style=for-the-badge">
-  <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d4?style=for-the-badge&logo=windows">
-  <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-24c8db?style=for-the-badge&logo=tauri">
-  <img alt="React" src="https://img.shields.io/badge/React-18-61dafb?style=for-the-badge&logo=react">
-  <img alt="License" src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge">
-</p>
+中文 | [English](README_EN.md)
 
 ## ✨ 为什么选择 LightMD？
 
@@ -34,12 +28,12 @@ LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器�
 - 📑 **文档大纲** — 实时同步，点击跳转
 - 📁 **文件树** + 拖拽打开
 - 📋 **最近文件** 快速访问
-- 💾 **自动保存** + 手动保存双保险
+- 💾 **自动保存** — 定时保存到磁盘，可配置间隔或关闭
 
 ### 🛠 高级功能
 - 🎨 **亮色 / 暗色主题**（`Ctrl+Shift+T` 切换）
 - 🔤 **自定义字体** 与字号
-- 🖼 **图片粘贴**自动保存到本地
+- 🖼 **图片粘贴** — 粘贴图片后弹窗选择插入方式
 - 📤 **导出 HTML**（保留 Mermaid / KaTeX 渲染）
 - 🎯 **专注模式**（`F8` 切换，dim 非活跃段落）
 - ⌨️ **打字机模式**（光标始终居中）
@@ -47,8 +41,8 @@ LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器�
 ### ⚡ 性能优势
 - **Tauri 2** Rust 后端 — 启动快、内存低、安装小
 - **ProseMirror** 编辑器核心 — 大文档流畅编辑
-- **iframe 隔离预览** — DOM 节点数降低 80%，GC 压力减少
-- **增量 diff 撤销栈** — 内存占用降低 90%
+- **iframe 隔离预览** — 预览 DOM 与主文档隔离，显著降低 GC 压力
+- **增量 diff 撤销栈** — 仅存储差异而非全量快照，大幅节省内存
 
 ## ⌨️ 快捷键
 
@@ -58,6 +52,7 @@ LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器�
 | | `Ctrl+O` | 打开文件 |
 | | `Ctrl+S` | 保存 |
 | | `Ctrl+Shift+S` | 另存为 |
+| | `Ctrl+Shift+E` | 导出 HTML |
 | **编辑** | `Ctrl+Z` / `Ctrl+Y` | 撤销 / 恢复 |
 | | `Ctrl+F` | 搜索 |
 | | `Ctrl+H` | 查找替换 |
@@ -65,6 +60,7 @@ LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器�
 | | `Ctrl+Tab` | 切换到下一个标签 |
 | | `Ctrl+Shift+Tab` | 切换到上一个标签 |
 | **视图** | `Ctrl+Shift+T` | 切换主题 |
+| | `Ctrl+Shift+O` | 切换大纲 / 语法辅助 |
 | | `F8` | 专注模式 |
 | | `Ctrl+,` | 打开设置 |
 | **模式** | 双击 `Ctrl` | 切换预览 / 编辑 |
@@ -74,7 +70,7 @@ LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器�
 
 ### Windows 用户（推荐）
 
-前往 [Releases](https://github.com/OWNER/lightmd/releases) 页面下载：
+前往 [Releases](../../releases) 页面下载：
 
 - **`.msi` 安装包** — 适合普通用户，支持卸载
 - **`.exe` 自解压安装包** — 单文件安装，免管理员权限
@@ -110,8 +106,8 @@ LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器�
 
 ```bash
 # 克隆项目
-git clone https://github.com/OWNER/lightmd.git
-cd lightmd/lightmd
+git clone https://github.com/badwoo/lightmd.git
+cd lightmd
 
 # 安装依赖
 npm install
