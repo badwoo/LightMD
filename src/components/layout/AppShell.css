@@ -1,0 +1,94 @@
+.app-shell {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.app-sidebar {
+  width: var(--sidebar-width);
+  min-width: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  transition: width 250ms ease, min-width 250ms ease;
+  position: relative;
+}
+
+.app-sidebar-collapsed {
+  width: 20px;
+  min-width: 20px;
+}
+
+.app-sidebar-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.app-sidebar-collapsed .app-sidebar-content {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-main {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-outline {
+  width: var(--outline-width);
+  min-width: 0;
+  background: var(--sidebar-bg);
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  transition: width 250ms ease, min-width 250ms ease;
+  position: relative;
+}
+
+.app-outline-collapsed {
+  width: 20px;
+  min-width: 20px;
+}
+
+.app-outline-content {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.app-outline-collapsed .app-outline-content {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 侧栏折叠切换按钮 */
+.sidebar-toggle-btn {
+  width: 20px;
+  min-width: 20px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8px;
+  transition: color var(--transition-fast), background var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.sidebar-toggle-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}

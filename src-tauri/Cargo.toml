@@ -1,0 +1,27 @@
+[package]
+name = "lightmd"
+version = "0.1.0"
+description = "LightMD - 轻量级 Markdown 编辑器"
+authors = ["LightMD"]
+edition = "2021"
+
+[package.metadata]
+# Tauri v2 build metadata
+
+[lib]
+name = "lightmd_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+ico = "0.3"
