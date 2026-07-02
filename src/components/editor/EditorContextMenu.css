@@ -1,0 +1,96 @@
+/* ─── 编辑器右键菜单 ──────────────────────── */
+.editor-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 200px;
+  max-height: 400px;
+  overflow-y: auto;
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border-color, #e0e0e0);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15), 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 4px 0;
+  /* 入场动画 */
+  animation: contextMenuIn 0.12s ease-out;
+}
+
+@keyframes contextMenuIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* 菜单项 */
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary, #333);
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--transition-fast, 0.1s);
+  /* 重置 button 默认样式 */
+  font-family: inherit;
+  outline: none;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background: var(--bg-hover, #f0f0f0);
+}
+
+.context-menu-item:focus-visible:not(.disabled) {
+  background: var(--bg-hover, #f0f0f0);
+  box-shadow: inset 0 0 0 2px var(--accent-color, #0078d4);
+}
+
+.context-menu-item.disabled {
+  color: var(--text-tertiary, #aaa);
+  cursor: not-allowed;
+}
+
+.context-menu-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.context-menu-shortcut {
+  margin-left: 24px;
+  font-size: 11px;
+  color: var(--text-tertiary, #999);
+  white-space: nowrap;
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+/* 分隔符 */
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border-color, #e0e0e0);
+}
+
+/* 滚动条样式（暗色主题适配） */
+.editor-context-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.editor-context-menu::-webkit-scrollbar-thumb {
+  background: var(--text-tertiary, #ccc);
+  border-radius: 3px;
+}
+
+.editor-context-menu::-webkit-scrollbar-track {
+  background: transparent;
+}

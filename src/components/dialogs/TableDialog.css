@@ -1,0 +1,178 @@
+/* ─── 表格插入对话框 ──────────────────────── */
+.table-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.table-dialog {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
+  width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  animation: slideUp 0.2s ease;
+}
+
+.table-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.table-dialog-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.table-dialog-body {
+  padding: 16px 20px;
+}
+
+.table-dialog-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.table-dialog-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-dialog-field label {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text-primary);
+}
+
+.table-dialog-number {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+  transition: border-color var(--transition-fast);
+}
+
+.table-dialog-number:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.table-dialog-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+
+.table-dialog-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.table-dialog-checkbox input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.table-dialog-preview {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.table-dialog-preview-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+
+.table-dialog-preview-code {
+  font-family: var(--font-mono, "Consolas", "Monaco", monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: pre;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.table-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.table-dialog-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  border: 1px solid var(--border-color);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.table-dialog-btn.primary {
+  background: var(--accent-color);
+  color: #fff;
+  border-color: var(--accent-color);
+}
+
+.table-dialog-btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.table-dialog-btn.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.table-dialog-btn.secondary {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.table-dialog-btn.secondary:hover {
+  background: var(--bg-hover);
+}
+
+.table-dialog-kbd {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  font-family: var(--font-mono, "Consolas", monospace);
+  line-height: 1.4;
+}
+
+.table-dialog-btn.secondary .table-dialog-kbd {
+  background: var(--bg-primary);
+  border-color: var(--border-color);
+  color: var(--text-secondary);
+}

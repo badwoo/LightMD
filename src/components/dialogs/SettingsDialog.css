@@ -1,0 +1,264 @@
+/* ─── 设置对话框 ──────────────────────────── */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+
+.settings-dialog {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
+  width: 520px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 0.2s ease;
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.settings-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 4px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.settings-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.settings-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.settings-section {
+  margin-bottom: 24px;
+}
+
+.settings-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.settings-field {
+  margin-bottom: 14px;
+}
+
+.settings-field label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.theme-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.theme-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.theme-btn.active {
+  border-color: var(--accent-color);
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.theme-btn:hover:not(.active) {
+  background: var(--bg-hover);
+}
+
+.settings-range {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-range input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent-color);
+}
+
+.range-value {
+  font-size: 13px;
+  color: var(--text-secondary);
+  min-width: 40px;
+  text-align: right;
+}
+
+/* ─── 开关样式（toggle switch）──────────────────── */
+/* 修复 bug：使用 label.settings-switch 提高特异性到 (0,0,1,1)，
+   与 .settings-field label 相同，但本规则后定义因此胜出。
+   否则 .settings-field label 的 display:block 会覆盖 inline-flex，
+   导致"开启/关闭"文字垂直堆叠在按钮下方而非右边 */
+label.settings-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  /* 覆盖 .settings-field label 的 margin-bottom 和 font-weight */
+  margin-bottom: 0;
+  font-weight: normal;
+}
+.settings-switch input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.settings-switch-slider {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  /* 关闭时：白色背景 + 灰色边框 */
+  background: #ffffff;
+  border: 1px solid var(--border-color, #ccc);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.settings-switch-slider::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ccc;
+  transition: transform 0.2s ease, background 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+/* 开启时：绿色背景 */
+.settings-switch input:checked + .settings-switch-slider {
+  background: #4caf50;
+  border-color: #4caf50;
+}
+.settings-switch input:checked + .settings-switch-slider::after {
+  transform: translateX(16px);
+  background: #fff;
+}
+.settings-switch-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.settings-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.settings-select:focus {
+  border-color: var(--accent-color);
+}
+
+.settings-css-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  resize: vertical;
+  outline: none;
+  line-height: 1.5;
+}
+
+.settings-css-input:focus {
+  border-color: var(--accent-color);
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.settings-btn {
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  border: 1px solid var(--border-color);
+}
+
+.settings-btn.primary {
+  background: var(--accent-color);
+  color: #fff;
+  border-color: var(--accent-color);
+}
+
+.settings-btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.settings-btn.secondary {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.settings-btn.secondary:hover {
+  background: var(--bg-hover);
+}

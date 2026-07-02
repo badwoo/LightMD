@@ -1,0 +1,749 @@
+/* ProseMirror 编辑器内容样式 */
+.ProseMirror {
+  flex: 1;
+  padding: 40px 60px;
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
+  outline: none;
+  font-size: var(--editor-font-size, 16px);
+  font-family: var(--editor-font-family, var(--font-sans));
+  line-height: 1.8;
+  color: var(--text-primary);
+  overflow-y: auto;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.ProseMirror h1, .ProseMirror h2, .ProseMirror h3,
+.ProseMirror h4, .ProseMirror h5, .ProseMirror h6 {
+  color: var(--heading-color);
+  margin: 1.2em 0 0.6em;
+  line-height: 1.3;
+}
+
+.ProseMirror h1 { font-size: 2em; }
+.ProseMirror h2 { font-size: 1.5em; }
+.ProseMirror h3 { font-size: 1.25em; }
+.ProseMirror h4 { font-size: 1.1em; }
+
+.ProseMirror p { margin: 0.5em 0; }
+
+.ProseMirror blockquote {
+  border-left: 3px solid var(--blockquote-border);
+  margin: 0.8em 0;
+  padding: 0.4em 1em;
+  background: var(--blockquote-bg);
+  color: var(--text-secondary);
+}
+
+.ProseMirror ul, .ProseMirror ol {
+  padding-left: 2em;
+  margin: 0.4em 0;
+}
+
+.ProseMirror li { margin: 0.2em 0; }
+
+.ProseMirror code {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.ProseMirror pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 1em;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.ProseMirror pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+}
+
+.ProseMirror table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: 100%;
+}
+
+.ProseMirror th, .ProseMirror td {
+  border: 1px solid var(--table-border);
+  padding: 6px 12px;
+  text-align: left;
+  min-width: 80px;
+}
+
+.ProseMirror th {
+  background: var(--table-header-bg);
+  font-weight: 600;
+}
+
+.ProseMirror hr {
+  border: none;
+  border-top: 2px solid var(--hr-color);
+  margin: 1.5em 0;
+}
+
+.ProseMirror a { color: var(--link-color); }
+
+.ProseMirror img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+
+/* 语法标记显示 */
+.marker-reveal {
+  color: var(--marker-color);
+  opacity: 0.5;
+  pointer-events: none;
+  user-select: none;
+  font-weight: normal;
+  font-style: normal;
+}
+
+/* 专注模式 */
+/* 亮色主题：浅色背景上的深色文字，opacity 0.25 足以形成视觉对比 */
+.ProseMirror.focus-mode .focus-dimmed {
+  opacity: 0.25;
+  transition: opacity var(--transition-normal);
+}
+/* 暗色主题：深色背景上的浅色文字，opacity 0.25 会让文字接近背景色几乎不可见
+ * 修复：用户反馈"切换暗色主题时内容被黑色掩盖"
+ * 提高 opacity 到 0.45，让非活跃段落仍可阅读，仅稍暗以突出活跃段落 */
+[data-theme="dark"] .ProseMirror.focus-mode .focus-dimmed {
+  opacity: 0.45;
+}
+
+/* 源码模式标记 */
+.heading-marker {
+  color: var(--marker-color);
+  font-weight: normal;
+  user-select: none;
+}
+
+/* ─── 任务列表 ──────────────────────────────── */
+
+.ProseMirror ul.task-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0.4em 0;
+}
+
+.ProseMirror li.task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0.3em 0;
+  list-style: none;
+}
+
+.ProseMirror .task-checkbox {
+  margin-top: 5px;
+  cursor: pointer;
+  accent-color: var(--accent-color, #5c9dff);
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.ProseMirror .task-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.ProseMirror .task-checked {
+  text-decoration: line-through;
+  color: var(--text-tertiary);
+}
+
+/* ─── 脚注 ─────────────────────────────────── */
+
+.ProseMirror .footnote-ref {
+  font-size: 0.8em;
+  vertical-align: super;
+  line-height: 0;
+}
+
+.ProseMirror .footnote-ref a {
+  color: var(--link-color, #0078d4);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.ProseMirror .footnote-ref a:hover {
+  text-decoration: underline;
+}
+
+.ProseMirror .footnote-def {
+  font-size: 0.875em;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-color, #e0e0e0);
+  margin-top: 1.5em;
+  padding-top: 0.5em;
+}
+
+.ProseMirror .footnote-def::before {
+  content: attr(data-label) ": ";
+  font-weight: 600;
+  color: var(--link-color, #0078d4);
+}
+
+/* ─── 定义列表 ───────────────────────────────── */
+
+.ProseMirror dl {
+  margin: 1em 0;
+  padding-left: 0;
+}
+
+.ProseMirror dt {
+  font-weight: 600;
+  margin-top: 0.6em;
+  color: var(--heading-color, #1a1a1a);
+}
+
+.ProseMirror dd {
+  margin-left: 1.5em;
+  margin-top: 0.2em;
+  color: var(--text-secondary);
+}
+
+/* ─── 代码块双层视图 ──────────────────────────────── */
+
+.code-block-wrapper {
+  position: relative;
+  background: var(--code-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  margin: 0.8em 0;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+.code-block-wrapper::before {
+  content: attr(data-language);
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-hover, rgba(0,0,0,0.05));
+  border-radius: 0 6px 0 6px;
+  z-index: 2;
+  pointer-events: none;
+  text-transform: uppercase;
+}
+
+.code-block-wrapper code {
+  display: block;
+  padding: 1em;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  tab-size: 4;
+}
+
+.code-block-wrapper code[contenteditable] {
+  position: relative;
+  color: transparent;
+  caret-color: var(--text-primary);
+  background: transparent;
+  z-index: 1;
+}
+
+.code-block-wrapper code.prism-highlighted {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: transparent !important;
+  overflow: hidden;
+}
+
+.code-block-wrapper code[contenteditable]:focus ~ code.prism-highlighted,
+.code-block-wrapper code[contenteditable]:focus + code.prism-highlighted {
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+/* ─── Mermaid 图表块 ──────────────────────────────── */
+
+.mermaid-block-wrapper {
+  position: relative;
+  background: var(--code-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  margin: 0.8em 0;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  line-height: 1.5;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.mermaid-block-wrapper::before {
+  content: "MERMAID";
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-hover, rgba(0,0,0,0.05));
+  border-radius: 0 6px 0 6px;
+  z-index: 2;
+  pointer-events: none;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.mermaid-block-wrapper.mermaid-editing::before {
+  content: "MERMAID (编辑中)";
+  background: var(--accent-color, #5c9dff);
+  color: #fff;
+}
+
+.mermaid-preview-layer {
+  padding: 16px;
+  text-align: center;
+  min-height: 40px;
+  overflow-x: auto;
+}
+
+.mermaid-preview-layer svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-empty {
+  color: var(--text-tertiary);
+  font-size: 13px;
+  padding: 20px;
+  font-family: var(--font-sans);
+}
+
+.mermaid-error {
+  color: #d63384;
+  font-size: 13px;
+  padding: 12px;
+  font-family: var(--font-sans);
+  text-align: left;
+}
+
+.mermaid-error-icon {
+  margin-right: 4px;
+}
+
+.mermaid-error-detail {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(214, 51, 132, 0.1);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+/* ─── 数学公式 ──────────────────────────────── */
+
+.math-inline-wrapper {
+  display: inline;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 3px;
+  transition: background var(--transition-fast);
+}
+
+.math-inline-wrapper:hover {
+  background: var(--bg-hover);
+}
+
+.math-inline-wrapper.math-editing {
+  background: var(--code-bg);
+  border: 1px solid var(--accent-color, #5c9dff);
+}
+
+.math-inline-preview {
+  display: inline;
+}
+
+.math-block-wrapper {
+  position: relative;
+  background: var(--code-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  margin: 0.8em 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.math-block-wrapper::before {
+  content: "LATEX";
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-hover, rgba(0,0,0,0.05));
+  border-radius: 0 6px 0 6px;
+  z-index: 2;
+  pointer-events: none;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: var(--font-sans);
+}
+
+.math-block-wrapper.math-editing::before {
+  content: "LATEX (编辑中)";
+  background: var(--accent-color, #5c9dff);
+  color: #fff;
+}
+
+.math-block-preview {
+  padding: 16px;
+  text-align: center;
+  min-height: 40px;
+  overflow-x: auto;
+}
+
+.math-empty {
+  color: var(--text-tertiary);
+  font-size: 13px;
+  padding: 20px;
+  font-family: var(--font-sans);
+}
+
+.math-error {
+  color: #d63384;
+  font-size: 13px;
+  padding: 12px;
+  font-family: var(--font-sans);
+  text-align: left;
+}
+
+.math-error-icon {
+  margin-right: 4px;
+}
+
+.math-error-detail {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(214, 51, 132, 0.1);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+/* ─── 源码编辑模式 ──────────────────────────────── */
+
+.source-format-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+  min-height: 36px;
+}
+
+.format-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+  line-height: 1.4;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+}
+
+.format-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+.format-btn:active { background: var(--bg-tertiary); }
+
+.format-btn-undo-redo { font-size: 14px; padding: 2px 7px; font-weight: 600; }
+
+.format-separator {
+  color: var(--border-color);
+  font-size: 12px;
+  padding: 0 2px;
+  user-select: none;
+  line-height: 1;
+}
+
+/* ─── Mermaid 模板下拉菜单 ──────────────────── */
+.mermaid-dropdown-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.mermaid-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1000;
+  min-width: 140px;
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border-color, #e0e0e0);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
+  padding: 4px 0;
+  margin-top: 2px;
+  animation: mermaidMenuIn 0.12s ease-out;
+}
+
+@keyframes mermaidMenuIn {
+  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.mermaid-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary, #333);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: background-color var(--transition-fast, 0.1s);
+}
+
+.mermaid-dropdown-item:hover {
+  background: var(--bg-hover, #f0f0f0);
+}
+
+.source-editor {
+  flex: 1;
+  width: 100%;
+  padding: 40px 60px;
+  max-width: 960px;
+  margin: 0 auto;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.8;
+  tab-size: 4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+}
+
+.source-editor::placeholder { color: var(--text-tertiary); }
+.source-editor:focus { outline: none; }
+
+/* ─── 源码模式专注遮罩（edit/split 模式下的专注模式）──────── */
+/* wrapper 包装 textarea + overlay，提供相对定位上下文 */
+.source-editor-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* overlay：覆盖在 textarea 之上，pointer-events:none 不影响交互 */
+/* 通过 background-image 渐变在活跃段落位置"开窗"，其余位置半透明遮罩 */
+.source-focus-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  /* background-image 由 JS 动态设置 */
+}
+
+/* ─── 语法辅助面板 ──────────────────────────────── */
+
+.syntax-helper { padding: 8px 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.syntax-helper-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px 8px; }
+.syntax-helper-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-secondary); }
+.syntax-helper-section { padding: 6px 14px; }
+.syntax-helper-section-title { font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.syntax-helper-list { list-style: none; margin: 0; padding: 0; }
+.syntax-helper-item { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; font-size: 12px; cursor: pointer; border-radius: 3px; transition: background var(--transition-fast); }
+.syntax-helper-item:hover { background: var(--bg-hover); }
+.syntax-helper-item-name { color: var(--text-secondary); }
+.syntax-helper-item-code { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+.syntax-helper-divider { height: 1px; background: var(--border-light); margin: 8px 14px; }
+.syntax-helper-scroll { flex: 1; overflow-y: auto; padding-bottom: 12px; }
+
+/* ─── 编辑器空状态 ──────────────────────────────── */
+.editor-empty-state {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  user-select: none; pointer-events: none; z-index: 10; background: var(--bg-primary);
+}
+
+.editor-empty-logo {
+  font-size: 120px; font-weight: 200; letter-spacing: 18px;
+  color: transparent;
+  background: linear-gradient(135deg, var(--text-tertiary) 0%, var(--border-color) 20%, rgba(255,255,255,0.6) 35%, var(--border-color) 50%, var(--text-tertiary) 65%, rgba(255,255,255,0.4) 80%, var(--text-tertiary) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  font-family: "Georgia", "Palatino Linotype", "Book Antiqua", "Palatino", serif;
+  text-transform: uppercase; user-select: none;
+  animation: emptyLogoShimmer 6s ease-in-out infinite;
+  text-indent: 18px;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.1), 0 -1px 0 rgba(0,0,0,0.2);
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.15));
+}
+
+@keyframes emptyLogoShimmer {
+  0%, 100% { opacity: 0.2; transform: scale(1); background-position: 0% 50%; }
+  25% { background-position: 100% 50%; }
+  50% { opacity: 0.45; transform: scale(1.02); background-position: 50% 50%; }
+  75% { background-position: 0% 50%; }
+}
+
+.editor-empty-hint {
+  margin-top: 24px; font-size: 14px; color: var(--text-tertiary);
+  opacity: 0.4; letter-spacing: 3px; font-weight: 300;
+}
+
+/* ─── 主内容区域 ──────────────────────────────── */
+.editor-main-area { flex: 1; display: flex; overflow: hidden; }
+
+/* ─── 分屏模式 ──────────────────────────────── */
+.split-view-container { flex: 1; display: flex; overflow: hidden; }
+
+.split-editor {
+  flex: 1; max-width: none; border-right: none; padding: 40px 30px;
+}
+
+.split-divider {
+  width: 1px; background: var(--border-color); flex-shrink: 0;
+}
+
+.split-preview {
+  flex: 1; overflow-y: auto; padding: 40px 30px;
+  background: var(--bg-primary);
+  line-height: 1.8;
+  font-size: var(--editor-font-size, 16px);
+  font-family: var(--editor-font-family, var(--font-sans));
+  color: var(--text-primary);
+  word-break: break-word;
+  white-space: pre-wrap;
+  user-select: none;
+}
+
+/* 分屏预览区 Markdown 内容样式 */
+.split-preview h1, .split-preview h2, .split-preview h3,
+.split-preview h4, .split-preview h5, .split-preview h6 {
+  color: var(--heading-color);
+  margin: 1.2em 0 0.6em;
+  line-height: 1.3;
+}
+
+.split-preview h1 { font-size: 2em; }
+.split-preview h2 { font-size: 1.5em; }
+.split-preview h3 { font-size: 1.25em; }
+.split-preview h4 { font-size: 1.1em; }
+
+.split-preview p { margin: 0.5em 0; }
+
+.split-preview blockquote {
+  border-left: 3px solid var(--blockquote-border);
+  margin: 0.8em 0;
+  padding: 0.4em 1em;
+  background: var(--blockquote-bg);
+  color: var(--text-secondary);
+}
+
+.split-preview ul, .split-preview ol {
+  padding-left: 2em;
+  margin: 0.4em 0;
+}
+
+.split-preview li { margin: 0.2em 0; }
+
+.split-preview code {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.split-preview pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 1em;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.split-preview pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+}
+
+.split-preview table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: 100%;
+}
+
+.split-preview th, .split-preview td {
+  border: 1px solid var(--table-border);
+  padding: 6px 12px;
+  text-align: left;
+  min-width: 80px;
+}
+
+.split-preview th {
+  background: var(--table-header-bg);
+  font-weight: 600;
+}
+
+.split-preview hr {
+  border: none;
+  border-top: 2px solid var(--hr-color);
+  margin: 1.5em 0;
+}
+
+.split-preview a { color: var(--link-color); }
+
+.split-preview img {
+  max-width: 100%;
+  border-radius: 4px;
+}

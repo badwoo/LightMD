@@ -1,0 +1,96 @@
+/* ─── 搜索替换对话框 ──────────────────────────────── */
+.search-replace {
+  position: absolute;
+  top: 0;
+  right: 20px;
+  z-index: 100;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  padding: 8px;
+  min-width: 360px;
+}
+
+.search-row,
+.replace-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.replace-row {
+  margin-top: 6px;
+}
+
+.search-input {
+  flex: 1;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: var(--accent-color);
+}
+
+.search-option-btn,
+.search-nav-btn,
+.search-toggle-btn,
+.search-close-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: background var(--transition-fast);
+  line-height: 1;
+}
+
+.search-option-btn:hover,
+.search-nav-btn:hover,
+.search-toggle-btn:hover,
+.search-close-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.search-option-btn.active {
+  background: var(--bg-selection);
+  color: var(--accent-color);
+}
+
+.search-nav-btn:disabled,
+.replace-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.search-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-width: 50px;
+  text-align: center;
+}
+
+.replace-btn {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-primary);
+  transition: background var(--transition-fast);
+}
+
+.replace-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}

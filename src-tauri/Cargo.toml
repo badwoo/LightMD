@@ -1,0 +1,29 @@
+[package]
+name = "lightmd"
+version = "0.2.0"
+description = "LightMD - 轻量级 Markdown 编辑器"
+authors = ["LightMD"]
+edition = "2021"
+
+[package.metadata]
+# Tauri v2 build metadata
+
+[lib]
+name = "lightmd_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+# 单实例插件：双击 .md 文件时复用已有窗口，以标签方式打开，而非启动新实例
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+ico = "0.3"
