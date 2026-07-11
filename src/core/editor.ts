@@ -5,8 +5,8 @@
  * - docToMarkdown 结果缓存，避免自动保存、手动保存、模式切换时重复序列化
  * - 缓存通过 doc 引用验证有效性，doc 不一致时自动回退到重新序列化
  */
-import { EditorView } from "prosemirror-view";
-import { EditorState } from "prosemirror-state";
+import { EditorView, Decoration, DecorationSet } from "prosemirror-view";
+import { EditorState, Plugin, PluginKey } from "prosemirror-state";
 import { history } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap } from "prosemirror-commands";
@@ -19,11 +19,43 @@ import { buildKeymap } from "./keymap";
 import { wysiwygPlugin } from "./plugins/wysiwyg";
 import { imagePastePlugin } from "./plugins/image-paste";
 import { focusModePlugin } from "./plugins/focus-mode";
+import { footnoteHoverPlugin } from "./plugins/footnote-hover";
 import { CodeBlockView } from "./plugins/code-block";
 import { MermaidBlockView } from "./plugins/mermaid-block";
 import { MathInlineView, MathBlockView } from "./plugins/math-block";
 import { TaskItemView } from "./plugins/task-list";
 import { TableView } from "./plugins/table-editor";
+
+// ─── 搜索高亮 Plugin（问题1修复）──────────────────────
+// 使用 ProseMirror Decoration 管理搜索高亮，不依赖编辑器焦点
+// 通过 tr.setMeta(searchHighlightKey, { from, to }) 更新高亮位置
+// 通过 tr.setMeta(searchHighlightKey, null) 清除高亮
+export const searchHighlightKey = new PluginKey<DecorationSet>("searchHighlight");
+const searchHighlightPlugin = new Plugin<DecorationSet>({
+  key: searchHighlightKey,
+  state: {
+    init() {
+      return DecorationSet.empty;
+    },
+    apply(tr, old) {
+      const meta = tr.getMeta(searchHighlightKey);
+      if (meta !== undefined) {
+        // null 表示清除高亮
+        if (meta === null) return DecorationSet.empty;
+        // { from, to } 表示设置高亮
+        const deco = Decoration.inline(meta.from, meta.to, { class: "search-highlight" });
+        return DecorationSet.create(tr.doc, [deco]);
+      }
+      // 文档变化时映射 decoration 位置
+      return old.map(tr.mapping, tr.doc);
+    },
+  },
+  props: {
+    decorations(state) {
+      return searchHighlightKey.getState(state);
+    },
+  },
+});
 
 // ─── 序列化缓存 ────────────────────────────────────
 // 缓存最近一次 docToMarkdown 结果，供自动保存、手动保存、模式切换复用
@@ -55,8 +87,8 @@ export interface EditorOptions {
   initialContent?: string;
   /** 文档变更回调 */
   onDocChange?: (markdown: string) => void;
-  /** 选区变更回调 */
-  onSelectionChange?: (line: number, wordCount: number) => void;
+  /** 选区变更回调（G11：第二参数由 wordCount:number 改为 text:string，字数计算移至 EditorContainer 调用 calculateWordCount） */
+  onSelectionChange?: (line: number, text: string) => void;
   /** 编辑器就绪回调 */
   onReady?: (view: EditorView) => void;
   /**
@@ -73,13 +105,19 @@ export interface EditorOptions {
    * - EditorContainer 设置 overflow-anchor:none，禁用 "preserve" 模式的 storeScrollPos/resetScrollPos
    */
   typewriterModeRef?: { current: boolean };
+  /**
+   * G10：拼写检查开关初始值
+   * 创建 EditorView 时通过 attributes.spellcheck 设置到 .ProseMirror 元素上，
+   * 后续切换由 EditorContainer 的 useEffect 同步更新 dom.spellcheck 属性
+   */
+  spellcheckEnabled?: boolean;
 }
 
 /**
  * 创建配置完整的 ProseMirror EditorView
  */
 export function createEditor(options: EditorOptions): EditorView | null {
-  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef } = options;
+  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false } = options;
 
   if (!parent) return null;
 
@@ -106,11 +144,12 @@ export function createEditor(options: EditorOptions): EditorView | null {
       wysiwygPlugin,
       imagePastePlugin,
       focusModePlugin,
+      footnoteHoverPlugin,
+      searchHighlightPlugin,
     ],
   });
 
   let initialized = false;
-  let lastWordCountTime = 0;
   // 序列化防抖：连续输入时只序列化最后一次变更，减少内存分配
   let serializeRafId: number | null = null;
 
@@ -123,6 +162,11 @@ export function createEditor(options: EditorOptions): EditorView | null {
       math_block: (node, view, getPos) => new MathBlockView(node, view, getPos),
       task_item: (node, view, getPos) => new TaskItemView(node, view, getPos),
       table: (node, view, getPos) => new TableView(node, view, getPos),
+    },
+    // G10：通过 attributes 设置 spellcheck 初始值（contenteditable 元素原生属性）
+    // 后续切换由 EditorContainer 的 useEffect 同步更新 dom.spellcheck 属性
+    attributes: {
+      spellcheck: spellcheckEnabled ? "true" : "false",
     },
     // 阻止 ProseMirror 在 "to selection" 模式下主动调用 scrollToSelection()
     // 滚动由 EditorContainer 的 keyup/click 监听统一处理，避免编辑时屏幕跳动
@@ -142,11 +186,14 @@ export function createEditor(options: EditorOptions): EditorView | null {
       // 后续滚动由 EditorContainer 的 keyup/click 监听统一处理。
       //
       // 文件切换事务不恢复 scrollTop（由 EditorContainer 滚动联动逻辑处理）
+      // 问题2修复：滚动容器从 .ProseMirror 改为 .editor-container（parentElement），
+      // 因为 .ProseMirror 移除 overflow-y: auto 后，滚动发生在 editor-container 上
       const editorDom = view.dom as HTMLElement;
-      const savedScrollTop = isFileSwitch ? -1 : editorDom.scrollTop;
+      const scrollContainer = editorDom.parentElement as HTMLElement;
+      const savedScrollTop = isFileSwitch ? -1 : (scrollContainer ? scrollContainer.scrollTop : 0);
       view.updateState(newState);
-      if (savedScrollTop >= 0 && editorDom.scrollTop !== savedScrollTop) {
-        editorDom.scrollTop = savedScrollTop;
+      if (savedScrollTop >= 0 && scrollContainer && scrollContainer.scrollTop !== savedScrollTop) {
+        scrollContainer.scrollTop = savedScrollTop;
       }
 
       // 文件切换事务不触发 dirty 标记和序列化
@@ -170,19 +217,15 @@ export function createEditor(options: EditorOptions): EditorView | null {
       // 标记初始事务已完成
       if (!initialized) initialized = true;
 
-      // 选区变化时更新行号和字数
+      // 选区变化时更新行号和文本（字数计算由 EditorContainer 防抖 300ms 后调用 calculateWordCount 完成）
+      // 注意：此处不再节流，避免快速输入时最后一次更新被丢失（EditorContainer 内部已有防抖）
       if (tr.selectionSet && onSelectionChange) {
         const { $from } = newState.selection;
         const lineCount = newState.doc.content.size > 0
           ? newState.doc.textBetween(0, $from.pos).split("\n").length
           : 1;
-        const now = Date.now();
-        if (now - lastWordCountTime > 300) {
-          lastWordCountTime = now;
-          const allText = newState.doc.textContent;
-          const wc = allText.replace(/\s/g, "").length;
-          onSelectionChange(lineCount, wc);
-        }
+        const allText = newState.doc.textContent;
+        onSelectionChange(lineCount, allText);
       }
     },
   });

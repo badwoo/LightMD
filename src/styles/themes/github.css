@@ -1,0 +1,52 @@
+/* GitHub 风格主题：白底、代码字体、浅灰边框
+ * 参考 GitHub Primer 风格，配色对齐 github.com 正文 */
+[data-theme="github"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f6f8fa;
+  --bg-tertiary: #eaeef2;
+  --bg-hover: #f3f4f6;
+  --bg-selection: #ddf4ff;
+
+  --text-primary: #24292f;
+  --text-secondary: #57606a;
+  --text-tertiary: #8c959f;
+
+  --border-color: #d0d7de;
+  --border-light: #eaeef2;
+
+  --accent-color: #0969da;
+  --accent-hover: #0550ae;
+
+  --heading-color: #24292f;
+  --code-bg: #f6f8fa;
+  --code-text: #cf222e;
+  --blockquote-border: #d0d7de;
+  --blockquote-bg: #f6f8fa;
+  --table-border: #d0d7de;
+  --table-header-bg: #f6f8fa;
+  --table-stripe: #f6f8fa;
+  --hr-color: #d0d7de;
+
+  --link-color: #0969da;
+  --marker-color: #57606a;
+  --scrollbar-thumb: #c0c4c8;
+  --scrollbar-thumb-hover: #a0a4a8;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+
+  --titlebar-bg: #f6f8fa;
+  --statusbar-bg: #f6f8fa;
+  --sidebar-bg: #f6f8fa;
+
+  /* PrismJS 代码高亮（GitHub 风格） */
+  --prism-text: #24292f;
+  --prism-comment: #6e7781;
+  --prism-punctuation: #24292f;
+  --prism-number: #0550ae;
+  --prism-string: #0a3069;
+  --prism-operator: #0550ae;
+  --prism-keyword: #cf222e;
+  --prism-function: #8250df;
+  --prism-regex: #116329;
+}

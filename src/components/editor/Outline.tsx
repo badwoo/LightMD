@@ -1,14 +1,40 @@
 /**
- * Outline —— 文档大纲视图（含滚动同步）
+ * Outline —— 文档大纲视图（含滚动同步 + 拖拽排序 G13）
  *
  * 性能优化：
  * - 使用 ProseMirror 事务监听替代 MutationObserver，避免 DOM 修改触发无限循环
  * - 限制 IntersectionObserver 只监听可视区域附近的标题
  * - 大纲列表限制最大渲染数量，避免大量 DOM 节点
  * - 防抖提取标题，减少频繁更新
+ * - 拖拽过程中不修改文档，仅 onDragEnd 时执行一次 transaction
+ *
+ * 拖拽（G13）：
+ * - 所有模式（编辑/分屏/阅读）均启用拖拽
+ * - 阅读模式下拖拽排序通过 editorView.dispatch 直接修改文档 state，
+ *   ProseMirror 会自动更新 DOM（阅读模式下 editorView 仍可见）
+ * - 拖拽手柄仅 hover 时显示，不干扰点击跳转
+ * - 限制垂直方向拖拽
+ * - 跨层级拖拽时智能调整标题级别（保持相对层级）
  */
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo, type CSSProperties } from "react";
 import type { EditorView } from "prosemirror-view";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+  type Modifier,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useT } from "../../i18n";
+import { calculateDragTransaction } from "../../utils/outlineDrag";
 import "./Outline.css";
 
 interface HeadingItem {
@@ -25,12 +51,79 @@ interface OutlineProps {
 /** 大纲最大渲染数量，超出时只显示前 MAX_OUTLINE_ITEMS 项 */
 const MAX_OUTLINE_ITEMS = 100;
 
+/**
+ * 限制拖拽只能沿垂直方向移动的自定义 modifier
+ *
+ * 实现：将 transform.x 强制为 0，保留 y 位移。
+ * 自定义实现以避免引入额外的 @dnd-kit/modifiers 依赖。
+ */
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
+
+/** 可排序标题项（包装 useSortable） */
+function SortableHeadingItem({
+  heading,
+  activeId,
+  draggable,
+  onClick,
+}: {
+  heading: HeadingItem;
+  activeId: string | null;
+  draggable: boolean;
+  onClick: (pos: number) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: heading.pos, disabled: !draggable });
+
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1, // 拖拽时半透明预览
+    paddingLeft: `${(heading.level - 1) * 14 + 12}px`,
+  };
+
+  return (
+    <button
+      ref={setNodeRef}
+      style={style}
+      className={`outline-item outline-level-${heading.level} ${activeId === heading.id ? "active" : ""} ${isDragging ? "dragging" : ""}`}
+      onClick={() => onClick(heading.pos)}
+      title={heading.text}
+    >
+      {draggable && (
+        <span
+          className="outline-drag-handle"
+          aria-label="drag handle"
+          title="⋮⋮"
+          {...attributes}
+          {...listeners}
+        >
+          ⋮⋮
+        </span>
+      )}
+      <span className="outline-item-text">{heading.text}</span>
+    </button>
+  );
+}
+
 export function Outline({ editorView }: OutlineProps) {
   const [headings, setHeadings] = useState<HeadingItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   // 缓存上一次的标题列表，避免内容未变时重复更新
   const lastHeadingsRef = useRef<string>("");
+  const t = useT();
+
+  // 所有模式启用拖拽（v0.3.0 修复：阅读模式下也支持大纲拖拽排序）
+  // editorView.dispatch 不依赖于 contenteditable，可直接修改文档 state
+  const dragEnabled = true;
+
+  // PointerSensor 要求移动超过 5px 才触发拖拽，避免误触点击跳转
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
 
   // 提取标题（遍历 ProseMirror 文档，不依赖 DOM）
   const extractHeadings = useCallback(() => {
@@ -40,7 +133,7 @@ export function Outline({ editorView }: OutlineProps) {
 
     doc.descendants((node, pos) => {
       if (node.type.name === "heading") {
-        const text = node.textContent || "(空标题)";
+        const text = node.textContent || t("outline.emptyHeading");
         const id = `outline-h-${pos}`;
         items.push({ level: node.attrs.level, text, pos, id });
       }
@@ -52,7 +145,7 @@ export function Outline({ editorView }: OutlineProps) {
     lastHeadingsRef.current = key;
     setHeadings(items);
     return items;
-  }, [editorView]);
+  }, [editorView, t]);
 
   // 设置 IntersectionObserver 追踪标题元素
   //
@@ -175,45 +268,91 @@ export function Outline({ editorView }: OutlineProps) {
     [editorView]
   );
 
+  // 拖拽完成处理：通过 calculateDragTransaction 计算 transaction 并 dispatch
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || !editorView) return;
+      if (active.id === over.id) return;
+
+      const sourcePos = active.id as number;
+      const targetPos = over.id as number;
+
+      // 计算并 dispatch 拖拽产生的 transaction
+      const tr = calculateDragTransaction(editorView.state, sourcePos, targetPos);
+      if (tr) {
+        editorView.dispatch(tr);
+      }
+    },
+    [editorView]
+  );
+
   // 限制渲染数量
   const displayHeadings = headings.length > MAX_OUTLINE_ITEMS
     ? headings.slice(0, MAX_OUTLINE_ITEMS)
     : headings;
   const hasMore = headings.length > MAX_OUTLINE_ITEMS;
 
+  // sortable items id 数组（用 pos 作为 id）
+  const sortableItems = useMemo(
+    () => displayHeadings.map((h) => h.pos),
+    [displayHeadings],
+  );
+
   if (headings.length === 0) {
     return (
       <div className="outline">
         <div className="outline-header">
-          <span className="outline-title">大纲</span>
+          <span className="outline-title">{t("outline.title")}</span>
         </div>
-        <div className="outline-empty">暂无标题</div>
+        <div className="outline-empty">{t("outline.empty")}</div>
       </div>
     );
   }
 
+  // 所有模式均用 DndContext + SortableContext 包装（支持拖拽排序）
+  const listContent = (
+    <>
+      {displayHeadings.map((h) => (
+        <SortableHeadingItem
+          key={h.id}
+          heading={h}
+          activeId={activeId}
+          draggable={dragEnabled}
+          onClick={handleClick}
+        />
+      ))}
+      {hasMore && (
+        <div className="outline-more">{t("outline.more", { count: headings.length - MAX_OUTLINE_ITEMS })}</div>
+      )}
+    </>
+  );
+
   return (
     <div className="outline">
       <div className="outline-header">
-        <span className="outline-title">大纲</span>
+        <span className="outline-title">{t("outline.title")}</span>
         <span className="outline-count">{headings.length}</span>
       </div>
       <nav className="outline-list">
-        {displayHeadings.map((h) => (
-          <button
-            key={h.id}
-            className={`outline-item outline-level-${h.level} ${activeId === h.id ? "active" : ""}`}
-            style={{ paddingLeft: `${(h.level - 1) * 14 + 12}px` }}
-            onClick={() => handleClick(h.pos)}
-            title={h.text}
+        {dragEnabled ? (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            modifiers={[restrictToVerticalAxis]}
+            onDragEnd={handleDragEnd}
           >
-            <span className="outline-item-text">{h.text}</span>
-          </button>
-        ))}
-        {hasMore && (
-          <div className="outline-more">还有 {headings.length - MAX_OUTLINE_ITEMS} 个标题...</div>
+            <SortableContext items={sortableItems} strategy={verticalListSortingStrategy}>
+              {listContent}
+            </SortableContext>
+          </DndContext>
+        ) : (
+          listContent
         )}
       </nav>
+      {dragEnabled && (
+        <div className="outline-drag-hint">{t("outline.dragHint")}</div>
+      )}
     </div>
   );
 }

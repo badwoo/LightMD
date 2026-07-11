@@ -104,7 +104,8 @@ describe("<ImageInsertDialog />", () => {
     );
     fireEvent.click(screen.getByText(/选择图片文件/));
     await waitFor(() => {
-      expect(screen.getByText(/img\.png/)).toBeTruthy();
+      // 默认 assets 模式下 preview code 也含 "img.png"，需用 selector 限定到 file-info span
+      expect(screen.getByText(/img\.png/, { selector: ".image-insert-file-info" })).toBeTruthy();
     });
     // alt 为空时 img 的可访问角色变为 presentation，故用 querySelector
     const img = container.querySelector("img") as HTMLImageElement;
@@ -118,7 +119,13 @@ describe("<ImageInsertDialog />", () => {
     mockReadFile.mockResolvedValue(PNG_BYTES);
     render(<ImageInsertDialog open onInsert={onInsert} onClose={vi.fn()} />);
     fireEvent.click(screen.getByText(/选择图片文件/));
-    await waitFor(() => expect(screen.getByText(/img\.png/)).toBeTruthy());
+    await waitFor(() =>
+      // 默认 assets 模式下 preview code 也含 "img.png"，需用 selector 限定到 file-info span
+      expect(screen.getByText(/img\.png/, { selector: ".image-insert-file-info" })).toBeTruthy(),
+    );
+
+    // Tauri 环境默认 assets 模式，显式切换到 Base64 模式
+    fireEvent.click(screen.getByText(/Base64 内联/));
 
     fireEvent.change(screen.getByPlaceholderText("图片的替代文字"), {
       target: { value: "图片" },
@@ -140,7 +147,14 @@ describe("<ImageInsertDialog />", () => {
     mockReadFile.mockResolvedValue(PNG_BYTES);
     render(<ImageInsertDialog open onInsert={onInsert} onClose={vi.fn()} />);
     fireEvent.click(screen.getByText(/选择图片文件/));
-    await waitFor(() => expect(screen.getByText(/img\.png/)).toBeTruthy());
+    await waitFor(() =>
+      // 默认 assets 模式下 preview code 也含 "img.png"，需用 selector 限定到 file-info span
+      expect(screen.getByText(/img\.png/, { selector: ".image-insert-file-info" })).toBeTruthy(),
+    );
+
+    // Tauri 环境默认 assets 模式，显式切换到 Base64 模式
+    fireEvent.click(screen.getByText(/Base64 内联/));
+
     fireEvent.change(screen.getByPlaceholderText("图片的替代文字"), {
       target: { value: "alt" },
     });
@@ -159,7 +173,10 @@ describe("<ImageInsertDialog />", () => {
 
     render(<ImageInsertDialog open onInsert={onInsert} onClose={vi.fn()} />);
     fireEvent.click(screen.getByText(/选择图片文件/));
-    await waitFor(() => expect(screen.getByText(/img\.png/)).toBeTruthy());
+    await waitFor(() =>
+      // 默认 assets 模式下 preview code 也含 "img.png"，需用 selector 限定到 file-info span
+      expect(screen.getByText(/img\.png/, { selector: ".image-insert-file-info" })).toBeTruthy(),
+    );
 
     // 切换到 assets 模式
     fireEvent.click(screen.getByText("📁 复制到 assets/"));
@@ -183,7 +200,10 @@ describe("<ImageInsertDialog />", () => {
     mockReadFile.mockResolvedValue(PNG_BYTES);
     render(<ImageInsertDialog open onInsert={onInsert} onClose={vi.fn()} />);
     fireEvent.click(screen.getByText(/选择图片文件/));
-    await waitFor(() => expect(screen.getByText(/img\.png/)).toBeTruthy());
+    await waitFor(() =>
+      // 默认 assets 模式下 preview code 也含 "img.png"，需用 selector 限定到 file-info span
+      expect(screen.getByText(/img\.png/, { selector: ".image-insert-file-info" })).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("📁 复制到 assets/"));
     fireEvent.click(screen.getByRole("button", { name: /插入/ }));
 
@@ -198,7 +218,16 @@ describe("<ImageInsertDialog />", () => {
     mockReadFile.mockResolvedValue(big);
     render(<ImageInsertDialog open onInsert={vi.fn()} onClose={vi.fn()} />);
     fireEvent.click(screen.getByText(/选择图片文件/));
-    await waitFor(() => expect(screen.getByText(/大于 2MB/)).toBeTruthy());
+    // bytesToBase64 处理 2MB 数据耗时较长，增加 waitFor 超时到 5s
+    await waitFor(
+      () =>
+        // 默认 assets 模式下 preview code 也含 "big.png"，需用 selector 限定到 file-info span
+        expect(screen.getByText(/big\.png/, { selector: ".image-insert-file-info" })).toBeTruthy(),
+      { timeout: 5000 },
+    );
+    // 大图警告仅在 Base64 模式下显示（assets 模式下不内联，无体积膨胀问题）
+    fireEvent.click(screen.getByText(/Base64 内联/));
+    await waitFor(() => expect(screen.getByText(/大于 2MB/)).toBeTruthy(), { timeout: 5000 });
   });
 
   it("不支持的格式显示错误", async () => {

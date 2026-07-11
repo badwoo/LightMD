@@ -1,0 +1,56 @@
+/* 报纸风主题：米白底、衬线字体、黑白印刷感
+ * 适合长文阅读，模拟纸张质感 */
+[data-theme="newsprint"] {
+  /* 衬线字体优先：报纸风核心特征 */
+  --font-sans: "Georgia", "Times New Roman", "Songti SC", "SimSun", serif;
+  --font-mono: "Courier New", "Consolas", monospace;
+
+  --bg-primary: #f8f5ef;
+  --bg-secondary: #f0ebe0;
+  --bg-tertiary: #e6dfcf;
+  --bg-hover: #ece5d4;
+  --bg-selection: #d4c9a8;
+
+  --text-primary: #1a1a1a;
+  --text-secondary: #555555;
+  --text-tertiary: #888888;
+
+  --border-color: #c8c0a8;
+  --border-light: #d8d0b8;
+
+  --accent-color: #1a1a1a;
+  --accent-hover: #000000;
+
+  --heading-color: #000000;
+  --code-bg: #ece5d4;
+  --code-text: #1a1a1a;
+  --blockquote-border: #555555;
+  --blockquote-bg: #f0ebe0;
+  --table-border: #888888;
+  --table-header-bg: #f0ebe0;
+  --table-stripe: #f8f5ef;
+  --hr-color: #1a1a1a;
+
+  --link-color: #1a1a1a;
+  --marker-color: #555555;
+  --scrollbar-thumb: #b8b0a0;
+  --scrollbar-thumb-hover: #988e80;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.08);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.12);
+
+  --titlebar-bg: #f0ebe0;
+  --statusbar-bg: #f0ebe0;
+  --sidebar-bg: #f5f1e8;
+
+  /* PrismJS 代码高亮（黑白印刷感） */
+  --prism-text: #1a1a1a;
+  --prism-comment: #707070;
+  --prism-punctuation: #1a1a1a;
+  --prism-number: #303030;
+  --prism-string: #404040;
+  --prism-operator: #1a1a1a;
+  --prism-keyword: #000000;
+  --prism-function: #1a1a1a;
+  --prism-regex: #404040;
+}

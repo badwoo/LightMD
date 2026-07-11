@@ -26,11 +26,20 @@
  */
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../../i18n";
 
 // ─── 类型定义 ────────────────────────────────────
 
 /** 菜单项分组 */
 export type MenuGroup = "基本块" | "列表" | "高级" | "行内格式";
+
+/** 分组名到 i18n key 的映射（保留中文 group 用于过滤匹配，渲染时通过此映射翻译） */
+const GROUP_I18N_KEY: Record<MenuGroup, string> = {
+  "基本块": "command.group.basic",
+  "列表": "command.group.list",
+  "高级": "command.group.advanced",
+  "行内格式": "command.group.inline",
+};
 
 /** 菜单项插入模式 */
 export type InsertMode = "block" | "inline";
@@ -275,6 +284,7 @@ export interface SlashCommandProps {
 }
 
 export function SlashCommand({ textarea, onInsert, onClose }: SlashCommandProps) {
+  const t = useT();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -424,7 +434,7 @@ export function SlashCommand({ textarea, onInsert, onClose }: SlashCommandProps)
       ref={menuRef}
       className="slash-command-menu"
       role="listbox"
-      aria-label="插入命令菜单"
+      aria-label={t("command.ariaLabel")}
       style={{
         position: "fixed",
         left: `${position.left}px`,
@@ -459,7 +469,7 @@ export function SlashCommand({ textarea, onInsert, onClose }: SlashCommandProps)
                   letterSpacing: "0.5px",
                 }}
               >
-                {item.group}
+                {t(GROUP_I18N_KEY[item.group])}
               </div>
             )}
             <button
@@ -516,7 +526,7 @@ export function SlashCommand({ textarea, onInsert, onClose }: SlashCommandProps)
                   textOverflow: "ellipsis",
                 }}
               >
-                {item.name}
+                {t(`command.${item.id}.name`)}
               </span>
             </button>
           </div>

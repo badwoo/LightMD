@@ -33,6 +33,7 @@ pub async fn export_pdf(html_path: String, pdf_path: String) -> Result<(), Strin
             "--headless",
             "--disable-gpu",
             "--no-sandbox",
+            "--virtual-time-budget=5000",
             &print_to_pdf_arg,
             "--print-to-pdf-no-header",
             &html_file_url,

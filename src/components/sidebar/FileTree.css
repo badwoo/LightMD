@@ -288,6 +288,55 @@
   flex-shrink: 0;
 }
 
+/* ─── 收藏区段（G7） ─────────────────────────────── */
+.favorites-section {
+  border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.favorites-header {
+  padding: 10px 14px 4px;
+}
+
+.favorites-list {
+  padding: 4px 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.favorites-empty {
+  padding: 8px 14px 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.favorite-item {
+  height: auto !important;
+  padding: 6px 8px 6px 14px !important;
+  cursor: pointer;
+}
+
+.favorite-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.favorite-star {
+  color: #ffa726;
+  font-size: 14px;
+}
+
+.favorite-path {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .recent-files-header {
   padding: 10px 14px 4px;
 }

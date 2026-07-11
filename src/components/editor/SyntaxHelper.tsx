@@ -5,6 +5,7 @@
  * 提供常用 Markdown 语法参考和快捷插入功能。
  */
 import { useCallback } from "react";
+import { useT } from "../../i18n";
 import "../../styles/editor.css";
 
 interface SyntaxHelperProps {
@@ -13,36 +14,38 @@ interface SyntaxHelperProps {
 
 // 语法辅助数据
 // cursorOffset: 插入后光标应放在第几个字符位置（从插入文本起始计算）
+// title/name 字段存储 i18n key，渲染时通过 t() 翻译
+// code/insert 字段是 Markdown 语法示例，不 i18n
 const SYNTAX_SECTIONS = [
   {
-    title: "标题",
+    title: "syntax.section.heading",
     items: [
-      { name: "一级标题", code: "# ", insert: "# ", cursorOffset: 2 },
-      { name: "二级标题", code: "## ", insert: "## ", cursorOffset: 3 },
-      { name: "三级标题", code: "### ", insert: "### ", cursorOffset: 4 },
+      { name: "syntax.h1", code: "# ", insert: "# ", cursorOffset: 2 },
+      { name: "syntax.h2", code: "## ", insert: "## ", cursorOffset: 3 },
+      { name: "syntax.h3", code: "### ", insert: "### ", cursorOffset: 4 },
     ],
   },
   {
-    title: "文本格式",
+    title: "syntax.section.textFormat",
     items: [
-      { name: "粗体", code: "**...**", insert: "****", cursorOffset: 2 },
-      { name: "斜体", code: "*...*", insert: "**", cursorOffset: 1 },
-      { name: "粗斜体", code: "***...***", insert: "******", cursorOffset: 3 },
-      { name: "删除线", code: "~~...~~", insert: "~~~~", cursorOffset: 2 },
-      { name: "行内代码", code: "`...`", insert: "``", cursorOffset: 1 },
+      { name: "syntax.bold", code: "**...**", insert: "****", cursorOffset: 2 },
+      { name: "syntax.italic", code: "*...*", insert: "**", cursorOffset: 1 },
+      { name: "syntax.boldItalic", code: "***...***", insert: "******", cursorOffset: 3 },
+      { name: "syntax.strikethrough", code: "~~...~~", insert: "~~~~", cursorOffset: 2 },
+      { name: "syntax.inlineCode", code: "`...`", insert: "``", cursorOffset: 1 },
     ],
   },
   {
-    title: "代码块",
+    title: "syntax.section.codeblock",
     items: [
-      { name: "代码块", code: "```...```", insert: "\n```\n\n```\n", cursorOffset: 5 },
-      { name: "JS 代码块", code: "```js", insert: "\n```javascript\n\n```\n", cursorOffset: 15 },
-      { name: "Python 代码块", code: "```python", insert: "\n```python\n\n```\n", cursorOffset: 12 },
-      { name: "HTML 代码块", code: "```html", insert: "\n```html\n\n```\n", cursorOffset: 9 },
+      { name: "syntax.codeblock", code: "```...```", insert: "\n```\n\n```\n", cursorOffset: 5 },
+      { name: "syntax.jsCodeblock", code: "```js", insert: "\n```javascript\n\n```\n", cursorOffset: 15 },
+      { name: "syntax.pythonCodeblock", code: "```python", insert: "\n```python\n\n```\n", cursorOffset: 12 },
+      { name: "syntax.htmlCodeblock", code: "```html", insert: "\n```html\n\n```\n", cursorOffset: 9 },
     ],
   },
   {
-    title: "代码块·更多",
+    title: "syntax.section.codeblockMore",
     items: [
       { name: "TypeScript", code: "```typescript", insert: "\n```typescript\n\n```\n", cursorOffset: 15 },
       { name: "Go", code: "```go", insert: "\n```go\n\n```\n", cursorOffset: 7 },
@@ -58,27 +61,28 @@ const SYNTAX_SECTIONS = [
     ],
   },
   {
-    title: "列表",
+    title: "syntax.section.list",
     items: [
-      { name: "无序列表", code: "- ", insert: "- ", cursorOffset: 2 },
-      { name: "有序列表", code: "1. ", insert: "1. ", cursorOffset: 3 },
-      { name: "任务列表", code: "- [ ] ", insert: "- [ ] ", cursorOffset: 6 },
-      { name: "已完成任务", code: "- [x] ", insert: "- [x] ", cursorOffset: 6 },
+      { name: "syntax.unorderedList", code: "- ", insert: "- ", cursorOffset: 2 },
+      { name: "syntax.orderedList", code: "1. ", insert: "1. ", cursorOffset: 3 },
+      { name: "syntax.taskList", code: "- [ ] ", insert: "- [ ] ", cursorOffset: 6 },
+      { name: "syntax.taskDone", code: "- [x] ", insert: "- [x] ", cursorOffset: 6 },
     ],
   },
   {
-    title: "其他",
+    title: "syntax.section.other",
     items: [
-      { name: "引用", code: "> ", insert: "> ", cursorOffset: 2 },
-      { name: "链接", code: "[文本](url)", insert: "[](url)", cursorOffset: 1 },
-      { name: "图片", code: "![描述](url)", insert: "![](url)", cursorOffset: 2 },
-      { name: "分割线", code: "---", insert: "\n---\n", cursorOffset: 5 },
-      { name: "表格", code: "|...|", insert: "\n| 列1 | 列2 | 列3 |\n|------|------|------|\n| 内容 | 内容 | 内容 |\n", cursorOffset: 3 },
+      { name: "syntax.quote", code: "> ", insert: "> ", cursorOffset: 2 },
+      { name: "syntax.link", code: "[文本](url)", insert: "[](url)", cursorOffset: 1 },
+      { name: "syntax.image", code: "![描述](url)", insert: "![](url)", cursorOffset: 2 },
+      { name: "syntax.hr", code: "---", insert: "\n---\n", cursorOffset: 5 },
+      { name: "syntax.table", code: "|...|", insert: "\n| 列1 | 列2 | 列3 |\n|------|------|------|\n| 内容 | 内容 | 内容 |\n", cursorOffset: 3 },
     ],
   },
 ];
 
 export function SyntaxHelper({ onInsert }: SyntaxHelperProps) {
+  const t = useT();
   const handleClick = useCallback(
     (insert: string, cursorOffset: number) => {
       onInsert?.(insert, cursorOffset);
@@ -89,23 +93,26 @@ export function SyntaxHelper({ onInsert }: SyntaxHelperProps) {
   return (
     <div className="syntax-helper">
       <div className="syntax-helper-header">
-        <span className="syntax-helper-title">语法辅助</span>
+        <span className="syntax-helper-title">{t("syntax.title")}</span>
       </div>
       <div className="syntax-helper-scroll">
         {SYNTAX_SECTIONS.map((section, idx) => (
           <div key={section.title}>
             {idx > 0 && <div className="syntax-helper-divider" />}
             <div className="syntax-helper-section">
-              <div className="syntax-helper-section-title">{section.title}</div>
+              <div className="syntax-helper-section-title">{t(section.title)}</div>
               <ul className="syntax-helper-list">
                 {section.items.map((item) => (
                   <li
                     key={item.name}
                     className="syntax-helper-item"
-                    title={`点击插入: ${item.insert}`}
+                    title={t("syntax.clickToInsert", { code: item.insert })}
                     onClick={() => handleClick(item.insert, item.cursorOffset)}
                   >
-                    <span className="syntax-helper-item-name">{item.name}</span>
+                    <span className="syntax-helper-item-name">
+                      {/* 代码块·更多 分组的 name 是语言名（TypeScript/Go 等），不 i18n；其余通过 t() 翻译 */}
+                      {section.title === "syntax.section.codeblockMore" ? item.name : t(item.name)}
+                    </span>
                     <span className="syntax-helper-item-code">{item.code}</span>
                   </li>
                 ))}

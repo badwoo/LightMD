@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useT } from "../../i18n";
 import "./AppShell.css";
 
 interface AppShellProps {
@@ -8,6 +9,7 @@ interface AppShellProps {
 }
 
 export function AppShell({ sidebar, outline, children }: AppShellProps) {
+  const t = useT();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [outlineCollapsed, setOutlineCollapsed] = useState(false);
 
@@ -20,7 +22,7 @@ export function AppShell({ sidebar, outline, children }: AppShellProps) {
         <aside className={`app-sidebar ${sidebarCollapsed ? "app-sidebar-collapsed" : ""}`}>
           <button
             className="sidebar-toggle-btn sidebar-toggle-left"
-            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            title={sidebarCollapsed ? t("appshell.expandSidebar") : t("appshell.collapseSidebar")}
             onClick={toggleSidebar}
           >
             {sidebarCollapsed ? "›" : "‹"}
@@ -35,7 +37,7 @@ export function AppShell({ sidebar, outline, children }: AppShellProps) {
         <aside className={`app-outline ${outlineCollapsed ? "app-outline-collapsed" : ""}`}>
           <button
             className="sidebar-toggle-btn sidebar-toggle-right"
-            title={outlineCollapsed ? "展开侧栏" : "收起侧栏"}
+            title={outlineCollapsed ? t("appshell.expandSidebar") : t("appshell.collapseSidebar")}
             onClick={toggleOutline}
           >
             {outlineCollapsed ? "‹" : "›"}

@@ -13,6 +13,7 @@
  * 当用户选中文本后调用对话框时，通过 initialText 预填选中文本。
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useT } from "../../i18n";
 import "./LinkDialog.css";
 
 export interface LinkDialogProps {
@@ -50,6 +51,7 @@ export function LinkDialog({ open, onInsert, onClose, initialText = "", initialU
   const [text, setText] = useState(initialText);
   const [url, setUrl] = useState(initialUrl);
   const [title, setTitle] = useState("");
+  const t = useT();
 
   // 对话框打开时同步初始值（每次 open 由 false 变 true 时重置）
   useEffect(() => {
@@ -96,24 +98,24 @@ export function LinkDialog({ open, onInsert, onClose, initialText = "", initialU
     <div className="link-dialog-overlay" onClick={onClose}>
       <div className="link-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="link-dialog-header">
-          <h3>插入链接</h3>
+          <h3>{t("link.title")}</h3>
         </div>
 
         <div className="link-dialog-body">
           <div className="link-dialog-field">
-            <label>链接文本</label>
+            <label>{t("link.text")}</label>
             <input
               type="text"
               className="link-dialog-input"
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder="显示文本（可选，留空则使用 URL）"
+              placeholder={t("link.textPlaceholder")}
               autoFocus
             />
           </div>
 
           <div className="link-dialog-field">
-            <label>URL *</label>
+            <label>{t("link.url")}</label>
             <input
               type="text"
               className="link-dialog-input"
@@ -124,27 +126,27 @@ export function LinkDialog({ open, onInsert, onClose, initialText = "", initialU
           </div>
 
           <div className="link-dialog-field">
-            <label>标题（可选）</label>
+            <label>{t("link.titleField")}</label>
             <input
               type="text"
               className="link-dialog-input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="鼠标悬停时的提示文字"
+              placeholder={t("link.titlePlaceholder")}
             />
           </div>
 
           <div className="link-dialog-preview">
-            <div className="link-dialog-preview-label">Markdown 预览</div>
+            <div className="link-dialog-preview-label">{t("link.preview")}</div>
             <code className="link-dialog-preview-code">
-              {preview || "[文本](url)"}
+              {preview || t("link.previewEmpty")}
             </code>
           </div>
         </div>
 
         <div className="link-dialog-footer">
           <button className="link-dialog-btn secondary" onClick={onClose}>
-            取消
+            {t("link.cancel")}
             <span className="link-dialog-kbd">Esc</span>
           </button>
           <button
@@ -152,7 +154,7 @@ export function LinkDialog({ open, onInsert, onClose, initialText = "", initialU
             onClick={handleInsert}
             disabled={!canInsert}
           >
-            插入
+            {t("link.insert")}
             <span className="link-dialog-kbd">Enter</span>
           </button>
         </div>

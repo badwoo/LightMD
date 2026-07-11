@@ -49,12 +49,19 @@ export const fileService = {
     }
   },
 
-  async listDir(path: string): Promise<FileEntry[]> {
+  /**
+   * 列出目录内容
+   * @param opts.silent 静默模式：true 时不弹出错误提示（用于拖拽场景的类型探测）
+   */
+  async listDir(path: string, opts?: { silent?: boolean }): Promise<FileEntry[]> {
     try {
       return await invoke<FileEntry[]>("list_dir", { path });
     } catch (err) {
       const msg = wrapError("读取目录失败", err);
-      notifyError(msg);
+      // 静默模式下不弹 toast，仅抛错（用于拖拽时探测路径类型）
+      if (!opts?.silent) {
+        notifyError(msg);
+      }
       throw new Error(msg);
     }
   },

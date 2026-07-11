@@ -91,3 +91,44 @@
   font-size: 11px;
   border-top: 1px solid var(--border-light);
 }
+
+/* ─── 拖拽手柄（G13）─────────────────────────── */
+/* 默认隐藏，仅 hover 时显示，避免干扰点击跳转 */
+.outline-drag-handle {
+  display: inline-block;
+  width: 14px;
+  margin-right: 4px;
+  flex-shrink: 0;
+  cursor: grab;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  user-select: none;
+  vertical-align: middle;
+}
+
+.outline-item:hover .outline-drag-handle {
+  opacity: 1;
+}
+
+.outline-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* 拖拽中的项：半透明预览 */
+.outline-item.dragging {
+  opacity: 0.5;
+  background: var(--bg-hover);
+}
+
+/* 拖拽提示文字 */
+.outline-drag-hint {
+  padding: 6px 14px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-align: center;
+  border-top: 1px solid var(--border-light);
+}

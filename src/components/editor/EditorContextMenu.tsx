@@ -14,6 +14,7 @@
  */
 import { useEffect, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../../i18n";
 import "./EditorContextMenu.css";
 
 /** 菜单项类型 */
@@ -101,6 +102,7 @@ export function EditorContextMenu({
   onAction,
   onClose,
 }: EditorContextMenuProps) {
+  const t = useT();
   // 缓存菜单项配置，仅当上下文状态变化时重建
   const menuItems = useMemo(
     () => buildMenuItems(hasSelection, canUndo, canRedo),
@@ -179,7 +181,7 @@ export function EditorContextMenu({
             disabled={item.disabled}
             onClick={() => handleItemClick(item.action!, item.disabled)}
           >
-            <span className="context-menu-label">{item.label}</span>
+            <span className="context-menu-label">{t(`menu.${item.action}`)}</span>
             {item.shortcut && <span className="context-menu-shortcut">{item.shortcut}</span>}
           </button>
         );

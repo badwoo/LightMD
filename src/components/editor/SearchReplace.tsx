@@ -1,16 +1,23 @@
 /**
- * SearchReplaceDialog —— 搜索和替换对话框
+ * SearchReplaceDialog —— 搜索和替换对话框（浮动窗口）
  *
  * 支持 Ctrl+F 搜索和 Ctrl+H 查找替换
  * 在阅读模式下搜索 ProseMirror 内容，在编辑模式下搜索 textarea 内容
+ *
+ * v0.3.5 改进：
+ * - 浮动窗口，支持拖拽移动
+ * - Ctrl+F 重复按可重新激活搜索框
+ * - 搜索框编辑时保持焦点（不被 ProseMirror focus 抢走）
+ * - 修复阅读模式搜索高亮与匹配位置不一致（buildOffsetBlocks 同时构建 text，保证偏移一致）
  *
  * 性能优化：
  * - buildOffsetMap 从每字符 Map 改为块级数组 + 二分查找
  * - 100KB 文档：内存从 4-8MB 降至 20-80KB
  */
 import { useState, useRef, useEffect, useCallback } from "react";
-import { TextSelection } from "prosemirror-state";
+import { searchHighlightKey } from "../../core/editor";
 import { useEditorStore } from "../../stores/useEditorStore";
+import { useT } from "../../i18n";
 import "./SearchReplace.css";
 
 interface SearchReplaceProps {
@@ -19,6 +26,8 @@ interface SearchReplaceProps {
   sourceTextareaRef?: React.RefObject<HTMLTextAreaElement | null>;
   sourceContent?: string;
   onSourceContentChange?: (content: string) => void;
+  /** 初始是否显示替换行（Ctrl+H 时为 true） */
+  initialShowReplace?: boolean;
 }
 
 // ─── 块级偏移映射（替代逐字符 Map，大幅减少内存）──────────
@@ -33,17 +42,29 @@ interface OffsetBlock {
   pmStart: number;
 }
 
-/** 构建块级偏移映射数组，替代逐字符 Map */
-function buildOffsetBlocks(doc: import("prosemirror-model").Node): OffsetBlock[] {
+/** 偏移映射结果：同时返回 text 和 blocks，保证搜索文本与位置映射完全一致 */
+interface OffsetMap {
+  text: string;
+  blocks: OffsetBlock[];
+}
+
+/**
+ * 构建块级偏移映射数组，同时构建 textContent
+ * 问题2修复：text 和 blocks 在同一次遍历中构建，保证偏移量完全一致
+ * （原实现使用 textBetween 获取 text，与 buildOffsetBlocks 的换行符插入逻辑不一致）
+ */
+function buildOffsetMap(doc: import("prosemirror-model").Node): OffsetMap {
   const blocks: OffsetBlock[] = [];
   let textOffset = 0;
   let lastBlockPos = -1;
+  let text = "";
 
   doc.descendants((node, pos) => {
     if (node.isText && node.text) {
       // 块边界换行符：textContent 在块边界插入换行符
       if (lastBlockPos >= 0) {
         textOffset += 1;
+        text += "\n";
         lastBlockPos = -1;
       }
       blocks.push({
@@ -51,6 +72,7 @@ function buildOffsetBlocks(doc: import("prosemirror-model").Node): OffsetBlock[]
         textEnd: textOffset + node.text.length,
         pmStart: pos,
       });
+      text += node.text;
       textOffset += node.text.length;
     } else if (node.isBlock && !node.isInline && pos > 0) {
       lastBlockPos = pos;
@@ -58,7 +80,7 @@ function buildOffsetBlocks(doc: import("prosemirror-model").Node): OffsetBlock[]
     return true;
   });
 
-  return blocks;
+  return { text, blocks };
 }
 
 /** 从 textContent 偏移量查找 PM 位置（二分查找，O(log n)） */
@@ -85,22 +107,104 @@ export function SearchReplaceDialog({
   sourceTextareaRef,
   sourceContent,
   onSourceContentChange,
+  initialShowReplace = false,
 }: SearchReplaceProps) {
+  const t = useT();
   const viewMode = useEditorStore((s) => s.viewMode);
   const isSourceMode = viewMode === "edit" || viewMode === "split";
+  // 问题3：监听 searchFocusKey 变化，重复按 Ctrl+F 时重新聚焦
+  const searchFocusKey = useEditorStore((s) => s.searchFocusKey);
   const [searchText, setSearchText] = useState("");
   const [replaceText, setReplaceText] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [matchCount, setMatchCount] = useState(0);
   const [currentMatch, setCurrentMatch] = useState(0);
-  const [showReplace, setShowReplace] = useState(false);
+  const [showReplace, setShowReplace] = useState(initialShowReplace);
+
+  // 当 initialShowReplace 变化时同步 showReplace（Ctrl+H 在已打开搜索框时切换到替换模式）
+  useEffect(() => {
+    if (initialShowReplace) setShowReplace(true);
+  }, [initialShowReplace]);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const matchesRef = useRef<number[]>([]);
+  // 缓存偏移映射，performSearch 构建后 highlightMatch 复用
+  const offsetMapRef = useRef<OffsetMap | null>(null);
 
-  // 聚焦搜索框
+  // ─── 问题4：浮动窗口拖拽 ──────────────────────────
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [initialized, setInitialized] = useState(false);
+
+  // 初始位置：浮动在文档中间
+  useEffect(() => {
+    if (!initialized && containerRef.current) {
+      const w = containerRef.current.offsetWidth || 460;
+      const h = containerRef.current.offsetHeight || 80;
+      setPosition({
+        x: Math.max(20, (window.innerWidth - w) / 2),
+        y: Math.max(20, (window.innerHeight - h) / 2 - 100),
+      });
+      setInitialized(true);
+    }
+  }, [initialized]);
+
+  // 问题3修复：拖拽事件改为在 handleDragStart 中注册，避免 useEffect 挂载时 dragging=false 导致不注册
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    // 不在 input/button 上触发拖拽
+    const target = e.target as HTMLElement;
+    if (target.tagName === "INPUT" || target.tagName === "BUTTON") return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const posX = position.x;
+    const posY = position.y;
+
+    const handleMove = (ev: MouseEvent) => {
+      const newX = posX + ev.clientX - startX;
+      const newY = posY + ev.clientY - startY;
+      // 限制在视口范围内
+      const maxX = window.innerWidth - 60;
+      const maxY = window.innerHeight - 30;
+      setPosition({
+        x: Math.max(0, Math.min(newX, maxX)),
+        y: Math.max(0, Math.min(newY, maxY)),
+      });
+    };
+    const handleUp = () => {
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleUp);
+    };
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleUp);
+    e.preventDefault();
+  }, [position]);
+
+  // 聚焦搜索框（初始 + searchFocusKey 变化时）
   useEffect(() => {
     searchInputRef.current?.focus();
   }, []);
+
+  // 问题3：searchFocusKey 变化时重新聚焦搜索框
+  useEffect(() => {
+    if (searchFocusKey > 0) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+  }, [searchFocusKey]);
+
+  // 问题1修复：组件卸载时清除 ProseMirror 中的搜索高亮 Decoration
+  useEffect(() => {
+    return () => {
+      if (editorView && !isSourceMode) {
+        try {
+          const tr = editorView.state.tr;
+          tr.setMeta(searchHighlightKey, null);
+          editorView.dispatch(tr);
+        } catch {
+          // 忽略清除错误（editorView 可能已销毁）
+        }
+      }
+    };
+  }, [editorView, isSourceMode]);
 
   // 搜索
   const performSearch = useCallback(() => {
@@ -108,15 +212,24 @@ export function SearchReplaceDialog({
       setMatchCount(0);
       setCurrentMatch(0);
       matchesRef.current = [];
+      // 问题1修复：清除 ProseMirror 中的搜索高亮 Decoration
+      if (editorView && !isSourceMode) {
+        const tr = editorView.state.tr;
+        tr.setMeta(searchHighlightKey, null);
+        editorView.dispatch(tr);
+      }
       return;
     }
 
     let text: string;
     if (isSourceMode) {
       text = sourceContent || "";
+      offsetMapRef.current = null;
     } else if (editorView) {
-      // 使用 textBetween 获取与 textContent 一致的文本
-      text = editorView.state.doc.textBetween(0, editorView.state.doc.content.size, "\n", "\n");
+      // 问题2修复：使用 buildOffsetMap 同时构建 text 和 blocks，保证偏移一致
+      const map = buildOffsetMap(editorView.state.doc);
+      offsetMapRef.current = map;
+      text = map.text;
     } else {
       text = "";
     }
@@ -160,27 +273,43 @@ export function SearchReplaceDialog({
       const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
       textarea.scrollTop = (lines.length - 1) * lineHeight;
     } else if (editorView) {
-      // ProseMirror 模式下，将 textContent 偏移量映射到 PM 位置
+      // ProseMirror 模式下，使用 offsetMapRef 中的 blocks 映射位置
       try {
-        const doc = editorView.state.doc;
+        const offsetMap = offsetMapRef.current;
+        if (!offsetMap) return;
         const targetOffset = matchesRef.current[index];
 
-        // 构建块级偏移映射（替代逐字符 Map，大幅减少内存）
-        const blocks = buildOffsetBlocks(doc);
-
         // 查找匹配起始位置对应的 PM 位置
-        const pmStart = lookupPmPos(blocks, targetOffset);
+        const pmStart = lookupPmPos(offsetMap.blocks, targetOffset);
         if (pmStart !== undefined) {
           // 查找匹配结束位置对应的 PM 位置
-          const pmEnd = lookupPmPos(blocks, targetOffset + searchText.length - 1);
+          const pmEnd = lookupPmPos(offsetMap.blocks, targetOffset + searchText.length - 1);
           if (pmEnd !== undefined) {
-            const endPos = Math.min(pmEnd + 1, doc.content.size);
-            const tr = editorView.state.tr.setSelection(
-              TextSelection.create(doc, pmStart, endPos)
-            );
+            const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
+            // 问题1修复：使用 ProseMirror Decoration 高亮匹配内容，不依赖编辑器焦点
+            // 通过 searchHighlightKey meta 更新 Plugin state，Decoration 始终可见
+            const tr = editorView.state.tr;
+            tr.setMeta(searchHighlightKey, { from: pmStart, to: endPos });
             tr.scrollIntoView();
             editorView.dispatch(tr);
-            editorView.focus();
+
+            // 阅读模式下 handleScrollToSelection 返回 true 会阻止自动滚动
+            // 手动滚动到匹配位置（使用 editor-container 作为滚动容器）
+            const view = editorView;
+            requestAnimationFrame(() => {
+              try {
+                const coords = view.coordsAtPos(pmStart);
+                const scrollContainer = view.dom.parentElement as HTMLElement | null;
+                if (scrollContainer) {
+                  const containerRect = scrollContainer.getBoundingClientRect();
+                  // 计算目标滚动位置，让匹配位置出现在容器中部
+                  const targetTop = coords.top - containerRect.top + scrollContainer.scrollTop - containerRect.height / 2;
+                  scrollContainer.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+                }
+              } catch {
+                // 忽略滚动错误
+              }
+            });
           }
         }
       } catch {
@@ -209,18 +338,17 @@ export function SearchReplaceDialog({
     } else if (editorView) {
       // 阅读模式：通过 ProseMirror transaction 替换文本
       try {
-        const doc = editorView.state.doc;
+        const offsetMap = offsetMapRef.current;
+        if (!offsetMap) return;
         const targetOffset = matchesRef.current[currentMatch - 1];
-        const blocks = buildOffsetBlocks(doc);
 
-        const pmStart = lookupPmPos(blocks, targetOffset);
-        const pmEnd = lookupPmPos(blocks, targetOffset + searchText.length - 1);
+        const pmStart = lookupPmPos(offsetMap.blocks, targetOffset);
+        const pmEnd = lookupPmPos(offsetMap.blocks, targetOffset + searchText.length - 1);
         if (pmStart !== undefined && pmEnd !== undefined) {
-          const endPos = Math.min(pmEnd + 1, doc.content.size);
+          const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
           const tr = editorView.state.tr.insertText(replaceText, pmStart, endPos);
           tr.setMeta("addToHistory", true);
           editorView.dispatch(tr);
-          editorView.focus();
         }
       } catch {
         // 忽略替换错误
@@ -243,24 +371,23 @@ export function SearchReplaceDialog({
     } else if (editorView) {
       // 阅读模式：从后往前替换，避免位置偏移
       try {
-        const doc = editorView.state.doc;
-        const blocks = buildOffsetBlocks(doc);
+        const offsetMap = offsetMapRef.current;
+        if (!offsetMap) return;
         const matches = matchesRef.current;
 
         let tr = editorView.state.tr;
         // 从后往前替换，这样前面的偏移量不会受影响
         for (let i = matches.length - 1; i >= 0; i--) {
           const targetOffset = matches[i];
-          const pmStart = lookupPmPos(blocks, targetOffset);
-          const pmEnd = lookupPmPos(blocks, targetOffset + searchText.length - 1);
+          const pmStart = lookupPmPos(offsetMap.blocks, targetOffset);
+          const pmEnd = lookupPmPos(offsetMap.blocks, targetOffset + searchText.length - 1);
           if (pmStart !== undefined && pmEnd !== undefined) {
-            const endPos = Math.min(pmEnd + 1, doc.content.size);
+            const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
             tr = tr.insertText(replaceText, pmStart, endPos);
           }
         }
         tr.setMeta("addToHistory", true);
         editorView.dispatch(tr);
-        editorView.focus();
       } catch {
         // 忽略替换错误
       }
@@ -281,37 +408,47 @@ export function SearchReplaceDialog({
   }, [goToMatch, onClose]);
 
   return (
-    <div className="search-replace" onKeyDown={handleKeyDown}>
+    <div
+      ref={containerRef}
+      className="search-replace search-replace-floating"
+      style={initialized ? { left: position.x, top: position.y } : undefined}
+      onKeyDown={handleKeyDown}
+    >
+      {/* 拖拽条 */}
+      <div className="search-drag-handle" onMouseDown={handleDragStart}>
+        <span className="search-drag-dots">⋮⋮</span>
+        <span className="search-drag-title">{t("search.placeholder")}</span>
+        <button className="search-close-btn" title={t("search.close")} onClick={onClose}>
+          ✕
+        </button>
+      </div>
       <div className="search-row">
         <input
           ref={searchInputRef}
           className="search-input"
           type="text"
-          placeholder="搜索..."
+          placeholder={t("search.placeholder")}
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
         />
         <button
           className={`search-option-btn ${caseSensitive ? "active" : ""}`}
-          title="区分大小写"
+          title={t("search.caseSensitive")}
           onClick={() => setCaseSensitive(!caseSensitive)}
         >
           Aa
         </button>
-        <button className="search-nav-btn" title="上一个" onClick={() => goToMatch(-1)} disabled={matchCount === 0}>
+        <button className="search-nav-btn" title={t("search.previous")} onClick={() => goToMatch(-1)} disabled={matchCount === 0}>
           ↑
         </button>
-        <button className="search-nav-btn" title="下一个" onClick={() => goToMatch(1)} disabled={matchCount === 0}>
+        <button className="search-nav-btn" title={t("search.next")} onClick={() => goToMatch(1)} disabled={matchCount === 0}>
           ↓
         </button>
         <span className="search-count">
-          {matchCount > 0 ? `${currentMatch}/${matchCount}` : "无结果"}
+          {matchCount > 0 ? `${currentMatch}/${matchCount}` : t("search.noResult")}
         </span>
-        <button className="search-toggle-btn" title="替换" onClick={() => setShowReplace(!showReplace)}>
+        <button className="search-toggle-btn" title={t("search.toggleReplace")} onClick={() => setShowReplace(!showReplace)}>
           ⟳
-        </button>
-        <button className="search-close-btn" title="关闭" onClick={onClose}>
-          ✕
         </button>
       </div>
       {showReplace && (
@@ -319,15 +456,15 @@ export function SearchReplaceDialog({
           <input
             className="search-input"
             type="text"
-            placeholder="替换为..."
+            placeholder={t("search.replacePlaceholder")}
             value={replaceText}
             onChange={(e) => setReplaceText(e.target.value)}
           />
-          <button className="replace-btn" title="替换当前" onClick={replaceCurrent} disabled={matchCount === 0}>
-            替换
+          <button className="replace-btn" title={t("search.replaceCurrent")} onClick={replaceCurrent} disabled={matchCount === 0}>
+            {t("search.replace")}
           </button>
-          <button className="replace-btn" title="全部替换" onClick={replaceAll} disabled={matchCount === 0}>
-            全部
+          <button className="replace-btn" title={t("search.replaceAll")} onClick={replaceAll} disabled={matchCount === 0}>
+            {t("search.replaceAll")}
           </button>
         </div>
       )}

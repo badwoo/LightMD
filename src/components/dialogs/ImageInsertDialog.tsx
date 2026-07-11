@@ -18,6 +18,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { readFile as tauriReadFile, copyFile, mkdir, exists } from "@tauri-apps/plugin-fs";
 import { isTauri } from "../../services/fileService";
 import { useEditorStore } from "../../stores/useEditorStore";
+import { useT } from "../../i18n";
 import "./ImageInsertDialog.css";
 
 /** 支持的图片扩展名 */
@@ -65,12 +66,14 @@ function getMime(ext: string): string {
   return MIME_MAP[ext] || "application/octet-stream";
 }
 
-/** Uint8Array -> base64 字符串 */
+/** Uint8Array -> base64 字符串（分块处理，避免逐字节拼接字符串的性能问题） */
 function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 8192;
   let binary = "";
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    // apply 一次性传递分块字节，避免逐字节拼接字符串的开销
+    binary += String.fromCharCode.apply(null, Array.from(chunk) as unknown as number[]);
   }
   return btoa(binary);
 }
@@ -137,7 +140,10 @@ export interface ImageInsertDialogProps {
 
 export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialogProps) {
   const filePath = useEditorStore((s) => s.filePath);
-  const [mode, setMode] = useState<"base64" | "assets">("base64");
+  const t = useT();
+  // 默认插入模式：Tauri 环境优先用 assets（生成简短的相对路径引用，避免 base64 占用篇幅过大）
+  // 浏览器环境无文件系统访问能力，回退到 base64
+  const [mode, setMode] = useState<"base64" | "assets">(isTauri() ? "assets" : "base64");
   /** Tauri 模式下选中文件的本地路径 */
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   /** 浏览器模式下选中的 File 对象 */
@@ -172,7 +178,8 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
   // 对话框打开/关闭时重置状态
   useEffect(() => {
     if (open) {
-      setMode("base64");
+      // 重置时也根据环境选择默认模式（Tauri → assets，浏览器 → base64）
+      setMode(isTauri() ? "assets" : "base64");
       setAlt("");
       setTitle("");
       setProcessing(false);
@@ -200,14 +207,14 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
       try {
         const selected = await openDialog({
           multiple: false,
-          filters: [{ name: "图片", extensions: SUPPORTED_EXTS }],
+          filters: [{ name: t("imageInsert.imageFilter"), extensions: SUPPORTED_EXTS }],
         });
         const path = typeof selected === "string" ? selected : Array.isArray(selected) ? selected[0] : null;
         if (!path) return;
         const name = getFileName(path);
         const ext = getExt(path);
         if (!SUPPORTED_EXTS.includes(ext)) {
-          setError(`不支持的图片格式：.${ext || "?"}（支持 ${SUPPORTED_EXTS.join("/")}）`);
+          setError(t("imageInsert.unsupportedFormat", { ext: ext || "?", formats: SUPPORTED_EXTS.join("/") }));
           return;
         }
         // 读取文件生成预览 data URL
@@ -221,12 +228,12 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
         setFileSize(bytes.byteLength);
         setPreviewSrc(dataUrl);
       } catch (err) {
-        setError(`选择文件失败：${err instanceof Error ? err.message : String(err)}`);
+        setError(t("imageInsert.selectFileFailed", { error: err instanceof Error ? err.message : String(err) }));
       }
     } else {
       inputRef.current?.click();
     }
-  }, [clearPreview]);
+  }, [clearPreview, t]);
 
   /** 浏览器 input[type=file] 选择回调 */
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -235,7 +242,7 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
     const name = file.name;
     const ext = getExt(name);
     if (!SUPPORTED_EXTS.includes(ext)) {
-      setError(`不支持的图片格式：.${ext || "?"}（支持 ${SUPPORTED_EXTS.join("/")}）`);
+      setError(t("imageInsert.unsupportedFormat", { ext: ext || "?", formats: SUPPORTED_EXTS.join("/") }));
       e.target.value = "";
       return;
     }
@@ -248,7 +255,7 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
     setFileSize(file.size);
     setPreviewSrc(url);
     e.target.value = "";
-  }, [clearPreview]);
+  }, [clearPreview, t]);
 
   // 预览生成的 Markdown（assets 模式下显示相对路径而非 data URL，避免预览过长）
   const preview = useMemo(() => {
@@ -283,13 +290,13 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
         // assets 模式
         if (isTauri() && selectedPath) {
           if (!filePath) {
-            setError("请先保存文档后再使用「复制到 assets」方式");
+            setError(t("imageInsert.needSaveForAssets"));
             setProcessing(false);
             return;
           }
           src = await copyToAssets(selectedPath, fileName, filePath);
         } else if (fileObj) {
-          setError("浏览器模式下不支持「复制到 assets」，请使用 Base64 内联");
+          setError(t("imageInsert.browserNoAssets"));
           setProcessing(false);
           return;
         }
@@ -297,11 +304,11 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
       const md = buildImageMarkdown(alt, src, title);
       if (md) onInsert(md);
     } catch (err) {
-      setError(`插入失败：${err instanceof Error ? err.message : String(err)}`);
+      setError(t("imageInsert.insertFailed", { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setProcessing(false);
     }
-  }, [canInsert, mode, selectedPath, fileObj, previewSrc, fileName, filePath, alt, title, onInsert]);
+  }, [canInsert, mode, selectedPath, fileObj, previewSrc, fileName, filePath, alt, title, onInsert, t]);
 
   // Esc 取消（不监听 Enter，避免与多行输入冲突；插入由按钮触发）
   useEffect(() => {
@@ -322,7 +329,7 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
     <div className="image-insert-overlay" onClick={onClose}>
       <div className="image-insert-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="image-insert-header">
-          <h3>插入图片</h3>
+          <h3>{t("imageInsert.title")}</h3>
         </div>
 
         <div className="image-insert-body">
@@ -332,7 +339,7 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
               onClick={handleSelectFile}
               type="button"
             >
-              📁 选择图片文件
+              {t("imageInsert.selectFile")}
             </button>
             <input
               ref={inputRef}
@@ -350,7 +357,7 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
 
           {isLarge && mode === "base64" && (
             <div className="image-insert-warn">
-              ⚠️ 图片大于 2MB，Base64 编码会显著增大文档体积，建议使用「复制到 assets」。
+              {t("imageInsert.largeImageWarn")}
             </div>
           )}
 
@@ -363,57 +370,57 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
           )}
 
           <div className="image-insert-field">
-            <label>图片描述（alt）</label>
+            <label>{t("imageInsert.alt")}</label>
             <input
               type="text"
               className="image-insert-input"
               value={alt}
               onChange={(e) => setAlt(e.target.value)}
-              placeholder="图片的替代文字"
+              placeholder={t("imageInsert.altPlaceholder")}
             />
           </div>
 
           <div className="image-insert-field">
-            <label>标题（可选）</label>
+            <label>{t("imageInsert.titleField")}</label>
             <input
               type="text"
               className="image-insert-input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="鼠标悬停提示"
+              placeholder={t("imageInsert.titlePlaceholder")}
             />
           </div>
 
           <div className="image-insert-field">
-            <label>插入方式</label>
+            <label>{t("imageInsert.insertMode")}</label>
             <div className="image-insert-mode-group">
               <button
                 type="button"
                 className={`image-insert-mode-btn ${mode === "base64" ? "active" : ""}`}
                 onClick={() => setMode("base64")}
               >
-                🔗 Base64 内联
+                {t("imageInsert.base64")}
               </button>
               <button
                 type="button"
                 className={`image-insert-mode-btn ${mode === "assets" ? "active" : ""}`}
                 onClick={() => setMode("assets")}
                 disabled={!isTauri()}
-                title={!isTauri() ? "浏览器模式不支持" : ""}
+                title={!isTauri() ? t("imageInsert.browserNotSupported") : ""}
               >
-                📁 复制到 assets/
+                {t("imageInsert.assets")}
               </button>
             </div>
             {mode === "assets" && !filePath && (
               <div className="image-insert-hint">
-                ⚠️ 需要先保存文档，图片将复制到文档同级的 assets/ 目录
+                {t("imageInsert.needSaveDoc")}
               </div>
             )}
           </div>
 
           {preview && (
             <div className="image-insert-preview">
-              <div className="image-insert-preview-label">Markdown 预览</div>
+              <div className="image-insert-preview-label">{t("imageInsert.preview")}</div>
               <code className="image-insert-preview-code">{truncate(preview, 200)}</code>
             </div>
           )}
@@ -421,7 +428,7 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
 
         <div className="image-insert-footer">
           <button className="image-insert-btn secondary" onClick={onClose} type="button">
-            取消
+            {t("imageInsert.cancel")}
             <span className="image-insert-kbd">Esc</span>
           </button>
           <button
@@ -430,7 +437,7 @@ export function ImageInsertDialog({ open, onInsert, onClose }: ImageInsertDialog
             disabled={!canInsert || processing}
             type="button"
           >
-            {processing ? "处理中..." : "插入"}
+            {processing ? t("imageInsert.processing") : t("imageInsert.insert")}
           </button>
         </div>
       </div>

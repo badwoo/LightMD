@@ -19,10 +19,12 @@ import type { EditorView } from "prosemirror-view";
 import { useEditorStore, type ViewMode } from "../../stores/useEditorStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useAutoSave } from "../../hooks/useAutoSave";
+import { useT, t as translate } from "../../i18n";
 import { SearchReplaceDialog } from "./SearchReplace";
 import { LinkDialog } from "../dialogs/LinkDialog";
 import { TableDialog } from "../dialogs/TableDialog";
 import { ImageInsertDialog } from "../dialogs/ImageInsertDialog";
+import { ImageEditDialog } from "../dialogs/ImageEditDialog";
 import { EditorContextMenu } from "./EditorContextMenu";
 import { SlashCommand, findSlashTrigger, isInCodeBlock, type InsertMode } from "./SlashCommand";
 import {
@@ -38,6 +40,7 @@ import { md } from "../../core/markdown/parser";
 import { highlightCodeBlocksInHtml, getPrismCss } from "../../utils/highlight";
 import { isMarkdownFile, getFileLanguage, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc } from "../../utils/imagePath";
+import { calculateWordCount } from "../../utils/wordCount";
 import { findParagraphRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight } from "../../utils/focus-paragraph";
 import { isTypewriterTriggerKey, isModifierKey, computeTypewriterScrollTop, shouldSkipScrollForCharInput, computeScrollPercent, isCursorOutsideViewport, computeSyncScrollTop, shouldSkipInitialScrollToCenter, computeRestoreScrollTop, computeViewportCenter } from "../../utils/typewriter";
 import "../../styles/editor.css";
@@ -96,7 +99,7 @@ function renderMarkdownToHtml(markdown: string): string {
   try {
     return md.render(markdown);
   } catch {
-    return "<p>渲染失败</p>";
+    return `<p>${translate("editor.renderFailed")}</p>`;
   }
 }
 
@@ -109,6 +112,7 @@ interface EditorContainerProps {
 }
 
 export function EditorContainer({ content = "", filePath, forceUpdateKey, onEditorReady, onContentChange }: EditorContainerProps) {
+  const t = useT();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   // 专注模式遮罩层 ref（源码模式下使用）
@@ -134,6 +138,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const fontFamily = useSettingsStore((s) => s.fontFamily);
   const typewriterMode = useSettingsStore((s) => s.typewriterMode);
   const theme = useSettingsStore((s) => s.theme);
+  // G10：拼写检查开关，控制 textarea 与 ProseMirror contenteditable 的 spellcheck 属性
+  const spellcheckEnabled = useSettingsStore((s) => s.spellcheckEnabled);
 
   const isSourceMode = viewMode === "edit" || viewMode === "split";
   // 判断当前文件是否为 Markdown 文件
@@ -361,6 +367,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const view = createEditor({
       parent,
       typewriterModeRef,
+      // G10：传入 spellcheck 初始值，创建时即设置 .ProseMirror 的 spellcheck 属性
+      spellcheckEnabled: useSettingsStore.getState().spellcheckEnabled,
       initialContent: content,
       onDocChange: (markdown: string) => {
         // 更新 lastContentRef 防止 useEffect([content]) 重复解析
@@ -368,10 +376,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         onContentChangeRef.current?.(markdown);
         setDirtyRef.current(true);
       },
-      onSelectionChange: (line, wc) => {
+      onSelectionChange: (line, text) => {
         setCursorLineRef.current(line);
         if (wordCountTimerRef.current) clearTimeout(wordCountTimerRef.current);
-        wordCountTimerRef.current = setTimeout(() => setWordCountRef.current(wc), 300);
+        // G11：调用 calculateWordCount 计算字数详情（含字符数/行数/段落数/阅读时长）
+        wordCountTimerRef.current = setTimeout(() => setWordCountRef.current(calculateWordCount(text)), 300);
       },
       onReady: (v) => {
         viewRef.current = v;
@@ -393,17 +402,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 注意：元素变为 display:none 时 scrollHeight/clientHeight 均为 0，max=0，
   // 此时不应更新百分比（否则会被错误地置为 0，导致模式切换后滚动位置丢失）
   useEffect(() => {
-    const pmEditor = editorRef.current?.querySelector(".ProseMirror") as HTMLElement;
-    if (!pmEditor) return;
+    // 问题4修复：滚动容器从 .ProseMirror 改为 .editor-container
+    // 移除 .ProseMirror overflow-y: auto 后，滚动发生在 editor-container 上
+    const container = editorRef.current;
+    if (!container) return;
     const handler = () => {
-      const percent = computeScrollPercent(pmEditor.scrollHeight, pmEditor.clientHeight, pmEditor.scrollTop);
+      const percent = computeScrollPercent(container.scrollHeight, container.clientHeight, container.scrollTop);
       if (percent !== null) {
         pmScrollPercentRef.current = percent;
       }
     };
-    pmEditor.addEventListener("scroll", handler);
-    return () => pmEditor.removeEventListener("scroll", handler);
-  }, [content, forceUpdateKey]); // 文件切换时 .ProseMirror 可能重建，重新绑定
+    container.addEventListener("scroll", handler);
+    return () => container.removeEventListener("scroll", handler);
+  }, [content, forceUpdateKey]);
 
   // ─── 持续追踪 textarea 滚动百分比 ──────────────
   useEffect(() => {
@@ -574,11 +585,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
     const applyScroll = () => {
       if (targetMode === "preview") {
-        const pmEditor = editorRef.current?.querySelector(".ProseMirror") as HTMLElement;
-        if (pmEditor) {
+        // 问题4修复：滚动容器从 .ProseMirror 改为 .editor-container
+        const container = editorRef.current;
+        if (container) {
           viewRef.current?.focus();
-          const newTop = computeRestoreScrollTop(percent, pmEditor.scrollHeight, pmEditor.clientHeight);
-          pmEditor.scrollTop = newTop ?? 0;
+          const newTop = computeRestoreScrollTop(percent, container.scrollHeight, container.clientHeight);
+          container.scrollTop = newTop ?? 0;
         }
         // 清理 iframe 待恢复标记，避免残留值影响后续切换
         pendingIframeScrollRef.current = null;
@@ -631,6 +643,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setDirtyRef.current(true);
     lastContentRef.current = newContent;
     lastTextareaCursorRef.current = textarea.selectionStart;
+
+    // G11：源码模式下更新字数统计（防抖 300ms，与 ProseMirror 模式一致）
+    if (wordCountTimerRef.current) clearTimeout(wordCountTimerRef.current);
+    wordCountTimerRef.current = setTimeout(() => setWordCountRef.current(calculateWordCount(newContent)), 300);
 
     // SlashCommand 触发检测：行首 / 且不在代码块内
     // 后续 query 更新和失效关闭由 SlashCommand 组件内部监听 input 处理
@@ -726,6 +742,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const [linkInitialText, setLinkInitialText] = useState("");
   const [tableDialogOpen, setTableDialogOpen] = useState(false);
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
+  // ─── G3：图片编辑对话框状态 ────────────────────
+  // imageEditSrc 为 resolve 后的可显示 URL（asset:// 或 data:）
+  // imageEditPos 为 ProseMirror 文档中图片节点的位置，确认后通过 setNodeMarkup 修改 attrs.src
+  const [imageEditDialogOpen, setImageEditDialogOpen] = useState(false);
+  const [imageEditSrc, setImageEditSrc] = useState("");
+  const [imageEditPos, setImageEditPos] = useState<number | null>(null);
   // ─── 右键菜单状态 ────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; hasSelection: boolean }>({
     open: false, x: 0, y: 0, hasSelection: false,
@@ -745,6 +767,61 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
     setLinkDialogOpen(true);
   }, []);
+
+  // ─── G3：阅读模式图片点击监听 ────────────────────
+  // 仅在 preview 模式监听 ProseMirror 容器的 click 事件，
+  // 点击 img[data-editable] 时打开 ImageEditDialog，传入 resolve 后的 src
+  // 确认编辑后通过 setNodeMarkup 修改 image 节点 attrs.src，自动触发 onDocChange 同步 sourceContent
+  useEffect(() => {
+    if (viewMode !== "preview") return;
+    const container = editorRef.current;
+    if (!container) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target || target.tagName !== "IMG") return;
+      const img = target as HTMLImageElement;
+      if (img.getAttribute("data-editable") !== "true") return;
+      const view = viewRef.current;
+      if (!view) return;
+      // 通过 posAtDOM 找到图片节点位置
+      const pos = view.posAtDOM(img, 0);
+      if (pos < 0) return;
+      // 阻止 ProseMirror 默认选择行为
+      e.preventDefault();
+      e.stopPropagation();
+      // img.src 是 resolveImageSrc 后的 URL（asset:// 或 data: 或 http(s)）
+      setImageEditSrc(img.src);
+      setImageEditPos(pos);
+      setImageEditDialogOpen(true);
+    };
+    container.addEventListener("click", handler, true);
+    return () => container.removeEventListener("click", handler, true);
+  }, [viewMode]);
+
+  /** G3：图片编辑确认回调 —— 通过 setNodeMarkup 修改 image 节点 src attrs */
+  const handleImageEditConfirm = useCallback((newSrc: string) => {
+    const view = viewRef.current;
+    if (!view || imageEditPos === null) {
+      setImageEditDialogOpen(false);
+      return;
+    }
+    try {
+      const node = view.state.doc.nodeAt(imageEditPos);
+      if (node && node.type.name === "image") {
+        // 保留原 alt/title，仅替换 src 为编辑后的 Base64 dataUrl
+        const tr = view.state.tr.setNodeMarkup(imageEditPos, undefined, {
+          ...node.attrs,
+          src: newSrc,
+        });
+        view.dispatch(tr);
+      }
+    } catch {
+      // 节点位置无效时静默失败（避免编辑过程中文档已变更导致崩溃）
+    }
+    setImageEditDialogOpen(false);
+    setImageEditPos(null);
+    setImageEditSrc("");
+  }, [imageEditPos]);
 
   // ─── 格式工具栏操作 ────────────────────────────
   // 通过 buildFormatReplacement 纯函数生成 replacement + cursorOffset，
@@ -973,7 +1050,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (focusMode && !isSourceMode && editorDom) {
         const selection = view.state.selection;
         const coords = view.coordsAtPos(selection.from);
-        const rect = editorDom.getBoundingClientRect();
+        // 问题2修复：使用 editor-container（editorRef.current）的 rect，
+        // 因为 .ProseMirror 移除 overflow 后不再是滚动容器，rect.height 是内容高度而非视口高度
+        const rect = editorRef.current?.getBoundingClientRect() || editorDom.getBoundingClientRect();
         const cursorTop = coords.top - rect.top;
         const cursorBottom = coords.bottom - rect.top;
         if (isCursorOutsideViewport(cursorTop, cursorBottom, rect.height)) {
@@ -1140,6 +1219,33 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
   }, [fontSize, fontFamily]);
 
+  // ─── G10：ProseMirror spellcheck 属性同步 ──────
+  // 浏览器原生 spellcheck 通过 contenteditable 元素的 spellcheck 属性控制
+  // 切换开关时同步更新 .ProseMirror 的 spellcheck 属性，
+  // 开启后浏览器自动渲染拼写错误的红色波浪下划线，右键菜单原生提供纠正建议
+  useEffect(() => {
+    const editorDom = editorRef.current?.querySelector(".ProseMirror") as HTMLElement;
+    if (editorDom) {
+      editorDom.setAttribute("spellcheck", spellcheckEnabled ? "true" : "false");
+      // 浏览器对 contenteditable 的 spellcheck 变化是惰性响应：
+      // 修改 spellcheck 属性后不会立即重新检查已有内容，需要触发 blur + focus
+      // 让浏览器重新执行拼写检查并渲染红色波浪下划线
+      if (document.activeElement === editorDom) {
+        // 问题2修复：滚动发生在 editor-container 上，保存/恢复其 scrollTop
+        const scrollContainer = editorRef.current;
+        const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+        const scrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
+        editorDom.blur();
+        editorDom.focus();
+        // 恢复滚动位置（focus 可能触发 scrollIntoView）
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollTop;
+          scrollContainer.scrollLeft = scrollLeft;
+        }
+      }
+    }
+  }, [spellcheckEnabled]);
+
   // ─── 主题变化时更新 mermaid 主题 ──────────────────
   // 修复：原 mermaid 主题硬编码为 'default'，暗色主题下图表渲染异常
   useEffect(() => {
@@ -1167,49 +1273,56 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (viewMode !== "preview") return;
     const editorDom = editorRef.current?.querySelector(".ProseMirror") as HTMLElement;
     if (!editorDom) return;
+    // 问题2修复：滚动容器从 .ProseMirror 改为 .editor-container
+    // 移除 .ProseMirror overflow-y: auto 后，滚动发生在 editor-container 上
+    const scrollContainer = editorRef.current;
+    if (!scrollContainer) return;
 
     // 禁用 ProseMirror 的 storeScrollPos/resetScrollPos 机制（双保险）
     editorDom.style.overflowAnchor = "none";
 
     // 获取光标相对内容顶部的 Y 坐标（不受 scrollTop 影响）
+    // 问题2修复：使用 scrollContainer 的 rect 和 scrollTop，因为滚动发生在 editor-container 上
     const getCursorY = () => {
       const view = viewRef.current;
       if (!view) return 0;
       const { from } = view.state.selection;
       const coords = view.coordsAtPos(from);
-      const editorRect = editorDom.getBoundingClientRect();
-      return coords.top - editorRect.top + editorDom.scrollTop;
+      const containerRect = scrollContainer.getBoundingClientRect();
+      return coords.top - containerRect.top + scrollContainer.scrollTop;
     };
 
     // 打字机模式：smooth 滚动使光标居中
+    // 问题2修复：使用 scrollContainer 的滚动属性
     const scrollToCenter = () => {
       requestAnimationFrame(() => {
         const cursorY = getCursorY();
         const target = computeTypewriterScrollTop(
           cursorY,
-          editorDom.clientHeight,
-          editorDom.scrollHeight,
-          editorDom.scrollTop
+          scrollContainer.clientHeight,
+          scrollContainer.scrollHeight,
+          scrollContainer.scrollTop
         );
         if (target !== null) {
-          editorDom.scrollTo({ top: target, behavior: "smooth" });
+          scrollContainer.scrollTo({ top: target, behavior: "smooth" });
         }
       });
     };
 
     // 非打字机模式：instant 滚动让光标可见（光标在视口外时）
+    // 问题2修复：使用 scrollContainer 的滚动属性
     const scrollToVisible = () => {
       const view = viewRef.current;
       if (!view) return;
       const { from } = view.state.selection;
       const coords = view.coordsAtPos(from);
-      const editorRect = editorDom.getBoundingClientRect();
-      const cursorTop = coords.top - editorRect.top;
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const cursorTop = coords.top - containerRect.top;
       const cursorBottom = cursorTop + (coords.bottom - coords.top);
-      if (cursorBottom > editorDom.clientHeight) {
-        editorDom.scrollTop += cursorBottom - editorDom.clientHeight + 20;
+      if (cursorBottom > scrollContainer.clientHeight) {
+        scrollContainer.scrollTop += cursorBottom - scrollContainer.clientHeight + 20;
       } else if (cursorTop < 0) {
-        editorDom.scrollTop += cursorTop - 20;
+        scrollContainer.scrollTop += cursorTop - 20;
       }
     };
 
@@ -1223,7 +1336,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // 会是变化后的 Y，导致 keyup 时 Y 差值始终为 0，回车换行不触发滚动。
     const handleKeyDown = () => {
       savedCursorY = getCursorY();
-      savedScrollTop = editorDom.scrollTop;
+      // 问题2修复：使用 scrollContainer 的 scrollTop
+      savedScrollTop = scrollContainer.scrollTop;
       // 检测光标是否在视口外
       // 根因：光标在视口外时按键，浏览器原生 selection 变化会触发 scrollIntoView，
       // 把 scrollTop 改为光标位置。如果 keyup 恢复 scrollTop，用户会看到抖动
@@ -1233,10 +1347,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (view) {
         const { from } = view.state.selection;
         const coords = view.coordsAtPos(from);
-        const editorRect = editorDom.getBoundingClientRect();
-        const cursorTop = coords.top - editorRect.top;
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const cursorTop = coords.top - containerRect.top;
         const cursorBottom = cursorTop + (coords.bottom - coords.top);
-        cursorWasOutside = isCursorOutsideViewport(cursorTop, cursorBottom, editorDom.clientHeight);
+        cursorWasOutside = isCursorOutsideViewport(cursorTop, cursorBottom, scrollContainer.clientHeight);
       } else {
         cursorWasOutside = false;
       }
@@ -1285,8 +1399,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
       if (diff <= 5) {
         // 同行输入：恢复 scrollTop，防止 dispatchTransaction 后的异步 scrollIntoView
-        if (editorDom.scrollTop !== savedScrollTop) {
-          editorDom.scrollTop = savedScrollTop;
+        // 问题2修复：使用 scrollContainer 的 scrollTop
+        if (scrollContainer.scrollTop !== savedScrollTop) {
+          scrollContainer.scrollTop = savedScrollTop;
         }
         return;
       }
@@ -1295,14 +1410,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (view) {
         const { from } = view.state.selection;
         const coords = view.coordsAtPos(from);
-        const editorRect = editorDom.getBoundingClientRect();
-        const cursorTop = coords.top - editorRect.top;
+        // 问题2修复：使用 scrollContainer 的 rect 和 clientHeight
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const cursorTop = coords.top - containerRect.top;
         const cursorBottom = cursorTop + (coords.bottom - coords.top);
         // 普通字符输入且光标在视口内：跳过滚动（避免软换行 cursorY 减小误触发）
-        if (shouldSkipScrollForCharInput(e.key, cursorTop, cursorBottom, editorDom.clientHeight)) {
+        if (shouldSkipScrollForCharInput(e.key, cursorTop, cursorBottom, scrollContainer.clientHeight)) {
           // 光标在视口内：恢复 scrollTop，防止异步 scrollIntoView
-          if (editorDom.scrollTop !== savedScrollTop) {
-            editorDom.scrollTop = savedScrollTop;
+          if (scrollContainer.scrollTop !== savedScrollTop) {
+            scrollContainer.scrollTop = savedScrollTop;
           }
           return;
         }
@@ -1764,7 +1880,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       {!content && viewMode === "preview" && (
         <div className="editor-empty-state">
           <div className="editor-empty-logo">LightMD</div>
-          <div className="editor-empty-hint">打开文件或拖拽 .md 文件开始编辑</div>
+          <div className="editor-empty-hint">{t("editor.emptyHint")}</div>
         </div>
       )}
 
@@ -1870,7 +1986,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             onChange={handleSourceChange.current}
             onKeyDown={handleSourceKeyDown}
             onContextMenu={handleTextareaContextMenu}
-            spellCheck={false}
+            spellCheck={spellcheckEnabled}
             style={{
               flex: isSourceMode ? 1 : 0,
               display: isSourceMode ? "block" : "none",
@@ -1895,7 +2011,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             border: "none",
             width: viewMode === "split" ? "100%" : "0",
           }}
-          title="预览"
+          title={t("editor.preview")}
           sandbox="allow-same-origin allow-scripts"
         />
       </div>
@@ -1913,6 +2029,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             setDirtyRef.current(true);
             lastContentRef.current = newContent;
           }}
+          initialShowReplace={showSearchReplace}
         />
       )}
 
@@ -1948,6 +2065,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           setImageDialogOpen(false);
         }}
         onClose={() => setImageDialogOpen(false)}
+      />
+
+      {/* G3：图片编辑对话框 */}
+      <ImageEditDialog
+        open={imageEditDialogOpen}
+        imageSrc={imageEditSrc}
+        onConfirm={handleImageEditConfirm}
+        onClose={() => {
+          setImageEditDialogOpen(false);
+          setImageEditPos(null);
+          setImageEditSrc("");
+        }}
       />
 
       {/* 编辑器右键菜单 */}

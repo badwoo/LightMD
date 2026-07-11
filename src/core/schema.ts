@@ -530,7 +530,8 @@ const nodeSpecs: Record<string, NodeSpec> = {
     toDOM(node: Node): DOMOutputSpec {
       const { src, alt, title } = node.attrs;
       // 将相对路径转换为 Tauri webview 可访问的 asset:// URL
-      return ["img", { src: resolveImageSrc(src), alt, title }];
+      // data-editable="true" 标记图片为可编辑，供阅读模式注入点击监听（G3）
+      return ["img", { src: resolveImageSrc(src), alt, title, "data-editable": "true" }];
     },
   },
 
@@ -540,6 +541,13 @@ const nodeSpecs: Record<string, NodeSpec> = {
     content: "table_head? table_body",
     group: "block",
     isolating: true,
+    attrs: {
+      // columnWidths 存储每列像素宽度，null 表示等宽（默认）
+      // 仅在编辑器内生效，不影响 markdown 输出
+      columnWidths: { default: null },
+      // rowHeights 存储每行像素高度，null 表示自动高度（默认）
+      rowHeights: { default: null },
+    },
     parseDOM: [{ tag: "table" }],
     toDOM(): DOMOutputSpec {
       return ["table", { class: "pm-table" }, 0];

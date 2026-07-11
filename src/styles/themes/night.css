@@ -1,0 +1,52 @@
+/* 深蓝夜空主题：深蓝底、柔和文字
+ * 适合夜间长时间阅读，降低视觉疲劳 */
+[data-theme="night"] {
+  --bg-primary: #0f1b2d;
+  --bg-secondary: #152538;
+  --bg-tertiary: #1d2f48;
+  --bg-hover: #1a2c44;
+  --bg-selection: #2a4a72;
+
+  --text-primary: #c8d4e8;
+  --text-secondary: #8a9ab4;
+  --text-tertiary: #5a6a84;
+
+  --border-color: #2a3f5c;
+  --border-light: #1f3556;
+
+  --accent-color: #6fa8dc;
+  --accent-hover: #8fc1ee;
+
+  --heading-color: #d8e4f4;
+  --code-bg: #1a2c44;
+  --code-text: #a8c8e8;
+  --blockquote-border: #6fa8dc;
+  --blockquote-bg: #152538;
+  --table-border: #2a3f5c;
+  --table-header-bg: #1d2f48;
+  --table-stripe: #152538;
+  --hr-color: #2a3f5c;
+
+  --link-color: #8fc1ee;
+  --marker-color: #5a6a84;
+  --scrollbar-thumb: #3a5274;
+  --scrollbar-thumb-hover: #4a6284;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+
+  --titlebar-bg: #152538;
+  --statusbar-bg: #152538;
+  --sidebar-bg: #142538;
+
+  /* PrismJS 代码高亮（深蓝夜空，柔和版 One Dark） */
+  --prism-text: #c8d4e8;
+  --prism-comment: #5a6a84;
+  --prism-punctuation: #c8d4e8;
+  --prism-number: #d1a87a;
+  --prism-string: #b5d4a0;
+  --prism-operator: #7fb8d4;
+  --prism-keyword: #c0a0e0;
+  --prism-function: #8fb8e8;
+  --prism-regex: #e0a0a0;
+}

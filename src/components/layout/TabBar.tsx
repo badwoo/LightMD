@@ -9,6 +9,7 @@
  */
 import { useCallback } from "react";
 import { useEditorStore, type TabInfo } from "../../stores/useEditorStore";
+import { useT } from "../../i18n";
 import "./TabBar.css";
 
 interface TabBarProps {
@@ -17,6 +18,7 @@ interface TabBarProps {
 }
 
 export function TabBar({ onTabSwitch, onTabClose }: TabBarProps) {
+  const t = useT();
   const openTabs = useEditorStore((s) => s.openTabs);
   const activeTabIdx = useEditorStore((s) => s.activeTabIdx);
   const setActiveTab = useEditorStore((s) => s.setActiveTab);
@@ -47,12 +49,14 @@ export function TabBar({ onTabSwitch, onTabClose }: TabBarProps) {
           onClick={() => handleTabClick(idx)}
           title={tab.path}
         >
-          <span className="tab-name">{tab.name}</span>
+          <span className="tab-name" title={tab.path}>
+            {tab.name}
+          </span>
           {tab.isDirty && <span className="tab-dirty">●</span>}
           <button
             className="tab-close"
             onClick={(e) => handleClose(e, idx)}
-            title="关闭"
+            title={t("tabbar.close")}
           >
             ×
           </button>

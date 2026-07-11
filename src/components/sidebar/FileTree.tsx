@@ -8,6 +8,8 @@ import { useEditorStore } from "../../stores/useEditorStore";
 import { fileService, isTauri, type FileEntry } from "../../services/fileService";
 import { FileEntryNode, type FileNodeData } from "./FileNode";
 import { RecentFiles } from "./RecentFiles";
+import { Favorites } from "./Favorites";
+import { useT } from "../../i18n";
 import { isSupportedTextFile } from "../../utils/constants";
 import "./FileTree.css";
 
@@ -61,6 +63,12 @@ export function FileTree() {
   const addRecentFile = useFileStore((s) => s.addRecentFile);
   const addTempFile = useFileStore((s) => s.addTempFile);
   const removeTempFile = useFileStore((s) => s.removeTempFile);
+  // G7：收藏操作（addFavorite/isFavorite 用于右键菜单切换文案）
+  const addFavorite = useFileStore((s) => s.addFavorite);
+  const removeFavorite = useFileStore((s) => s.removeFavorite);
+  const favorites = useFileStore((s) => s.favorites);
+  const renameFileEntry = useFileStore((s) => s.renameFileEntry);
+  const t = useT();
   // 同步全局 filePath，确保关闭文件时能正确判断当前活跃文件
   const globalFilePath = useEditorStore((s) => s.filePath);
 
@@ -69,9 +77,12 @@ export function FileTree() {
   // 同步 expandedPaths 到 ref
   useEffect(() => { expandedPathsRef.current = expandedPaths; }, [expandedPaths]);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
-  const [activePath, setActivePath] = useState<string | null>(null);
-  // 同步 activePath 与全局 filePath（处理拖拽、Ctrl+O 等非 FileTree 途径打开的文件）
-  useEffect(() => { setActivePath(globalFilePath); }, [globalFilePath]);
+  // 直接使用 globalFilePath 作为 activePath，避免 useEffect 延迟导致双高亮
+  const activePath = globalFilePath;
+  const setActivePath = (path: string | null) => {
+    // activePath 现在直接从 store 派生，setActivePath 仅在需要即时更新时调用
+    // 实际更新通过 openFile/store 完成
+  };
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   // 缓存已加载的子目录
   const [childrenMap, setChildrenMap] = useState<Map<string, FileNodeData[]>>(new Map());
@@ -106,10 +117,10 @@ export function FileTree() {
       setChildrenMap(new Map([[selected, sortTree(nodes)]]));
       setExpandedPaths(new Set());
     } catch (err) {
-      showMessage("打开文件夹失败");
+      showMessage(t("filetree.openFolderFailed"));
       console.error(err);
     }
-  }, [setRootPath, setFileTree]);
+  }, [setRootPath, setFileTree, t]);
 
   const openFolder = useCallback(async () => {
     if (isTauri()) {
@@ -119,7 +130,7 @@ export function FileTree() {
           await openFolderAt(selected);
         }
       } catch (err) {
-        showMessage("打开文件夹失败");
+        showMessage(t("filetree.openFolderFailed"));
         console.error(err);
       }
     } else {
@@ -134,7 +145,7 @@ export function FileTree() {
       ];
       setFileTree(mockTree);
     }
-  }, [setRootPath, setFileTree]);
+  }, [setRootPath, setFileTree, t]);
 
   // ─── 关闭文件夹 ──────────────────────────────
   // 清空文件夹相关状态，与"打开的文件"关闭按钮体验一致
@@ -163,7 +174,7 @@ export function FileTree() {
     async (node: FileNodeData) => {
       if (node.isDir) return;
       if (!isSupportedTextFile(node.name)) {
-        showMessage("不支持的文件类型");
+        showMessage(t("filetree.unsupportedFileType"));
         return;
       }
 
@@ -184,7 +195,7 @@ export function FileTree() {
 
         window.dispatchEvent(
           new CustomEvent("lightmd:openFile", {
-            detail: { path: node.path, content },
+            detail: { path: node.path, name: node.name, content },
           })
         );
 
@@ -195,11 +206,11 @@ export function FileTree() {
           addTempFile({ name: node.name, path: node.path, isDir: false, size: 0 });
         }
       } catch (err) {
-        showMessage(`打开文件失败`);
+        showMessage(t("filetree.openFileFailed"));
         console.error(err);
       }
     },
-    [addRecentFile, addTempFile, rootPath]
+    [addRecentFile, addTempFile, rootPath, t]
   );
 
   // ─── 展开/折叠 ───────────────────────────────
@@ -312,14 +323,31 @@ export function FileTree() {
           await fileService.renameFile(path, newPath);
         }
 
-        showMessage(`已重命名: ${newName}`);
+        // 联动更新收藏和最近文件中的路径和名称
+        renameFileEntry(path, newPath, newName);
+        // 同步更新已打开标签页的路径和名称
+        const { openTabs, activeTabIdx } = useEditorStore.getState();
+        const tabIdx = openTabs.findIndex((t) => t.path === path);
+        if (tabIdx !== -1) {
+          useEditorStore.setState((s) => ({
+            openTabs: s.openTabs.map((t, i) =>
+              i === tabIdx ? { ...t, path: newPath, name: newName } : t
+            ),
+          }));
+        }
+        // 同步全局 filePath（如果当前活跃文件被重命名）
+        if (useEditorStore.getState().filePath === path) {
+          useEditorStore.getState().openFile(newPath);
+        }
+
+        showMessage(t("filetree.renamed", { name: newName }));
         await refreshTree();
       } catch (err) {
-        showMessage("重命名失败");
+        showMessage(t("filetree.renameFailed"));
         console.error(err);
       }
     },
-    [refreshTree]
+    [refreshTree, renameFileEntry, t]
   );
 
   const handleRenameCancel = useCallback(() => {
@@ -335,31 +363,31 @@ export function FileTree() {
         if (isTauri()) {
           try {
             const selected = await save({
-              defaultPath: "新文档.md",
-              filters: [{ name: "Markdown", extensions: ["md"] }],
+              defaultPath: t("filetree.newDocName"),
+              filters: [{ name: t("app.markdownFilter"), extensions: ["md"] }],
             });
             if (selected) {
-              const defaultContent = "# 新文档\n\n";
+              const defaultContent = t("filetree.newDocContent");
               await fileService.writeFile(selected, defaultContent);
               window.dispatchEvent(
                 new CustomEvent("lightmd:openFile", {
                   detail: { path: selected, content: defaultContent },
                 })
               );
-              addRecentFile({ path: selected, name: selected.split(/[\\/]/).pop() || "新文档.md" });
-              showMessage(`已创建: ${selected.split(/[\\/]/).pop()}`);
+              addRecentFile({ path: selected, name: selected.split(/[\\/]/).pop() || t("filetree.newDocName") });
+              showMessage(t("filetree.created", { name: selected.split(/[\\/]/).pop() || "" }));
             }
           } catch (err) {
-            showMessage("创建文件失败");
+            showMessage(t("filetree.createFileFailed"));
             console.error(err);
           }
         } else {
-          showMessage("请先打开文件夹");
+          showMessage(t("filetree.pleaseOpenFolder"));
         }
         return;
       }
 
-      const name = prompt("输入文件名（.md）:", "新文档.md");
+      const name = prompt(t("filetree.inputFileName"), t("filetree.newDocName"));
       if (!name) return;
 
       try {
@@ -369,7 +397,7 @@ export function FileTree() {
           await fileService.createFile(filePath);
         }
 
-        showMessage(`已创建: ${name}`);
+        showMessage(t("filetree.created", { name }));
         // 确保父目录展开
         setExpandedPaths((prev) => {
           const next = new Set(prev);
@@ -381,22 +409,22 @@ export function FileTree() {
         // 选中新创建的文件
         setActivePath(filePath);
       } catch (err) {
-        showMessage("创建文件失败");
+        showMessage(t("filetree.createFileFailed"));
         console.error(err);
       }
     },
-    [refreshTree, addRecentFile]
+    [refreshTree, addRecentFile, t]
   );
 
   const handleNewFolder = useCallback(
     async (parentPath: string) => {
       // 没有父目录时，弹出选择文件夹对话框
       if (!parentPath) {
-        showMessage("请先打开文件夹后再新建文件夹");
+        showMessage(t("filetree.pleaseOpenFolderFirst"));
         return;
       }
 
-      const name = prompt("输入文件夹名:", "新文件夹");
+      const name = prompt(t("filetree.inputFolderName"), t("filetree.newFolderDefault"));
       if (!name) return;
 
       try {
@@ -406,7 +434,7 @@ export function FileTree() {
           await fileService.createDir(dirPath);
         }
 
-        showMessage(`已创建文件夹: ${name}`);
+        showMessage(t("filetree.createdFolder", { name }));
         // 确保父目录展开
         setExpandedPaths((prev) => {
           const next = new Set(prev);
@@ -416,18 +444,18 @@ export function FileTree() {
         // 刷新目录树
         await refreshTree();
       } catch (err) {
-        showMessage("创建文件夹失败");
+        showMessage(t("filetree.createFolderFailed"));
         console.error(err);
       }
     },
-    [refreshTree]
+    [refreshTree, t]
   );
 
   // ─── 删除文件 ────────────────────────────────
 
   const handleDelete = useCallback(
     async (node: FileNodeData) => {
-      const confirmed = confirm(`确认删除 ${node.isDir ? "文件夹" : "文件"} "${node.name}"？`);
+      const confirmed = confirm(t("filetree.confirmDelete", { type: node.isDir ? t("filetree.folderType") : t("filetree.fileType"), name: node.name }));
       if (!confirmed) return;
 
       try {
@@ -435,14 +463,14 @@ export function FileTree() {
           await fileService.deleteFile(node.path);
         }
 
-        showMessage(`已删除: ${node.name}`);
+        showMessage(t("filetree.deleted", { name: node.name }));
         await refreshTree();
       } catch (err) {
-        showMessage("删除失败");
+        showMessage(t("filetree.deleteFailed"));
         console.error(err);
       }
     },
-    [refreshTree]
+    [refreshTree, t]
   );
 
   // ─── 拖拽（图片等） ──────────────────────────
@@ -548,29 +576,45 @@ export function FileTree() {
       if (isTauri()) {
         await fileService.renameFile(file.path, newPath);
       }
+      // 联动更新收藏和最近文件中的路径和名称
+      renameFileEntry(file.path, newPath, newName);
       removeTempFile(file.path);
       addTempFile({ name: newName, path: newPath, isDir: false, size: 0 });
+      // 同步更新已打开标签页的路径和名称
+      const { openTabs } = useEditorStore.getState();
+      const tabIdx = openTabs.findIndex((t) => t.path === file.path);
+      if (tabIdx !== -1) {
+        useEditorStore.setState((s) => ({
+          openTabs: s.openTabs.map((t, i) =>
+            i === tabIdx ? { ...t, path: newPath, name: newName } : t
+          ),
+        }));
+      }
+      // 同步全局 filePath
+      if (useEditorStore.getState().filePath === file.path) {
+        useEditorStore.getState().openFile(newPath);
+      }
       if (activePath === file.path) setActivePath(newPath);
-      showMessage(`已重命名: ${newName}`);
+      showMessage(t("filetree.renamed", { name: newName }));
     } catch (err) {
-      showMessage("重命名失败");
+      showMessage(t("filetree.renameFailed"));
       console.error(err);
     }
-  }, [tempRenameValue, removeTempFile, addTempFile, activePath]);
+  }, [tempRenameValue, removeTempFile, addTempFile, activePath, renameFileEntry, t]);
 
   // 查看文件属性
   const handleViewProperties = useCallback((file: FileNodeData) => {
     const parentDir = file.path.replace(/\\/g, "/").replace(/\/[^/]*$/, "");
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
     const info = [
-      `文件名: ${file.name}`,
-      `路径: ${file.path}`,
-      `目录: ${parentDir}`,
-      `类型: ${ext ? `.${ext} 文件` : "未知"}`,
-      file.size > 0 ? `大小: ${formatFileSize(file.size)}` : "",
+      t("filetree.propFileName", { name: file.name }),
+      t("filetree.propFilePath", { path: file.path }),
+      t("filetree.propFileDir", { dir: parentDir }),
+      ext ? t("filetree.propFileType", { ext }) : t("filetree.propUnknownType"),
+      file.size > 0 ? t("filetree.propFileSize", { size: formatFileSize(file.size) }) : "",
     ].filter(Boolean).join("\n");
     alert(info);
-  }, []);
+  }, [t]);
 
   // 关闭临时文件右键菜单
   useEffect(() => {
@@ -623,19 +667,19 @@ export function FileTree() {
     <div className="filetree">
       {/* 头部工具栏 */}
       <div className="filetree-header">
-        <span className="filetree-title">文件管理</span>
+        <span className="filetree-title">{t("filetree.title")}</span>
         <div className="filetree-actions">
-          <button className="filetree-btn" title="新建文件" onClick={() => handleNewFile(rootPath || "")}>
+          <button className="filetree-btn" title={t("filetree.newFileTitle")} onClick={() => handleNewFile(rootPath || "")}>
             <svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 1.1l3.4 3.5.1.4v4h-1V6H8V2H3v12h5v1H2.5l-.5-.5v-13l.5-.5h6.7l.3.1zM9 2v3h2.9L9 2z" fill="#5c9dff"/><path d="M14 8v2h2v1h-2v2h-1v-2h-2v-1h2V8h1z" fill="#4caf50"/></svg>
           </button>
-          <button className="filetree-btn" title="新建文件夹" onClick={() => handleNewFolder(rootPath || "")}>
+          <button className="filetree-btn" title={t("filetree.newFolderTitle")} onClick={() => handleNewFolder(rootPath || "")}>
             <svg width="14" height="14" viewBox="0 0 16 16"><path d="M1.5 2h4.3l1 1H14.5l.5.5v9l-.5.5h-13l-.5-.5v-10l.5-.5z" fill="#ffc107"/><path d="M2 3v8h12V4H6.7l-1-1H2z" fill="#ffd54f"/></svg>
           </button>
-          <button className="filetree-btn" title="打开文件夹" onClick={openFolder}>
+          <button className="filetree-btn" title={t("filetree.openFolderTitle")} onClick={openFolder}>
             <svg width="14" height="14" viewBox="0 0 16 16"><path d="M1.5 2h4.3l1 1H14.5l.5.5v9l-.5.5h-13l-.5-.5v-10l.5-.5z" fill="#ffa726"/><path d="M2 3v8h12V4H6.7l-1-1H2z" fill="#ffb74d"/></svg>
           </button>
           {rootPath && (
-            <button className="filetree-btn" title="刷新" onClick={refreshTree}>
+            <button className="filetree-btn" title={t("filetree.refreshTitle")} onClick={refreshTree}>
               <svg width="14" height="14" viewBox="0 0 16 16"><path d="M13.451 5.67l-.724-.69A5.5 5.5 0 008 2.5 5.5 5.5 0 002.5 8a5.5 5.5 0 009.227 4.077l-.69-.724A4.5 4.5 0 013.5 8 4.5 4.5 0 018 3.5a4.5 4.5 0 013.751 2h-2.25v1h4V2.5h-1v3.17z" fill="#66bb6a"/></svg>
             </button>
           )}
@@ -649,7 +693,7 @@ export function FileTree() {
           <span className="filetree-root-name">{rootPath.replace(/\\/g, "/").split("/").pop() || rootPath}</span>
           <button
             className="filetree-root-close"
-            title="关闭文件夹"
+            title={t("filetree.closeFolderTitle")}
             onClick={(e) => { e.stopPropagation(); closeFolder(); }}
           >
             ×
@@ -687,21 +731,20 @@ export function FileTree() {
               />
             ))
           ) : (
-            <div className="filetree-placeholder">此文件夹为空</div>
+            <div className="filetree-placeholder">{t("filetree.emptyFolder")}</div>
           )
         ) : (
           <div className="filetree-placeholder">
-            <p>点击上方按钮打开文件夹</p>
-            <p className="filetree-hint">或拖拽 .md 文件到编辑器</p>
+            <p>{t("filetree.clickToOpen")}</p>
+            <p className="filetree-hint">{t("filetree.dragHint")}</p>
           </div>
         )}
 
         {/* 临时打开的文件（不在当前目录树中的文件） */}
         {tempFiles.length > 0 && (
           <div className="filetree-temp-section">
-            <div className="filetree-temp-header">打开的文件</div>
+            <div className="filetree-temp-header">{t("filetree.openedFiles")}</div>
             {tempFiles.map((file, idx) => {
-              const parentDir = file.path.replace(/\\/g, "/").replace(/\/[^/]*$/, "");
               const isActive = activePath === file.path;
               const isSelected = selectedTempIdx === idx;
               const isRenaming = tempRenamingPath === file.path;
@@ -733,11 +776,10 @@ export function FileTree() {
                   ) : (
                     <span className="filetree-name">{file.name}</span>
                   )}
-                  <span className="filetree-size" style={{ fontSize: "10px" }}>{parentDir}</span>
                   {/* 关闭按钮 */}
                   <button
                     className="filetree-temp-close"
-                    title="关闭"
+                    title={t("filetree.closeTitle")}
                     onClick={(e) => { e.stopPropagation(); closeTempFile(file); }}
                   >
                     ×
@@ -759,6 +801,28 @@ export function FileTree() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
+            {/* G7：收藏切换项（已收藏显示"从收藏移除"，未收藏显示"添加到收藏"） */}
+            {favorites.some((f) => f.path === tempContextMenu.file.path) ? (
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  removeFavorite(tempContextMenu.file.path);
+                  setTempContextMenu(null);
+                }}
+              >
+                {t("sidebar.removeFromFavorites")}
+              </button>
+            ) : (
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  addFavorite({ path: tempContextMenu.file.path, name: tempContextMenu.file.name });
+                  setTempContextMenu(null);
+                }}
+              >
+                {t("sidebar.addToFavorites")}
+              </button>
+            )}
             <button
               className="context-menu-item danger"
               onClick={() => {
@@ -766,7 +830,7 @@ export function FileTree() {
                 setTempContextMenu(null);
               }}
             >
-              关闭文件
+              {t("filetree.closeFile")}
             </button>
             <button
               className="context-menu-item"
@@ -776,7 +840,7 @@ export function FileTree() {
                 setTempContextMenu(null);
               }}
             >
-              重命名
+              {t("filetree.rename")}
             </button>
             <button
               className="context-menu-item"
@@ -785,14 +849,17 @@ export function FileTree() {
                 setTempContextMenu(null);
               }}
             >
-              查看属性
+              {t("filetree.viewProperties")}
             </button>
           </div>
         )}
       </div>
 
-      {/* 最近文件 */}
-      {!rootPath && <RecentFiles onOpen={handleSelectFile} />}
+      {/* G7：收藏区段（常驻显示，修复拖动打开文件夹导致收藏夹丢失的问题） */}
+      <Favorites onOpen={handleSelectFile} />
+
+      {/* 最近文件（常驻显示） */}
+      <RecentFiles onOpen={handleSelectFile} />
     </div>
   );
 }

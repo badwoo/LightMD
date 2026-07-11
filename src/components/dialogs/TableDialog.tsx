@@ -13,6 +13,7 @@
  *   | 内容 | 内容 | 内容 |
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useT } from "../../i18n";
 import "./TableDialog.css";
 
 export interface TableDialogProps {
@@ -83,6 +84,7 @@ export function TableDialog({ open, onInsert, onClose }: TableDialogProps) {
   const [rows, setRows] = useState(3);
   const [cols, setCols] = useState(3);
   const [withHeader, setWithHeader] = useState(true);
+  const t = useT();
 
   // 对话框打开时重置为默认值
   useEffect(() => {
@@ -127,13 +129,13 @@ export function TableDialog({ open, onInsert, onClose }: TableDialogProps) {
     <div className="table-dialog-overlay" onClick={onClose}>
       <div className="table-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="table-dialog-header">
-          <h3>插入表格</h3>
+          <h3>{t("table.title")}</h3>
         </div>
 
         <div className="table-dialog-body">
           <div className="table-dialog-row">
             <div className="table-dialog-field">
-              <label>行数</label>
+              <label>{t("table.rows")}</label>
               <input
                 type="number"
                 className="table-dialog-number"
@@ -146,7 +148,7 @@ export function TableDialog({ open, onInsert, onClose }: TableDialogProps) {
               <span className="table-dialog-hint">{MIN_ROWS}-{MAX_ROWS}</span>
             </div>
             <div className="table-dialog-field">
-              <label>列数</label>
+              <label>{t("table.cols")}</label>
               <input
                 type="number"
                 className="table-dialog-number"
@@ -166,23 +168,23 @@ export function TableDialog({ open, onInsert, onClose }: TableDialogProps) {
                 checked={withHeader}
                 onChange={(e) => setWithHeader(e.target.checked)}
               />
-              <span>包含表头行</span>
+              <span>{t("table.includeHeader")}</span>
             </label>
           </div>
 
           <div className="table-dialog-preview">
-            <div className="table-dialog-preview-label">Markdown 预览</div>
+            <div className="table-dialog-preview-label">{t("table.preview")}</div>
             <pre className="table-dialog-preview-code">{preview}</pre>
           </div>
         </div>
 
         <div className="table-dialog-footer">
           <button className="table-dialog-btn secondary" onClick={onClose}>
-            取消
+            {t("table.cancel")}
             <span className="table-dialog-kbd">Esc</span>
           </button>
           <button className="table-dialog-btn primary" onClick={handleInsert}>
-            插入
+            {t("table.insert")}
             <span className="table-dialog-kbd">Enter</span>
           </button>
         </div>

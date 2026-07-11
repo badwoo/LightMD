@@ -1,0 +1,58 @@
+/* Solarized 主题：Ethan Schoonover 经典配色
+ * base03 背景 + base0 文字，遵循 Solarized 16 色板
+ * https://ethanschoonover.com/solarized/ */
+[data-theme="solarized"] {
+  /* Solarized 推荐字体栈 */
+  --font-sans: "Source Sans Pro", "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "Source Code Pro", "Consolas", "Cascadia Code", monospace;
+
+  /* Solarized base 色板 */
+  --bg-primary: #fdf6e3;      /* base3：米黄背景 */
+  --bg-secondary: #eee8d5;   /* base2 */
+  --bg-tertiary: #e4dcc4;
+  --bg-hover: #e8e0c8;
+  --bg-selection: #d8d0b8;
+
+  --text-primary: #586e75;    /* base01：主文字 */
+  --text-secondary: #657b83; /* base00 */
+  --text-tertiary: #93a1a1;   /* base1 */
+
+  --border-color: #d8d0b8;
+  --border-light: #e8e0c8;
+
+  --accent-color: #268bd2;    /* blue */
+  --accent-hover: #1e6fa8;
+
+  --heading-color: #073642;   /* base02：标题更深 */
+  --code-bg: #eee8d5;         /* base2 */
+  --code-text: #d33682;       /* magenta */
+  --blockquote-border: #2aa198;  /* cyan */
+  --blockquote-bg: #eee8d5;
+  --table-border: #d8d0b8;
+  --table-header-bg: #eee8d5;
+  --table-stripe: #f5efde;
+  --hr-color: #d8d0b8;
+
+  --link-color: #268bd2;      /* blue */
+  --marker-color: #93a1a1;
+  --scrollbar-thumb: #c8c0a8;
+  --scrollbar-thumb-hover: #a89c80;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+
+  --titlebar-bg: #eee8d5;
+  --statusbar-bg: #eee8d5;
+  --sidebar-bg: #f5efde;
+
+  /* PrismJS 代码高亮（Solarized Light 经典配色） */
+  --prism-text: #586e75;
+  --prism-comment: #93a1a1;
+  --prism-punctuation: #586e75;
+  --prism-number: #d33682;    /* magenta */
+  --prism-string: #859900;    /* green */
+  --prism-operator: #cb4b16;  /* orange */
+  --prism-keyword: #859900;   /* green */
+  --prism-function: #268bd2;  /* blue */
+  --prism-regex: #cb4b16;     /* orange */
+}

@@ -2,6 +2,7 @@
  * FileNode ── 单个文件/文件夹节点（支持内联重命名）
  */
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useT } from "../../i18n";
 import "./FileTree.css";
 
 export interface FileNodeData {
@@ -53,6 +54,7 @@ export function FileEntryNode({
   const inputRef = useRef<HTMLInputElement>(null);
   const isExpanded = expandedPaths.has(node.path);
   const isActive = activePath === node.path;
+  const t = useT();
 
   // 外部触发的重命名
   useEffect(() => {
@@ -211,7 +213,7 @@ export function FileEntryNode({
               className="filetree-empty"
               style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
             >
-              空文件夹
+              {t("filetree.emptySubfolder")}
             </div>
           )}
         </div>
@@ -237,7 +239,7 @@ export function FileEntryNode({
                   setContextMenu(null);
                 }}
               >
-                📄 新建文件
+                {t("titlebar.newFile")}
               </button>
               <button
                 className="context-menu-item"
@@ -246,7 +248,7 @@ export function FileEntryNode({
                   setContextMenu(null);
                 }}
               >
-                📁 新建文件夹
+                {t("titlebar.newFolder")}
               </button>
               <button
                 className="context-menu-item"
@@ -255,7 +257,7 @@ export function FileEntryNode({
                   setContextMenu(null);
                 }}
               >
-                🔄 刷新
+                {t("filetree.refreshTitle")}
               </button>
               <div className="context-menu-divider" />
             </>
@@ -267,7 +269,7 @@ export function FileEntryNode({
               setContextMenu(null);
             }}
           >
-            ✏️ 重命名
+            {t("filetree.rename")}
           </button>
           <button
             className="context-menu-item danger"
@@ -276,7 +278,7 @@ export function FileEntryNode({
               setContextMenu(null);
             }}
           >
-            🗑️ 删除
+            {t("common.delete")}
           </button>
         </div>
       )}

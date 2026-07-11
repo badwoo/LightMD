@@ -10,9 +10,28 @@
   font-family: var(--editor-font-family, var(--font-sans));
   line-height: 1.8;
   color: var(--text-primary);
-  overflow-y: auto;
+  /* 补充需求修复：移除 overflow-y: auto，让滚动发生在 .editor-container 上
+     这样中间整个阅读区（包括 ProseMirror 两侧空白）都可以滚动 */
   word-break: break-word;
   white-space: pre-wrap;
+}
+
+/* 问题2修复：确保搜索选区在 editorView 失去焦点后仍然可见
+   ProseMirror 默认 contenteditable=true，失去焦点后选区变灰不明显，
+   通过 ::selection 强制选区背景色，让搜索匹配始终可见 */
+.ProseMirror ::selection {
+  background: rgba(25, 118, 210, 0.3);
+}
+
+/* 问题1修复：搜索高亮 Decoration 样式（不依赖编辑器焦点，始终可见） */
+.ProseMirror .search-highlight {
+  background: rgba(255, 213, 79, 0.6);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 193, 7, 0.5);
+}
+[data-theme="dark"] .ProseMirror .search-highlight {
+  background: rgba(255, 213, 79, 0.4);
+  box-shadow: 0 0 0 1px rgba(255, 193, 7, 0.6);
 }
 
 .ProseMirror h1, .ProseMirror h2, .ProseMirror h3,
@@ -75,14 +94,26 @@
 .ProseMirror table {
   border-collapse: collapse;
   margin: 0.8em 0;
-  width: 100%;
+  /* 问题1修复：移除 width: 100%，避免 table-layout: fixed 下列宽按比例分配
+     列宽由 TableView.applyColumnWidths 动态设置 table.style.width 控制
+     无 columnWidths 时默认 width: 100% 等宽 */
+  table-layout: fixed;
 }
 
 .ProseMirror th, .ProseMirror td {
   border: 1px solid var(--table-border);
   padding: 6px 12px;
   text-align: left;
-  min-width: 80px;
+  /* G4 修复：移除 min-width: 80px，避免与拖拽设置的 width 冲突 */
+  /* 列宽由 table-editor.ts 的 columnWidths 控制，通过 applyColumnWidths 设置 td/th width */
+  word-break: break-word;
+  overflow-wrap: break-word;
+  /* 问题1修复：box-sizing: border-box 让 style.width 包含 padding 和 border，
+     与 getBoundingClientRect().width 一致。
+     否则 content-box 下 getBoundingClientRect 记录的 startWidths 含 padding+border，
+     设置 style.width 时仅设 content 宽度，总宽度 > table width，
+     table-layout: fixed 会按比例压缩所有列，导致拖拽一列时其他列同比例变化 */
+  box-sizing: border-box;
 }
 
 .ProseMirror th {
@@ -200,6 +231,54 @@
   color: var(--link-color, #0078d4);
 }
 
+/* ─── 脚注悬浮预览 tooltip（G2） ─────────────── */
+
+.footnote-tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 400px;
+  padding: 10px 14px;
+  background: var(--bg-primary, #fff);
+  color: var(--text-primary, #1a1a1a);
+  border: 1px solid var(--border-color, #e0e0e0);
+  border-radius: 6px;
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.15));
+  font-size: 0.875em;
+  line-height: 1.6;
+  /* 允许内部内容自动换行，避免长链接溢出 */
+  overflow-wrap: break-word;
+  word-break: break-word;
+  /* 进入动画：淡入 + 轻微上移 */
+  animation: footnote-tooltip-fade-in 120ms ease-out;
+  /* tooltip 内部链接可点击 */
+  pointer-events: auto;
+}
+
+.footnote-tooltip a {
+  color: var(--link-color, #0078d4);
+  text-decoration: none;
+}
+
+.footnote-tooltip a:hover {
+  text-decoration: underline;
+}
+
+.footnote-tooltip code {
+  background: var(--code-bg, #f5f5f5);
+  color: var(--code-text, #c7254e);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.footnote-tooltip em { font-style: italic; }
+.footnote-tooltip strong { font-weight: 700; }
+
+@keyframes footnote-tooltip-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* ─── 定义列表 ───────────────────────────────── */
 
 .ProseMirror dl {
@@ -278,6 +357,31 @@
 .code-block-wrapper code[contenteditable]:focus + code.prism-highlighted {
   opacity: 0.6;
   transition: opacity 0.2s;
+}
+
+/* ─── G9：代码块行号层 ──────────────────────────────── */
+/* 行号层：绝对定位在左侧，pointer-events:none 不影响编辑
+   user-select:none 确保复制代码时不包含行号
+   display 由 CodeBlockView.applyLineNumbersVisibility 动态控制 */
+.code-block-wrapper .code-line-numbers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 3em;
+  padding: 1em 0.5em 1em 0;
+  color: var(--text-secondary);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  line-height: 1.5;
+  text-align: right;
+  white-space: pre-wrap;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
 }
 
 /* ─── Mermaid 图表块 ──────────────────────────────── */

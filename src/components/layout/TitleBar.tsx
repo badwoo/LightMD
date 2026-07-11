@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEditorStore, type ViewMode } from "../../stores/useEditorStore";
+import { useT } from "../../i18n";
 import "./TitleBar.css";
 
 interface TitleBarProps {
@@ -20,6 +21,7 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
   const setTheme = useSettingsStore((s) => s.setTheme);
   const viewMode = useEditorStore((s) => s.viewMode);
   const setViewMode = useEditorStore((s) => s.setViewMode);
+  const t = useT();
   const [showNewMenu, setShowNewMenu] = useState(false);
   const newMenuRef = useRef<HTMLDivElement>(null);
 
@@ -47,50 +49,50 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
         <div className="titlebar-mode-switch">
           <button
             className={`titlebar-mode-btn ${viewMode === "preview" ? "active" : ""}`}
-            title="阅读模式"
+            title={t("titlebar.readMode")}
             onClick={() => handleModeClick("preview")}
           >
-            阅读
+            {t("titlebar.read")}
           </button>
           <button
             className={`titlebar-mode-btn ${viewMode === "edit" ? "active" : ""}`}
-            title="编辑模式"
+            title={t("titlebar.editMode")}
             onClick={() => handleModeClick("edit")}
           >
-            编辑
+            {t("titlebar.edit")}
           </button>
           <button
             className={`titlebar-mode-btn ${viewMode === "split" ? "active" : ""}`}
-            title="分屏模式 (双击Shift)"
+            title={t("titlebar.splitMode")}
             onClick={() => handleModeClick("split")}
           >
-            分屏
+            {t("titlebar.split")}
           </button>
         </div>
         <div className="titlebar-menu">
           <div className="titlebar-new-menu" ref={newMenuRef}>
-            <button className="titlebar-menu-btn" title="新建 (Ctrl+N)" onClick={() => setShowNewMenu(!showNewMenu)}>
-              新建 ▾
+            <button className="titlebar-menu-btn" title={t("titlebar.newTitle")} onClick={() => setShowNewMenu(!showNewMenu)}>
+              {t("titlebar.new")}
             </button>
             {showNewMenu && (
               <div className="titlebar-dropdown">
                 <button className="titlebar-dropdown-item" onClick={() => { setShowNewMenu(false); onNewFile?.(); }}>
-                  📄 新建文件
+                  {t("titlebar.newFile")}
                 </button>
                 <button className="titlebar-dropdown-item" onClick={() => { setShowNewMenu(false); onNewFolder?.(); }}>
-                  📁 新建文件夹
+                  {t("titlebar.newFolder")}
                 </button>
               </div>
             )}
           </div>
-          <button className="titlebar-menu-btn" title="打开文件 (Ctrl+O)" onClick={onOpen}>
-            打开
+          <button className="titlebar-menu-btn" title={t("titlebar.openTitle")} onClick={onOpen}>
+            {t("titlebar.open")}
           </button>
-          <button className="titlebar-menu-btn" title="保存 (Ctrl+S)" onClick={onSave}>
-            保存
+          <button className="titlebar-menu-btn" title={t("titlebar.saveTitle")} onClick={onSave}>
+            {t("titlebar.save")}
           </button>
-          <button className="titlebar-menu-btn" title="另存为 (Ctrl+Shift+S)" onClick={onSaveAs}>
-            另存为
+          <button className="titlebar-menu-btn" title={t("titlebar.saveAsTitle")} onClick={onSaveAs}>
+            {t("titlebar.saveAs")}
           </button>
         </div>
       </div>
@@ -102,7 +104,7 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
       <div className="titlebar-right">
         <button
           className="titlebar-icon-btn"
-          title={theme === "light" ? "切换暗色主题 (Ctrl+Shift+T)" : "切换亮色主题 (Ctrl+Shift+T)"}
+          title={theme === "light" ? t("titlebar.switchDark") : t("titlebar.switchLight")}
           onClick={() => setTheme(theme === "light" ? "dark" : "light")}
         >
           {theme === "light" ? "🌙" : "☀️"}
@@ -110,7 +112,7 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
 
         <button
           className="titlebar-icon-btn"
-          title="导出 (Ctrl+Shift+E)"
+          title={t("titlebar.export")}
           onClick={onExport}
         >
           📤
@@ -118,7 +120,7 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
 
         <button
           className="titlebar-icon-btn"
-          title="设置 (Ctrl+,)"
+          title={t("titlebar.settings")}
           onClick={onSettings}
         >
           ⚙️

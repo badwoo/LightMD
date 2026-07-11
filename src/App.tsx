@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { useSettingsStore } from "./stores/useSettingsStore";
+import { useSettingsStore, THEMES, type Theme } from "./stores/useSettingsStore";
 import { useEditorStore, type TabInfo } from "./stores/useEditorStore";
 import { useFileStore } from "./stores/useFileStore";
 import { AppShell } from "./components/layout/AppShell";
@@ -14,6 +14,7 @@ import { SyntaxHelper } from "./components/editor/SyntaxHelper";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { ExportDialog } from "./components/dialogs/ExportDialog";
 import { ImagePasteDialog } from "./components/dialogs/ImagePasteDialog";
+import { CommandPalette } from "./components/dialogs/CommandPalette";
 import { setImageHandler, insertImageAtCursor } from "./core/plugins/image-paste";
 import { fileService, isTauri } from "./services/fileService";
 import { safeSetItem } from "./utils/safeStorage";
@@ -23,6 +24,7 @@ import {
   setNotificationHandler,
   type Notification,
 } from "./services/notificationService";
+import { useT } from "./i18n";
 import type { EditorView } from "prosemirror-view";
 import "./App.css";
 
@@ -63,8 +65,31 @@ console.log(greet("LightMD"));
 
 /** 从路径中提取文件名（兼容 Windows 和 Unix 路径） */
 function getFileName(path: string): string {
-  return path.split(/[\\/]/).pop() || "无标题.md";
+  return path.split(/[\\/]/).pop() || "Untitled.md";
 }
+
+/**
+ * G8：格式/插入命令的 markdown 语法映射
+ * 用于源码模式（edit/split）下通过 sourceInsertHandler 插入语法
+ * cursorOffset 表示插入后光标位置（相对于插入起点的偏移）
+ */
+const COMMAND_SYNTAX: Record<string, { syntax: string; cursorOffset?: number }> = {
+  "format.bold": { syntax: "****", cursorOffset: 2 },
+  "format.italic": { syntax: "**", cursorOffset: 1 },
+  "format.strikethrough": { syntax: "~~~~", cursorOffset: 2 },
+  "format.inlineCode": { syntax: "``", cursorOffset: 1 },
+  "format.highlight": { syntax: "====", cursorOffset: 2 },
+  "format.heading1": { syntax: "# " },
+  "format.heading2": { syntax: "## " },
+  "format.heading3": { syntax: "### " },
+  "insert.table": { syntax: "\n| 列1 | 列2 |\n|------|------|\n| 内容 | 内容 |\n" },
+  "insert.link": { syntax: "[](url)", cursorOffset: 1 },
+  "insert.image": { syntax: "![](url)", cursorOffset: 2 },
+  "insert.codeblock": { syntax: "\n```\n\n```\n", cursorOffset: 5 },
+  "insert.mermaid": { syntax: "\n```mermaid\n\n```\n", cursorOffset: 11 },
+  "insert.taskList": { syntax: "\n- [ ] " },
+  "insert.footnote": { syntax: "[^1]: " },
+};
 
 // ─── NotificationToast 组件 ──────────────────────────
 
@@ -87,6 +112,7 @@ function NotificationToast({ notifications }: { notifications: Notification[] })
 function App() {
   const theme = useSettingsStore((s) => s.theme);
   const setTheme = useSettingsStore((s) => s.setTheme);
+  const t = useT();
   const filePath = useEditorStore((s) => s.filePath);
   const isDirty = useEditorStore((s) => s.isDirty);
   const focusMode = useEditorStore((s) => s.focusMode);
@@ -148,6 +174,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showOutline, setShowOutline] = useState(true);
+  // G8：命令面板开关
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [imageFiles, setImageFiles] = useState<File[] | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
@@ -165,11 +193,24 @@ function App() {
     return () => setNotificationHandler(null);
   }, []);
 
+  // ─── G6 主题应用到 documentElement ──────────────────────────
+  // 同步 data-theme 到 <html> 元素，使 :root[data-theme="x"] 选择器生效
+  // 同时让 body/html 继承主题 CSS 变量（如 newsprint 的衬线字体）
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
   // ─── 文件打开事件 ──────────────────────────
   useEffect(() => {
     const handler = async (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail?.content !== undefined) {
+        // 问题8修复：先同步设置文档路径，确保 ProseMirror 渲染图片时能正确解析相对路径
+        // React useEffect 执行顺序是子组件先于父组件，若依赖 useEffect 设置 currentDocPath，
+        // EditorContainer 的 useEffect（更新 ProseMirror）会先执行，导致图片用旧路径渲染失败
+        if (detail.path) {
+          setCurrentDocPath(detail.path);
+        }
         // 只通过 React 状态更新编辑器内容，避免双重 dispatch
         // EditorContainer 的 useEffect([content, forceUpdateKey]) 会统一处理 ProseMirror 更新
         setContent(detail.content);
@@ -181,19 +222,21 @@ function App() {
           openFile(detail.path);
           // 记录上次打开的文件路径，供启动时恢复使用
           safeSetItem("lightmd-last-file", detail.path);
+          // 文件名优先使用 detail.name（来自 FileTree 的 node.name），避免路径解析得到目录名
+          const fileName = detail.name || getFileName(detail.path);
           // 添加到标签页（若已存在则切换到该标签，但不更新 content）
-          addTab({ path: detail.path, name: getFileName(detail.path), content: detail.content, isDirty: false });
+          addTab({ path: detail.path, name: fileName, content: detail.content, isDirty: false });
           // 显式更新标签页 content，确保已存在标签页也能加载最新内容
           const { activeTabIdx: newIdx } = useEditorStore.getState();
           updateTabContent(newIdx, detail.content);
           addRecentFile({
             path: detail.path,
-            name: getFileName(detail.path),
+            name: fileName,
           });
           // 如果文件不在当前目录树中，添加为临时文件
           if (!rootPath || !detail.path.startsWith(rootPath)) {
             addTempFile({
-              name: getFileName(detail.path),
+              name: fileName,
               path: detail.path,
               isDir: false,
               size: 0,
@@ -213,7 +256,7 @@ function App() {
                 }
                 // 通过通知服务提示用户
                 const { notify } = await import("./services/notificationService");
-                notify(`文件较大（${(fileSize / 1024 / 1024).toFixed(1)}MB），已切换到编辑模式以保证流畅度`);
+                notify(t("app.largeFileNotify", { size: (fileSize / 1024 / 1024).toFixed(1) }));
               }
             } catch {
               // 获取文件大小失败，忽略
@@ -224,7 +267,7 @@ function App() {
     };
     window.addEventListener("lightmd:openFile", handler);
     return () => window.removeEventListener("lightmd:openFile", handler);
-  }, [openFile, addRecentFile, addTempFile, rootPath, setViewMode]);
+  }, [openFile, addRecentFile, addTempFile, rootPath, setViewMode, t]);
 
   // ─── 同步当前文档路径到 imagePath 模块 ──────────
   // 供 schema.ts 的 image toDOM 和分屏预览的 img src 转换使用
@@ -294,25 +337,28 @@ function App() {
           if (!paths || paths.length === 0) return;
 
           const firstPath = paths[0];
-          try {
-            // 尝试列出目录内容：成功说明是文件夹
-            const entries = await fileService.listDir(firstPath);
-            window.dispatchEvent(
-              new CustomEvent("lightmd:openFolder", { detail: { path: firstPath } })
-            );
-          } catch {
-            // listDir 失败说明是文件，走文件打开逻辑
-            if (isSupportedTextFile(firstPath)) {
-              try {
-                const content = await fileService.readFile(firstPath);
-                window.dispatchEvent(
-                  new CustomEvent("lightmd:openFile", {
-                    detail: { path: firstPath, content },
-                  })
-                );
-              } catch (err) {
-                console.error("拖拽打开文件失败:", err);
-              }
+          // 先判断扩展名：是支持的文本文件就直接读取，避免触发 listDir 错误提示
+          if (isSupportedTextFile(firstPath)) {
+            try {
+              const content = await fileService.readFile(firstPath);
+              window.dispatchEvent(
+                new CustomEvent("lightmd:openFile", {
+                  detail: { path: firstPath, content },
+                })
+              );
+            } catch (err) {
+              console.error("拖拽打开文件失败:", err);
+            }
+          } else {
+            // 非已知文本文件，尝试作为文件夹打开（silent 避免文件路径触发错误提示）
+            try {
+              await fileService.listDir(firstPath, { silent: true });
+              window.dispatchEvent(
+                new CustomEvent("lightmd:openFolder", { detail: { path: firstPath } })
+              );
+            } catch {
+              // 既不是支持的文件也不是目录，忽略
+              console.warn("拖拽路径既不是支持的文件也不是目录:", firstPath);
             }
           }
         });
@@ -370,45 +416,88 @@ function App() {
     };
   }, []);
 
-  // ─── 启动载入上次打开的文件 ──────────────────────────
+  // ─── 启动载入上次打开的文件（F2：支持多文件恢复） ──────────────────────────
   // 仅在 Tauri 环境、开关开启、且非双击文件启动时载入上次文件
   // 双击文件启动时 lightmd:openFileArgv 事件会处理，此处通过 startupRef 避免重复
+  // F2 改造：读取 loadLastFileCount（N），从 recentFiles 取前 N 条，串行打开
+  // 问题8修复：恢复完成后显式切换到第一个文件（recentFiles[0]，即最后打开的文件）
   const startupRestoreRef = useRef(false);
   useEffect(() => {
     if (startupRestoreRef.current) return;
     startupRestoreRef.current = true;
-    // 直接从 localStorage 读取设置，避免 Zustand persist hydration 时机问题
-    let loadLast = true;
-    try {
-      const settingsRaw = localStorage.getItem("lightmd-settings");
-      if (settingsRaw) {
-        const parsed = JSON.parse(settingsRaw);
-        if (parsed?.state?.loadLastFileOnStartup === false) {
-          loadLast = false;
-        }
-      }
-    } catch {
-      // 读取失败，使用默认值（开启）
-    }
-    if (!loadLast) return;
-    if (!isTauri()) return;
-    const lastFile = localStorage.getItem("lightmd-last-file");
-    if (!lastFile) return;
-    // 异步读取上次文件内容并触发打开事件
+    let cancelled = false;
     (async () => {
       try {
-        const fileContent = await fileService.readFile(lastFile);
-        window.dispatchEvent(
-          new CustomEvent("lightmd:openFile", {
-            detail: { path: lastFile, content: fileContent },
-          })
-        );
+        const { restoreRecentFiles } = await import("./utils/startupRestore");
+        if (cancelled) return;
+        const result = await restoreRecentFiles({
+          dispatchOpenFile: (detail) => {
+            window.dispatchEvent(
+              new CustomEvent("lightmd:openFile", { detail })
+            );
+          },
+          removeRecentFile: (path) => {
+            useFileStore.getState().removeRecentFile(path);
+          },
+        });
+        // 问题8修复：恢复完成后，切换到第一个打开的文件（即 recentFiles[0]，最后打开的文件）
+        // restoreRecentFiles 串行打开，最后打开的成为活跃标签，但用户期望最后打开的文件为活跃文件
+        if (result.restored > 0 && !cancelled) {
+          const { openTabs, setActiveTab, openFile } = useEditorStore.getState();
+          if (openTabs.length > 0) {
+            const firstTab = openTabs[0];
+            setActiveTab(0);
+            // 同步 content 和 filePath，并同步设置 currentDocPath 确保图片渲染正确
+            setCurrentDocPath(firstTab.path);
+            setContent(firstTab.content || "");
+            safeSetItem("lightmd-content", firstTab.content || "");
+            openFile(firstTab.path);
+            setForceUpdateKey((k) => k + 1);
+          }
+        }
       } catch (err) {
-        // 文件可能已被删除/移动，清除记录并静默失败
-        console.warn("[启动恢复] 上次文件打开失败:", err);
-        localStorage.removeItem("lightmd-last-file");
+        console.warn("[启动恢复] 文件恢复失败:", err);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ─── 启动载入上次打开的文件夹（F3） ──────────────────────────
+  // 在文件恢复之后执行（延迟 100ms 确保文件恢复完成）
+  // 仅恢复最后一个为活动 rootPath，其他作为历史保留在 recentFolders
+  const startupFolderRestoreRef = useRef(false);
+  useEffect(() => {
+    if (startupFolderRestoreRef.current) return;
+    startupFolderRestoreRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { restoreRecentFolders } = await import("./utils/startupRestore");
+        if (cancelled) return;
+        await restoreRecentFolders({
+          setRootPath: (path) => {
+            useFileStore.getState().setRootPath(path);
+          },
+          dispatchOpenFolder: (path) => {
+            // 派发 openFolder 事件，让 FileTree 重新加载文件树（修复启动时文件树为空的问题）
+            window.dispatchEvent(
+              new CustomEvent("lightmd:openFolder", { detail: { path } })
+            );
+          },
+          removeRecentFolder: (path) => {
+            useFileStore.getState().removeRecentFolder(path);
+          },
+          delayMs: 100,
+        });
+      } catch (err) {
+        console.warn("[启动恢复] 文件夹恢复失败:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // ─── 打开文件（Ctrl+O）──────────────────────
@@ -420,8 +509,8 @@ function App() {
         const selected = await open({
           multiple: false,
           filters: [
-            { name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] },
-            { name: "所有支持的文件", extensions },
+            { name: t("app.markdownFilter"), extensions: ["md", "markdown", "mdown", "mkd"] },
+            { name: t("app.allSupportedFiles"), extensions },
           ],
         });
         if (selected) {
@@ -452,7 +541,7 @@ function App() {
     } catch (err) {
       console.error("打开文件失败:", err);
     }
-  }, []);
+  }, [t]);
 
   // ─── 另存为（Ctrl+Shift+S）── 定义在 handleSaveFile 之前 ──
   const handleSaveAsFile = useCallback(async () => {
@@ -468,8 +557,8 @@ function App() {
     if (isTauri()) {
       try {
         const selected = await save({
-          defaultPath: getFileName(filePath || "未命名.md"),
-          filters: [{ name: "Markdown", extensions: ["md"] }],
+          defaultPath: getFileName(filePath || t("app.unnamed")),
+          filters: [{ name: t("app.markdownFilter"), extensions: ["md"] }],
         });
         if (selected) {
           await fileService.writeFile(selected, markdown);
@@ -488,7 +577,7 @@ function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = getFileName(filePath || "未命名.md");
+      a.download = getFileName(filePath || t("app.unnamed"));
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -497,7 +586,7 @@ function App() {
       const { activeTabIdx: browserIdx } = useEditorStore.getState();
       updateTabDirty(browserIdx, false);
     }
-  }, [filePath, openFile, setDirty, addRecentFile, updateTabDirty]);
+  }, [filePath, openFile, setDirty, addRecentFile, updateTabDirty, t]);
 
   // ─── 保存文件（Ctrl+S）── 依赖 handleSaveAsFile ──
   const handleSaveFile = useCallback(async () => {
@@ -538,7 +627,7 @@ function App() {
   // ─── 新建文件（Ctrl+N）──────────────────────
   const handleNewFile = useCallback(async () => {
     if (isDirty && filePath) {
-      if (!window.confirm("当前文件有未保存的更改，是否继续新建？")) {
+      if (!window.confirm(t("app.confirmNewWithUnsaved"))) {
         return;
       }
     }
@@ -547,12 +636,12 @@ function App() {
       // Tauri 环境：弹出另存为对话框，让用户选择新文件的位置
       try {
         const selected = await save({
-          defaultPath: "未命名.md",
-          filters: [{ name: "Markdown", extensions: ["md"] }],
+          defaultPath: t("app.unnamed"),
+          filters: [{ name: t("app.markdownFilter"), extensions: ["md"] }],
         });
         if (selected) {
           // 创建空文件
-          const defaultContent = "# 未命名文档\n\n开始输入内容...\n";
+          const defaultContent = t("app.unnamedDoc");
           await fileService.writeFile(selected, defaultContent);
           // 打开新创建的文件
           window.dispatchEvent(
@@ -573,12 +662,12 @@ function App() {
       openFile(null);
       setDirty(false);
     }
-  }, [filePath, isDirty, openFile, setDirty, addRecentFile]);
+  }, [filePath, isDirty, openFile, setDirty, addRecentFile, t]);
 
   // ─── 新建文件夹 ──────────────────────────────
   const handleNewFolder = useCallback(async () => {
     if (isTauri()) {
-      const name = prompt("输入文件夹名:", "新文件夹");
+      const name = prompt(t("app.inputFolderName"), t("app.newFolderDefault"));
       if (!name) return;
       try {
         const selected = await save({
@@ -594,13 +683,13 @@ function App() {
         console.error("新建文件夹失败:", err);
       }
     }
-  }, []);
+  }, [t]);
 
   // ─── 标签页关闭回调 ──────────────────────────
   const handleTabClose = useCallback((tab: TabInfo, idx: number) => {
     // 检查脏标记
     if (tab.isDirty) {
-      if (!window.confirm(`"${tab.name}" 有未保存的更改，确定关闭吗？`)) {
+      if (!window.confirm(t("app.confirmCloseDirty", { name: tab.name }))) {
         return;
       }
     }
@@ -626,7 +715,72 @@ function App() {
       setDirty(false);
     }
     setForceUpdateKey((k) => k + 1);
-  }, [closeTab, openFile, setDirty]);
+  }, [closeTab, openFile, setDirty, t]);
+
+  // ─── G8：命令面板事件路由 ──────────────────────────
+  // 监听 'lightmd:command' 事件，根据 id 执行对应操作
+  // 文件/视图/编辑/导出命令复用现有 handler
+  // 格式/插入命令通过 sourceInsertHandler（源码模式）或 editorView（阅读模式）处理
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const id: string = detail?.id;
+      if (!id) return;
+
+      // 文件命令
+      if (id === "file.new") { handleNewFile(); return; }
+      if (id === "file.open") { handleOpenFile(); return; }
+      if (id === "file.save") { handleSaveFile(); return; }
+      if (id === "file.saveAs") { handleSaveAsFile(); return; }
+
+      // 编辑命令
+      if (id === "edit.undo") { undoHandler?.(); return; }
+      if (id === "edit.redo") { redoHandler?.(); return; }
+      if (id === "edit.find") { setShowSearch(true); return; }
+      if (id === "edit.replace") { setShowSearchReplace(true); return; }
+
+      // 视图命令
+      if (id === "view.preview") { setViewMode("preview"); return; }
+      if (id === "view.edit") { setViewMode("edit"); return; }
+      if (id === "view.split") { setViewMode("split"); return; }
+      if (id === "view.toggleTheme") {
+        const idx = THEMES.indexOf(theme as Theme);
+        setTheme(THEMES[(idx + 1) % THEMES.length]);
+        return;
+      }
+      if (id === "view.toggleFocusMode") { toggleFocusMode(); return; }
+      if (id === "view.toggleTypewriter") { toggleTypewriter(); return; }
+      if (id === "view.toggleOutline") { setShowOutline((v) => !v); return; }
+      if (id === "view.settings") { setShowSettings(true); return; }
+
+      // 导出命令
+      if (id === "export.html" || id === "export.pdf") { setShowExport(true); return; }
+
+      // 格式/插入命令：通过 sourceInsertHandler（源码模式）或 editorView（阅读模式）处理
+      const syntaxEntry = COMMAND_SYNTAX[id];
+      if (syntaxEntry) {
+        const currentMode = useEditorStore.getState().viewMode;
+        const isSource = currentMode === "edit" || currentMode === "split";
+        if (isSource && sourceInsertHandler) {
+          // 源码模式：通过 sourceInsertHandler 插入语法
+          sourceInsertHandler(syntaxEntry.syntax, syntaxEntry.cursorOffset);
+        } else if (editorViewRef.current) {
+          // 阅读模式：通过 ProseMirror 插入文本
+          const view = editorViewRef.current;
+          const tr = view.state.tr.insertText(syntaxEntry.syntax);
+          view.dispatch(tr);
+          view.focus();
+        }
+      }
+    };
+    window.addEventListener("lightmd:command", handler);
+    return () => window.removeEventListener("lightmd:command", handler);
+  }, [
+    theme, setTheme, toggleFocusMode, toggleTypewriter, setViewMode,
+    handleNewFile, handleOpenFile, handleSaveFile, handleSaveAsFile,
+    undoHandler, redoHandler, setShowSearch, setShowSearchReplace,
+    setShowSettings, setShowExport, sourceInsertHandler,
+  ]);
 
   // ─── 快捷键 ────────────────────────────────
   useEffect(() => {
@@ -721,7 +875,10 @@ function App() {
       }
       if (e.ctrlKey && e.shiftKey && e.key === "T") {
         e.preventDefault();
-        setTheme(theme === "light" ? "dark" : "light");
+        // G6：循环切换 6 个主题（light → dark → github → newsprint → night → solarized → light）
+        const idx = THEMES.indexOf(theme as Theme);
+        const nextTheme = THEMES[(idx + 1) % THEMES.length];
+        setTheme(nextTheme);
       }
       if (e.ctrlKey && e.key === ",") {
         e.preventDefault();
@@ -742,6 +899,11 @@ function App() {
       if (e.ctrlKey && e.shiftKey && e.key === "O") {
         e.preventDefault();
         setShowOutline((v) => !v);
+      }
+      // G8：Ctrl+Shift+P 打开命令面板
+      if (e.ctrlKey && e.shiftKey && (e.key === "P" || e.key === "p")) {
+        e.preventDefault();
+        setShowCommandPalette(true);
       }
       // Ctrl+Tab 切换到下一个标签，Ctrl+Shift+Tab 切换到上一个标签
       if (e.ctrlKey && e.key === "Tab") {
@@ -837,7 +999,7 @@ function App() {
     [editorView]
   );
 
-  const fileName = filePath ? getFileName(filePath) : "无标题.md";
+  const fileName = filePath ? getFileName(filePath) : t("app.untitled");
 
   // ─── 标签页切换回调 ──────────────────────────
   const handleTabSwitch = useCallback((tab: TabInfo) => {
@@ -916,6 +1078,10 @@ function App() {
           onInsert={handleImageInsert}
           onCancel={() => setImageFiles(null)}
         />
+      )}
+      {/* G8：命令面板（Ctrl+Shift+P） */}
+      {showCommandPalette && (
+        <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}
     </div>
   );

@@ -1,5 +1,10 @@
 @import "./themes/light.css";
 @import "./themes/dark.css";
+/* G6：新增 4 个主题 */
+@import "./themes/github.css";
+@import "./themes/newsprint.css";
+@import "./themes/night.css";
+@import "./themes/solarized.css";
 @import "./code-theme.css";
 
 :root {

@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.2.0**
+**Current Version: v0.3.5**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 

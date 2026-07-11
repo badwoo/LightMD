@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { WordCountResult } from "../utils/wordCount";
 
 export type ViewMode = "preview" | "edit" | "split";
 
@@ -13,7 +14,8 @@ interface EditorState {
   filePath: string | null;
   isDirty: boolean;
   cursorLine: number;
-  wordCount: number;
+  /** 字数统计详情（G11：扩展为对象，含字数/字符数/行数/段落数/阅读时长） */
+  wordCount: WordCountResult;
   viewMode: ViewMode;
   /** 上一个非分屏模式，用于双击Shift切回 */
   prevViewMode: ViewMode;
@@ -26,6 +28,8 @@ interface EditorState {
   // 搜索/替换
   showSearch: boolean;
   showSearchReplace: boolean;
+  /** 搜索框聚焦触发器：每次开启搜索时递增，SearchReplaceDialog 监听变化重新聚焦 */
+  searchFocusKey: number;
   // 多标签页
   openTabs: TabInfo[];
   activeTabIdx: number;
@@ -33,13 +37,16 @@ interface EditorState {
   openFile: (path: string | null) => void;
   setDirty: (dirty: boolean) => void;
   setCursorLine: (line: number) => void;
-  setWordCount: (count: number) => void;
+  /** 更新字数统计详情（接收 calculateWordCount 的结果） */
+  setWordCount: (count: WordCountResult) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleFocusMode: () => void;
   setSourceInsertHandler: (handler: ((syntax: string, cursorOffset?: number) => void) | null) => void;
   setUndoHandler: (handler: (() => void) | null) => void;
   setRedoHandler: (handler: (() => void) | null) => void;
   setShowSearch: (show: boolean) => void;
+  /** 切换搜索框开关（底部栏按钮使用） */
+  toggleSearch: () => void;
   setShowSearchReplace: (show: boolean) => void;
   markSaved: () => void;
   addTab: (tab: TabInfo) => void;
@@ -54,7 +61,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   filePath: null,
   isDirty: false,
   cursorLine: 0,
-  wordCount: 0,
+  wordCount: { words: 0, chars: 0, charsNoSpaces: 0, lines: 0, paragraphs: 0, readingTimeMin: 0 },
   viewMode: "preview",
   prevViewMode: "preview",
   focusMode: false,
@@ -63,6 +70,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   redoHandler: null,
   showSearch: false,
   showSearchReplace: false,
+  searchFocusKey: 0,
   openTabs: [],
   activeTabIdx: 0,
 
@@ -79,13 +87,40 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setSourceInsertHandler: (handler) => set({ sourceInsertHandler: handler }),
   setUndoHandler: (handler) => set({ undoHandler: handler }),
   setRedoHandler: (handler) => set({ redoHandler: handler }),
-  setShowSearch: (show) => set({ showSearch: show, showSearchReplace: false }),
-  setShowSearchReplace: (show) => set({ showSearchReplace: show, showSearch: show }),
+  // 开启搜索时递增 searchFocusKey，触发 SearchReplaceDialog 重新聚焦（解决 Ctrl+F 重复按无反应）
+  setShowSearch: (show) => set((s) => show
+    ? { showSearch: true, showSearchReplace: false, searchFocusKey: s.searchFocusKey + 1 }
+    : { showSearch: false }),
+  // 底部栏按钮切换：已开启则关闭，未开启则开启并聚焦
+  toggleSearch: () => set((s) => s.showSearch
+    ? { showSearch: false }
+    : { showSearch: true, showSearchReplace: false, searchFocusKey: s.searchFocusKey + 1 }),
+  setShowSearchReplace: (show) => set((s) => show
+    ? { showSearchReplace: true, showSearch: true, searchFocusKey: s.searchFocusKey + 1 }
+    : { showSearchReplace: false }),
   markSaved: () => set({ isDirty: false }),
   addTab: (tab) => set((s) => {
-    // 如果标签已存在（path 相同），切换到该标签
+    // 如果标签已存在（path 相同），切换到该标签并同步更新 name/content
+    // 修复：通过文件夹打开文件时，旧逻辑仅切换不更新 name，导致标签显示目录名
     const existIdx = s.openTabs.findIndex((t) => t.path === tab.path);
     if (existIdx !== -1) {
+      const existTab = s.openTabs[existIdx];
+      const needUpdateName = existTab.name !== tab.name && tab.name;
+      const needUpdateContent = tab.content !== undefined && existTab.content !== tab.content;
+      if (needUpdateName || needUpdateContent) {
+        return {
+          openTabs: s.openTabs.map((t, i) =>
+            i === existIdx
+              ? {
+                  ...t,
+                  name: needUpdateName ? tab.name! : t.name,
+                  content: needUpdateContent ? tab.content : t.content,
+                }
+              : t
+          ),
+          activeTabIdx: existIdx,
+        };
+      }
       return { activeTabIdx: existIdx };
     }
     // 否则添加新标签

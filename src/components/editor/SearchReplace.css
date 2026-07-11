@@ -1,38 +1,67 @@
-/* ─── 搜索替换对话框 ──────────────────────────────── */
+/* ─── 搜索替换对话框（浮动窗口） ──────────────────────── */
 .search-replace {
-  position: absolute;
-  top: 0;
-  right: 20px;
-  z-index: 100;
+  position: fixed;
+  z-index: 10000;
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: var(--shadow-md);
-  padding: 8px;
-  min-width: 360px;
+  padding: 0;
+  min-width: 460px;
+  max-width: 90vw;
+}
+
+/* 拖拽条 */
+.search-drag-handle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: move;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  border-radius: 8px 8px 0 0;
+  user-select: none;
+}
+
+.search-drag-dots {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  letter-spacing: -2px;
+}
+
+.search-drag-title {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .search-row,
 .replace-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  padding: 8px 10px;
 }
 
 .replace-row {
-  margin-top: 6px;
+  padding-top: 0;
 }
 
 .search-input {
   flex: 1;
-  height: 28px;
-  padding: 0 8px;
+  height: 34px;
+  padding: 0 10px;
   border: 1px solid var(--border-color);
   border-radius: 4px;
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 14px;
   outline: none;
+  min-width: 0;
 }
 
 .search-input:focus {
@@ -52,6 +81,7 @@
   color: var(--text-secondary);
   transition: background var(--transition-fast);
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .search-option-btn:hover,
@@ -78,6 +108,7 @@
   color: var(--text-tertiary);
   min-width: 50px;
   text-align: center;
+  flex-shrink: 0;
 }
 
 .replace-btn {
@@ -89,6 +120,7 @@
   font-size: 12px;
   color: var(--text-primary);
   transition: background var(--transition-fast);
+  flex-shrink: 0;
 }
 
 .replace-btn:hover:not(:disabled) {

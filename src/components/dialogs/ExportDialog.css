@@ -78,6 +78,13 @@
   gap: 8px;
 }
 
+/* G12：4 个格式按钮网格布局（2x2）*/
+.export-format-group-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
 .export-format-btn {
   flex: 1;
   padding: 10px;

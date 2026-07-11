@@ -13,6 +13,7 @@ import { isTauri } from "../../services/fileService";
 import { writeFile, mkdir, exists, readDir } from "@tauri-apps/plugin-fs";
 import { dirname, join } from "@tauri-apps/api/path";
 import { notifyWarning } from "../../services/notificationService";
+import { useT, t } from "../../i18n";
 import "./ImagePasteDialog.css";
 
 /** Base64 内联大小警告阈值 */
@@ -127,6 +128,7 @@ export function ImagePasteDialog({ files, filePath, onInsert, onCancel }: ImageP
   const [error, setError] = useState<string | null>(null);
   // 标记 assets 模式因文档未保存而回退到 base64
   const [fallbackToBase64, setFallbackToBase64] = useState(false);
+  const tt = useT();
 
   // 预创建 Blob URL 并在组件卸载时清理，避免内存泄漏
   const blobUrls = useMemo(() => files.map(f => URL.createObjectURL(f)), [files]);
@@ -151,7 +153,7 @@ export function ImagePasteDialog({ files, filePath, onInsert, onCancel }: ImageP
       if (mode === "assets" && !filePath) {
         // 文档未保存：提示用户并回退到 base64
         setFallbackToBase64(true);
-        notifyWarning("文档尚未保存，无法使用 assets 模式，已自动回退到 Base64");
+        notifyWarning(t("imagePaste.notSavedNotify"));
       }
 
       // assets 模式下收集已存在的文件名，避免同批次多文件重复
@@ -188,7 +190,7 @@ export function ImagePasteDialog({ files, filePath, onInsert, onCancel }: ImageP
       onInsert(images);
     } catch (err) {
       console.error("图片处理失败:", err);
-      setError(err instanceof Error ? err.message : "图片处理失败");
+      setError(err instanceof Error ? err.message : t("imagePaste.processFailed"));
     } finally {
       setProcessing(false);
     }
@@ -210,9 +212,9 @@ export function ImagePasteDialog({ files, filePath, onInsert, onCancel }: ImageP
     <div className="image-dialog-overlay" onClick={onCancel}>
       <div className="image-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="image-dialog-header">
-          <h3>插入图片</h3>
+          <h3>{tt("imagePaste.title")}</h3>
           <span className="image-dialog-count">
-            {files.length} 个文件
+            {tt("imagePaste.fileCount", { count: files.length })}
           </span>
         </div>
 
@@ -231,26 +233,26 @@ export function ImagePasteDialog({ files, filePath, onInsert, onCancel }: ImageP
             ))}
             {files.length > 5 && (
               <div className="image-preview-more">
-                ...共 {files.length} 个文件
+                {tt("imagePaste.totalFiles", { count: files.length })}
               </div>
             )}
           </div>
 
           {isTauri() && (
             <div className="image-mode-select">
-              <label>保存方式</label>
+              <label>{tt("imagePaste.saveMode")}</label>
               <div className="image-mode-group">
                 <button
                   className={`image-mode-btn ${mode === "base64" ? "active" : ""}`}
                   onClick={() => { setMode("base64"); setFallbackToBase64(false); setError(null); }}
                 >
-                  🔗 Base64 内联
+                  {tt("imagePaste.base64")}
                 </button>
                 <button
                   className={`image-mode-btn ${mode === "assets" ? "active" : ""}`}
                   onClick={() => { setMode("assets"); setFallbackToBase64(false); setError(null); }}
                 >
-                  📁 保存到 assets/
+                  {tt("imagePaste.assets")}
                 </button>
               </div>
             </div>
@@ -259,27 +261,27 @@ export function ImagePasteDialog({ files, filePath, onInsert, onCancel }: ImageP
             {error
               ? `❌ ${error}`
               : fallbackToBase64
-                ? "⚠️ 文档尚未保存，无法使用 assets 模式，将自动回退到 Base64。建议先保存文档（Ctrl+S）再粘贴图片。"
+                ? tt("imagePaste.fallbackToBase64")
                 : hasLargeFiles
-                  ? "⚠️ 存在大于 2MB 的图片，Base64 编码后文档体积会显著增大，建议使用「保存到 assets/」方式。"
+                  ? tt("imagePaste.largeFilesWarn")
                   : assetsUnavailable
-                    ? "⚠️ 文档尚未保存，无法使用 assets 模式。请先保存文档（Ctrl+S）。"
+                    ? tt("imagePaste.needSaveFirst")
                     : mode === "base64"
-                      ? "💡 图片将以 Base64 编码嵌入到 Markdown 中，适合小图片和单文件分享。"
-                      : "💡 图片将复制到文档目录的 assets/ 文件夹中，生成相对路径引用，适合大图片和本地管理。"}
+                      ? tt("imagePaste.base64Info")
+                      : tt("imagePaste.assetsInfo")}
           </div>
         </div>
 
         <div className="image-dialog-footer">
           <button className="image-dialog-btn secondary" onClick={onCancel}>
-            取消
+            {tt("imagePaste.cancel")}
           </button>
           <button
             className="image-dialog-btn primary"
             onClick={handleInsert}
             disabled={processing}
           >
-            {processing ? "处理中..." : `插入 ${files.length} 张图片`}
+            {processing ? tt("imagePaste.processing") : tt("imagePaste.insertN", { count: files.length })}
           </button>
         </div>
       </div>
