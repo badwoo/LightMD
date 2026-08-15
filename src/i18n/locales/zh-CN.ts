@@ -62,6 +62,11 @@ export const zhCN: Record<string, string> = {
   "sidebar.addToFavorites": "添加到收藏",
   "sidebar.removeFromFavorites": "从收藏移除",
   "sidebar.favoritesCount": "收藏 ({count})",
+  "filetree.favoritesToggle": "收藏",
+  "filetree.recentToggle": "最近打开",
+  "filetree.minimize": "缩小",
+  "filetree.maximize": "放大",
+  "filetree.closeSection": "关闭",
   // ─── 标题栏 ────────────────────────────────────
   "titlebar.read": "阅读",
   "titlebar.edit": "编辑",
@@ -89,6 +94,9 @@ export const zhCN: Record<string, string> = {
   "filetree.newFolderTitle": "新建文件夹",
   "filetree.openFolderTitle": "打开文件夹",
   "filetree.refreshTitle": "刷新",
+  "filetree.searchTitle": "搜索文件",
+  "filetree.searchPlaceholder": "搜索文件名...",
+  "filetree.searchNoResult": "未找到匹配文件",
   "filetree.closeFolderTitle": "关闭文件夹",
   "filetree.closeTitle": "关闭",
   "filetree.emptyFolder": "此文件夹为空",
@@ -126,6 +134,22 @@ export const zhCN: Record<string, string> = {
   "filetree.propFileType": "类型: .{ext} 文件",
   "filetree.propUnknownType": "未知",
   "filetree.propFileSize": "大小: {size}",
+  // ─── 版本快照（v0.4.0 功能4）────────────────────────────────
+  "snapshot.title": "版本快照",
+  "snapshot.empty": "暂无快照记录",
+  "snapshot.initial": "初始版本",
+  "snapshot.modified": "修改",
+  "snapshot.recent": "最近修改",
+  "snapshot.useThisVersion": "使用该版本",
+  "snapshot.confirmUse": "确认使用此版本替换当前文件？此操作不可撤销。",
+  "snapshot.diffAdded": "新增",
+  "snapshot.diffRemoved": "删除",
+  "snapshot.diffTruncated": "差异行数过多，仅显示前 {count} 行",
+  "snapshot.viewSnapshots": "查看版本快照",
+  "snapshot.leftVersion": "选中版本",
+  "snapshot.rightCurrent": "当前版本",
+  "snapshot.maximize": "放大",
+  "snapshot.restore": "缩小",
   // ─── 大纲 ────────────────────────────────────
   "outline.title": "大纲",
   "outline.empty": "暂无标题",
@@ -140,6 +164,8 @@ export const zhCN: Record<string, string> = {
   // ─── AppShell 侧栏 ────────────────────────────────────
   "appshell.expandSidebar": "展开侧栏",
   "appshell.collapseSidebar": "收起侧栏",
+  // v0.4.0：分割条拖拽提示
+  "appshell.dragToResize": "拖拽调整宽度",
   // ─── 标签栏 ────────────────────────────────────
   "tabbar.close": "关闭",
   // ─── 编辑器 ────────────────────────────────────

@@ -44,10 +44,117 @@
   color: var(--text-primary);
 }
 
+/* v0.4.1：toggle 按钮激活态 */
+.filetree-btn.active {
+  background: var(--bg-selection);
+  color: var(--accent-color);
+}
+
 .filetree-btn-text {
   font-size: 11px;
   padding: 2px 6px;
   line-height: 1.2;
+}
+
+/* ─── v0.4.3 Issue 2：全局文件搜索面板 ─────────────── */
+.filetree-search-panel {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.filetree-search-box {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
+.filetree-search-box:focus-within {
+  border-color: var(--accent-color);
+}
+
+.filetree-search-input {
+  flex: 1;
+  border: none;
+  background: none;
+  outline: none;
+  padding: 5px 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: inherit;
+  min-width: 0;
+}
+
+.filetree-search-clear {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 2px 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.filetree-search-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.filetree-search-results {
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.filetree-search-result {
+  display: flex;
+  flex-direction: column;
+  padding: 5px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.filetree-search-result:hover {
+  background: var(--bg-hover);
+}
+
+.filetree-search-result.active {
+  background: var(--bg-selection);
+}
+
+.filetree-search-result-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filetree-search-result-path {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filetree-search-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 12px 8px;
+  font-style: italic;
 }
 
 /* ─── 根路径 ─────────────────────────────────────── */
@@ -55,13 +162,23 @@
   position: relative;
   padding: 6px 28px 6px 14px;
   font-size: 11px;
+  font-weight: 600;
   color: var(--text-tertiary);
-  border-bottom: 1px solid var(--border-light);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   display: flex;
   align-items: center;
+  /* Issue 4 修复：文件夹标题栏 3D 效果，与其他标题栏一致 */
+  background: linear-gradient(to bottom, var(--bg-tertiary), var(--bg-secondary));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.15),
+    0 1px 2px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+  z-index: 1;
 }
 
 .filetree-root-name {
@@ -102,6 +219,49 @@
   transform: translateY(-50%) scale(1.2);
 }
 
+/* v0.4.0：文件夹刷新按钮（位于关闭按钮左侧） */
+.filetree-root-refresh {
+  right: 24px;
+}
+
+/* Issue 1 修复：每个文件夹独立浏览区域，支持放大缩小和拖拽调整高度 */
+.filetree-folder-section {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.filetree-folder-section:last-child {
+  border-bottom: none;
+}
+
+/* Issue 1：折叠状态高度自适应 */
+.filetree-folder-section.collapsed {
+  height: auto !important;
+}
+
+/* Issue 1：标题栏控制按钮（hover 浮现，与 favorites/recent 一致） */
+.filetree-folder-section .section-controls {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.filetree-folder-section:hover .section-controls,
+.filetree-root-path:hover .section-controls {
+  opacity: 1;
+}
+
+/* v0.4.1：文件夹内容独立滚动容器（每个文件夹单独一个滚动条） */
+.filetree-folder-content {
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
+}
+
 /* ─── 状态消息 ─────────────────────────────────────── */
 .filetree-status {
   padding: 6px 14px;
@@ -123,6 +283,9 @@
   overflow-y: auto;
   overflow-x: hidden;
   padding: 4px 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .filetree-placeholder {
@@ -286,22 +449,41 @@
 .recent-files {
   border-top: 1px solid var(--border-color);
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* ─── 收藏区段（G7） ─────────────────────────────── */
 .favorites-section {
   border-top: 1px solid var(--border-color);
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .favorites-header {
-  padding: 10px 14px 4px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* Issue 4 修复：增强 3D 效果，更深的 gradient + 多层阴影 + 边框 */
+  background: linear-gradient(to bottom, var(--bg-tertiary), var(--bg-secondary));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.15),
+    0 1px 2px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
 }
 
 .favorites-list {
   padding: 4px 0;
-  max-height: 200px;
+  flex: 1;
   overflow-y: auto;
+  min-height: 0;
 }
 
 .favorites-empty {
@@ -338,13 +520,26 @@
 }
 
 .recent-files-header {
-  padding: 10px 14px 4px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* Issue 4 修复：增强 3D 效果，更深的 gradient + 多层阴影 + 边框 */
+  background: linear-gradient(to bottom, var(--bg-tertiary), var(--bg-secondary));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.15),
+    0 1px 2px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
 }
 
 .recent-files-list {
   padding: 4px 0;
-  max-height: 200px;
+  flex: 1;
   overflow-y: auto;
+  min-height: 0;
 }
 
 .recent-file-item {
@@ -378,17 +573,36 @@
 /* ─── 临时打开的文件 ──────────────────────────────── */
 .filetree-temp-section {
   border-top: 1px solid var(--border-color);
-  margin-top: 4px;
-  padding-top: 4px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
 }
 
 .filetree-temp-header {
-  padding: 6px 14px 2px;
+  padding: 6px 14px;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-tertiary);
+  /* Issue 4 修复：增强 3D 效果，更深的 gradient + 多层阴影 + 边框 */
+  background: linear-gradient(to bottom, var(--bg-tertiary), var(--bg-secondary));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.15),
+    0 1px 2px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+/* v0.4.1：临时文件列表独立滚动容器 */
+.filetree-temp-content {
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
 }
 
 .filetree-temp-node {
@@ -431,4 +645,101 @@
   background: var(--bg-tertiary);
   color: var(--text-primary);
   transform: translateY(-50%) scale(1.2);
+}
+
+/* ─── v0.4.1：垂直分隔条（功能栏之间，支持拖拽调整高度） ──── */
+.filetree-v-resizer {
+  height: 4px;
+  cursor: row-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+  position: relative;
+  z-index: 2;
+}
+
+.filetree-v-resizer:hover {
+  background: var(--accent-color);
+  opacity: 0.5;
+}
+
+.filetree-v-resizer:active {
+  background: var(--accent-color);
+  opacity: 0.8;
+}
+
+/* ─── v0.4.1：标题栏控制按钮（缩小/放大/关闭，hover 浮现） ──── */
+.section-controls {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.favorites-header:hover .section-controls,
+.recent-files-header:hover .section-controls {
+  opacity: 1;
+}
+
+.section-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--text-tertiary);
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.section-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.section-btn.section-close:hover {
+  background: #fde8e8;
+  color: #d32f2f;
+}
+
+/* ─── v0.4.1：折叠/最大化状态 ──────────────────────── */
+.favorites-section.collapsed .favorites-list,
+.favorites-section.collapsed .favorites-empty,
+.recent-files.collapsed .recent-files-list {
+  display: none;
+}
+
+.favorites-section.collapsed,
+.recent-files.collapsed {
+  height: auto !important;
+}
+
+/* ─── v0.4.1：dark 主题适配 ──────────────────────── */
+[data-theme="dark"] .filetree-root-path,
+[data-theme="dark"] .filetree-temp-header,
+[data-theme="dark"] .favorites-header,
+[data-theme="dark"] .recent-files-header {
+  /* Issue 4 修复：暗色模式更深 3D 效果 */
+  background: linear-gradient(to bottom, #2a2a2e, #1e1e22);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.4);
+  box-shadow:
+    0 3px 6px rgba(0, 0, 0, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="dark"] .section-btn.section-close:hover {
+  background: #3a1a1a;
+}
+
+[data-theme="dark"] .filetree-v-resizer:hover {
+  background: var(--accent-color);
+  opacity: 0.7;
 }

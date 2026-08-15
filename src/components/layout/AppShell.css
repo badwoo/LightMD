@@ -92,3 +92,26 @@
   color: var(--text-primary);
   background: var(--bg-hover);
 }
+
+/* ─── v0.4.0：可拖拽分割条 ─────────────────────────── */
+.app-resizer {
+  width: 4px;
+  min-width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+  align-self: stretch;
+}
+
+.app-resizer:hover,
+.app-resizer:active {
+  background: var(--border-color);
+}
+
+/* 拖拽进行中：禁用 sidebar/outline 的 width transition，避免视觉延迟 */
+body.resizing .app-sidebar,
+body.resizing .app-outline {
+  transition: none;
+}

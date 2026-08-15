@@ -231,8 +231,9 @@ describe("问题5：表格行高拖拽", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
     const stopEventSection = src.match(/stopEvent\(event:\s*Event\)[\s\S]*?\n\s*\}/);
     expect(stopEventSection).not.toBeNull();
-    // 列宽热区：右边缘 8px
-    expect(stopEventSection![0]).toMatch(/Math\.abs\(offsetX\)\s*<=\s*8/);
+    // v0.4.5 修复：变量名变更 offsetX → offsetXRight/offsetXLeft
+    // 列宽热区：右边缘 8px（兼容新旧变量名）
+    expect(stopEventSection![0]).toMatch(/Math\.abs\(offsetXRight\)\s*<=\s*8|Math\.abs\(offsetX\)\s*<=\s*8/);
     // 行高热区：底边缘 6px
     expect(stopEventSection![0]).toMatch(/Math\.abs\(offsetY\)\s*<=\s*6/);
   });

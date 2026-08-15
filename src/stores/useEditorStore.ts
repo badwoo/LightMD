@@ -33,8 +33,12 @@ interface EditorState {
   // 多标签页
   openTabs: TabInfo[];
   activeTabIdx: number;
+  /** v0.4.0：当前文件语言标识（如 "javascript"/"python"/"markdown"），用于代码文件语法高亮 */
+  currentLanguage: string;
 
   openFile: (path: string | null) => void;
+  /** v0.4.0：设置当前文件语言标识（由 App.tsx 在打开文件时根据扩展名设置） */
+  setCurrentLanguage: (lang: string) => void;
   setDirty: (dirty: boolean) => void;
   setCursorLine: (line: number) => void;
   /** 更新字数统计详情（接收 calculateWordCount 的结果） */
@@ -73,8 +77,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   searchFocusKey: 0,
   openTabs: [],
   activeTabIdx: 0,
+  // v0.4.0：默认 markdown，打开非 md 文件时由 App.tsx 设置为对应语言
+  currentLanguage: "markdown",
 
   openFile: (path) => set({ filePath: path, isDirty: false, cursorLine: 0 }),
+  setCurrentLanguage: (lang) => set({ currentLanguage: lang }),
   setDirty: (dirty) => set({ isDirty: dirty }),
   setCursorLine: (line) => set({ cursorLine: line }),
   setWordCount: (count) => set({ wordCount: count }),

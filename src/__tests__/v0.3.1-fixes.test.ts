@@ -169,9 +169,10 @@ describe("问题3：表格列宽拖拽修复", () => {
     const tsPath = path.resolve(__dirname, "../core/plugins/table-editor.ts");
     const src = fs.readFileSync(tsPath, "utf-8");
     expect(src).toMatch(/stopEvent\(event:\s*Event\)/);
-    // 验证 stopEvent 中有 cell 右边缘检测逻辑
-    expect(src).toMatch(/stopEvent[\s\S]*?offsetX\s*=\s*event\.clientX\s*-\s*rect\.right/);
-    expect(src).toMatch(/stopEvent[\s\S]*?Math\.abs\(offsetX\)\s*<=\s*8/);
+    // v0.4.5 修复：变量名变更 offsetX → offsetXRight/offsetXLeft
+    // 验证 stopEvent 中有 cell 右边缘检测逻辑（兼容新旧变量名）
+    expect(src).toMatch(/stopEvent[\s\S]*?offsetXRight\s*=\s*event\.clientX\s*-\s*rect\.right|stopEvent[\s\S]*?offsetX\s*=\s*event\.clientX\s*-\s*rect\.right/);
+    expect(src).toMatch(/stopEvent[\s\S]*?Math\.abs\(offsetXRight\)\s*<=\s*8|stopEvent[\s\S]*?Math\.abs\(offsetX\)\s*<=\s*8/);
   });
 });
 

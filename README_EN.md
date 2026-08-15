@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.3.5**
+**Current Version: v0.4.5**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -103,10 +103,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.2.0 installers:
+Visit the [Releases](../../releases) page to download the 0.4.5 installers:
 
-- **`LightMD_0.2.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.2.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.4.5_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.4.5_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -141,8 +141,8 @@ Visit the [Releases](../../releases) page to download the 0.2.0 installers:
 
 ```bash
 # Clone the repository
-git clone https://github.com/badwoo/lightmd.git
-cd lightmd
+git clone https://github.com/badwoo/LightMD.git
+cd LightMD
 
 # Install dependencies
 npm install
@@ -155,6 +155,32 @@ npm run tauri build
 ```
 
 Build artifacts are located in `src-tauri/target/release/bundle/`.
+
+## 📋 Changelog
+
+### v0.4.5 (2026-07-16)
+
+**Table column resize improvements**:
+- Dragging an inner column border resizes the two adjacent columns while keeping the total table width unchanged
+- Dragging the outermost border changes the total table width
+- Cell left edge (8px) also triggers the resize hotspot; fixed unresponsive drag and table collapse issues
+
+**Search fixes**:
+- Fixed search highlight mismatch in non-Markdown code/text files across read/edit/split modes (newline normalization `\r\n` → `\n`)
+
+**UI fixes & optimizations**:
+- Outline panel auto-closes when switching from a Markdown file to a non-Markdown file
+- Optimized sidebar "Opened Files" / "Documents" section display logic
+- Closed folders/files are no longer restored on next startup
+- Idle-state logo animation performance: opacity-only animation (compositor layer, CPU≈0), auto-pauses on window blur, respects `prefers-reduced-motion`
+
+### v0.4.0 ~ v0.4.4 (2026-07-12 ~ 2026-07-15)
+
+- **v0.4.0**: Multi-folder sidebar, code file syntax highlighting (PrismJS), draggable splitters (sidebar width & split ratio), version snapshots (auto-record up to 5 versions with diff & restore)
+- **v0.4.1**: Sidebar section minimize/maximize/close buttons with height resizing; snapshot dialog maximize/restore, scroll sync
+- **v0.4.2**: Search & replace for non-Markdown files; content preservation across mode switches; adjacent-column-only table resize; various sidebar fixes
+- **v0.4.3**: Global file search in sidebar; per-folder independent browse sections; camera icon for snapshots entry
+- **v0.4.4**: Table collapse fix (`table.width = cellWidthSum`); search highlight offset fix
 
 ## 🤝 Contributing
 

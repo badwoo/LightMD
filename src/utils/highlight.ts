@@ -90,6 +90,19 @@ export function highlightCode(code: string, language: string): string {
 }
 
 /**
+ * v0.4.0：将代码文件内容渲染为带语法高亮的 HTML
+ * 用于非 Markdown 文件（.js/.py/.ts 等）的阅读模式和分屏预览
+ * 整个内容用 PrismJS 高亮，包裹在 <pre class="code-file-preview"><code> 中
+ * @param content 代码文本
+ * @param language 语言标识（如 "javascript"/"python"，未知语言回退到 plaintext）
+ * @returns 可直接插入 DOM 的 HTML 字符串
+ */
+export function renderCodeFilePreview(content: string, language: string): string {
+  const highlighted = highlightCode(content, language);
+  return `<pre class="code-file-preview"><code class="language-${language}">${highlighted}</code></pre>`;
+}
+
+/**
  * 对 HTML 字符串中的代码块进行语法高亮处理
  * 匹配 <pre><code class="language-xxx">...</code></pre> 模式，
  * 用 PrismJS 高亮代码内容（跳过 mermaid 代码块）

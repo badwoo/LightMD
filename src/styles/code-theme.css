@@ -91,3 +91,20 @@ pre[class*="language-"] {
   border-radius: 3px;
   background: var(--code-bg);
 }
+
+/* ─── v0.4.0：非 Markdown 代码文件的整体预览容器 ─── */
+/* 打开 .js/.py/.ts 等代码文件时，阅读模式/分屏预览用此样式 */
+.code-file-preview {
+  margin: 0;
+  padding: 16px;
+  background: var(--code-bg, #f6f8fa);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.9em;
+  line-height: 1.6;
+}
+.code-file-preview code {
+  background: none;
+  padding: 0;
+}

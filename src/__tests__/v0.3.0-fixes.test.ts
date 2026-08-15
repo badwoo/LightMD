@@ -269,11 +269,12 @@ describe("问题7：表格列宽拖拽修复（CSS table-layout: fixed + 热区�
     expect(pmTdBlock![1]).not.toMatch(/min-width:\s*80px/);
   });
 
-  it("table-editor.ts 热区为 8px（Math.abs(offsetX) > 8）", () => {
+  it("table-editor.ts 热区为 8px（v0.4.5 后改用 offsetXRight/offsetXLeft）", () => {
     const tsPath = path.resolve(__dirname, "../core/plugins/table-editor.ts");
     const src = fs.readFileSync(tsPath, "utf-8");
-    // 验证 mousedown 中的热区判断
-    expect(src).toMatch(/Math\.abs\(offsetX\)\s*>\s*8/);
+    // v0.4.5 修复：热区判断从 Math.abs(offsetX) > 8 改为 !inRightEdge && !inLeftEdge
+    // 验证 mousedown 中存在 8px 热区判断（变量名变更：offsetX → offsetXRight/offsetXLeft）
+    expect(src).toMatch(/Math\.abs\(offsetXRight\)\s*<=\s*8|Math\.abs\(offsetX\)\s*>\s*8/);
   });
 
   it("table-editor.ts 添加了 onHover mousemove 视觉提示", () => {

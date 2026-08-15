@@ -45,6 +45,11 @@ src-tauri/target/
 *.tmp
 *.temp
 *.bak
+test-focus-mode.md
+test-typewriter.md
+test-output.txt
+test-output-i18n.txt
+test-snapshot.txt
 
 # 操作系统
 .DS_Store

@@ -6,8 +6,9 @@
  * - 每个标签显示文件名、脏标记（●）、关闭按钮（×）
  * - 激活标签高亮，非激活标签可点击切换
  * - 标签过多时支持横向滚动
+ * - v0.4.0 功能4：tab-item 右键菜单 + 标题栏快照入口图标
  */
-import { useCallback } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { useEditorStore, type TabInfo } from "../../stores/useEditorStore";
 import { useT } from "../../i18n";
 import "./TabBar.css";
@@ -23,6 +24,8 @@ export function TabBar({ onTabSwitch, onTabClose }: TabBarProps) {
   const activeTabIdx = useEditorStore((s) => s.activeTabIdx);
   const setActiveTab = useEditorStore((s) => s.setActiveTab);
   const closeTab = useEditorStore((s) => s.closeTab);
+  // 右键菜单位置与目标 tab
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; tab: TabInfo } | null>(null);
 
   const handleTabClick = useCallback((idx: number) => {
     if (idx === activeTabIdx) return;
@@ -38,6 +41,33 @@ export function TabBar({ onTabSwitch, onTabClose }: TabBarProps) {
     if (tab) onTabClose?.(tab, idx);
   }, [openTabs, onTabClose]);
 
+  // tab-item 右键菜单：弹出含"查看版本快照"项
+  const handleContextMenu = useCallback((e: React.MouseEvent, tab: TabInfo) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ x: e.clientX, y: e.clientY, tab });
+  }, []);
+
+  // 点击外部关闭右键菜单
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [ctxMenu]);
+
+  // 标题栏快照入口：用当前活跃标签的 filePath
+  const handleSnapshotBtnClick = useCallback(() => {
+    const activeTab = openTabs[activeTabIdx];
+    if (activeTab) {
+      window.dispatchEvent(
+        new CustomEvent("lightmd:showSnapshotDialog", {
+          detail: { filePath: activeTab.path },
+        })
+      );
+    }
+  }, [openTabs, activeTabIdx]);
+
   if (openTabs.length === 0) return null;
 
   return (
@@ -47,6 +77,7 @@ export function TabBar({ onTabSwitch, onTabClose }: TabBarProps) {
           key={`${tab.path}-${idx}`}
           className={`tab-item ${idx === activeTabIdx ? "tab-active" : ""}`}
           onClick={() => handleTabClick(idx)}
+          onContextMenu={(e) => handleContextMenu(e, tab)}
           title={tab.path}
         >
           <span className="tab-name" title={tab.path}>
@@ -62,6 +93,36 @@ export function TabBar({ onTabSwitch, onTabClose }: TabBarProps) {
           </button>
         </div>
       ))}
+      {/* v0.4.0 功能4：标题栏快照入口图标 */}
+      <button
+        className="tab-bar-snapshot-btn"
+        onClick={handleSnapshotBtnClick}
+        title={t("snapshot.viewSnapshots")}
+      >
+        🕐
+      </button>
+      {/* tab-item 右键菜单 */}
+      {ctxMenu && (
+        <div
+          className="tabbar-context-menu"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              window.dispatchEvent(
+                new CustomEvent("lightmd:showSnapshotDialog", {
+                  detail: { filePath: ctxMenu.tab.path },
+                })
+              );
+              setCtxMenu(null);
+            }}
+          >
+            {t("snapshot.viewSnapshots")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

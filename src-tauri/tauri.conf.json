@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/main/core/tauri-config-schema/schema.json",
   "productName": "LightMD",
-  "version": "0.3.5",
+  "version": "0.4.5",
   "identifier": "com.lightmd.app",
   "build": {
     "frontendDist": "../dist",
@@ -46,12 +46,21 @@
       "nsis": {}
     },
     "fileAssociations": [
-      {
-        "ext": ["md", "markdown", "mdown"],
-        "name": "Markdown",
-        "description": "Markdown Document",
-        "role": "Editor"
-      }
+      { "ext": ["md", "markdown", "mdown", "mkd"], "name": "Markdown", "description": "Markdown Document", "role": "Editor" },
+      { "ext": ["js", "mjs", "cjs", "ts", "jsx", "tsx"], "name": "JavaScript/TypeScript", "description": "JS/TS Source", "role": "Editor" },
+      { "ext": ["json"], "name": "JSON", "description": "JSON File", "role": "Editor" },
+      { "ext": ["html", "htm", "xml", "svg"], "name": "Markup", "description": "Markup File", "role": "Editor" },
+      { "ext": ["css", "scss", "less", "sass"], "name": "Stylesheet", "description": "CSS File", "role": "Editor" },
+      { "ext": ["py"], "name": "Python", "description": "Python Source", "role": "Editor" },
+      { "ext": ["rs"], "name": "Rust", "description": "Rust Source", "role": "Editor" },
+      { "ext": ["go"], "name": "Go", "description": "Go Source", "role": "Editor" },
+      { "ext": ["java"], "name": "Java", "description": "Java Source", "role": "Editor" },
+      { "ext": ["c", "cpp", "cc", "h", "hpp"], "name": "C/C++", "description": "C/C++ Source", "role": "Editor" },
+      { "ext": ["sh", "bash", "zsh", "bat", "cmd", "ps1"], "name": "Script", "description": "Script File", "role": "Editor" },
+      { "ext": ["yml", "yaml", "toml", "ini", "conf"], "name": "Config", "description": "Config File", "role": "Editor" },
+      { "ext": ["sql"], "name": "SQL", "description": "SQL File", "role": "Editor" },
+      { "ext": ["php", "rb", "swift", "kt", "dart", "lua", "r", "scala", "pl"], "name": "Other Code", "description": "Source Code", "role": "Editor" },
+      { "ext": ["txt", "log", "csv"], "name": "Text", "description": "Text File", "role": "Editor" }
     ]
   }
 }

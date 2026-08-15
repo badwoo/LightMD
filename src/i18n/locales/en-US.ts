@@ -61,6 +61,11 @@ export const enUS: Record<string, string> = {
   "sidebar.addToFavorites": "Add to Favorites",
   "sidebar.removeFromFavorites": "Remove from Favorites",
   "sidebar.favoritesCount": "Favorites ({count})",
+  "filetree.favoritesToggle": "Favorites",
+  "filetree.recentToggle": "Recent",
+  "filetree.minimize": "Minimize",
+  "filetree.maximize": "Maximize",
+  "filetree.closeSection": "Close",
   // ─── Title bar ───────────────────────────────────
   "titlebar.read": "Read",
   "titlebar.edit": "Edit",
@@ -88,6 +93,9 @@ export const enUS: Record<string, string> = {
   "filetree.newFolderTitle": "New Folder",
   "filetree.openFolderTitle": "Open Folder",
   "filetree.refreshTitle": "Refresh",
+  "filetree.searchTitle": "Search Files",
+  "filetree.searchPlaceholder": "Search file name...",
+  "filetree.searchNoResult": "No matching files found",
   "filetree.closeFolderTitle": "Close Folder",
   "filetree.closeTitle": "Close",
   "filetree.emptyFolder": "This folder is empty",
@@ -125,6 +133,22 @@ export const enUS: Record<string, string> = {
   "filetree.propFileType": "Type: .{ext} file",
   "filetree.propUnknownType": "Unknown",
   "filetree.propFileSize": "Size: {size}",
+  // ─── Version Snapshots (v0.4.0 Feature 4) ────────────────
+  "snapshot.title": "Version Snapshots",
+  "snapshot.empty": "No snapshots yet",
+  "snapshot.initial": "Initial version",
+  "snapshot.modified": "Modified",
+  "snapshot.recent": "Recent",
+  "snapshot.useThisVersion": "Use this version",
+  "snapshot.confirmUse": "Replace current file with this version? This cannot be undone.",
+  "snapshot.diffAdded": "Added",
+  "snapshot.diffRemoved": "Removed",
+  "snapshot.diffTruncated": "Too many diff lines, showing first {count} only",
+  "snapshot.viewSnapshots": "View version snapshots",
+  "snapshot.leftVersion": "Selected version",
+  "snapshot.rightCurrent": "Current version",
+  "snapshot.maximize": "Maximize",
+  "snapshot.restore": "Restore",
   // ─── Outline ───────────────────────────────────
   "outline.title": "Outline",
   "outline.empty": "No headings",
@@ -139,6 +163,8 @@ export const enUS: Record<string, string> = {
   // ─── AppShell sidebar ───────────────────────────────────
   "appshell.expandSidebar": "Expand Sidebar",
   "appshell.collapseSidebar": "Collapse Sidebar",
+  // v0.4.0: drag to resize hint
+  "appshell.dragToResize": "Drag to resize",
   // ─── Tab bar ───────────────────────────────────
   "tabbar.close": "Close",
   // ─── Editor ───────────────────────────────────

@@ -714,22 +714,39 @@
 .editor-empty-logo {
   font-size: 120px; font-weight: 200; letter-spacing: 18px;
   color: transparent;
+  /* 静态渐变（保留视觉层次，不再动画 background-position） */
   background: linear-gradient(135deg, var(--text-tertiary) 0%, var(--border-color) 20%, rgba(255,255,255,0.6) 35%, var(--border-color) 50%, var(--text-tertiary) 65%, rgba(255,255,255,0.4) 80%, var(--text-tertiary) 100%);
-  background-size: 200% 100%;
   -webkit-background-clip: text; background-clip: text;
   font-family: "Georgia", "Palatino Linotype", "Book Antiqua", "Palatino", serif;
   text-transform: uppercase; user-select: none;
-  animation: emptyLogoShimmer 6s ease-in-out infinite;
   text-indent: 18px;
   text-shadow: 0 1px 0 rgba(255,255,255,0.1), 0 -1px 0 rgba(0,0,0,0.2);
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.15));
+  /* v0.4.5 性能优化：仅保留 opacity 呼吸动画（走合成层，空闲 CPU≈0）
+     移除的昂贵属性：
+     - background-position 动画 + background-clip:text（每帧重绘渐变+文字栅格化）
+     - filter: drop-shadow（每帧重算阴影）
+     - transform: scale()（合成开销，视觉增益不明显）
+     - background-size: 200% 100%（仅 shimmer 流动时需要） */
+  animation: emptyLogoShimmer 4s ease-in-out infinite;
+  will-change: opacity;
 }
 
 @keyframes emptyLogoShimmer {
-  0%, 100% { opacity: 0.2; transform: scale(1); background-position: 0% 50%; }
-  25% { background-position: 100% 50%; }
-  50% { opacity: 0.45; transform: scale(1.02); background-position: 50% 50%; }
-  75% { background-position: 0% 50%; }
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.45; }
+}
+
+/* v0.4.5 性能优化：窗口失焦/页面隐藏时暂停动画，避免后台持续消耗 CPU */
+.app-blurred .editor-empty-logo {
+  animation-play-state: paused;
+}
+
+/* v0.4.5 性能优化：尊重用户系统"减少动态效果"偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .editor-empty-logo {
+    animation: none;
+    opacity: 0.35;
+  }
 }
 
 .editor-empty-hint {
@@ -748,7 +765,19 @@
 }
 
 .split-divider {
-  width: 1px; background: var(--border-color); flex-shrink: 0;
+  /* v0.4.0：可拖拽分割条，6px 宽，hover 时显示背景色 */
+  width: 6px;
+  min-width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+  align-self: stretch;
+}
+
+.split-divider:hover,
+.split-divider:active {
+  background: var(--border-color);
 }
 
 .split-preview {

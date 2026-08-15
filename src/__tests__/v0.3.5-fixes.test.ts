@@ -54,32 +54,36 @@ describe("问题1：表格列宽拖拽", () => {
     expect(startResizeSection![0]).toMatch(/getBoundingClientRect\(\)\.width/);
   });
 
-  it("onMouseMove 保持其他列宽度不变，只修改目标列", () => {
+  it("onMouseMove 使用 computeResizedWidths 调整相邻列，保持总宽度不变（Issue 8 修复）", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
     const onMouseMoveSection = src.match(/private onMouseMove = \(e: MouseEvent\) =>[\s\S]*?  \};/);
     expect(onMouseMoveSection).not.toBeNull();
-    // 验证目标列设置新宽度（通过 newWidths 数组）
-    expect(onMouseMoveSection![0]).toMatch(/i === colIdx \? Math\.round\(newWidth\)/);
+    // Issue 8：使用 computeResizedWidths 纯函数计算新宽度（调整 colIdx 和 colIdx+1，保持总宽度不变）
+    expect(onMouseMoveSection![0]).toMatch(/computeResizedWidths\(startWidths,\s*colIdx,\s*deltaX\)/);
+    // 通过 newWidths[i] 设置每列宽度
     expect(onMouseMoveSection![0]).toMatch(/\$\{newWidths\[i\]\}px/);
-    // 验证其他列保持初始宽度（通过 Math.round(w)）
-    expect(onMouseMoveSection![0]).toMatch(/Math\.round\(w\)/);
+    // v0.4.4 修复：table width 设为 newWidths 之和，避免 table-layout:fixed 等比例缩放
+    expect(onMouseMoveSection![0]).toMatch(/totalWidth\s*=\s*newWidths\.reduce/);
+    expect(onMouseMoveSection![0]).toMatch(/\$\{totalWidth\}px/);
   });
 
-  it("onMouseMove 设置 table 总宽度为列宽之和（修复列宽按比例分配）", () => {
+  it("onMouseMove 设置 table width 为 newWidths 之和（v0.4.4 修复表格坍缩）", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
     const onMouseMoveSection = src.match(/private onMouseMove = \(e: MouseEvent\) =>[\s\S]*?  \};/);
     expect(onMouseMoveSection).not.toBeNull();
-    // 验证设置 contentDOM.style.width 为 totalWidth
-    expect(onMouseMoveSection![0]).toMatch(/contentDOM\.style\.width/);
-    expect(onMouseMoveSection![0]).toMatch(/totalWidth/);
+    // v0.4.4：使用 newWidths 之和而非 width:auto，避免表格坍缩
+    expect(onMouseMoveSection![0]).toMatch(/contentDOM\.style\.width\s*=\s*`\$\{totalWidth\}px`/);
+    expect(onMouseMoveSection![0]).not.toMatch(/tableStartWidth/);
+    expect(onMouseMoveSection![0]).not.toMatch(/["']auto["']/);
   });
 
-  it("applyColumnWidths 设置 table width 为列宽之和", () => {
+  it("applyColumnWidths 设置 table width 为 widths 之和（v0.4.4 修复）", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
     const applySection = src.match(/private applyColumnWidths\(node: Node\)[\s\S]*?\n  \}/);
     expect(applySection).not.toBeNull();
-    // 有 columnWidths 时设置 table width 为列宽之和
-    expect(applySection![0]).toMatch(/contentDOM\.style\.width.*totalWidth/);
+    // v0.4.4 修复：有 columnWidths 时设为 widths 之和，让 table.width = cellWidthSum
+    expect(applySection![0]).toMatch(/totalWidth\s*=\s*widths\.reduce/);
+    expect(applySection![0]).toMatch(/\$\{totalWidth\}px/);
     // 无 columnWidths 时恢复 width: 100%
     expect(applySection![0]).toMatch(/contentDOM\.style\.width.*100%/);
   });

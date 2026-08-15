@@ -47,6 +47,12 @@ interface SettingsState {
   showCodeLineNumbers: boolean;
   /** G10: 拼写检查开关（默认 false，使用浏览器原生 spellcheck） */
   spellcheckEnabled: boolean;
+  /** v0.4.0: 侧边栏宽度（默认 260，范围 180~480） */
+  sidebarWidth: number;
+  /** v0.4.0: 大纲栏宽度（默认 240，范围 180~480） */
+  outlineWidth: number;
+  /** v0.4.0: 分屏左右比例（默认 0.5，范围 0.3~0.7） */
+  splitRatio: number;
 
   setTheme: (theme: Theme) => void;
   setFontSize: (size: number) => void;
@@ -64,6 +70,12 @@ interface SettingsState {
   setShowCodeLineNumbers: (v: boolean) => void;
   /** G10：设置是否启用拼写检查 */
   setSpellcheckEnabled: (v: boolean) => void;
+  /** v0.4.0：设置侧边栏宽度（钳制 180~480） */
+  setSidebarWidth: (w: number) => void;
+  /** v0.4.0：设置大纲栏宽度（钳制 180~480） */
+  setOutlineWidth: (w: number) => void;
+  /** v0.4.0：设置分屏比例（钳制 0.3~0.7） */
+  setSplitRatio: (r: number) => void;
 }
 
 /** 钳制到 [min, max] 范围内 */
@@ -97,6 +109,12 @@ export const useSettingsStore = create<SettingsState>()(
       showCodeLineNumbers: true,
       // G10：默认关闭拼写检查（用户按需开启）
       spellcheckEnabled: false,
+      // v0.4.0：侧边栏默认宽度 260px
+      sidebarWidth: 260,
+      // v0.4.0：大纲栏默认宽度 240px
+      outlineWidth: 240,
+      // v0.4.0：分屏默认比例 0.5（左右各半）
+      splitRatio: 0.5,
 
       setTheme: (theme) => set({ theme }),
       setFontSize: (fontSize) => set({ fontSize }),
@@ -120,6 +138,12 @@ export const useSettingsStore = create<SettingsState>()(
       setShowCodeLineNumbers: (showCodeLineNumbers) => set({ showCodeLineNumbers }),
       // G10：设置是否启用拼写检查
       setSpellcheckEnabled: (spellcheckEnabled) => set({ spellcheckEnabled }),
+      // v0.4.0：钳制到 180~480
+      setSidebarWidth: (w) => set({ sidebarWidth: clamp(Math.round(w), 180, 480) }),
+      // v0.4.0：钳制到 180~480
+      setOutlineWidth: (w) => set({ outlineWidth: clamp(Math.round(w), 180, 480) }),
+      // v0.4.0：钳制到 0.3~0.7
+      setSplitRatio: (r) => set({ splitRatio: clamp(r, 0.3, 0.7) }),
     }),
     {
       name: "lightmd-settings",

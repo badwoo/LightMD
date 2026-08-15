@@ -28,6 +28,8 @@ interface SearchReplaceProps {
   onSourceContentChange?: (content: string) => void;
   /** 初始是否显示替换行（Ctrl+H 时为 true） */
   initialShowReplace?: boolean;
+  /** Issue 6：是否为 Markdown 文件。非 md 文件总是走 sourceContent 搜索分支（ProseMirror 为空） */
+  isMdFile?: boolean;
 }
 
 // ─── 块级偏移映射（替代逐字符 Map，大幅减少内存）──────────
@@ -101,6 +103,30 @@ function lookupPmPos(blocks: OffsetBlock[], textOffset: number): number | undefi
   return undefined;
 }
 
+/**
+ * Issue 6：在文本中搜索匹配项，返回匹配起始位置数组（纯函数，便于单元测试）
+ *
+ * 用于 md 文件的 ProseMirror 内容搜索和非 md 文件的 textarea 源码搜索。
+ * 特殊字符会被正则转义，避免搜索文本中含 . * + 等时误匹配。
+ *
+ * @param text 待搜索的文本（sourceContent 或 PM textContent）
+ * @param searchText 搜索关键词
+ * @param caseSensitive 是否区分大小写
+ * @returns 匹配起始位置数组（0-indexed），最多返回 10000 个以防无限循环
+ */
+export function findMatches(text: string, searchText: string, caseSensitive = false): number[] {
+  if (!searchText) return [];
+  const flags = caseSensitive ? "g" : "gi";
+  const regex = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+  const matches: number[] = [];
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    matches.push(match.index);
+    if (matches.length > 10000) break; // 防止无限循环
+  }
+  return matches;
+}
+
 export function SearchReplaceDialog({
   onClose,
   editorView,
@@ -108,10 +134,12 @@ export function SearchReplaceDialog({
   sourceContent,
   onSourceContentChange,
   initialShowReplace = false,
+  isMdFile = true,
 }: SearchReplaceProps) {
   const t = useT();
   const viewMode = useEditorStore((s) => s.viewMode);
-  const isSourceMode = viewMode === "edit" || viewMode === "split";
+  // Issue 6：非 md 文件 ProseMirror 为空，无论 viewMode 如何都走 sourceContent 搜索分支
+  const isSourceMode = viewMode === "edit" || viewMode === "split" || !isMdFile;
   // 问题3：监听 searchFocusKey 变化，重复按 Ctrl+F 时重新聚焦
   const searchFocusKey = useEditorStore((s) => s.searchFocusKey);
   const [searchText, setSearchText] = useState("");
@@ -203,8 +231,12 @@ export function SearchReplaceDialog({
           // 忽略清除错误（editorView 可能已销毁）
         }
       }
+      // v0.4.3 Issue 3：清除非 md 文件阅读模式的选区高亮
+      if (!isMdFile) {
+        window.getSelection()?.removeAllRanges();
+      }
     };
-  }, [editorView, isSourceMode]);
+  }, [editorView, isSourceMode, isMdFile]);
 
   // 搜索
   const performSearch = useCallback(() => {
@@ -218,12 +250,19 @@ export function SearchReplaceDialog({
         tr.setMeta(searchHighlightKey, null);
         editorView.dispatch(tr);
       }
+      // v0.4.3 Issue 3：清除非 md 文件阅读模式的选区高亮
+      if (!isMdFile && viewMode === "preview") {
+        window.getSelection()?.removeAllRanges();
+      }
       return;
     }
 
     let text: string;
     if (isSourceMode) {
-      text = sourceContent || "";
+      // v0.4.4 修复：规范化换行符 \r\n → \n。
+      // textarea.value 和 DOM 文本都会将 \r\n 规范化为 \n，
+      // 如果 sourceContent 含 \r\n，findMatches 返回的位置会偏移，导致高亮选中错误内容。
+      text = (sourceContent || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
       offsetMapRef.current = null;
     } else if (editorView) {
       // 问题2修复：使用 buildOffsetMap 同时构建 text 和 blocks，保证偏移一致
@@ -234,15 +273,8 @@ export function SearchReplaceDialog({
       text = "";
     }
 
-    const flags = caseSensitive ? "g" : "gi";
-    const regex = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
-    const matches: number[] = [];
-    let match;
-
-    while ((match = regex.exec(text)) !== null) {
-      matches.push(match.index);
-      if (matches.length > 10000) break; // 防止无限循环
-    }
+    // Issue 6：使用提取的 findMatches 纯函数搜索匹配项
+    const matches = findMatches(text, searchText, caseSensitive);
 
     matchesRef.current = matches;
     setMatchCount(matches.length);
@@ -252,7 +284,7 @@ export function SearchReplaceDialog({
     if (matches.length > 0) {
       highlightMatch(0);
     }
-  }, [searchText, caseSensitive, isSourceMode, sourceContent, editorView]);
+  }, [searchText, caseSensitive, isSourceMode, sourceContent, editorView, isMdFile, viewMode]);
 
   // 搜索文本变化时自动搜索
   useEffect(() => {
@@ -263,9 +295,56 @@ export function SearchReplaceDialog({
   const highlightMatch = useCallback((index: number) => {
     if (matchesRef.current.length === 0) return;
 
+    // v0.4.3 Issue 3：非 md 文件阅读模式下 textarea 隐藏（display:none），
+    // 需要在 .plaintext-preview 容器中通过 Range 选区高亮匹配文本
+    if (!isMdFile && viewMode === "preview") {
+      const previewEl = document.querySelector(".plaintext-preview");
+      if (!previewEl) return;
+      const pos = matchesRef.current[index];
+      const endPos = pos + searchText.length;
+      // TreeWalker 遍历文本节点，定位匹配的起止位置（PrismJS 高亮后文本被分散在多个 span 中）
+      const walker = document.createTreeWalker(previewEl, NodeFilter.SHOW_TEXT);
+      let charCount = 0;
+      let startNode: Text | null = null;
+      let startOffset = 0;
+      let endNode: Text | null = null;
+      let endOffset = 0;
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        const nodeLen = node.nodeValue?.length || 0;
+        if (!startNode && charCount + nodeLen > pos) {
+          startNode = node;
+          startOffset = Math.max(0, pos - charCount);
+        }
+        if (charCount + nodeLen >= endPos) {
+          endNode = node;
+          endOffset = Math.max(0, endPos - charCount);
+          break;
+        }
+        charCount += nodeLen;
+      }
+      if (startNode && endNode) {
+        const range = document.createRange();
+        range.setStart(startNode, startOffset);
+        range.setEnd(endNode, endOffset);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        // 滚动到匹配位置（居中显示）
+        const rect = range.getBoundingClientRect();
+        const containerRect = previewEl.getBoundingClientRect();
+        const targetTop = rect.top - containerRect.top + previewEl.scrollTop - containerRect.height / 2;
+        previewEl.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+      }
+      return;
+    }
+
     if (isSourceMode && sourceTextareaRef?.current) {
       const textarea = sourceTextareaRef.current;
       const pos = matchesRef.current[index];
+      // Issue 6：非 md 文件在 preview 模式下 textarea 隐藏（display:none），
+      // offsetParent === null 表示不可见，此时跳过视觉高亮（仅显示匹配计数）
+      if (textarea.offsetParent === null) return;
       textarea.focus();
       textarea.setSelectionRange(pos, pos + searchText.length);
       // 滚动到匹配位置
@@ -316,7 +395,7 @@ export function SearchReplaceDialog({
         // 忽略位置计算错误
       }
     }
-  }, [isSourceMode, sourceTextareaRef, editorView, searchText]);
+  }, [isSourceMode, sourceTextareaRef, editorView, searchText, isMdFile, viewMode]);
 
   // 上一个/下一个
   const goToMatch = useCallback((direction: 1 | -1) => {

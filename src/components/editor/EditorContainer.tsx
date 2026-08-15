@@ -19,6 +19,7 @@ import type { EditorView } from "prosemirror-view";
 import { useEditorStore, type ViewMode } from "../../stores/useEditorStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useAutoSave } from "../../hooks/useAutoSave";
+import { useResizable } from "../../hooks/useResizable";
 import { useT, t as translate } from "../../i18n";
 import { SearchReplaceDialog } from "./SearchReplace";
 import { LinkDialog } from "../dialogs/LinkDialog";
@@ -37,8 +38,8 @@ import {
   FORMAT_BUTTONS as formatButtons,
 } from "./sourceFormat";
 import { md } from "../../core/markdown/parser";
-import { highlightCodeBlocksInHtml, getPrismCss } from "../../utils/highlight";
-import { isMarkdownFile, getFileLanguage, LARGE_FILE_THRESHOLD } from "../../utils/constants";
+import { highlightCodeBlocksInHtml, getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
+import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc } from "../../utils/imagePath";
 import { calculateWordCount } from "../../utils/wordCount";
 import { findParagraphRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight } from "../../utils/focus-paragraph";
@@ -103,6 +104,25 @@ function renderMarkdownToHtml(markdown: string): string {
   }
 }
 
+/**
+ * Issue 7：判断模式切换时是否跳过 ProseMirror doc 转换（纯函数，便于单元测试）
+ *
+ * 非 md 文件 ProseMirror 始终为空，切换模式时若走 getMarkdownFromDoc 会取到空字符串，
+ * 覆盖 sourceContent 导致内容丢失。此函数封装跳过决策，保证非 md 文件直接保留 sourceContent。
+ *
+ * @param isMdFile 是否为 Markdown 文件
+ * @param fromSource 来源模式是否为源码模式（edit/split）
+ * @param toSource 目标模式是否为源码模式（edit/split）
+ * @returns true 表示跳过 ProseMirror doc 转换，直接保留 sourceContent
+ */
+export function shouldSkipProseMirrorSync(isMdFile: boolean, fromSource: boolean, toSource: boolean): boolean {
+  // 编辑 ↔ 分屏：不需要同步内容，只恢复滚动位置
+  if (fromSource && toSource) return true;
+  // 非 md 文件：ProseMirror 为空，跳过 doc 转换，避免内容丢失
+  if (!isMdFile) return true;
+  return false;
+}
+
 interface EditorContainerProps {
   content?: string;
   filePath?: string | null;
@@ -140,11 +160,28 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const theme = useSettingsStore((s) => s.theme);
   // G10：拼写检查开关，控制 textarea 与 ProseMirror contenteditable 的 spellcheck 属性
   const spellcheckEnabled = useSettingsStore((s) => s.spellcheckEnabled);
+  // v0.4.0：分屏比例（持久化），用于 split 模式左右宽度分配
+  const splitRatio = useSettingsStore((s) => s.splitRatio);
+  const setSplitRatio = useSettingsStore((s) => s.setSplitRatio);
 
   const isSourceMode = viewMode === "edit" || viewMode === "split";
+
+  // v0.4.0：分屏分割条拖拽 hook（direction="split"，按容器总宽计算 ratio）
+  const splitResizer = useResizable({
+    initialWidth: 0,
+    minWidth: 0,
+    maxWidth: 0,
+    direction: "split",
+    initialRatio: splitRatio,
+    onSplitChange: (r) => setSplitRatio(r),
+  });
+  // 分屏比例（优先用拖拽中的实时值，确保拖拽过程跟手）
+  const effectiveSplitRatio = splitResizer.isDragging ? splitResizer.ratio : splitRatio;
   // 判断当前文件是否为 Markdown 文件
   // 非 Markdown 文件（txt/代码文件）不显示格式栏、不渲染 Markdown
   const isMdFile = isMarkdownFile(filePath || "");
+  // v0.4.0：当前文件语言标识（由 App.tsx 在打开文件时设置），用于代码文件语法高亮
+  const currentLanguage = useEditorStore((s) => s.currentLanguage);
 
   const setDirtyRef = useRef(setDirty);
   const setCursorLineRef = useRef(setCursorLine);
@@ -476,11 +513,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const toSource = isSourceMode;
 
     // 编辑 ↔ 分屏：不需要同步内容，只恢复滚动位置
-    if (fromSource && toSource) {
-      // textarea 内容已经是最新的，只需恢复滚动位置
+    // Issue 7：非 md 文件也不走 ProseMirror doc 转换（ProseMirror 为空）
+    // 用 shouldSkipProseMirrorSync 统一判断，保证非 md 文件直接保留 sourceContent
+    if (shouldSkipProseMirrorSync(isMdFile, fromSource, toSource)) {
+      const sourcePercent = fromPreview
+        ? pmScrollPercentRef.current
+        : textareaScrollPercentRef.current;
       pendingScrollRef.current = {
         targetMode: viewMode,
-        percent: textareaScrollPercentRef.current,
+        percent: sourcePercent,
       };
       return;
     }
@@ -1594,18 +1635,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   // 分屏预览 HTML（仅分屏模式才计算，基于防抖内容）
   // Markdown 文件：渲染 markdown + mermaid + 代码高亮
-  // 非 Markdown 文件（txt/代码等）：纯文本 + 语法高亮，不渲染 markdown
+  // 非 Markdown 文件（txt/代码等）：v0.4.0 用 PrismJS 对整个内容语法高亮，不渲染 markdown
   const previewHtml = useMemo(
     () => {
       if (viewMode !== "split") return "";
       if (!isMdFile) {
-        // 非 Markdown 文件：用 <pre><code> 包裹，添加语法高亮
-        const lang = getFileLanguage(filePath || "");
-        const escaped = debouncedSourceContent
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
-        return `<pre class="language-${lang}"><code class="language-${lang}">${escaped}</code></pre>`;
+        // v0.4.0：非 Markdown 文件用 renderCodeFilePreview 生成带语法高亮的 HTML
+        return renderCodeFilePreview(debouncedSourceContent, currentLanguage);
       }
       let html = renderMarkdownToHtml(debouncedSourceContent);
       // 将相对路径图片 src 转换为 Tauri webview 可访问的 asset:// URL
@@ -1621,8 +1657,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       html = highlightCodeBlocksInHtml(html);
       return html;
     },
-    [debouncedSourceContent, viewMode, isMdFile, filePath]
+    [debouncedSourceContent, viewMode, isMdFile, filePath, currentLanguage]
   );
+
+  // v0.4.0：阅读模式下非 Markdown 文件的语法高亮 HTML（用 useMemo 缓存避免重复计算）
+  // 仅在阅读模式 + 非 md 文件时计算，依赖 sourceContent 和 currentLanguage
+  const codePreviewHtml = useMemo(() => {
+    if (isMdFile || viewMode !== "preview") return "";
+    return renderCodeFilePreview(sourceContent, currentLanguage);
+  }, [sourceContent, isMdFile, viewMode, currentLanguage]);
 
   // 将预览 HTML 写入 iframe，隔离 DOM 减少 GC 压力
   // 优化：首次进入分屏写入完整 HTML（含脚本），后续只更新 body 内容并重新触发渲染
@@ -1947,7 +1990,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           }}
         />
 
-        {/* 非 Markdown 文件的纯文本视图（阅读模式，带语法高亮） */}
+        {/* v0.4.0：非 Markdown 文件的代码视图（阅读模式，带 PrismJS 语法高亮） */}
         {viewMode === "preview" && !isMdFile && content && (
           <div
             className="plaintext-preview"
@@ -1957,16 +2000,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               padding: "16px",
               background: "var(--bg-primary)",
             }}
-            dangerouslySetInnerHTML={{
-              __html: (() => {
-                const lang = getFileLanguage(filePath || "");
-                const escaped = sourceContent
-                  .replace(/&/g, "&amp;")
-                  .replace(/</g, "&lt;")
-                  .replace(/>/g, "&gt;");
-                return `<pre class="language-${lang}"><code class="language-${lang}">${escaped}</code></pre>`;
-              })(),
-            }}
+            dangerouslySetInnerHTML={{ __html: codePreviewHtml }}
           />
         )}
 
@@ -1975,7 +2009,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         <div
           className="source-editor-wrapper"
           style={{
-            flex: isSourceMode ? 1 : 0,
+            // v0.4.0：split 模式下用 width 控制宽度（ratio 来自拖拽），edit 模式用 flex:1
+            flex: viewMode === "split" ? "none" : isSourceMode ? 1 : 0,
+            width: viewMode === "split" ? `calc(${effectiveSplitRatio * 100}% - 3px)` : undefined,
             display: isSourceMode ? "flex" : "none",
           }}
         >
@@ -1992,7 +2028,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               display: isSourceMode ? "block" : "none",
               fontSize: `${fontSize}px`,
               fontFamily: `${fontFamily}, "Cascadia Code", "Consolas", monospace`,
-              borderRight: viewMode === "split" ? "1px solid var(--border-color)" : "none",
+              // v0.4.0：split 模式下右边框由分割条替代，避免双线
+              borderRight: viewMode === "split" ? "none" : "none",
             }}
           />
           {/* 专注模式遮罩：仅在 edit/split 模式 + focusMode 开启时显示 */}
@@ -2001,15 +2038,25 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           )}
         </div>
 
+        {/* v0.4.0：分屏分割条（仅 split 模式渲染，6px 宽，可拖拽调整左右比例） */}
+        {viewMode === "split" && (
+          <div
+            className="split-divider"
+            title={t("appshell.dragToResize")}
+            onMouseDown={splitResizer.onMouseDown}
+          />
+        )}
+
         {/* 分屏预览区：使用 iframe 隔离 DOM，减少主文档节点数和 GC 压力 */}
         <iframe
           ref={previewIframeRef}
           className="split-preview ProseMirror"
           style={{
-            flex: viewMode === "split" ? 1 : 0,
+            // v0.4.0：split 模式下用 width 控制宽度（1-ratio），其他模式 flex:0 隐藏
+            flex: viewMode === "split" ? "none" : 0,
             display: viewMode === "split" ? "block" : "none",
             border: "none",
-            width: viewMode === "split" ? "100%" : "0",
+            width: viewMode === "split" ? `calc(${(1 - effectiveSplitRatio) * 100}% - 3px)` : "0",
           }}
           title={t("editor.preview")}
           sandbox="allow-same-origin allow-scripts"
@@ -2030,6 +2077,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             lastContentRef.current = newContent;
           }}
           initialShowReplace={showSearchReplace}
+          isMdFile={isMdFile}
         />
       )}
 

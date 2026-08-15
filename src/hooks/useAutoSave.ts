@@ -13,8 +13,10 @@ import { useEffect, useRef, useCallback } from "react";
 import { useEditorStore } from "../stores/useEditorStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { fileService, isTauri } from "../services/fileService";
+import { versionSnapshotService } from "../services/versionSnapshotService";
 import { safeSetItem } from "../utils/safeStorage";
 import { getMarkdownFromDoc } from "../core/editor";
+import { isMarkdownFile } from "../utils/constants";
 import type { EditorView } from "prosemirror-view";
 
 export function useAutoSave(
@@ -40,9 +42,12 @@ export function useAutoSave(
     // 根据当前模式选择数据源：
     // - 编辑/分屏模式：textarea 内容是最新的（ProseMirror doc 尚未同步）
     // - 阅读模式：ProseMirror doc 是最新的
+    // Issue 7 隐藏 bug 修复：非 md 文件 ProseMirror 始终为空，
+    // 无论什么模式都必须从 sourceContentRef 读取，否则会保存空内容
     let markdown: string;
     const isSourceMode = viewModeRef.current === "edit" || viewModeRef.current === "split";
-    if (isSourceMode && sourceContentRef?.current !== undefined) {
+    const isMdFile = isMarkdownFile(filePath || "");
+    if ((isSourceMode || !isMdFile) && sourceContentRef?.current !== undefined) {
       markdown = sourceContentRef.current;
     } else {
       // 优先使用缓存的序列化结果，避免重复计算
@@ -52,6 +57,8 @@ export function useAutoSave(
     try {
       if (isTauri()) {
         await fileService.writeFile(filePath, markdown);
+        // v0.4.0 功能4：自动保存成功后记录版本快照（内容去重由服务内部处理）
+        versionSnapshotService.recordSnapshot(filePath, markdown).catch(() => {});
       } else {
         safeSetItem("lightmd-content", markdown);
       }

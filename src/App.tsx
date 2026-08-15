@@ -15,11 +15,13 @@ import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { ExportDialog } from "./components/dialogs/ExportDialog";
 import { ImagePasteDialog } from "./components/dialogs/ImagePasteDialog";
 import { CommandPalette } from "./components/dialogs/CommandPalette";
+import { VersionSnapshotDialog } from "./components/dialogs/VersionSnapshotDialog";
 import { setImageHandler, insertImageAtCursor } from "./core/plugins/image-paste";
-import { fileService, isTauri } from "./services/fileService";
+import { fileService, isTauri, type FileEntry } from "./services/fileService";
+import { versionSnapshotService } from "./services/versionSnapshotService";
 import { safeSetItem } from "./utils/safeStorage";
 import { setCurrentDocPath } from "./utils/imagePath";
-import { isSupportedTextFile, isMarkdownFile, ALL_SUPPORTED_EXTENSIONS, HUGE_FILE_THRESHOLD } from "./utils/constants";
+import { isSupportedTextFile, isMarkdownFile, ALL_SUPPORTED_EXTENSIONS, HUGE_FILE_THRESHOLD, getFileLanguage } from "./utils/constants";
 import {
   setNotificationHandler,
   type Notification,
@@ -135,6 +137,8 @@ function App() {
   const openTabs = useEditorStore((s) => s.openTabs);
   const activeTabIdx = useEditorStore((s) => s.activeTabIdx);
   const setActiveTab = useEditorStore((s) => s.setActiveTab);
+  // v0.4.0：设置当前文件语言标识，供 EditorContainer 渲染代码高亮
+  const setCurrentLanguage = useEditorStore((s) => s.setCurrentLanguage);
   const addRecentFile = useFileStore((s) => s.addRecentFile);
   const addTempFile = useFileStore((s) => s.addTempFile);
   const rootPath = useFileStore((s) => s.rootPath);
@@ -176,6 +180,9 @@ function App() {
   const [showOutline, setShowOutline] = useState(true);
   // G8：命令面板开关
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  // v0.4.0 功能4：版本快照窗口开关 + 目标文件路径
+  const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
+  const [snapshotFilePath, setSnapshotFilePath] = useState<string | null>(null);
   const [imageFiles, setImageFiles] = useState<File[] | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
@@ -220,6 +227,12 @@ function App() {
         // 设置文件路径和清除 dirty 标记
         if (detail.path) {
           openFile(detail.path);
+          // v0.4.0：根据文件扩展名设置语言标识，供 EditorContainer 渲染代码高亮
+          // md 文件为 "markdown"，其他代码文件为对应语言（如 "javascript"/"python"）
+          const lang = isMarkdownFile(detail.name || detail.path)
+            ? "markdown"
+            : getFileLanguage(detail.name || detail.path);
+          setCurrentLanguage(lang);
           // 记录上次打开的文件路径，供启动时恢复使用
           safeSetItem("lightmd-last-file", detail.path);
           // 文件名优先使用 detail.name（来自 FileTree 的 node.name），避免路径解析得到目录名
@@ -233,8 +246,8 @@ function App() {
             path: detail.path,
             name: fileName,
           });
-          // 如果文件不在当前目录树中，添加为临时文件
-          if (!rootPath || !detail.path.startsWith(rootPath)) {
+          // v0.4.0：如果文件不在任一已打开文件夹下，添加为临时文件
+          if (!useFileStore.getState().isPathInOpenFolders(detail.path)) {
             addTempFile({
               name: fileName,
               path: detail.path,
@@ -262,12 +275,29 @@ function App() {
               // 获取文件大小失败，忽略
             }
           }
+          // v0.4.0 功能4：记录初始版本快照（去重：已有 initial 则跳过）
+          if (isTauri()) {
+            versionSnapshotService.recordSnapshot(detail.path, detail.content, true).catch(() => {});
+          }
         }
       }
     };
     window.addEventListener("lightmd:openFile", handler);
     return () => window.removeEventListener("lightmd:openFile", handler);
-  }, [openFile, addRecentFile, addTempFile, rootPath, setViewMode, t]);
+  }, [openFile, addRecentFile, addTempFile, setViewMode, setCurrentLanguage, t]);
+
+  // ─── v0.4.0 功能4：版本快照窗口事件 ──────────────────────────
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.filePath) {
+        setSnapshotFilePath(detail.filePath);
+        setShowSnapshotDialog(true);
+      }
+    };
+    window.addEventListener("lightmd:showSnapshotDialog", handler);
+    return () => window.removeEventListener("lightmd:showSnapshotDialog", handler);
+  }, []);
 
   // ─── 同步当前文档路径到 imagePath 模块 ──────────
   // 供 schema.ts 的 image toDOM 和分屏预览的 img src 转换使用
@@ -280,7 +310,11 @@ function App() {
     const handler = () => {
       // 关闭当前活跃标签
       if (openTabs.length > 0) {
-        closeTab(activeTabIdx);
+        const closedTab = closeTab(activeTabIdx);
+        // v0.4.5 修复：同步从 recentFiles 中移除，避免下次启动时恢复已被用户关闭的文件
+        if (closedTab) {
+          useFileStore.getState().removeRecentFile(closedTab.path);
+        }
       }
       const remainingTabs = useEditorStore.getState().openTabs;
       if (remainingTabs.length > 0) {
@@ -290,18 +324,23 @@ function App() {
           setContent(tab.content || "");
           safeSetItem("lightmd-content", tab.content || "");
           openFile(tab.path);
+          // v0.4.0：切换到剩余标签时，根据其路径重新设置语言标识
+          const lang = isMarkdownFile(tab.path) ? "markdown" : getFileLanguage(tab.path);
+          setCurrentLanguage(lang);
           setForceUpdateKey((k) => k + 1);
         }
       } else {
         setContent("");
         safeSetItem("lightmd-content", "");
         openFile(null);
+        // v0.4.0：无剩余标签时重置为 markdown
+        setCurrentLanguage("markdown");
         setForceUpdateKey((k) => k + 1);
       }
     };
     window.addEventListener("lightmd:closeFile", handler);
     return () => window.removeEventListener("lightmd:closeFile", handler);
-  }, [openFile, closeTab, openTabs, activeTabIdx]);
+  }, [openFile, closeTab, openTabs, activeTabIdx, setCurrentLanguage]);
 
   // ─── 图片粘贴处理器 ───────────────────────
   useEffect(() => {
@@ -443,7 +482,7 @@ function App() {
         // 问题8修复：恢复完成后，切换到第一个打开的文件（即 recentFiles[0]，最后打开的文件）
         // restoreRecentFiles 串行打开，最后打开的成为活跃标签，但用户期望最后打开的文件为活跃文件
         if (result.restored > 0 && !cancelled) {
-          const { openTabs, setActiveTab, openFile } = useEditorStore.getState();
+          const { openTabs, setActiveTab, openFile, setCurrentLanguage } = useEditorStore.getState();
           if (openTabs.length > 0) {
             const firstTab = openTabs[0];
             setActiveTab(0);
@@ -452,6 +491,9 @@ function App() {
             setContent(firstTab.content || "");
             safeSetItem("lightmd-content", firstTab.content || "");
             openFile(firstTab.path);
+            // v0.4.0：启动恢复时同步语言标识
+            const lang = isMarkdownFile(firstTab.path) ? "markdown" : getFileLanguage(firstTab.path);
+            setCurrentLanguage(lang);
             setForceUpdateKey((k) => k + 1);
           }
         }
@@ -464,9 +506,9 @@ function App() {
     };
   }, []);
 
-  // ─── 启动载入上次打开的文件夹（F3） ──────────────────────────
+  // ─── 启动载入上次打开的文件夹（F3 / v0.4.0 多文件夹） ──────────────────────────
   // 在文件恢复之后执行（延迟 100ms 确保文件恢复完成）
-  // 仅恢复最后一个为活动 rootPath，其他作为历史保留在 recentFolders
+  // v0.4.0：按 loadLastFolderCount 恢复多个文件夹，每个调用 addOpenFolder + updateFolderTree
   const startupFolderRestoreRef = useRef(false);
   useEffect(() => {
     if (startupFolderRestoreRef.current) return;
@@ -476,15 +518,22 @@ function App() {
       try {
         const { restoreRecentFolders } = await import("./utils/startupRestore");
         if (cancelled) return;
+        // v0.4.0：从 settings 读取恢复数量，传入 addOpenFolder + updateFolderTree 启用多文件夹模式
+        const { loadLastFolderCount } = useSettingsStore.getState();
         await restoreRecentFolders({
-          setRootPath: (path) => {
-            useFileStore.getState().setRootPath(path);
+          count: loadLastFolderCount,
+          addOpenFolder: (path) => {
+            useFileStore.getState().addOpenFolder(path);
           },
-          dispatchOpenFolder: (path) => {
-            // 派发 openFolder 事件，让 FileTree 重新加载文件树（修复启动时文件树为空的问题）
-            window.dispatchEvent(
-              new CustomEvent("lightmd:openFolder", { detail: { path } })
-            );
+          updateFolderTree: (path, entries) => {
+            // 将 listDir 原始结果（FileEntry[]）转为 store 的 FileNode[] 后更新
+            const nodes = (entries as FileEntry[]).map((e) => ({
+              name: e.name,
+              path: e.path,
+              isDir: e.is_dir,
+              size: e.size,
+            }));
+            useFileStore.getState().updateFolderTree(path, nodes);
           },
           removeRecentFolder: (path) => {
             useFileStore.getState().removeRecentFolder(path);
@@ -568,6 +617,8 @@ function App() {
           const { activeTabIdx } = useEditorStore.getState();
           updateTabDirty(activeTabIdx, false);
           addRecentFile({ path: selected, name: getFileName(selected) });
+          // v0.4.0 功能4：对新路径记录初始版本快照
+          versionSnapshotService.recordSnapshot(selected, markdown, true).catch(() => {});
         }
       } catch (err) {
         console.error("另存为失败:", err);
@@ -610,6 +661,8 @@ function App() {
         // 清除当前标签页的脏标记
         const { activeTabIdx } = useEditorStore.getState();
         updateTabDirty(activeTabIdx, false);
+        // v0.4.0 功能4：保存成功后记录版本快照（内容去重由服务内部处理）
+        versionSnapshotService.recordSnapshot(filePath, markdown).catch(() => {});
       } catch (err) {
         console.error("保存失败:", err);
       }
@@ -695,6 +748,8 @@ function App() {
     }
     // 关闭标签
     closeTab(idx);
+    // v0.4.5 修复：同步从 recentFiles 中移除，避免下次启动时恢复已被用户关闭的文件
+    useFileStore.getState().removeRecentFile(tab.path);
     // 同步移除左侧"打开的文件"中的临时文件
     const { tempFiles } = useFileStore.getState();
     if (tempFiles.some(f => f.path === tab.path)) {
@@ -905,6 +960,17 @@ function App() {
         e.preventDefault();
         setShowCommandPalette(true);
       }
+      // v0.4.0 功能4：Ctrl+Shift+V 打开版本快照窗口
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "v") {
+        e.preventDefault();
+        const { openTabs, activeTabIdx } = useEditorStore.getState();
+        const activeTab = openTabs[activeTabIdx];
+        if (activeTab) {
+          setSnapshotFilePath(activeTab.path);
+          setShowSnapshotDialog(true);
+        }
+        return;
+      }
       // Ctrl+Tab 切换到下一个标签，Ctrl+Shift+Tab 切换到上一个标签
       if (e.ctrlKey && e.key === "Tab") {
         e.preventDefault();
@@ -987,6 +1053,26 @@ function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
+  // ─── v0.4.5 性能优化：窗口失焦/页面隐藏时暂停空状态 Logo 动画 ──────
+  // 软件在后台时无需持续渲染 CSS 动画，通过 body.app-blurred class 暂停
+  // 与 editor.css 的 .app-blurred .editor-empty-logo { animation-play-state: paused } 配合
+  useEffect(() => {
+    const setBlurred = (blurred: boolean) => {
+      document.body.classList.toggle("app-blurred", blurred);
+    };
+    const onVisibilityChange = () => setBlurred(document.hidden);
+    const onBlur = () => setBlurred(true);
+    const onFocus = () => setBlurred(false);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+
   // ─── 图片插入回调 ─────────────────────────
   const handleImageInsert = useCallback(
     async (images: Array<{ src: string; alt: string }>) => {
@@ -1018,9 +1104,12 @@ function App() {
     setContent(tab.content || "");
     safeSetItem("lightmd-content", tab.content || "");
     openFile(tab.path);
+    // v0.4.0：切换标签时同步语言标识，确保代码文件正确高亮
+    const lang = isMarkdownFile(tab.path) ? "markdown" : getFileLanguage(tab.path);
+    setCurrentLanguage(lang);
     setDirty(tab.isDirty || false);
     setForceUpdateKey((k) => k + 1);
-  }, [openFile, setDirty, updateTabContent, setActiveTab]);
+  }, [openFile, setDirty, updateTabContent, setActiveTab, setCurrentLanguage]);
 
   return (
     <div className="app" data-theme={theme}>
@@ -1042,9 +1131,10 @@ function App() {
       <AppShell
         sidebar={<FileTree />}
         outline={
-          // 无文件时不显示大纲（修复：预览模式下关闭文件时大纲未关闭）
-          showOutline && filePath
-            ? (isSourceMode && isMarkdownFile(filePath || "")
+          // v0.4.5 修复：仅 md 文件才显示大纲，切换至非 md 文件时自动关闭大纲栏
+          // 旧逻辑仅用 filePath 判断，非 md 文件也会显示 Outline，导致切换文件时大纲栏未关闭
+          showOutline && filePath && isMarkdownFile(filePath || "")
+            ? (isSourceMode
                 ? <SyntaxHelper onInsert={sourceInsertHandler || undefined} />
                 : <Outline editorView={editorView} />)
             : undefined
@@ -1082,6 +1172,27 @@ function App() {
       {/* G8：命令面板（Ctrl+Shift+P） */}
       {showCommandPalette && (
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
+      )}
+      {/* v0.4.0 功能4：版本快照窗口（Ctrl+Shift+V） */}
+      {showSnapshotDialog && snapshotFilePath && (
+        <VersionSnapshotDialog
+          filePath={snapshotFilePath}
+          currentContent={content}
+          onClose={() => {
+            setShowSnapshotDialog(false);
+            setSnapshotFilePath(null);
+          }}
+          onApply={(newContent) => {
+            // 应用版本后同步编辑器内容（文件已由 applySnapshot 写回磁盘）
+            setContent(newContent);
+            safeSetItem("lightmd-content", newContent);
+            setForceUpdateKey((k) => k + 1);
+            setDirty(false);
+            const { activeTabIdx } = useEditorStore.getState();
+            updateTabContent(activeTabIdx, newContent);
+            updateTabDirty(activeTabIdx, false);
+          }}
+        />
       )}
     </div>
   );

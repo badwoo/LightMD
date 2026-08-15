@@ -178,30 +178,42 @@ export async function restoreRecentFiles(opts: {
 }
 
 /**
- * F3：启动恢复上次打开的文件夹
+ * F3 / v0.4.0：启动恢复上次打开的文件夹（支持多个）
  *
- * 仅恢复最后一个为活动 rootPath（其他作为历史保留在 recentFolders）
- * 失败时静默跳过并从 recentFolders 移除
+ * 行为分两种模式：
+ * - 多文件夹模式（推荐，v0.4.0）：传入 addOpenFolder + updateFolderTree 时，
+ *   按 count（或 settings.loadLastFolderCount）串行恢复 N 个文件夹，
+ *   每个成功访问的文件夹调用 addOpenFolder + updateFolderTree。
+ * - 兼容模式（旧调用）：未传入 addOpenFolder 时，仅恢复第一个能访问的文件夹为 rootPath，
+ *   行为与 v0.3.0 完全一致（向后兼容，不破坏现有测试）。
  *
- * 修复 v0.3.0：恢复成功后必须派发 openFolder 事件，让 FileTree 重新加载文件树。
- * 仅调用 setRootPath 不会触发文件树加载（fileTree 不在 persist 范围内，重启后为 []）。
+ * 失败的文件夹静默跳过并从 recentFolders 移除。
  *
  * @param opts.storage localStorage 注入（默认 globalThis.localStorage）
  * @param opts.fileServiceImpl fileService 注入（默认真实 fileService）
- * @param opts.setRootPath 设置当前 rootPath（store action）
- * @param opts.dispatchOpenFolder 派发 openFolder 事件，触发 FileTree 加载文件树
+ * @param opts.setRootPath 设置当前 rootPath（兼容模式使用）
+ * @param opts.dispatchOpenFolder 派发 openFolder 事件（兼容模式使用，触发 FileTree 加载文件树）
  * @param opts.removeRecentFolder 从 recentFolders 中移除条目（store action）
  * @param opts.isTauriEnv 是否 Tauri 环境（默认用 isTauri()）
  * @param opts.delayMs 启动延迟（等待文件恢复完成，默认 100ms）
+ * @param opts.count v0.4.0：显式指定恢复数量（覆盖 settings.loadLastFolderCount）
+ * @param opts.addOpenFolder v0.4.0：添加打开的文件夹（store action，传入则启用多文件夹模式）
+ * @param opts.updateFolderTree v0.4.0：更新指定文件夹的 fileTree（接收 listDir 原始结果）
  */
 export async function restoreRecentFolders(opts: {
   storage?: StorageLike;
   fileServiceImpl?: FileServiceLike;
-  setRootPath: (path: string) => void;
+  setRootPath?: (path: string) => void;
   dispatchOpenFolder?: (path: string) => void;
   removeRecentFolder?: (path: string) => void;
   isTauriEnv?: boolean;
   delayMs?: number;
+  /** v0.4.0：显式指定恢复数量（默认从 settings 读取） */
+  count?: number;
+  /** v0.4.0：传入则启用多文件夹恢复模式 */
+  addOpenFolder?: (path: string) => void;
+  /** v0.4.0：更新指定文件夹的 fileTree（接收 listDir 原始结果） */
+  updateFolderTree?: (path: string, entries: unknown[]) => void;
 }): Promise<RestoreResult> {
   const storage = opts.storage ?? (typeof localStorage !== "undefined" ? localStorage : { getItem: () => null });
   const fileServiceImpl = opts.fileServiceImpl ?? defaultFileService;
@@ -221,8 +233,8 @@ export async function restoreRecentFolders(opts: {
   }
 
   const { recentFolders } = readFileStore(storage);
-  // 钳制 N 到 1-5（与 store setter 一致）
-  const N = clamp(settings.loadLastFolderCount, 1, 5);
+  // v0.4.0：count 优先，否则从 settings 读取，钳制到 1-5
+  const N = opts.count != null ? clamp(opts.count, 1, 5) : clamp(settings.loadLastFolderCount, 1, 5);
   const foldersToTry = recentFolders.slice(0, N);
 
   if (foldersToTry.length === 0) {
@@ -232,8 +244,34 @@ export async function restoreRecentFolders(opts: {
   let restored = 0;
   let skipped = 0;
 
-  // 仅恢复最后一个为活动 rootPath；从第一个开始尝试，遇到失败的移除并继续尝试下一个
-  // 找到第一个能成功访问的文件夹作为活动 rootPath
+  // v0.4.0 多文件夹模式：传入 addOpenFolder 时，串行恢复多个文件夹
+  if (opts.addOpenFolder) {
+    for (const folder of foldersToTry) {
+      try {
+        // listDir 成功即文件夹存在且可访问，同时获取目录内容
+        let entries: unknown[] = [];
+        if (fileServiceImpl.listDir) {
+          entries = await fileServiceImpl.listDir(folder.path);
+        } else if (fileServiceImpl.exists) {
+          const ok = await fileServiceImpl.exists(folder.path);
+          if (!ok) throw new Error("folder not exists");
+        }
+        opts.addOpenFolder(folder.path);
+        opts.updateFolderTree?.(folder.path, entries);
+        restored++;
+      } catch {
+        skipped++;
+        try {
+          opts.removeRecentFolder?.(folder.path);
+        } catch {
+          // 移除失败忽略
+        }
+      }
+    }
+    return { restored, skipped };
+  }
+
+  // 兼容模式（旧逻辑）：仅恢复第一个能访问的文件夹为 rootPath
   let activePath: string | null = null;
   for (const folder of foldersToTry) {
     try {
@@ -260,7 +298,7 @@ export async function restoreRecentFolders(opts: {
   if (activePath) {
     // 先派发 openFolder 事件，让 FileTree 加载文件树（setRootPath 仅修改 store，不触发文件树加载）
     opts.dispatchOpenFolder?.(activePath);
-    opts.setRootPath(activePath);
+    opts.setRootPath?.(activePath);
   }
 
   return { restored, skipped };

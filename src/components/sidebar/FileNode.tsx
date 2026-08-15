@@ -262,6 +262,22 @@ export function FileEntryNode({
               <div className="context-menu-divider" />
             </>
           )}
+          {/* v0.4.0 功能4：查看版本快照（仅文件） */}
+          {!node.isDir && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                window.dispatchEvent(
+                  new CustomEvent("lightmd:showSnapshotDialog", {
+                    detail: { filePath: node.path },
+                  })
+                );
+                setContextMenu(null);
+              }}
+            >
+              {t("snapshot.viewSnapshots")}
+            </button>
+          )}
           <button
             className="context-menu-item"
             onClick={() => {

@@ -61,18 +61,31 @@ export function getFileLanguage(name: string): string {
   if (basename === "makefile" || basename === "dockerfile") return basename.toLowerCase();
   // 有扩展名文件
   const ext = "." + basename.split(".").pop();
+  // v0.4.0：补全常见代码文件扩展名映射
+  // 注意：未在 PrismJS 中 import 的语言（如 toml/ini/properties）会由 resolveLanguage 回退到 plaintext，安全
   const extLangMap: Record<string, string> = {
     ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".ts": "typescript", ".jsx": "jsx", ".tsx": "tsx",
     ".json": "json", ".html": "markup", ".htm": "markup", ".css": "css",
     ".xml": "markup", ".svg": "markup",
+    ".vue": "markup", ".svelte": "markup", // 模板文件用 markup 高亮（含标签）
     ".py": "python", ".rs": "rust", ".go": "go",
     ".java": "java", ".c": "c", ".cpp": "cpp", ".h": "c", ".hpp": "cpp",
     ".sh": "bash", ".bash": "bash", ".zsh": "bash",
     ".bat": "batch", ".cmd": "batch", ".ps1": "powershell",
     ".yml": "yaml", ".yaml": "yaml",
     ".sql": "sql",
-    ".md": "markdown", ".markdown": "markdown",
+    ".md": "markdown", ".markdown": "markdown", ".mdown": "markdown", ".mkd": "markdown",
+    // v0.4.0 新增映射
+    ".php": "php", ".rb": "ruby", ".swift": "swift",
+    ".kt": "kotlin", ".kts": "kotlin", ".dart": "dart",
+    ".lua": "lua", ".r": "r", ".scala": "scala", ".pl": "perl",
+    // 配置/文本文件：PrismJS 无专门语法，保留语言标识由 resolveLanguage 回退到 plaintext
+    ".toml": "toml", ".ini": "ini", ".conf": "ini",
+    ".properties": "properties", ".csv": "plaintext",
+    ".log": "plaintext", ".txt": "plaintext",
+    // 样式预处理：PrismJS 未单独 import scss/sass/less 组件，复用 css 高亮以获得部分着色
+    ".scss": "css", ".sass": "css", ".less": "css",
   };
   return extLangMap[ext] || "plaintext";
 }

@@ -6,21 +6,32 @@ use commands::{config, file_ops, image, export};
 use std::io::Cursor;
 use tauri::{Emitter, Manager};
 
-/// 判断给定路径是否为 Markdown 文件（按扩展名匹配）
-/// 支持 .md / .markdown / .mdown 三种常见扩展名
-fn is_markdown_path(arg: &str) -> bool {
+/// 判断给定路径是否为支持的文本/代码文件（按扩展名匹配）
+/// v0.4.0：扩展为支持所有常见代码文件，使双击 .js/.py 等文件也能启动应用
+fn is_supported_text_path(arg: &str) -> bool {
     let lower = arg.to_lowercase();
-    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".mdown")
+    let exts = [
+        ".md", ".markdown", ".mdown", ".mkd",
+        ".txt", ".log", ".csv", ".ini", ".conf", ".toml", ".properties",
+        ".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx",
+        ".json", ".html", ".htm", ".css", ".scss", ".less", ".sass",
+        ".xml", ".svg", ".py", ".rs", ".go", ".java", ".c", ".cpp", ".cc", ".h", ".hpp",
+        ".sh", ".bash", ".zsh", ".bat", ".cmd", ".ps1",
+        ".yml", ".yaml", ".sql", ".vue", ".svelte",
+        ".php", ".rb", ".swift", ".kt", ".kts", ".dart", ".lua", ".r", ".scala", ".pl",
+    ];
+    exts.iter().any(|ext| lower.ends_with(ext))
 }
 
-/// 从命令行参数中提取第一个 Markdown 文件路径
+/// 从命令行参数中提取第一个支持的文本/代码文件路径
 /// 跳过程序自身路径和以 `-` / `--` 开头的 Tauri 内部参数
-fn extract_md_arg(args: &[String]) -> Option<String> {
+/// v0.4.0：由仅识别 md 扩展为识别所有支持的代码/文本文件
+fn extract_file_arg(args: &[String]) -> Option<String> {
     for arg in args.iter().skip(1) {
         if arg.starts_with('-') {
             continue;
         }
-        if is_markdown_path(arg) {
+        if is_supported_text_path(arg) {
             return Some(arg.clone());
         }
     }
@@ -30,10 +41,11 @@ fn extract_md_arg(args: &[String]) -> Option<String> {
 pub fn run() {
     tauri::Builder::default()
         // 单实例插件：后续启动时不再创建新窗口，而是将 argv 转发给主实例
-        // 主实例收到事件后以新标签方式打开文件，实现"双击 .md 文件以标签打开"的体验
+        // 主实例收到事件后以新标签方式打开文件，实现"双击支持的文件以标签打开"的体验
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // 后续实例启动时触发：提取文件参数并转发给前端
-            if let Some(path) = extract_md_arg(&argv) {
+            // v0.4.0：支持所有代码/文本文件，不仅限于 md
+            if let Some(path) = extract_file_arg(&argv) {
                 // 使用 emit_to 主窗口，确保事件能被前端接收
                 let _ = app.emit_to("main", "lightmd:openFileArgv", path);
                 // 将主窗口提到前台，避免用户感知不到打开动作
@@ -67,10 +79,11 @@ pub fn run() {
             }
 
             // ─── 文件关联：处理首次启动时传入的文件路径 ───
-            // 双击 .md 文件首次启动应用时，系统以命令行参数形式传入文件路径
+            // 双击支持的代码/文本文件首次启动应用时，系统以命令行参数形式传入文件路径
             // 后续双击由 single-instance 插件回调处理（见上方 init）
+            // v0.4.0：扩展为支持所有代码/文本文件
             let args: Vec<String> = std::env::args().collect();
-            if let Some(path) = extract_md_arg(&args) {
+            if let Some(path) = extract_file_arg(&args) {
                 // 延迟发送事件，确保前端已就绪
                 // 使用独立线程避免阻塞主线程，同时不依赖 tokio
                 let app_handle = app.handle().clone();

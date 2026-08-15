@@ -312,6 +312,57 @@ export function setColumnWidths(
 }
 
 /**
+ * Issue 8 修复：计算列宽拖拽后的新宽度数组（纯函数，便于单元测试）
+ *
+ * 拖拽行为：
+ * - 非最后一列：调整 colIdx 和 colIdx+1 列宽，保持总宽度不变
+ *   * 拖拽列 colIdx 右边缘往右：colIdx 列宽增大，colIdx+1 列宽减小
+ *   * 拖拽列 colIdx 右边缘往左：colIdx 列宽减小，colIdx+1 列宽增大
+ * - 最后一列：只调整该列，总宽度可变
+ * - 两列宽度均不小于 minWidth（默认 20px），通过限制 delta 范围实现
+ *
+ * @param startWidths 拖拽开始时各列的初始宽度
+ * @param colIdx 被拖拽右边缘的列索引
+ * @param deltaX 鼠标水平位移（正数=往右拖拽，负数=往左拖拽）
+ * @param minWidth 最小列宽，默认 20px
+ * @returns 新的列宽数组（长度与 startWidths 相同）
+ */
+export function computeResizedWidths(
+  startWidths: number[],
+  colIdx: number,
+  deltaX: number,
+  minWidth = 20
+): number[] {
+  if (startWidths.length === 0 || colIdx < 0 || colIdx >= startWidths.length) {
+    return startWidths.map((w) => Math.round(w));
+  }
+  const isLastColumn = colIdx >= startWidths.length - 1;
+  if (isLastColumn) {
+    // 最后一列：只调整该列，总宽度可变
+    const newWidth = Math.max(minWidth, startWidths[colIdx] + deltaX);
+    return startWidths.map((w, i) =>
+      i === colIdx ? Math.round(newWidth) : Math.round(w)
+    );
+  }
+  // 非最后一列：调整 colIdx 和 colIdx+1，保持总宽度不变
+  const startWidth = startWidths[colIdx];
+  const adjacentStartWidth = startWidths[colIdx + 1];
+  // 限制 delta 范围，确保两列都不小于 minWidth：
+  // colIdx 列：startWidth + delta >= minWidth → delta >= minWidth - startWidth
+  // colIdx+1 列：adjacentStartWidth - delta >= minWidth → delta <= adjacentStartWidth - minWidth
+  const minDelta = minWidth - startWidth;
+  const maxDelta = adjacentStartWidth - minWidth;
+  const actualDelta = Math.max(minDelta, Math.min(deltaX, maxDelta));
+  const newColWidth = startWidth + actualDelta;
+  const newAdjacentWidth = adjacentStartWidth - actualDelta;
+  return startWidths.map((w, i) => {
+    if (i === colIdx) return Math.round(newColWidth);
+    if (i === colIdx + 1) return Math.round(newAdjacentWidth);
+    return Math.round(w);
+  });
+}
+
+/**
  * 更新单列宽度（基于现有 columnWidths 复制后修改）
  * 如果当前 columnWidths 为 null（等宽），先初始化为各列 100px
  * @param colIdx 列索引（0-based）
@@ -470,9 +521,8 @@ export class TableView implements NodeView {
   private resizing: {
     colIdx: number;
     startX: number;
-    startWidth: number;
     cellEl: HTMLElement;
-    /** 拖拽开始时所有列的初始宽度，保持其他列不变 */
+    /** 拖拽开始时所有列的初始宽度，Issue 8 修复后用于计算相邻列调整 */
     startWidths: number[];
   } | null = null;
   // 行高拖拽状态
@@ -525,9 +575,10 @@ export class TableView implements NodeView {
       this.contentDOM.style.width = "100%";
       return;
     }
-    // 问题3修复：设置 table width = 各列 width 之和，避免 table-layout: fixed 按比例分配
-    // table-layout: fixed 下，如果 table 有明确 width 且列宽之和 ≠ table width，
-    // 浏览器会按比例调整列宽。设置 table width = 列宽之和可避免此问题。
+    // v0.4.4 修复：设置 table width = widths 之和，让 table.width = cellWidthSum。
+    // table-layout:fixed 下，当 table.width = cell width 之和时，浏览器按 cell width 绝对值分配列宽，不缩放。
+    // 之前用 width:auto 在某些情况下会导致表格坍缩（border-collapse:collapse 下
+    // getBoundingClientRect().width 之和 ≠ table.offsetWidth，width:auto 使 table 收缩到内容大小）。
     const totalWidth = widths.reduce((sum, w) => sum + w, 0);
     this.contentDOM.style.width = `${totalWidth}px`;
     // 遍历 DOM 中所有 row，按列索引设置 cell 宽度
@@ -567,7 +618,8 @@ export class TableView implements NodeView {
   // ─── 列宽拖拽 ──────────────────────────────────────
 
   /**
-   * mousemove 视觉提示：检测鼠标是否靠近 cell 右边缘，显示 col-resize 光标
+   * mousemove 视觉提示：检测鼠标是否靠近 cell 左/右边缘，显示 col-resize 光标
+   * v0.4.5 修复：同时检测 cell 左边缘和右边缘，实现内部列框线拖拽
    * 性能考量：仅修改 cursor style，不触发 DOM 重建，开销极小
    */
   private onHover(e: MouseEvent) {
@@ -580,17 +632,18 @@ export class TableView implements NodeView {
       return;
     }
     const rect = cell.getBoundingClientRect();
-    const offsetX = e.clientX - rect.right;
+    // v0.4.5 修复：同时计算左边缘和右边缘偏移
+    const offsetXRight = e.clientX - rect.right; // 正数：在右边缘右侧
+    const offsetXLeft = rect.left - e.clientX;   // 正数：在左边缘左侧
     const offsetY = e.clientY - rect.bottom;
-    // 距离右边缘 8px 范围内显示 col-resize 光标
-    if (Math.abs(offsetX) <= 8 && Math.abs(offsetY) > 6) {
+    const inRightEdge = Math.abs(offsetXRight) <= 8;
+    const inLeftEdge = Math.abs(offsetXLeft) <= 8;
+    const inBottomEdge = Math.abs(offsetY) <= 6;
+    // 列宽热区（左边缘或右边缘 8px 内）优先于行高热区
+    if (inRightEdge || inLeftEdge) {
       this.contentDOM.style.cursor = "col-resize";
-    // 距离底部边缘 6px 范围内显示 row-resize 光标
-    } else if (Math.abs(offsetY) <= 6 && Math.abs(offsetX) > 8) {
+    } else if (inBottomEdge) {
       this.contentDOM.style.cursor = "row-resize";
-    } else if (Math.abs(offsetX) <= 8 && Math.abs(offsetY) <= 6) {
-      // 角落优先列宽
-      this.contentDOM.style.cursor = "col-resize";
     } else {
       this.contentDOM.style.cursor = "";
     }
@@ -604,11 +657,16 @@ export class TableView implements NodeView {
     if (!cell) return;
 
     const rect = cell.getBoundingClientRect();
-    const offsetX = e.clientX - rect.right;
+    // v0.4.5 修复：同时计算左边缘和右边缘偏移
+    const offsetXRight = e.clientX - rect.right;
+    const offsetXLeft = rect.left - e.clientX;
     const offsetY = e.clientY - rect.bottom;
+    const inRightEdge = Math.abs(offsetXRight) <= 8;
+    const inLeftEdge = Math.abs(offsetXLeft) <= 8;
+    const inBottomEdge = Math.abs(offsetY) <= 6;
 
     // 行高拖拽：距离 cell 底部 6px 范围内（且不在列宽热区内）
-    if (Math.abs(offsetY) <= 6 && Math.abs(offsetX) > 8) {
+    if (inBottomEdge && !inRightEdge && !inLeftEdge) {
       e.preventDefault();
       const row = cell.parentElement as HTMLTableRowElement | null;
       if (!row) return;
@@ -619,30 +677,40 @@ export class TableView implements NodeView {
       return;
     }
 
-    // 列宽拖拽：距离 cell 右边缘 8px 范围内
-    if (Math.abs(offsetX) > 8) return;
+    // 列宽拖拽：cell 左边缘或右边缘 8px 范围内
+    if (!inRightEdge && !inLeftEdge) return;
 
     e.preventDefault();
     // 计算列索引
     const row = cell.parentElement;
     if (!row) return;
     const cells = Array.from(row.querySelectorAll("td, th"));
-    const colIdx = cells.indexOf(cell);
-    if (colIdx < 0) return;
+    const cellIdx = cells.indexOf(cell);
+    if (cellIdx < 0) return;
+
+    // v0.4.5 修复：计算被拖拽的列索引
+    // - 右边缘触发：colIdx = cellIdx（当前列右边缘，调整当前列和下一列）
+    // - 左边缘触发：colIdx = cellIdx - 1（前一列右边缘，调整前一列和当前列）
+    // - 第一列左边缘不触发（避免误触表格左外侧框线）
+    let colIdx = cellIdx;
+    if (inLeftEdge) {
+      if (cellIdx === 0) return; // 第一列左边缘不触发
+      colIdx = cellIdx - 1;
+    }
 
     this.startResize(colIdx, e.clientX, cell);
   }
 
   private startResize(colIdx: number, clientX: number, cellEl: HTMLElement) {
-    // 问题1修复：记录所有列的初始宽度，拖拽时保持其他列不变
+    // 记录所有列的初始宽度，拖拽时用于计算相邻列调整（Issue 8 修复）
+    // v0.4.4 修复：Math.round 取整，确保 startWidths 之和 = table.style.width（整数像素）
     const firstRow = this.contentDOM.querySelector("tr");
     const allCells = firstRow ? Array.from(firstRow.querySelectorAll("td, th")) : [];
-    const startWidths = allCells.map((c) => c.getBoundingClientRect().width);
+    const startWidths = allCells.map((c) => Math.round(c.getBoundingClientRect().width));
 
     this.resizing = {
       colIdx,
       startX: clientX,
-      startWidth: cellEl.getBoundingClientRect().width,
       cellEl,
       startWidths,
     };
@@ -674,18 +742,16 @@ export class TableView implements NodeView {
     e.preventDefault();
     // 实时更新指示线位置
     this.updateResizeIndicator(e.clientX);
-    // 拖拽时保持其他列宽度不变，只修改目标列
+    // v0.4.4 修复：拖拽某列右边缘时，调整该列和相邻列（colIdx+1）的宽度，
+    // 保持总宽度不变（非最后一列）；最后一列则只调整该列，总宽度可变。
+    // 关键修复：设置 table.style.width = newWidths 之和，让 table.width = cellWidthSum。
+    // table-layout:fixed 下，当 table.width = cell width 之和时，浏览器按 cell width 绝对值
+    // 分配列宽，不缩放。之前用 width:auto 在某些情况下会导致表格坍缩。
     const deltaX = e.clientX - this.resizing.startX;
-    const newWidth = Math.max(20, this.resizing.startWidth + deltaX);
     const { colIdx, startWidths } = this.resizing;
-    // 问题3修复：设置 table width = 各列 width 之和，避免 table-layout: fixed 按比例分配
-    // 计算新的各列宽度数组和总和
-    let totalWidth = 0;
-    const newWidths = startWidths.map((w, i) => {
-      const width = i === colIdx ? Math.round(newWidth) : Math.round(w);
-      totalWidth += width;
-      return width;
-    });
+    const newWidths = computeResizedWidths(startWidths, colIdx, deltaX);
+    // 保持 table.width = newWidths 之和，避免等比例缩放
+    const totalWidth = newWidths.reduce((sum, w) => sum + w, 0);
     this.contentDOM.style.width = `${totalWidth}px`;
     const rows = this.contentDOM.querySelectorAll("tr");
     rows.forEach((row) => {
@@ -700,10 +766,8 @@ export class TableView implements NodeView {
 
   private onMouseUp = (e: MouseEvent) => {
     if (!this.resizing) return;
-    const { colIdx, startWidth, startX, cellEl } = this.resizing;
+    const { colIdx, startWidths, startX, cellEl } = this.resizing;
     const deltaX = e.clientX - startX;
-    // 最小宽度 20px，避免负值
-    const newWidth = Math.max(20, startWidth + deltaX);
 
     // 清理拖拽状态
     this.resizing = null;
@@ -712,12 +776,15 @@ export class TableView implements NodeView {
     document.body.style.userSelect = "";
     removeResizeIndicator();
 
+    // Issue 8 修复：使用 computeResizedWidths 计算最终宽度，
+    // 通过 setColumnWidths 持久化整个宽度数组（含相邻列的调整）
+    const newWidths = computeResizedWidths(startWidths, colIdx, deltaX);
     // 通过 cellEl 的 DOM 位置反查 ProseMirror 位置
     try {
       const cellPos = this.view.posAtDOM(cellEl, 0);
       const $pos = this.view.state.doc.resolve(cellPos);
       const tr = this.view.state.tr;
-      const newTr = updateColumnWidth(tr, $pos, colIdx, newWidth);
+      const newTr = setColumnWidths(tr, $pos, newWidths);
       if (newTr) this.view.dispatch(newTr);
     } catch {
       // posAtDOM 在 DOM 不在文档中时可能抛出
@@ -1005,8 +1072,9 @@ export class TableView implements NodeView {
     return true;
   }
 
-  // stopEvent：在 cell 右边缘 8px 或底边缘 6px 范围内的 mousedown 阻止 ProseMirror 处理
+  // stopEvent：在 cell 左/右边缘 8px 或底边缘 6px 范围内的 mousedown 阻止 ProseMirror 处理
   // 否则 PM 会先设置选区，干扰列宽/行高拖拽逻辑
+  // v0.4.5 修复：同时检测 cell 左边缘，配合 onMouseDown 的左边缘拖拽逻辑
   stopEvent(event: Event): boolean {
     if (event.type === "mousedown" && event instanceof MouseEvent) {
       if (event.button !== 0) return false;
@@ -1015,10 +1083,13 @@ export class TableView implements NodeView {
       const cell = target.closest("td, th") as HTMLElement | null;
       if (!cell) return false;
       const rect = cell.getBoundingClientRect();
-      const offsetX = event.clientX - rect.right;
+      // v0.4.5 修复：同时检测左边缘和右边缘
+      const offsetXRight = event.clientX - rect.right;
+      const offsetXLeft = rect.left - event.clientX;
       const offsetY = event.clientY - rect.bottom;
-      // 列宽热区（右边缘 8px）或行高热区（底边缘 6px）
-      if (Math.abs(offsetX) <= 8) return true;
+      // 列宽热区（左边缘或右边缘 8px）或行高热区（底边缘 6px）
+      if (Math.abs(offsetXRight) <= 8) return true;
+      if (Math.abs(offsetXLeft) <= 8) return true;
       if (Math.abs(offsetY) <= 6) return true;
     }
     return false;
