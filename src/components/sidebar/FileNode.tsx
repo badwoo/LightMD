@@ -3,6 +3,7 @@
  */
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useT } from "../../i18n";
+import { fileService } from "../../services/fileService";
 import "./FileTree.css";
 
 export interface FileNodeData {
@@ -276,6 +277,18 @@ export function FileEntryNode({
               }}
             >
               {t("snapshot.viewSnapshots")}
+            </button>
+          )}
+          {/* N5：在资源管理器中显示并选中该文件（仅文件） */}
+          {!node.isDir && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                fileService.revealInFolder(node.path).catch(() => {});
+                setContextMenu(null);
+              }}
+            >
+              {t("common.revealInFolder")}
             </button>
           )}
           <button

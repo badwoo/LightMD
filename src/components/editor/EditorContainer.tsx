@@ -28,6 +28,8 @@ import { ImageInsertDialog } from "../dialogs/ImageInsertDialog";
 import { ImageEditDialog } from "../dialogs/ImageEditDialog";
 import { EditorContextMenu } from "./EditorContextMenu";
 import { SlashCommand, findSlashTrigger, isInCodeBlock, type InsertMode } from "./SlashCommand";
+import { PAIR_MAP, PAIR_CLOSERS } from "../../core/plugins/auto-pair";
+import { isHttpUrl } from "../../core/plugins/smart-paste";
 import {
   buildFormatReplacement,
   parseShortcut,
@@ -160,6 +162,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const theme = useSettingsStore((s) => s.theme);
   // G10：拼写检查开关，控制 textarea 与 ProseMirror contenteditable 的 spellcheck 属性
   const spellcheckEnabled = useSettingsStore((s) => s.spellcheckEnabled);
+  // N1：自动配对补全开关（textarea 源码模式；PM 端插件内部读取 store）
+  const autoPairEnabled = useSettingsStore((s) => s.autoPairEnabled);
   // v0.4.0：分屏比例（持久化），用于 split 模式左右宽度分配
   const splitRatio = useSettingsStore((s) => s.splitRatio);
   const setSplitRatio = useSettingsStore((s) => s.setSplitRatio);
@@ -959,11 +963,60 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setTimeout(restore, 50);
   });
 
+  // ─── N2：智能粘贴 URL→链接（源码模式） ──────────
+  // 粘贴单个 http(s) URL 时转为 Markdown 链接：无选区 → [url](url)；
+  // 有选区 → [选中文字](url)。代码块内不处理。
+  const handleSourcePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const ta = sourceTextareaRef.current;
+    const text = e.clipboardData.getData("text/plain").trim();
+    if (!ta || !isHttpUrl(text)) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    if (isInCodeBlock(ta.value, start)) return;
+    e.preventDefault();
+    const selected = ta.value.slice(start, end);
+    // execCommand 触发 input 事件 → React onChange → undo 记录/内容同步
+    document.execCommand("insertText", false, `[${selected || text}](${text})`);
+  }, []);
+
   // ─── 源码模式快捷键处理器 ────────────────────────
   // 在 textarea 的 keydown 中拦截 Ctrl/Cmd 组合键，分发到对应 action
   // 注意：Ctrl+Shift+S 已被 App.tsx 占用为「另存为」，删除线改用 Ctrl+Alt+S
   const handleSourceKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!isSourceMode || !isMdFile) return;
+
+    // N1：自动配对补全（先于快捷键解析：仅单字符、无修饰键）
+    // 开符号 → 插入配对（有选区则包裹并保持选中）；闭符号与下一字符相同 → 跳过（光标右移）
+    if (
+      autoPairEnabled &&
+      e.key.length === 1 &&
+      !e.ctrlKey && !e.metaKey && !e.altKey
+    ) {
+      const ta = sourceTextareaRef.current;
+      const key = e.key;
+      const close = PAIR_MAP[key];
+      const start = ta?.selectionStart ?? 0;
+      const end = ta?.selectionEnd ?? 0;
+      // 代码块内不配对（与 SlashCommand 的代码块判定一致）
+      const inCode = ta ? isInCodeBlock(ta.value, start) : false;
+
+      if (ta && !inCode && close) {
+        e.preventDefault();
+        const selected = ta.value.slice(start, end);
+        // execCommand 触发 input 事件 → React onChange → undo 记录/内容同步
+        ta.setSelectionRange(start, end);
+        document.execCommand("insertText", false, key + selected + close);
+        // 光标置于开符号后；有选区时保持原选中文本选中
+        ta.setSelectionRange(start + 1, start + 1 + selected.length);
+        return;
+      }
+      if (ta && !close && PAIR_CLOSERS.has(key) && ta.value[end] === key) {
+        e.preventDefault();
+        ta.setSelectionRange(end + 1, end + 1);
+        return;
+      }
+    }
+
     const action = parseShortcut(e.nativeEvent);
     if (!action) return;
     e.preventDefault();
@@ -978,7 +1031,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     } else {
       handleFormatAction.current(action);
     }
-  }, [isSourceMode, isMdFile]);
+  }, [isSourceMode, isMdFile, autoPairEnabled]);
 
   // ─── textarea 右键菜单 ──────────────────────────
   const handleTextareaContextMenu = useCallback((e: React.MouseEvent<HTMLTextAreaElement>) => {
@@ -2021,6 +2074,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             value={sourceContent}
             onChange={handleSourceChange.current}
             onKeyDown={handleSourceKeyDown}
+            onPaste={handleSourcePaste}
             onContextMenu={handleTextareaContextMenu}
             spellCheck={spellcheckEnabled}
             style={{

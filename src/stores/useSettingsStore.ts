@@ -47,6 +47,8 @@ interface SettingsState {
   showCodeLineNumbers: boolean;
   /** G10: 拼写检查开关（默认 false，使用浏览器原生 spellcheck） */
   spellcheckEnabled: boolean;
+  /** N1: 自动配对补全开关（默认 true，输入括号/引号自动补全配对） */
+  autoPairEnabled: boolean;
   /** v0.4.0: 侧边栏宽度（默认 260，范围 180~480） */
   sidebarWidth: number;
   /** v0.4.0: 大纲栏宽度（默认 240，范围 180~480） */
@@ -68,8 +70,10 @@ interface SettingsState {
   setLanguage: (lang: Language) => void;
   /** G9：设置是否显示代码行号 */
   setShowCodeLineNumbers: (v: boolean) => void;
-  /** G10：设置是否启用拼写检查 */
+  /** G10: 设置是否启用拼写检查 */
   setSpellcheckEnabled: (v: boolean) => void;
+  /** N1: 设置是否启用自动配对补全 */
+  setAutoPairEnabled: (v: boolean) => void;
   /** v0.4.0：设置侧边栏宽度（钳制 180~480） */
   setSidebarWidth: (w: number) => void;
   /** v0.4.0：设置大纲栏宽度（钳制 180~480） */
@@ -109,6 +113,8 @@ export const useSettingsStore = create<SettingsState>()(
       showCodeLineNumbers: true,
       // G10：默认关闭拼写检查（用户按需开启）
       spellcheckEnabled: false,
+      // N1：默认开启自动配对补全
+      autoPairEnabled: true,
       // v0.4.0：侧边栏默认宽度 260px
       sidebarWidth: 260,
       // v0.4.0：大纲栏默认宽度 240px
@@ -138,6 +144,8 @@ export const useSettingsStore = create<SettingsState>()(
       setShowCodeLineNumbers: (showCodeLineNumbers) => set({ showCodeLineNumbers }),
       // G10：设置是否启用拼写检查
       setSpellcheckEnabled: (spellcheckEnabled) => set({ spellcheckEnabled }),
+      // N1：设置是否启用自动配对补全
+      setAutoPairEnabled: (autoPairEnabled) => set({ autoPairEnabled }),
       // v0.4.0：钳制到 180~480
       setSidebarWidth: (w) => set({ sidebarWidth: clamp(Math.round(w), 180, 480) }),
       // v0.4.0：钳制到 180~480

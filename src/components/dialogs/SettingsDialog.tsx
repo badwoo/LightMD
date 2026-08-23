@@ -224,6 +224,22 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 </span>
               </label>
             </div>
+
+            {/* N1：自动配对补全开关（括号/引号自动补全，编辑与源码模式同时生效） */}
+            <div className="settings-field">
+              <label>{t("settings.autoPair")}</label>
+              <label className="settings-switch">
+                <input
+                  type="checkbox"
+                  checked={settings.autoPairEnabled}
+                  onChange={(e) => settings.setAutoPairEnabled(e.target.checked)}
+                />
+                <span className="settings-switch-slider"></span>
+                <span className="settings-switch-label">
+                  {settings.autoPairEnabled ? t("settings.on") : t("settings.off")}
+                </span>
+              </label>
+            </div>
           </section>
 
           {/* 自定义 CSS */}

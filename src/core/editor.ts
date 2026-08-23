@@ -24,7 +24,9 @@ import { CodeBlockView } from "./plugins/code-block";
 import { MermaidBlockView } from "./plugins/mermaid-block";
 import { MathInlineView, MathBlockView } from "./plugins/math-block";
 import { TaskItemView } from "./plugins/task-list";
-import { TableView } from "./plugins/table-editor";
+import { TableView, TableCellView } from "./plugins/table-editor";
+import { autoPairPlugin } from "./plugins/auto-pair";
+import { smartPastePlugin } from "./plugins/smart-paste";
 
 // ─── 搜索高亮 Plugin（问题1修复）──────────────────────
 // 使用 ProseMirror Decoration 管理搜索高亮，不依赖编辑器焦点
@@ -146,6 +148,8 @@ export function createEditor(options: EditorOptions): EditorView | null {
       focusModePlugin,
       footnoteHoverPlugin,
       searchHighlightPlugin,
+      autoPairPlugin(),
+      smartPastePlugin(),
     ],
   });
 
@@ -162,6 +166,10 @@ export function createEditor(options: EditorOptions): EditorView | null {
       math_block: (node, view, getPos) => new MathBlockView(node, view, getPos),
       task_item: (node, view, getPos) => new TaskItemView(node, view, getPos),
       table: (node, view, getPos) => new TableView(node, view, getPos),
+      // F1 修复：td/th 挂轻量 NodeView，忽略拖拽时直接写 style 的 attributes
+      // mutation，阻止 ProseMirror 重建单元格导致列宽丢失
+      table_cell: (node) => new TableCellView(node),
+      table_header: (node) => new TableCellView(node),
     },
     // G10：通过 attributes 设置 spellcheck 初始值（contenteditable 元素原生属性）
     // 后续切换由 EditorContainer 的 useEffect 同步更新 dom.spellcheck 属性

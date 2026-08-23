@@ -109,13 +109,17 @@ describe("问题2：左侧栏「打开的文件」和「文档」栏显示位置
 // ─── 问题 3：阅读模式下表格列宽拖拽（cell 左边缘也触发热区）──────────────
 
 describe("问题3：表格列宽拖拽 cell 左边缘热区", () => {
-  it("onHover 检测 cell 左边缘（offsetXLeft）和右边缘（offsetXRight）", () => {
+  it("onHover 统一使用 hitResizeZone，其内部检测左右边缘（rect.left/rect.right）", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
     const onHoverSection = src.match(/private onHover\(e: MouseEvent\)[\s\S]*?\n  \}/);
     expect(onHoverSection).not.toBeNull();
-    // 应同时计算左边缘和右边缘偏移
-    expect(onHoverSection![0]).toMatch(/offsetXRight|offsetX-right|rect\.right/);
-    expect(onHoverSection![0]).toMatch(/offsetXLeft|offsetX-left|rect\.left/);
+    // F1 修复：onHover/onMouseDown/stopEvent 统一调用 hitResizeZone 判定热区
+    expect(onHoverSection![0]).toMatch(/hitResizeZone/);
+    // hitResizeZone 内部应同时计算左边缘和右边缘
+    const zoneSection = src.match(/function hitResizeZone[\s\S]*?\n\}/);
+    expect(zoneSection).not.toBeNull();
+    expect(zoneSection![0]).toMatch(/rect\.right/);
+    expect(zoneSection![0]).toMatch(/rect\.left/);
   });
 
   it("onHover 在 cell 左边缘或右边缘 8px 内显示 col-resize 光标", () => {
@@ -124,9 +128,8 @@ describe("问题3：表格列宽拖拽 cell 左边缘热区", () => {
     expect(onHoverSection).not.toBeNull();
     // col-resize 应在左边缘或右边缘热区内显示
     expect(onHoverSection![0]).toMatch(/col-resize/);
-    // 不再依赖 offsetY > 6 才显示 col-resize（旧逻辑：Math.abs(offsetX) <= 8 && Math.abs(offsetY) > 6）
-    // 新逻辑：左/右边缘任一进入热区即显示 col-resize
-    expect(onHoverSection![0]).toMatch(/inRightEdge|inLeftEdge|Math\.abs\(offsetXLeft\)\s*<=\s*8/);
+    // F1 新逻辑：zone.col 命中（左/右边缘任一进入热区）即显示 col-resize
+    expect(onHoverSection![0]).toMatch(/zone\.col/);
   });
 
   it("onMouseDown 在 cell 左边缘 8px 内也触发列宽拖拽", () => {
@@ -152,8 +155,8 @@ describe("问题3：表格列宽拖拽 cell 左边缘热区", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
     const onMouseDownSection = src.match(/private onMouseDown\(e: MouseEvent\)[\s\S]*?\n  \}/);
     expect(onMouseDownSection).not.toBeNull();
-    // 验证存在 cellIdx === 0 时 return 或不触发的逻辑
-    expect(onMouseDownSection![0]).toMatch(/cellIdx\s*===\s*0/);
+    // F1 修复：用 isFirstCellInRow 判定第一列，左边缘命中时 return 放行事件（避免死区）
+    expect(onMouseDownSection![0]).toMatch(/isFirstCellInRow/);
   });
 
   it("stopEvent 在 cell 左边缘 8px 内也返回 true", () => {

@@ -107,6 +107,7 @@ pub fn run() {
             file_ops::delete_file,
             file_ops::rename_file,
             file_ops::exists,
+            file_ops::reveal_in_folder,
             image::save_image,
             image::get_assets_dir,
             config::get_config,

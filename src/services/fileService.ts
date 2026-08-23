@@ -113,6 +113,17 @@ export const fileService = {
       return false;
     }
   },
+
+  /** 在系统资源管理器中显示并选中指定文件（N5：右键菜单"打开文件所在目录"） */
+  async revealInFolder(path: string): Promise<void> {
+    try {
+      await invoke("reveal_in_folder", { path });
+    } catch (err) {
+      const msg = wrapError("打开文件所在目录失败", err);
+      notifyError(msg);
+      throw new Error(msg);
+    }
+  },
 };
 
 export function isTauri(): boolean {

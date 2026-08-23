@@ -177,6 +177,42 @@ pub async fn exists(path: String) -> bool {
     PathBuf::from(&path).exists()
 }
 
+/// 在系统资源管理器中显示并选中指定文件（N5：右键菜单"打开文件所在目录"）
+#[tauri::command]
+pub async fn reveal_in_folder(path: String) -> Result<(), String> {
+    let path = resolve_path(&path)?;
+    if !path.exists() {
+        return Err(format!("文件不存在: {}", path.display()));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // explorer /select,<path>：打开父目录并选中该文件
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
+            .map_err(|e| format!("打开资源管理器失败: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // open -R：在 Finder 中显示并选中该文件
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("打开 Finder 失败: {}", e))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Linux 无统一选中协议，退化为打开父目录
+        let parent = path.parent().ok_or_else(|| "无父目录".to_string())?;
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("打开文件管理器失败: {}", e))?;
+    }
+    Ok(())
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct FileEntry {
     pub name: String,

@@ -35,6 +35,8 @@ export const enUS: Record<string, string> = {
   "settings.loadLastFolderCount": "Number of folders to load",
   "settings.showCodeLineNumbers": "Show code line numbers",
   "settings.spellcheck": "Spell Check",
+  // N1：自动配对补全开关
+  "settings.autoPair": "Auto Pair",
   "settings.customCss": "Custom CSS",
   "settings.customCss.placeholder": `/* Custom editor styles */\n/* e.g.: */\n/* h1 { color: red; } */`,
   "settings.cancel": "Cancel",
@@ -167,6 +169,8 @@ export const enUS: Record<string, string> = {
   "appshell.dragToResize": "Drag to resize",
   // ─── Tab bar ───────────────────────────────────
   "tabbar.close": "Close",
+  // N5：右键菜单"打开文件所在目录"（标签页/文件树/最近打开共用）
+  "common.revealInFolder": "Reveal in Folder",
   // ─── Editor ───────────────────────────────────
   "editor.renderFailed": "Render failed",
   "editor.emptyHint": "Open a file or drag a .md file to start editing",

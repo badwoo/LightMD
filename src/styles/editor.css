@@ -521,6 +521,33 @@
   color: #fff;
 }
 
+/* N3：块级公式编辑态实时预览 —— 编辑区在上、预览在下并列布局 */
+.math-block-wrapper.math-editing {
+  display: flex;
+  flex-direction: column;
+}
+
+.math-block-wrapper.math-editing > .math-block-content {
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.math-block-wrapper.math-editing > .math-block-preview {
+  position: relative;
+  background: var(--bg-primary, transparent);
+}
+
+/* 编辑态预览角标，提示下方为渲染结果 */
+.math-block-wrapper.math-editing > .math-block-preview::before {
+  content: "预览";
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+  font-family: var(--font-sans);
+}
+
 .math-block-preview {
   padding: 16px;
   text-align: center;

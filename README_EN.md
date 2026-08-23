@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.4.5**
+**Current Version: v0.5.0**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -21,8 +21,8 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - ✅ Standard Markdown (headings, lists, quotes, code blocks, tables, links, images)
 - ✅ **GFM Task Lists** (`- [x]` / `- [ ]`)
 - ✅ **Mermaid Diagrams** (flowchart, sequence, gantt, class, state, and 20+ more; 7 built-in templates in the toolbar for one-click insertion)
-- ✅ **KaTeX Math** (inline `$...$` and block `$$...$$`)
-- ✅ **Syntax Highlighting** (PrismJS, 200+ languages; 0.2.0 adds PHP/Swift/Kotlin/Dart/Lua/Ruby/R/Scala/Perl/PowerShell)
+- ✅ **KaTeX Math** (inline `$...$` and block `$$...$$`; live preview for block math while editing, 0.5.0)
+- ✅ **Syntax Highlighting** (PrismJS, 200+ languages; 0.2.0 adds PHP/Swift/Kotlin/Dart/Lua/Ruby/R/Scala/Perl/PowerShell; 0.5.0 adds automatic language detection for unlabeled code blocks)
 - ✅ **Highlight** `==text==` (0.2.0)
 - ✅ **Superscript / Subscript** `^text^` / `~text~` (0.2.0)
 - ✅ **Emoji** `:smile:` auto-completion (0.2.0)
@@ -32,7 +32,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - ✅ **Anchor Links** — headings auto-generate ids, supports `[link](#heading)` jump (0.2.0)
 
 ### ⚡ Productivity Boosters
-- 🗂 **Multi-Tab** with file tree sync (`Ctrl+W` to close, `Ctrl+Tab` to switch)
+- 🗂 **Multi-Tab** with file tree sync (`Ctrl+W` to close, `Ctrl+Tab` to switch; right-click a tab/file/recent item to "Open file location", 0.5.0)
 - 🔍 **Global Search & Replace** (`Ctrl+F` / `Ctrl+H`)
 - 📑 **Document Outline** with click-to-jump navigation
 - 📁 **File Tree** + drag-and-drop open
@@ -40,6 +40,8 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 💾 **Auto-save** — periodically saves to disk, configurable interval or disable
 - ⚡ **Slash Commands** — type `/` at line start to trigger the quick-insert menu (headings/lists/code blocks/tables/Mermaid/math, etc.) (0.2.0)
 - 🖱 **Editor Context Menu** — undo/cut/copy/paste/quick insert (0.2.0)
+- ⌨️ **Auto-Pair Completion** — brackets/quotes/asterisks auto-close as you type, toggleable in settings (0.5.0)
+- 🔗 **Smart URL Paste** — pasting a URL creates `[link](URL)`, or turns selected text into a hyperlink (0.5.0)
 - 🖱 **Table Context Menu** — right-click a table in preview mode to insert/delete rows and columns (0.2.0)
 
 ### 🛠 Advanced Features
@@ -50,6 +52,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 🎯 **Focus Mode** (toggle with `F8`, dims inactive paragraphs)
 - ⌨️ **Typewriter Mode** (toggle with `F9`, cursor always centered)
 - 🔗 **Link Insert Dialog** — text/URL/title inputs with live preview (0.2.0)
+- 📊 **Table Visual Editing** — add/delete rows & columns, column alignment, draggable column width/row height, floating toolbar (0.3.0; 0.4.5 perfects column resizing: inner borders resize adjacent columns keeping total width unchanged, outermost border changes total width; 0.5.0 fixes unresponsive dragging in preview mode and supports the first column's left edge)
 - 📊 **Table Insert Dialog** — custom rows/columns + header toggle (0.2.0)
 - 🖼 **Image-from-File Dialog** — file picker + Base64 / assets insertion modes (0.2.0)
 - 🧩 **Mermaid Template Dropdown** — Flowchart / Sequence / State / Gantt / Pie / ER / Gitgraph one-click insertion (0.2.0)
@@ -103,10 +106,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.4.5 installers:
+Visit the [Releases](../../releases) page to download the 0.5.0 installers:
 
-- **`LightMD_0.4.5_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.4.5_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.5.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.5.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -157,6 +160,22 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.5.0 (2026-08-23)
+
+**5 new features**:
+- **Auto-Pair Completion** — typing `(` `[` `{` `"` `'` `` ` `` `*` auto-closes the pair and places the cursor inside; works in preview & source modes, toggleable in settings (default on)
+- **Smart URL Paste** — pasting a bare URL inserts `[link](URL)` with link styling; with text selected, pasting a URL turns the selection into a hyperlink; skipped inside code blocks
+- **Live Math Preview** — block `$$...$$` formulas show an editing area on top and a KaTeX-rendered preview below, updating as you type
+- **Silent Language Detection** — code blocks without a language tag are auto-detected (heuristic scoring, 16 languages including Python/JavaScript/TypeScript/Rust/Go), used only for highlighting, never written back to the document
+- **Open File Location** — right-click a tab, a file in the tree, or a recent-file entry to reveal it in the system file manager
+
+**Fixes & optimizations**:
+- Fixed table column borders being unresponsive to dragging in preview mode: dragging any inner border keeps the total table width unchanged while adjacent columns adjust complementarily; unified hit detection and enabled dragging the first column's left edge (no dead zone)
+- Removed file-association registration for script files (.bat/.cmd/.vbs) from the installer (returns default open behavior to users), and cleans up registry leftovers on uninstall/upgrade via NSIS hooks
+- TableCellView ignores attributes mutations to avoid cell re-render flicker while dragging
+
+**Quality**: 1552/1552 tests pass (75 test files), `tsc --noEmit` with zero errors.
 
 ### v0.4.5 (2026-07-16)
 

@@ -13,12 +13,64 @@
  * - 列宽仅影响编辑器内显示，不影响 markdown 输出（markdown 表格无列宽概念）
  * - 行列增删时同步更新 columnWidths 数组，保持长度与列数一致
  */
-import type { NodeView, EditorView } from "prosemirror-view";
+import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view";
 import type { Node, ResolvedPos } from "prosemirror-model";
 import type { Transaction } from "prosemirror-state";
 import { lightMDSchema as schema } from "../schema";
 // 直接从 state.ts 导入 t，避免触发 i18n/index.ts 的 useSettingsStore 副作用订阅
 import { t } from "../../i18n/state";
+
+// ─── TableCellView —— td/th 的轻量 NodeView（F1 修复） ────────────────
+
+/**
+ * F1 修复（v0.5.0）：阅读模式下表格列宽拖拽不生效的根因。
+ *
+ * TableView 拖拽时直接写 td/th 的 style.width/height，ProseMirror 的 DOMObserver
+ * 会捕获这些 attributes 型 mutation（nearestDesc 找到的是 td 自身的普通
+ * NodeViewDesc，其 ignoreMutation 对含 contentDOM 的节点返回 false），
+ * 进而 readDOMChange → 整体重建 thead/tbody → 刚写入的宽度随旧节点被丢弃。
+ *
+ * 挂上本 NodeView 后，td/th 的 desc 变为 CustomNodeViewDesc，其 ignoreMutation
+ * 会转发到本实例：这里仅忽略 attributes 型 mutation（我们自己写的 style），
+ * childList/characterData（正常内容编辑）仍交由 PM 解析，不影响文字输入。
+ */
+export class TableCellView implements NodeView {
+  dom: HTMLElement;
+  contentDOM: HTMLElement;
+  /** 创建时的标签类型（th/td），update 时校验节点类型一致，避免 td/th 标签错乱 */
+  private readonly tagName: string;
+
+  constructor(node: Node) {
+    this.tagName = node.type.name === "table_header" ? "th" : "td";
+    this.dom = document.createElement(this.tagName);
+    // contentDOM 指向自身：内容仍由 ProseMirror 管理渲染
+    this.contentDOM = this.dom;
+    this.applyAlign(node);
+  }
+
+  /** 同步 align 属性到 DOM（与 schema.toDOM 的 text-align 输出保持一致） */
+  private applyAlign(node: Node) {
+    const align = node.attrs.align as string;
+    this.dom.style.textAlign = align && align !== "left" ? align : "";
+  }
+
+  update(node: Node): boolean {
+    // 节点类型必须与创建时的标签匹配（td↔table_cell、th↔table_header），
+    // 不匹配时返回 false 交由 PM 销毁重建，避免 td/th 标签错乱
+    const expected = this.tagName === "th" ? "table_header" : "table_cell";
+    if (node.type.name !== expected) {
+      return false;
+    }
+    this.applyAlign(node);
+    return true;
+  }
+
+  ignoreMutation(mutation: ViewMutationRecord): boolean {
+    // 仅忽略属性变化（列宽/行高/对齐直接写 style），内容编辑与选区变化照常交给 PM
+    return mutation.type === "attributes";
+  }
+}
+
 
 let activeMenu: HTMLElement | null = null;
 
@@ -32,6 +84,41 @@ let resizeIndicator: HTMLElement | null = null;
 function removeResizeIndicator() {
   if (resizeIndicator) { resizeIndicator.remove(); resizeIndicator = null; }
 }
+
+// ─── 拖拽热区判定（F1 修复：onHover/onMouseDown/stopEvent 统一使用） ────────
+
+/** 列宽热区半宽（px）：cell 左/右边缘命中范围 */
+const COL_RESIZE_HOTZONE = 8;
+/** 行高热区高度（px）：cell 底边缘命中范围 */
+const ROW_RESIZE_HOTZONE = 6;
+
+/**
+ * 判定坐标相对 cell 的拖拽热区
+ * F1 修复：抽取统一判定逻辑，消除 onMouseDown 与 stopEvent 判定不一致
+ * 导致的"第一列左边缘"死区（stopEvent 拦截了事件但 onMouseDown 不响应）。
+ */
+function hitResizeZone(
+  cell: HTMLElement,
+  clientX: number,
+  clientY: number
+): { col: boolean; row: boolean } {
+  const rect = cell.getBoundingClientRect();
+  // border-collapse 下相邻 cell 边框共享，取 rect 边界 ±hotzone 判定
+  const inRightEdge = Math.abs(clientX - rect.right) <= COL_RESIZE_HOTZONE;
+  const inLeftEdge = Math.abs(rect.left - clientX) <= COL_RESIZE_HOTZONE;
+  const inBottomEdge = Math.abs(clientY - rect.bottom) <= ROW_RESIZE_HOTZONE;
+  // 列宽热区优先于行高热区
+  return { col: inRightEdge || inLeftEdge, row: inBottomEdge };
+}
+
+/** 判断 cell 是否为其所在行的第一个单元格（第一列） */
+function isFirstCellInRow(cell: HTMLElement): boolean {
+  const row = cell.parentElement;
+  if (!row) return false;
+  const first = row.querySelector("td, th");
+  return first === cell;
+}
+
 
 // ─── 表格结构工具函数（导出供测试） ────────────────────────────
 
@@ -631,18 +718,11 @@ export class TableView implements NodeView {
       this.contentDOM.style.cursor = "";
       return;
     }
-    const rect = cell.getBoundingClientRect();
-    // v0.4.5 修复：同时计算左边缘和右边缘偏移
-    const offsetXRight = e.clientX - rect.right; // 正数：在右边缘右侧
-    const offsetXLeft = rect.left - e.clientX;   // 正数：在左边缘左侧
-    const offsetY = e.clientY - rect.bottom;
-    const inRightEdge = Math.abs(offsetXRight) <= 8;
-    const inLeftEdge = Math.abs(offsetXLeft) <= 8;
-    const inBottomEdge = Math.abs(offsetY) <= 6;
-    // 列宽热区（左边缘或右边缘 8px 内）优先于行高热区
-    if (inRightEdge || inLeftEdge) {
+    // F1 修复：统一使用 hitResizeZone 判定（与 onMouseDown/stopEvent 一致）
+    const zone = hitResizeZone(cell, e.clientX, e.clientY);
+    if (zone.col) {
       this.contentDOM.style.cursor = "col-resize";
-    } else if (inBottomEdge) {
+    } else if (zone.row) {
       this.contentDOM.style.cursor = "row-resize";
     } else {
       this.contentDOM.style.cursor = "";
@@ -656,17 +736,14 @@ export class TableView implements NodeView {
     const cell = target.closest("td, th") as HTMLElement;
     if (!cell) return;
 
+    // F1 修复：统一使用 hitResizeZone 判定
     const rect = cell.getBoundingClientRect();
-    // v0.4.5 修复：同时计算左边缘和右边缘偏移
-    const offsetXRight = e.clientX - rect.right;
-    const offsetXLeft = rect.left - e.clientX;
-    const offsetY = e.clientY - rect.bottom;
-    const inRightEdge = Math.abs(offsetXRight) <= 8;
-    const inLeftEdge = Math.abs(offsetXLeft) <= 8;
-    const inBottomEdge = Math.abs(offsetY) <= 6;
+    const zone = hitResizeZone(cell, e.clientX, e.clientY);
+    const inLeftEdge = Math.abs(rect.left - e.clientX) <= COL_RESIZE_HOTZONE;
+    const inRightEdge = Math.abs(e.clientX - rect.right) <= COL_RESIZE_HOTZONE;
 
-    // 行高拖拽：距离 cell 底部 6px 范围内（且不在列宽热区内）
-    if (inBottomEdge && !inRightEdge && !inLeftEdge) {
+    // 行高拖拽：cell 底边缘热区内（且不在列宽热区内）
+    if (zone.row && !zone.col) {
       e.preventDefault();
       const row = cell.parentElement as HTMLTableRowElement | null;
       if (!row) return;
@@ -677,8 +754,12 @@ export class TableView implements NodeView {
       return;
     }
 
-    // 列宽拖拽：cell 左边缘或右边缘 8px 范围内
-    if (!inRightEdge && !inLeftEdge) return;
+    // 列宽拖拽：cell 左边缘或右边缘热区内
+    if (!zone.col) return;
+
+    // 第一列左边缘不触发拖拽（表格左外侧框线无相邻列可调整），
+    // 事件放行给 ProseMirror（stopEvent 同步返回 false，见下），避免死区
+    if (inLeftEdge && !inRightEdge && isFirstCellInRow(cell)) return;
 
     e.preventDefault();
     // 计算列索引
@@ -688,13 +769,11 @@ export class TableView implements NodeView {
     const cellIdx = cells.indexOf(cell);
     if (cellIdx < 0) return;
 
-    // v0.4.5 修复：计算被拖拽的列索引
+    // 计算被拖拽的列索引：
     // - 右边缘触发：colIdx = cellIdx（当前列右边缘，调整当前列和下一列）
     // - 左边缘触发：colIdx = cellIdx - 1（前一列右边缘，调整前一列和当前列）
-    // - 第一列左边缘不触发（避免误触表格左外侧框线）
     let colIdx = cellIdx;
-    if (inLeftEdge) {
-      if (cellIdx === 0) return; // 第一列左边缘不触发
+    if (inLeftEdge && !inRightEdge && cellIdx > 0) {
       colIdx = cellIdx - 1;
     }
 

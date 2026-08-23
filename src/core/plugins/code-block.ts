@@ -17,6 +17,7 @@
 import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
 import { highlightCode } from "../../utils/highlight";
+import { detectLanguage } from "../../utils/detect-language";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 
 /** 行号层固定宽度（em） */
@@ -151,8 +152,25 @@ export class CodeBlockView implements NodeView {
           this.highlightLayer.textContent = code;
         }
       } else {
-        // 没有语言标识，直接显示文本（使用 prism-text 颜色）
-        this.highlightLayer.textContent = code;
+        // N4：无语言标识时静默检测语言并高亮（仅用于本层显示，不写回文档属性）
+        const detected = detectLanguage(code);
+        this.highlightLayer.className = `prism-highlighted${detected ? ` language-${detected}` : ""}`;
+        if (detected) {
+          try {
+            const highlighted = highlightCode(code, detected);
+            if (highlighted.includes('class="token')) {
+              this.highlightLayer.innerHTML = highlighted;
+            } else {
+              // 检测到的语言未产生语法 token，直接显示文本
+              this.highlightLayer.textContent = code;
+            }
+          } catch {
+            this.highlightLayer.textContent = code;
+          }
+        } else {
+          // 未识别出语言，直接显示文本（使用 prism-text 颜色）
+          this.highlightLayer.textContent = code;
+        }
       }
     } else {
       this.highlightLayer.textContent = "";

@@ -6,8 +6,13 @@
  * - 编辑态：显示 LaTeX 源码文本编辑区
  * - 双击切换编辑/预览态，默认预览态
  *
+ * N3（v0.5.0）编辑态实时预览：
+ * - 编辑时预览层不再隐藏，块级公式为「编辑区在上 + 预览在下」并列布局
+ * - update() 时预览随源码实时刷新，输入即见渲染结果
+ *
  * 性能优化：
  * - 缓存上次渲染的 LaTeX 文本，内容未变时跳过
+ * - update() 用 rAF 合并渲染：连续输入只在下一帧渲染一次，减少 KaTeX 开销
  * - 语法错误时显示友好提示
  */
 import type { NodeView, EditorView } from "prosemirror-view";
@@ -21,6 +26,7 @@ export class MathInlineView implements NodeView {
   private node: PMNode;
   private isEditing = false;
   private lastRenderedLatex = "";
+  private rafId: number | null = null;
   private handleDblClick: () => void;
 
   constructor(node: PMNode, _view: EditorView, _getPos: () => number | undefined) {
@@ -52,6 +58,9 @@ export class MathInlineView implements NodeView {
     if (this.isEditing) {
       this.contentDOM.style.display = "inline";
       this.dom.classList.add("math-editing");
+      // N3：进入编辑即渲染一次，保证预览与源码同步
+      this.lastRenderedLatex = "";
+      this.renderKatex();
     } else {
       this.contentDOM.style.display = "none";
       this.dom.classList.remove("math-editing");
@@ -106,13 +115,23 @@ export class MathInlineView implements NodeView {
   update(node: PMNode): boolean {
     if (node.type !== this.node.type) return false;
     this.node = node;
-    // 强制清除缓存，因为 node 已更新
-    this.lastRenderedLatex = "";
-    this.renderKatex();
+    // N3：rAF 合并渲染，连续输入只在下一帧渲染一次（编辑态实时预览）
+    this.scheduleRender();
     return true;
   }
 
+  /** N3：rAF 合并 KaTeX 渲染，避免每个按键触发一次全量渲染 */
+  private scheduleRender() {
+    if (this.rafId !== null) return;
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = null;
+      this.lastRenderedLatex = "";
+      this.renderKatex();
+    });
+  }
+
   destroy() {
+    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.dom.removeEventListener("dblclick", this.handleDblClick);
   }
 }
@@ -124,6 +143,7 @@ export class MathBlockView implements NodeView {
   private node: PMNode;
   private isEditing = false;
   private lastRenderedLatex = "";
+  private rafId: number | null = null;
   private previewLayer: HTMLElement;
   private handleDblClick: () => void;
 
@@ -160,16 +180,18 @@ export class MathBlockView implements NodeView {
   private toggleEditMode() {
     this.isEditing = !this.isEditing;
     if (this.isEditing) {
-      this.previewLayer.style.display = "none";
+      // N3：编辑态实时预览 —— 编辑区在上、预览层在下并列显示（不再隐藏预览）
       this.contentDOM.style.display = "block";
       this.contentDOM.style.cssText =
         "display:block !important;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
         "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;" +
         "color:var(--text-primary);caret-color:var(--text-primary);background:transparent;";
+      this.previewLayer.style.display = "block";
       this.dom.classList.add("math-editing");
+      this.lastRenderedLatex = "";
+      this.renderKatex();
     } else {
       this.contentDOM.style.display = "none";
-      this.previewLayer.style.display = "block";
       this.dom.classList.remove("math-editing");
       this.renderKatex();
     }
@@ -215,13 +237,23 @@ export class MathBlockView implements NodeView {
   update(node: PMNode): boolean {
     if (node.type !== this.node.type) return false;
     this.node = node;
-    // 强制清除缓存，因为 node 已更新
-    this.lastRenderedLatex = "";
-    this.renderKatex();
+    // N3：rAF 合并渲染，连续输入只在下一帧渲染一次（编辑态实时预览）
+    this.scheduleRender();
     return true;
   }
 
+  /** N3：rAF 合并 KaTeX 渲染，避免每个按键触发一次全量渲染 */
+  private scheduleRender() {
+    if (this.rafId !== null) return;
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = null;
+      this.lastRenderedLatex = "";
+      this.renderKatex();
+    });
+  }
+
   destroy() {
+    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.dom.removeEventListener("dblclick", this.handleDblClick);
   }
 }

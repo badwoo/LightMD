@@ -1067,6 +1067,16 @@ export function FileTree() {
           >
             {t("snapshot.viewSnapshots")}
           </button>
+          {/* N5：在资源管理器中显示并选中该文件 */}
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              fileService.revealInFolder(tempContextMenu.file.path).catch(() => {});
+              setTempContextMenu(null);
+            }}
+          >
+            {t("common.revealInFolder")}
+          </button>
           <button
             className="context-menu-item"
             onClick={() => {

@@ -36,6 +36,8 @@ export const zhCN: Record<string, string> = {
   "settings.loadLastFolderCount": "载入文件夹数量",
   "settings.showCodeLineNumbers": "显示代码行号",
   "settings.spellcheck": "拼写检查",
+  // N1：自动配对补全开关
+  "settings.autoPair": "自动配对补全",
   "settings.customCss": "自定义 CSS",
   "settings.customCss.placeholder": `/* 自定义编辑器样式 */\n/* 例如: */\n/* h1 { color: red; } */`,
   "settings.cancel": "取消",
@@ -168,6 +170,8 @@ export const zhCN: Record<string, string> = {
   "appshell.dragToResize": "拖拽调整宽度",
   // ─── 标签栏 ────────────────────────────────────
   "tabbar.close": "关闭",
+  // N5：右键菜单"打开文件所在目录"（标签页/文件树/最近打开共用）
+  "common.revealInFolder": "打开文件所在目录",
   // ─── 编辑器 ────────────────────────────────────
   "editor.renderFailed": "渲染失败",
   "editor.emptyHint": "打开文件或拖拽 .md 文件开始编辑",

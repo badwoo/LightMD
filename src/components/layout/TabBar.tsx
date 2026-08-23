@@ -11,6 +11,7 @@
 import { useCallback, useState, useEffect } from "react";
 import { useEditorStore, type TabInfo } from "../../stores/useEditorStore";
 import { useT } from "../../i18n";
+import { fileService } from "../../services/fileService";
 import "./TabBar.css";
 
 interface TabBarProps {
@@ -120,6 +121,16 @@ export function TabBar({ onTabSwitch, onTabClose }: TabBarProps) {
             }}
           >
             {t("snapshot.viewSnapshots")}
+          </button>
+          {/* N5：在资源管理器中显示并选中该文件 */}
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              fileService.revealInFolder(ctxMenu.tab.path).catch(() => {});
+              setCtxMenu(null);
+            }}
+          >
+            {t("common.revealInFolder")}
           </button>
         </div>
       )}
