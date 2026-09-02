@@ -1,8 +1,10 @@
 pub mod commands;
 pub mod db;
+pub mod translate;
 pub mod utils;
 
 use commands::{config, file_ops, image, export};
+use translate::TranslateState;
 use std::io::Cursor;
 use tauri::{Emitter, Manager};
 
@@ -60,6 +62,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_sql::Builder::new().build())
+        // v0.6.0 AI 翻译：单任务状态托管（取消标志）
+        .manage(TranslateState::default())
         .setup(|app| {
             // 设置窗口图标
             if let Some(window) = app.get_webview_window("main") {
@@ -112,6 +116,11 @@ pub fn run() {
             image::get_assets_dir,
             config::get_config,
             config::set_config,
+            commands::translate::translate_text,
+            commands::translate::cancel_translate,
+            commands::translate::test_translate_connection,
+            commands::translate::set_translate_key,
+            commands::translate::has_translate_key,
             export::export_pdf,
             export::export_html_to_pdf,
         ])

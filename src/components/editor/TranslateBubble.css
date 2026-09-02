@@ -1,0 +1,205 @@
+/* v0.6.0 AI 翻译气泡 —— 全部使用主题 CSS 变量，自动适配 6 主题 */
+
+/* ─── 选区浮动气泡图标按钮（v0.6.0 优化：SVG 气泡图标） ─────────── */
+.translate-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  vertical-align: middle;
+  user-select: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.translate-trigger:hover {
+  background: var(--accent-color, #4a9eff);
+  border-color: var(--accent-color, #4a9eff);
+}
+
+/* 气泡轮廓：默认描边填充反色，hover 反转为填充式图标 */
+.translate-trigger .translate-trigger-bubble {
+  fill: var(--bg-primary);
+  stroke: var(--text-primary);
+  stroke-width: 1.6;
+}
+
+.translate-trigger .translate-trigger-glyph {
+  fill: var(--text-primary);
+}
+
+.translate-trigger:hover .translate-trigger-bubble {
+  fill: var(--bg-primary);
+  stroke: var(--bg-primary);
+}
+
+.translate-trigger:hover .translate-trigger-glyph {
+  fill: var(--bg-primary);
+}
+
+.translate-bubble {
+  position: fixed;
+  z-index: 1000;
+  width: 380px;
+  max-width: calc(100vw - 16px);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  font-size: 13px;
+  color: var(--text-primary);
+  animation: translate-bubble-in 0.12s ease-out;
+}
+
+@keyframes translate-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ─── 头部 ─────────────────────────────────── */
+.translate-bubble-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.translate-bubble-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.translate-bubble-loading {
+  color: var(--text-tertiary);
+}
+
+.translate-bubble-status {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.translate-bubble-tokens {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-family: var(--font-mono, "Consolas", "Monaco", monospace);
+}
+
+.translate-bubble-close {
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all var(--transition-fast);
+}
+
+.translate-bubble-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ─── 正文 ─────────────────────────────────── */
+.translate-bubble-body {
+  padding: 10px 12px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.translate-bubble-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+/* ─── 错误态 ───────────────────────────────── */
+.translate-bubble-error {
+  color: var(--danger-color, #d73a49);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.translate-bubble-error-detail {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.translate-bubble-retry {
+  align-self: flex-start;
+  padding: 4px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all var(--transition-fast);
+}
+
+.translate-bubble-retry:hover {
+  border-color: var(--accent-color);
+}
+
+/* ─── 警告条 ───────────────────────────────── */
+.translate-bubble-warning {
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  color: var(--warning-color, #b08800);
+  font-size: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* ─── 操作栏 ───────────────────────────────── */
+.translate-bubble-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+.translate-bubble-btn {
+  padding: 4px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all var(--transition-fast);
+}
+
+.translate-bubble-btn:hover {
+  background: var(--bg-hover);
+}
+
+.translate-bubble-btn.primary {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: var(--bg-primary);
+}
+
+.translate-bubble-btn.primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}

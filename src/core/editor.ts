@@ -27,6 +27,8 @@ import { TaskItemView } from "./plugins/task-list";
 import { TableView, TableCellView } from "./plugins/table-editor";
 import { autoPairPlugin } from "./plugins/auto-pair";
 import { smartPastePlugin } from "./plugins/smart-paste";
+import { createTranslateTooltipPlugin } from "./plugins/translateTooltip";
+import { createSlashCommandPlugin } from "./plugins/slash-command";
 
 // ─── 搜索高亮 Plugin（问题1修复）──────────────────────
 // 使用 ProseMirror Decoration 管理搜索高亮，不依赖编辑器焦点
@@ -113,13 +115,25 @@ export interface EditorOptions {
    * 后续切换由 EditorContainer 的 useEffect 同步更新 dom.spellcheck 属性
    */
   spellcheckEnabled?: boolean;
+  /**
+   * v0.6.0：AI 翻译触发回调（选区「译」浮动按钮点击时调用，参数为所属 view）
+   * 由 EditorContainer 注入，负责提取选区文本并打开翻译气泡
+   */
+  onTranslateTrigger?: (view: EditorView) => void;
+  /** v0.6.0：AI 翻译总开关 getter（动态读取设置，返回 false 时不显示浮动按钮） */
+  translateEnabledGetter?: () => boolean;
+  /**
+   * v0.6.6 问题2：阅读模式 Slash 命令触发状态回调
+   * 由 EditorContainer 注入，驱动 SlashCommandPm 菜单渲染（触发 → SlashState；失效 → null）
+   */
+  onSlashStateChange?: (s: import("./plugins/slash-command").SlashState | null) => void;
 }
 
 /**
  * 创建配置完整的 ProseMirror EditorView
  */
 export function createEditor(options: EditorOptions): EditorView | null {
-  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false } = options;
+  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, onSlashStateChange } = options;
 
   if (!parent) return null;
 
@@ -150,6 +164,10 @@ export function createEditor(options: EditorOptions): EditorView | null {
       searchHighlightPlugin,
       autoPairPlugin(),
       smartPastePlugin(),
+      // v0.6.0：AI 翻译选区浮动按钮（未传回调时不注册；enabled getter 动态响应设置开关）
+      ...(onTranslateTrigger ? [createTranslateTooltipPlugin(onTranslateTrigger, translateEnabledGetter ?? (() => true))] : []),
+      // v0.6.6 问题2：阅读模式 Slash 命令面板（未传回调时不注册）
+      ...(onSlashStateChange ? [createSlashCommandPlugin(onSlashStateChange)] : []),
     ],
   });
 

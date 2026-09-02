@@ -22,6 +22,7 @@ import { versionSnapshotService } from "./services/versionSnapshotService";
 import { safeSetItem } from "./utils/safeStorage";
 import { setCurrentDocPath } from "./utils/imagePath";
 import { isSupportedTextFile, isMarkdownFile, ALL_SUPPORTED_EXTENSIONS, HUGE_FILE_THRESHOLD, getFileLanguage } from "./utils/constants";
+import { evalDoublePress } from "./utils/modeSwitch";
 import {
   setNotificationHandler,
   type Notification,
@@ -658,6 +659,10 @@ function App() {
       try {
         await fileService.writeFile(filePath, markdown);
         setDirty(false);
+        // v0.6.1 问题3：手动保存成功后解除翻译回写的自动保存抑制
+        useEditorStore.getState().setSuppressAutoSave(false);
+        // v0.6.1 问题2：手动保存 = 接受译文，清除"取消翻译"气泡
+        useEditorStore.getState().setTranslateUndoSnapshot(null);
         // 清除当前标签页的脏标记
         const { activeTabIdx } = useEditorStore.getState();
         updateTabDirty(activeTabIdx, false);
@@ -671,6 +676,10 @@ function App() {
     } else {
       safeSetItem("lightmd-content", markdown);
       setDirty(false);
+      // v0.6.1 问题3：手动保存成功后解除翻译回写的自动保存抑制
+      useEditorStore.getState().setSuppressAutoSave(false);
+      // v0.6.1 问题2：手动保存 = 接受译文，清除"取消翻译"气泡
+      useEditorStore.getState().setTranslateUndoSnapshot(null);
       // 清除当前标签页的脏标记（修复：浏览器环境保存后小蓝点未消失）
       const { activeTabIdx } = useEditorStore.getState();
       updateTabDirty(activeTabIdx, false);
@@ -841,9 +850,12 @@ function App() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       // 双击 Ctrl 切换阅读/编辑模式
+      // v0.6.1 修复：长按 Ctrl 时浏览器持续派发 repeat keydown 导致模式连续切换，
+      // 使用 evalDoublePress 三态判定（skip 时完全忽略，不刷新时间戳）
       if (e.key === "Control") {
         const now = Date.now();
-        if (now - lastCtrlTimeRef.current < DOUBLE_CLICK_THRESHOLD) {
+        const r = evalDoublePress(now, lastCtrlTimeRef.current, DOUBLE_CLICK_THRESHOLD, e.repeat);
+        if (r === "toggle") {
           e.preventDefault();
           // 在阅读和编辑之间切换
           if (viewMode === "preview") {
@@ -855,16 +867,17 @@ function App() {
             setViewMode("preview");
           }
           lastCtrlTimeRef.current = 0;
-        } else {
+        } else if (r === "record") {
           lastCtrlTimeRef.current = now;
         }
         return;
       }
 
-      // 双击 Shift 切换分屏模式
+      // 双击 Shift 切换分屏模式（同样过滤长按 repeat 事件）
       if (e.key === "Shift" && !e.ctrlKey && !e.altKey && !e.metaKey) {
         const now = Date.now();
-        if (now - lastShiftTimeRef.current < DOUBLE_CLICK_THRESHOLD) {
+        const r = evalDoublePress(now, lastShiftTimeRef.current, DOUBLE_CLICK_THRESHOLD, e.repeat);
+        if (r === "toggle") {
           e.preventDefault();
           // 如果当前是分屏模式，切回上一个模式；否则切到分屏
           if (viewMode === "split") {
@@ -873,7 +886,7 @@ function App() {
             setViewMode("split");
           }
           lastShiftTimeRef.current = 0;
-        } else {
+        } else if (r === "record") {
           lastShiftTimeRef.current = now;
         }
         return;
@@ -1008,6 +1021,16 @@ function App() {
       if (e.ctrlKey && !e.shiftKey && e.key === "h") {
         e.preventDefault();
         setShowSearchReplace(true);
+      }
+      // v0.6.0：F6 AI 翻译选中内容（统一走 lightmd:command 事件，由 EditorContainer 处理）
+      if (e.key === "F6" && !e.shiftKey) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "edit.translate" } }));
+      }
+      // v0.6.1：Shift+F6 全文翻译（统一走 lightmd:command 事件，由 EditorContainer 处理）
+      if (e.key === "F6" && e.shiftKey) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "edit.translateDocument" } }));
       }
     };
     window.addEventListener("keydown", handler);

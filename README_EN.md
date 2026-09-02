@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.5.0**
+**Current Version: v0.6.6**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -106,10 +106,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.5.0 installers:
+Visit the [Releases](../../releases) page to download the 0.6.6 installers:
 
-- **`LightMD_0.5.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.5.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.6.6_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.6.6_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -160,6 +160,57 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.6.6 (2026-09-01)
+
+**Four experience fixes**:
+- **Empty-document newlines preserved** — repeated Enter newlines are no longer lost after switching tabs, reopening, or saving (serializer keeps trailing newlines + parser rebuilds empty paragraphs)
+- **Slash `/` panel works in Read mode** — the ProseMirror plugin activates the same menu as Source mode
+- **Delete no longer closes files** — a focus guard prevents the "close temporary file" shortcut from firing while editing
+- **Inline base64 images collapsed** — Edit/Split mode shows a short marker `![alt](image-1.png)` instead of huge base64 blobs, dramatically reducing screen usage; the file on disk still stores full base64 and restores it before save/preview/translation, so content never changes
+
+**Quality**: 1880/1880 frontend tests pass, `tsc --noEmit` clean.
+
+### v0.6.5 (2026-08-29)
+
+**P0 critical fix (full translation only translated the tail segment)**: placeholders for links/inline code/images must be extracted BEFORE the request is built and sent as `{{N}}`. Previously tokens were generated only after the LLM reply arrived, so any segment containing those elements failed validation and kept its original text. Now those segments translate correctly and links/code/images are restored verbatim.
+
+### v0.6.4 (2026-08-29)
+
+- Failed translation segments are shown as a red bubble at the top of the document (auto-hide 5s); the status bar only shows progress and then "Translation completed ✓", reset on document switch
+- Pure-image blocks skip translation; inline image alt text & URL are fully protected by placeholders
+
+### v0.6.3 (2026-08-29)
+
+**Data-safety & robustness hardening** (per code review):
+- **P0**: full-translation tab-switch abort actually enforced; undo snapshot cleaned across tabs/files bound to document context; write-back aborts if the document was edited meanwhile (DOC_CHANGED)
+- **P1**: frontmatter misdetection fixed, long-block split boundaries improved, rate-limit exponential backoff with retry, error-code passthrough
+- **P2**: image/link syntax removal, error-code wiring, dead-code cleanup
+- **Security**: warning for non-localhost / non-HTTPS translate endpoints, credential hardening, boundary checks
+
+### v0.6.2 (2026-08-27)
+
+**Translation efficiency + uninstall cleanup**:
+- Pure-symbol / pure-URL / pure-email segments no longer generate translation requests, cutting wasted tokens
+- Uninstalling now clears the translate API key (Windows Credential Manager) and enables-state; translation is off by default for new installs
+
+### v0.6.1 (2026-08-26)
+
+**Full-document translation + UX polish**:
+- **Full translation** — floating button / `Shift+F6` / command palette; auto-splits paragraphs and translates serially, skipping code fences, formulas, frontmatter; tolerant of segment failures
+- **Undo translation** — click the "Undo translation" bubble to restore the original text (bound to document context)
+- **Translated content is not auto-saved** — waits for your confirm or further editing
+- Mode-switch button (pen / book icons); fixed long-press Ctrl accidentally triggering mode switch
+
+### v0.6.0 (2026-08-23)
+
+**AI Translation (core new feature)**:
+- **Selected / Full translation** — context menu, translate button, command palette; defaults to full translation when nothing is selected
+- **Result mode** — direct replace or bilingual side-by-side
+- **Translate bubble** — streaming results with i18n error codes
+- **Settings** — "AI Translation" group (provider presets / API Key / baseUrl / model / source language / tone / result mode / prompt) plus connection test
+- **API Key stored in Windows Credential Manager**
+- **Backend** — Rust translate command (single-task model, streaming channel, error-code protocol)
 
 ### v0.5.0 (2026-08-23)
 

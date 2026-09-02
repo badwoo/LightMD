@@ -34,6 +34,8 @@ const tZh = (key: string): string => {
     "command.edit.redo": "恢复",
     "command.edit.find": "查找",
     "command.edit.replace": "替换",
+    "command.edit.translate": "AI 翻译选中内容",
+    "command.edit.translateDocument": "AI 全文翻译",
     "command.view.preview": "阅读模式",
     "command.view.edit": "编辑模式",
     "command.view.split": "分屏模式",
@@ -74,6 +76,8 @@ const tEn = (key: string): string => {
     "command.edit.redo": "Redo",
     "command.edit.find": "Find",
     "command.edit.replace": "Replace",
+    "command.edit.translate": "AI Translate Selection",
+    "command.edit.translateDocument": "AI Translate Document",
     "command.view.preview": "Read Mode",
     "command.view.edit": "Edit Mode",
     "command.view.split": "Split Mode",
@@ -106,8 +110,19 @@ const tEn = (key: string): string => {
 describe("G8: 命令注册中心", () => {
   it("命令注册数量 ≥ 20（覆盖五大分组）", () => {
     expect(commands.length).toBeGreaterThanOrEqual(20);
-    // 实际注册 33 条命令
-    expect(commands.length).toBe(33);
+    // 实际注册 35 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument）
+    expect(commands.length).toBe(35);
+  });
+
+  it("edit.translate 命令快捷键为 F6", () => {
+    const cmd = commands.find((c) => c.id === "edit.translate");
+    expect(cmd?.shortcut).toBe("F6");
+  });
+
+  it("edit.translateDocument 命令快捷键为 Shift+F6（v0.6.1 全文翻译）", () => {
+    const cmd = commands.find((c) => c.id === "edit.translateDocument");
+    expect(cmd?.shortcut).toBe("Shift+F6");
+    expect(cmd?.group).toBe("edit");
   });
 
   it("每条命令都有必填字段（id/titleKey/group/action）", () => {

@@ -34,7 +34,7 @@ import { useT } from "../../i18n";
 export type MenuGroup = "基本块" | "列表" | "高级" | "行内格式";
 
 /** 分组名到 i18n key 的映射（保留中文 group 用于过滤匹配，渲染时通过此映射翻译） */
-const GROUP_I18N_KEY: Record<MenuGroup, string> = {
+export const GROUP_I18N_KEY: Record<MenuGroup, string> = {
   "基本块": "command.group.basic",
   "列表": "command.group.list",
   "高级": "command.group.advanced",
@@ -268,11 +268,114 @@ function getCaretCoordinates(textarea: HTMLTextAreaElement): { left: number; top
   return { left, top };
 }
 
-// ─── 组件 ────────────────────────────────────────
+// ─── 组件 ────────────────────────────────
 
 /** 菜单预估尺寸（用于边界检测） */
-const MENU_WIDTH = 280;
-const MENU_MAX_HEIGHT = 360;
+export const MENU_WIDTH = 280;
+export const MENU_MAX_HEIGHT = 360;
+
+/**
+ * v0.6.6 问题2：菜单列表渲染（共享组件）
+ * 源码模式（SlashCommand）与阅读模式（SlashCommandPm）复用同一份列表 UI，
+ * 仅定位与事件监听方式不同。
+ */
+export interface SlashMenuListProps {
+  /** 过滤后的菜单项 */
+  items: MenuItem[];
+  /** 当前选中索引 */
+  selectedIndex: number;
+  /** 选中（点击）回调 */
+  onSelect: (item: MenuItem) => void;
+  /** 悬停高亮回调 */
+  onHover: (index: number) => void;
+}
+
+export function SlashMenuList({ items, selectedIndex, onSelect, onHover }: SlashMenuListProps) {
+  const t = useT();
+  return (
+    <>
+      {items.map((item, idx) => {
+        // 分组标题：第一项或与前一项不同组时显示
+        const showGroup = idx === 0 || items[idx - 1].group !== item.group;
+        return (
+          <div key={item.id}>
+            {showGroup && (
+              <div
+                style={{
+                  padding: "6px 14px 4px",
+                  fontSize: "11px",
+                  color: "var(--text-tertiary, #999)",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                {t(GROUP_I18N_KEY[item.group])}
+              </div>
+            )}
+            <button
+              type="button"
+              className={`slash-command-item${idx === selectedIndex ? " selected" : ""}`}
+              role="option"
+              aria-selected={idx === selectedIndex}
+              onClick={() => onSelect(item)}
+              onMouseEnter={() => onHover(idx)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                width: "100%",
+                padding: "6px 14px",
+                border: "none",
+                background:
+                  idx === selectedIndex
+                    ? "var(--bg-hover, #f0f0f0)"
+                    : "transparent",
+                color: "var(--text-primary, #333)",
+                fontSize: "13px",
+                lineHeight: "1.5",
+                cursor: "pointer",
+                textAlign: "left",
+                fontFamily: "inherit",
+                gap: "10px",
+                outline: "none",
+              }}
+            >
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: "28px",
+                  height: "28px",
+                  borderRadius: "4px",
+                  background: "var(--bg-secondary, #f4f4f4)",
+                  color: "var(--text-secondary, #666)",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  fontFamily:
+                    "var(--font-mono, 'Consolas', 'Monaco', monospace)",
+                  flexShrink: 0,
+                }}
+              >
+                {item.icon}
+              </span>
+              <span
+                style={{
+                  flex: 1,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {t(`command.${item.id}.name`)}
+              </span>
+            </button>
+          </div>
+        );
+      })}
+    </>
+  );
+}
 
 export interface SlashCommandProps {
   /** 目标 textarea（由外部传入，组件不持有强引用） */
@@ -452,86 +555,12 @@ export function SlashCommand({ textarea, onInsert, onClose }: SlashCommandProps)
         animation: "slashMenuIn 0.12s ease-out",
       }}
     >
-      {filteredItems.map((item, idx) => {
-        // 分组标题：第一项或与前一项不同组时显示
-        const showGroup =
-          idx === 0 || filteredItems[idx - 1].group !== item.group;
-        return (
-          <div key={item.id}>
-            {showGroup && (
-              <div
-                style={{
-                  padding: "6px 14px 4px",
-                  fontSize: "11px",
-                  color: "var(--text-tertiary, #999)",
-                  fontWeight: 600,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.5px",
-                }}
-              >
-                {t(GROUP_I18N_KEY[item.group])}
-              </div>
-            )}
-            <button
-              type="button"
-              className={`slash-command-item${idx === selectedIndex ? " selected" : ""}`}
-              role="option"
-              aria-selected={idx === selectedIndex}
-              onClick={() => handleSelect(item)}
-              onMouseEnter={() => setSelectedIndex(idx)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                width: "100%",
-                padding: "6px 14px",
-                border: "none",
-                background:
-                  idx === selectedIndex
-                    ? "var(--bg-hover, #f0f0f0)"
-                    : "transparent",
-                color: "var(--text-primary, #333)",
-                fontSize: "13px",
-                lineHeight: "1.5",
-                cursor: "pointer",
-                textAlign: "left",
-                fontFamily: "inherit",
-                gap: "10px",
-                outline: "none",
-              }}
-            >
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: "28px",
-                  height: "28px",
-                  borderRadius: "4px",
-                  background: "var(--bg-secondary, #f4f4f4)",
-                  color: "var(--text-secondary, #666)",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  fontFamily:
-                    "var(--font-mono, 'Consolas', 'Monaco', monospace)",
-                  flexShrink: 0,
-                }}
-              >
-                {item.icon}
-              </span>
-              <span
-                style={{
-                  flex: 1,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {t(`command.${item.id}.name`)}
-              </span>
-            </button>
-          </div>
-        );
-      })}
+      <SlashMenuList
+        items={filteredItems}
+        selectedIndex={selectedIndex}
+        onSelect={handleSelect}
+        onHover={setSelectedIndex}
+      />
     </div>,
     document.body
   );

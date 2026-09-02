@@ -1,0 +1,134 @@
+/* FullTranslateButton —— 全文翻译悬浮按钮（v0.6.1）
+   「译」字气泡，固定于编辑区域右上角（模式切换按钮下方），不随文档滚动 */
+.full-translate-btn {
+  position: absolute;
+  top: 50px;
+  right: 14px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0 8px;
+  border-radius: 17px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary, var(--text-primary));
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.full-translate-btn:hover {
+  opacity: 1;
+  border-color: var(--accent-color, #4a9eff);
+  color: var(--accent-color, #4a9eff);
+}
+
+/* 翻译进行中：常亮 + 进度数字 */
+.full-translate-btn.running {
+  opacity: 1;
+  color: var(--accent-color, #4a9eff);
+  border-color: var(--accent-color, #4a9eff);
+  cursor: pointer; /* 运行中点击 = 取消 */
+}
+
+.full-translate-progress {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* ModeSwitchButton —— 模式切换悬浮按钮（v0.6.1 问题5）
+   阅读模式显示羽毛笔（→分屏），分屏模式显示书本（→阅读），位于右上角最上方 */
+.mode-switch-btn {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary, var(--text-primary));
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.mode-switch-btn:hover {
+  opacity: 1;
+  border-color: var(--accent-color, #4a9eff);
+  color: var(--accent-color, #4a9eff);
+}
+
+/* TranslateUndoToast —— "取消翻译"浮动气泡（v0.6.1 问题2）
+   悬浮于「译」按钮正下方 */
+.translate-undo-toast {
+  position: absolute;
+  top: 90px;
+  right: 14px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent-color, #4a9eff);
+  color: var(--accent-color, #4a9eff);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.9;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.translate-undo-toast:hover {
+  opacity: 1;
+  background: var(--accent-color, #4a9eff);
+  color: var(--bg-primary);
+}
+
+/* SegmentFailTip —— 失败段气泡（v0.6.4 问题1c）
+   悬浮于编辑区域顶部（内容首处），提示翻译失败的段，5 秒自动消失 */
+.segment-fail-tip {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, 80%);
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
+  background: var(--bg-primary);
+  border: 1px solid var(--danger-color, #e5484d);
+  color: var(--danger-color, #e5484d);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.segment-fail-icon {
+  flex: none;
+  line-height: 1;
+}
+
+.segment-fail-msg {
+  flex: none;
+}
+
+.segment-fail-preview {
+  color: var(--text-secondary, var(--text-primary));
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

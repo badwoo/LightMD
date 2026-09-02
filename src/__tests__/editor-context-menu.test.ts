@@ -105,10 +105,11 @@ describe("buildMenuItems - 菜单项配置构建", () => {
   it("有选中时菜单项顺序正确", () => {
     const items = buildMenuItems(true, true, true);
     const actions = getItemActions(items);
-    // 预期顺序：undo, redo, cut, copy, paste, bold, italic, strikethrough, code, link, image, table, codeblock, mermaid
+    // 预期顺序：undo, redo, cut, copy, paste, bold, italic, strikethrough, code, translate, link, image, table, codeblock, mermaid
+    // v0.6.0：md 文件且有选区时含 AI 翻译项
     expect(actions).toEqual([
       "undo", "redo", "cut", "copy", "paste",
-      "bold", "italic", "strikethrough", "code",
+      "bold", "italic", "strikethrough", "code", "translate",
       "link", "image", "table", "codeblock", "mermaid",
     ]);
   });
@@ -120,8 +121,31 @@ describe("buildMenuItems - 菜单项配置构建", () => {
     expect(countSeparators(items)).toBe(2);
   });
 
-  it("有选中时分隔符数量为 3（含行内格式组分隔符）", () => {
+  it("有选中时分隔符数量为 4（含行内格式组与翻译组分隔符）", () => {
     const items = buildMenuItems(true, true, true);
+    // v0.6.0：翻译项前新增分隔符（undo组后、剪贴组后、行内格式组后、翻译组后）
+    expect(countSeparators(items)).toBe(4);
+  });
+
+  // ─── v0.6.0：AI 翻译项 ────────────────────────
+  it("非 md 文件时即使有选区也不显示 AI 翻译项", () => {
+    const items = buildMenuItems(true, true, true, false);
+    const actions = getItemActions(items);
+    expect(actions).not.toContain("translate");
+    expect(countSeparators(items)).toBe(3);
+  });
+
+  it("AI 翻译项显示 F6 快捷键", () => {
+    const items = buildMenuItems(true, true, true);
+    const translateItem = items.find((i) => i.action === "translate");
+    expect(translateItem?.shortcut).toBe("F6");
+  });
+
+  // ─── v0.6.0 优化：总开关过滤 ──────────────────
+  it("翻译开关关闭时即使 md 文件有选区也不显示 AI 翻译项", () => {
+    const items = buildMenuItems(true, true, true, true, false);
+    expect(getItemActions(items)).not.toContain("translate");
+    // 分隔符数量回落到 3（无翻译组分隔符）
     expect(countSeparators(items)).toBe(3);
   });
 

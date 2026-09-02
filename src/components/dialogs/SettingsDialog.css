@@ -208,6 +208,17 @@ label.settings-switch {
   border-color: var(--accent-color);
 }
 
+/* v0.6.3 S-4：非 https API 地址的安全警告提示 */
+.settings-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-hint-warning {
+  color: #d19a0a;
+}
+
 .settings-css-input {
   width: 100%;
   padding: 10px 12px;
@@ -261,4 +272,55 @@ label.settings-switch {
 
 .settings-btn.secondary:hover {
   background: var(--bg-hover);
+}
+
+/* ─── v0.6.0：AI 翻译分组 ─────────────────── */
+/* 行内布局：输入框 + 按钮并排（API Key / 测试连接） */
+.settings-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-inline-row .settings-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.settings-inline-row .settings-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Key 配置状态（label 内右侧小字） */
+.translate-key-status {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.translate-key-status.ok {
+  color: var(--accent-color);
+}
+
+/* 测试连接结果状态 */
+.translate-test-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.translate-test-status.ok {
+  color: var(--accent-color);
+}
+
+.translate-test-status.fail {
+  color: var(--danger-color, #e5484d);
+}
+
+/* 总开关关闭时：其余翻译配置置灰且不可交互（仍可查看） */
+.translate-config-fields.disabled {
+  opacity: 0.45;
+  pointer-events: none;
 }

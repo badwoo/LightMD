@@ -46,12 +46,13 @@ beforeEach(() => {
   mockMkdir.mockReset();
   mockExists.mockReset();
   // 模拟 Tauri 运行环境，使 isTauri() 返回 true
-  (window as unknown as { __TAURI__?: unknown }).__TAURI__ = true;
+  // v0.6.3 S-2：isTauri 改检测 __TAURI_INTERNALS__（withGlobalTauri 已关闭）
+  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = true;
   useEditorStore.setState({ filePath: "/docs/readme.md" });
 });
 
 afterEach(() => {
-  delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   useEditorStore.setState({ filePath: null });
 });
 

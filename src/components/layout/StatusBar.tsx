@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../../stores/useEditorStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useT } from "../../i18n";
+// v0.6.1：全文翻译进度（状态栏显示 + 取消）
+import { useFullTranslateStore } from "../../stores/fullTranslateStore";
+import { translateService } from "../../services/translateService";
+import { translateErrorKey } from "../editor/TranslateBubble";
 import "./StatusBar.css";
 
 export function StatusBar() {
@@ -18,10 +22,24 @@ export function StatusBar() {
   // 问题5：底部栏搜索按钮切换开关（已开启则关闭）
   const showSearch = useEditorStore((s) => s.showSearch);
   const toggleSearch = useEditorStore((s) => s.toggleSearch);
+  // v0.6.1：全文翻译进度状态
+  const ftStatus = useFullTranslateStore((s) => s.status);
+  const ftDone = useFullTranslateStore((s) => s.doneCount);
+  const ftTotal = useFullTranslateStore((s) => s.totalCount);
+  const ftErrorCode = useFullTranslateStore((s) => s.errorCode);
+  const ftRequestCancel = useFullTranslateStore((s) => s.requestCancel);
+  const ftReset = useFullTranslateStore((s) => s.reset);
 
   // G11：字数详情面板展开状态
   const [showDetail, setShowDetail] = useState(false);
   const wordWrapRef = useRef<HTMLDivElement>(null);
+
+  // v0.6.4：翻译完成态 2 秒后自动消失（取消/切换文档走 reset，同样离开 done 态）
+  useEffect(() => {
+    if (ftStatus !== "done") return;
+    const timer = setTimeout(() => ftReset(), 2000);
+    return () => clearTimeout(timer);
+  }, [ftStatus, ftReset]);
 
   const fileName = filePath
     ? filePath.replace(/\\/g, "/").split("/").pop() || t("statusbar.untitled")
@@ -47,6 +65,44 @@ export function StatusBar() {
         {isDirty && <span className="statusbar-dirty"> ●</span>}
       </span>
       <span className="statusbar-item statusbar-center">
+        {/* v0.6.1：全文翻译进度；v0.6.4：完成态显示"翻译完成 ✓"2 秒自动消失，
+            段级失败不在底部栏显示（编辑器内气泡逐段提示），仅系统性错误保留提示 */}
+        {ftStatus === "running" && (
+          <span className="statusbar-ft-progress">
+            <span className="statusbar-ft-spinner" aria-hidden="true" />
+            {t("translate.full.progress", { done: ftDone, total: ftTotal })}
+            <button
+              type="button"
+              className="statusbar-ft-cancel"
+              title={t("translate.full.cancel")}
+              onClick={() => {
+                ftRequestCancel();
+                translateService.cancel().catch(() => undefined);
+              }}
+            >
+              ✕
+            </button>
+          </span>
+        )}
+        {ftStatus === "done" && (
+          <span className="statusbar-ft-progress statusbar-ft-done" data-testid="statusbar-ft-done">
+            {t("translate.full.done")}
+            <span className="statusbar-ft-check" aria-hidden="true">✓</span>
+          </span>
+        )}
+        {ftStatus === "error" && ftErrorCode && (
+          <span className="statusbar-ft-progress statusbar-ft-error">
+            {t(translateErrorKey(ftErrorCode))}
+            <button
+              type="button"
+              className="statusbar-ft-cancel"
+              title={t("translate.full.dismiss")}
+              onClick={ftReset}
+            >
+              ✕
+            </button>
+          </span>
+        )}
         {/* 搜索入口：放大镜图标 + "搜索"文字，点击切换开关 */}
         <button
           className={`statusbar-toggle ${showSearch ? "active" : ""}`}

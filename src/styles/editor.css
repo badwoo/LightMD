@@ -782,7 +782,8 @@
 }
 
 /* ─── 主内容区域 ──────────────────────────────── */
-.editor-main-area { flex: 1; display: flex; overflow: hidden; }
+/* v0.6.1：position:relative 作为全文翻译悬浮按钮的定位上下文 */
+.editor-main-area { flex: 1; display: flex; overflow: hidden; position: relative; }
 
 /* ─── 分屏模式 ──────────────────────────────── */
 .split-view-container { flex: 1; display: flex; overflow: hidden; }

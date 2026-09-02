@@ -40,6 +40,10 @@ export interface EditorContextMenuProps {
   canUndo: boolean;
   /** 是否可恢复 */
   canRedo: boolean;
+  /** v0.6.0：是否为 Markdown 文件（决定是否显示 AI 翻译项） */
+  isMdFile?: boolean;
+  /** v0.6.0：AI 翻译总开关（关闭时隐藏"AI 翻译"项） */
+  translateEnabled?: boolean;
   /** 菜单项触发回调，参数为 action 名称 */
   onAction: (action: string) => void;
   /** 关闭菜单回调 */
@@ -49,13 +53,16 @@ export interface EditorContextMenuProps {
 /**
  * 构建菜单项配置（纯函数，便于单元测试）
  *
- * 根据上下文状态（是否有选中文本、是否可撤销/恢复）决定菜单项的显示和禁用状态。
+ * 根据上下文状态（是否有选中文本、是否可撤销/恢复、是否 md 文件）决定菜单项的显示和禁用状态。
  * 无选中文本时隐藏"加粗"等行内格式项及其分隔符。
+ * v0.6.0：md 文件 + 翻译开关开启 + 有选区时显示"AI 翻译"项（快捷键 F6）。
  */
 export function buildMenuItems(
   hasSelection: boolean,
   canUndo: boolean,
   canRedo: boolean,
+  isMdFile = true,
+  translateEnabled = true,
 ): MenuItemConfig[] {
   const items: MenuItemConfig[] = [
     // ─── 撤销/恢复 ───
@@ -77,6 +84,13 @@ export function buildMenuItems(
       { type: "item", action: "strikethrough", label: "删除线" },
       { type: "item", action: "code", label: "行内代码", shortcut: "Ctrl+E" },
     );
+    // v0.6.0：AI 翻译（md 文件 + 总开关开启；快捷键 F6）
+    if (isMdFile && translateEnabled) {
+      items.push(
+        { type: "separator" },
+        { type: "item", action: "translate", label: "AI 翻译", shortcut: "F6" },
+      );
+    }
   }
 
   // ─── 插入操作 ───
@@ -99,14 +113,16 @@ export function EditorContextMenu({
   hasSelection,
   canUndo,
   canRedo,
+  isMdFile = true,
+  translateEnabled = true,
   onAction,
   onClose,
 }: EditorContextMenuProps) {
   const t = useT();
   // 缓存菜单项配置，仅当上下文状态变化时重建
   const menuItems = useMemo(
-    () => buildMenuItems(hasSelection, canUndo, canRedo),
-    [hasSelection, canUndo, canRedo],
+    () => buildMenuItems(hasSelection, canUndo, canRedo, isMdFile, translateEnabled),
+    [hasSelection, canUndo, canRedo, isMdFile, translateEnabled],
   );
 
   // 计算菜单显示位置，避免溢出视口边界

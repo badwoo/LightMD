@@ -27,6 +27,22 @@ function mapToFileNode(entry: FileEntry): FileNodeData {
 
 // ─── 工具函数 ──────────────────────────────────────────
 
+/**
+ * v0.6.6 问题3：焦点是否在可编辑元素上（textarea / input / contenteditable）。
+ * 用于 Delete 关闭临时文件快捷键的守卫——焦点在编辑器内打字删除时
+ * 不应触发 window 级快捷键误关文件。
+ */
+export function isFocusInEditable(active: Element | null): boolean {
+  return (
+    active instanceof HTMLElement &&
+    (active.tagName === "TEXTAREA" ||
+      active.tagName === "INPUT" ||
+      // isContentEditable 在 jsdom 中未实现（undefined），用属性兜底判断
+      active.isContentEditable === true ||
+      active.hasAttribute("contenteditable"))
+  );
+}
+
 // 文件类型判断统一使用 constants.ts 中的 isSupportedTextFile
 
 /** 递归排序文件树（文件夹在前，字母序） */
@@ -744,6 +760,12 @@ export function FileTree() {
   // Delete键/Ctrl+2 快捷键关闭临时文件
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // v0.6.6 问题3修复：焦点在可编辑元素（源码 textarea / ProseMirror / 输入框）时
+      // 不响应 Delete 快捷键——此前 window 级监听会在用户编辑文字按 Delete 删字时
+      // 误触发 closeTempFile，把正在编辑的文件关闭
+      if (isFocusInEditable(document.activeElement)) {
+        return;
+      }
       // Delete 键关闭选中的临时文件
       if (e.key === "Delete" && selectedTempIdx >= 0 && selectedTempIdx < tempFiles.length) {
         e.preventDefault();

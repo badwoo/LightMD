@@ -42,3 +42,18 @@
   ; 通知资源管理器刷新关联（忽略失败）
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
+
+; v0.6.1 问题7 / v0.6.2 问题1：卸载时清除 Windows 凭据管理器中的 AI 翻译 API Key
+; 与 WebView2 用户数据目录（localStorage 持久化的全部设置，含翻译开关/Provider 等），
+; 确保卸载重装后回到全新状态（Key 不残留、AI 翻译默认关闭），避免安全问题。
+; keyring crate 在 Windows 写入的 Generic Credential target 名为
+; "{account}.{service}" = "translate_api_key.LightMD"（已用 cmdkey /list 实机验证）；
+; 同时兜底删除旧格式 "{service}/{account}"（不同 keyring 版本格式差异）。
+!macro NSIS_HOOK_PREUNINSTALL
+  ; CredDeleteW(TargetName, CRED_TYPE_GENERIC=1, Flags=0)
+  System::Call 'advapi32::CredDeleteW(w "translate_api_key.LightMD", i 1, i 0) i .r0'
+  System::Call 'advapi32::CredDeleteW(w "LightMD/translate_api_key", i 1, i 0) i .r0'
+  ; WebView2 用户数据目录（localStorage/IndexedDB 持久化存储）与 roaming 数据目录
+  RMDir /r "$LOCALAPPDATA\com.lightmd.app"
+  RMDir /r "$APPDATA\com.lightmd.app"
+!macroend

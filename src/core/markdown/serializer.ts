@@ -5,6 +5,12 @@ import type { Node, Mark } from "prosemirror-model";
 
 /**
  * 将 ProseMirror 文档序列化为 Markdown 字符串
+ *
+ * v0.6.6 问题1：空段落（空行）往返一致性
+ * - 空段落序列化为单个空行（"\n"）；空段之后紧跟的块不再追加间隔换行
+ *   （否则每个空段膨胀为 2 个空行，md→doc→md 往返不收敛）
+ * - 去掉原 trimEnd()：它会把用户显式输入的尾部空行（空段落）全部剪掉，
+ *   导致切换页签/重开后换行丢失；现在仅保证恰好以单个换行结尾
  */
 export function docToMarkdown(doc: Node): string {
   const parts: string[] = [];
@@ -14,14 +20,17 @@ export function docToMarkdown(doc: Node): string {
       // 在块之间添加空行（分割线、列表项之间特殊处理）
       if (index > 0 && !md.startsWith("|") && parts.length > 0) {
         const last = parts[parts.length - 1];
-        if (!last.endsWith("\n\n") && last !== "") {
+        // 上一块为空段落（"\n"）时其自身已构成空行，无需再加间隔
+        if (last !== "\n" && !last.endsWith("\n\n")) {
           parts.push("\n");
         }
       }
       parts.push(md);
     }
   });
-  return parts.join("").trimEnd() + "\n";
+  let out = parts.join("");
+  if (out && !out.endsWith("\n")) out += "\n";
+  return out;
 }
 
 // ─── 块级序列化 ──────────────────────────────────────────

@@ -10,9 +10,34 @@ export interface TabInfo {
   isDirty?: boolean;
 }
 
+/**
+ * v0.6.3 P0-2：翻译撤销快照——绑定文档上下文。
+ * 恢复原文前校验 filePath/key 与当前文档一致，防止跨文件/跨版本恢复（A 的原文灌进 B）。
+ */
+export interface TranslateUndoSnapshot {
+  /** 回写前的原文全文 */
+  content: string;
+  /** 回写时的文件路径（null = 未保存的新文件） */
+  filePath: string | null;
+  /** 回写时的 forceUpdateKey（外部内容替换计数，版本恢复/磁盘重载会变化） */
+  key: number;
+}
+
 interface EditorState {
   filePath: string | null;
   isDirty: boolean;
+  /**
+   * v0.6.1 问题3：翻译回写（直接替换/双语对照）产生的修改不自动保存，
+   * 仅在用户手动保存（Ctrl+S / 菜单）或继续手动编辑后恢复自动保存
+   */
+  suppressAutoSave: boolean;
+  /**
+   * v0.6.1 问题2：翻译回写前的原文全文快照。
+   * 非空时显示浮动"取消翻译"气泡，点击恢复原文；
+   * 用户手动编辑/手动保存/切换文件后清除
+   * v0.6.3 P0-2：绑定文档上下文（filePath/key），恢复前校验归属
+   */
+  translateUndoSnapshot: TranslateUndoSnapshot | null;
   cursorLine: number;
   /** 字数统计详情（G11：扩展为对象，含字数/字符数/行数/段落数/阅读时长） */
   wordCount: WordCountResult;
@@ -40,6 +65,10 @@ interface EditorState {
   /** v0.4.0：设置当前文件语言标识（由 App.tsx 在打开文件时根据扩展名设置） */
   setCurrentLanguage: (lang: string) => void;
   setDirty: (dirty: boolean) => void;
+  /** v0.6.1 问题3：设置翻译回写后的自动保存抑制标志 */
+  setSuppressAutoSave: (v: boolean) => void;
+  /** v0.6.1 问题2：设置/清除翻译取消快照（v0.6.3 P0-2：绑定文档上下文） */
+  setTranslateUndoSnapshot: (v: TranslateUndoSnapshot | null) => void;
   setCursorLine: (line: number) => void;
   /** 更新字数统计详情（接收 calculateWordCount 的结果） */
   setWordCount: (count: WordCountResult) => void;
@@ -64,6 +93,8 @@ interface EditorState {
 export const useEditorStore = create<EditorState>((set, get) => ({
   filePath: null,
   isDirty: false,
+  suppressAutoSave: false,
+  translateUndoSnapshot: null,
   cursorLine: 0,
   wordCount: { words: 0, chars: 0, charsNoSpaces: 0, lines: 0, paragraphs: 0, readingTimeMin: 0 },
   viewMode: "preview",
@@ -80,9 +111,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   // v0.4.0：默认 markdown，打开非 md 文件时由 App.tsx 设置为对应语言
   currentLanguage: "markdown",
 
-  openFile: (path) => set({ filePath: path, isDirty: false, cursorLine: 0 }),
+  openFile: (path) => set({ filePath: path, isDirty: false, suppressAutoSave: false, translateUndoSnapshot: null, cursorLine: 0 }),
   setCurrentLanguage: (lang) => set({ currentLanguage: lang }),
   setDirty: (dirty) => set({ isDirty: dirty }),
+  setSuppressAutoSave: (v) => set({ suppressAutoSave: v }),
+  setTranslateUndoSnapshot: (v) => set({ translateUndoSnapshot: v }),
   setCursorLine: (line) => set({ cursorLine: line }),
   setWordCount: (count) => set({ wordCount: count }),
   setViewMode: (mode) => set((s) => {
@@ -105,7 +138,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setShowSearchReplace: (show) => set((s) => show
     ? { showSearchReplace: true, showSearch: true, searchFocusKey: s.searchFocusKey + 1 }
     : { showSearchReplace: false }),
-  markSaved: () => set({ isDirty: false }),
+  // 手动保存完成：同时解除翻译回写的自动保存抑制与取消快照（v0.6.1 问题2/3）
+  markSaved: () => set({ isDirty: false, suppressAutoSave: false, translateUndoSnapshot: null }),
   addTab: (tab) => set((s) => {
     // 如果标签已存在（path 相同），切换到该标签并同步更新 name/content
     // 修复：通过文件夹打开文件时，旧逻辑仅切换不更新 name，导致标签显示目录名
@@ -136,7 +170,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       activeTabIdx: s.openTabs.length,
     };
   }),
-  setActiveTab: (idx) => set({ activeTabIdx: idx }),
+  // v0.6.3 P0-2/P2-4：切换/关闭激活标签时清除翻译撤销快照并解除自动保存抑制。
+  // 结构性防御：当前 App 层切换路径最终都会调 openFile（已清理），
+  // 但 store 是公共 API，任何未走 openFile 的调用方不应留下跨文档的快照/抑制状态
+  setActiveTab: (idx) =>
+    set((s) => (idx === s.activeTabIdx
+      ? { activeTabIdx: idx }
+      : { activeTabIdx: idx, translateUndoSnapshot: null, suppressAutoSave: false })),
   closeTab: (idx) => {
     const state = get();
     const closedTab = state.openTabs[idx] || null;
@@ -153,7 +193,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (newActiveIdx >= newTabs.length) {
         newActiveIdx = Math.max(0, newTabs.length - 1);
       }
-      return { openTabs: newTabs, activeTabIdx: newActiveIdx };
+      // v0.6.3 P0-2：关闭的是激活标签 → 活跃文档变化，清除翻译快照/保存抑制
+      const clearTranslateState = idx === s.activeTabIdx;
+      return {
+        openTabs: newTabs,
+        activeTabIdx: newActiveIdx,
+        ...(clearTranslateState ? { translateUndoSnapshot: null, suppressAutoSave: false } : {}),
+      };
     });
     return closedTab;
   },

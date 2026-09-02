@@ -27,6 +27,65 @@
   gap: 6px;
 }
 
+/* ─── v0.6.1：全文翻译进度/错误提示 ─────────────── */
+.statusbar-ft-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px 1px 8px;
+  border-radius: 3px;
+  color: var(--accent-color);
+}
+
+.statusbar-ft-error {
+  color: var(--danger-color, #e5484d);
+}
+
+/* v0.6.4：翻译完成态（绿色 + ✓，2 秒后消失） */
+.statusbar-ft-done {
+  color: var(--success-color, #30a46c);
+}
+
+.statusbar-ft-check {
+  font-weight: 700;
+  margin-left: 2px;
+}
+
+/* 加载 spinner：边框旋转 */
+.statusbar-ft-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent-color);
+  border-radius: 50%;
+  animation: statusbar-ft-spin 0.8s linear infinite;
+}
+
+@keyframes statusbar-ft-spin {
+  to { transform: rotate(360deg); }
+}
+
+.statusbar-ft-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.statusbar-ft-cancel:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 /* 模式切换按钮：默认低调显示，激活时高亮 */
 .statusbar-toggle {
   display: inline-flex;

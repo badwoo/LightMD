@@ -28,6 +28,8 @@ import { ImageInsertDialog } from "../dialogs/ImageInsertDialog";
 import { ImageEditDialog } from "../dialogs/ImageEditDialog";
 import { EditorContextMenu } from "./EditorContextMenu";
 import { SlashCommand, findSlashTrigger, isInCodeBlock, type InsertMode } from "./SlashCommand";
+import { SlashCommandPm } from "./SlashCommandPm";
+import type { SlashState } from "../../core/plugins/slash-command";
 import { PAIR_MAP, PAIR_CLOSERS } from "../../core/plugins/auto-pair";
 import { isHttpUrl } from "../../core/plugins/smart-paste";
 import {
@@ -46,6 +48,38 @@ import { resolveImageSrc } from "../../utils/imagePath";
 import { calculateWordCount } from "../../utils/wordCount";
 import { findParagraphRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight } from "../../utils/focus-paragraph";
 import { isTypewriterTriggerKey, isModifierKey, computeTypewriterScrollTop, shouldSkipScrollForCharInput, computeScrollPercent, isCursorOutsideViewport, computeSyncScrollTop, shouldSkipInitialScrollToCenter, computeRestoreScrollTop, computeViewportCenter } from "../../utils/typewriter";
+// v0.6.6 问题4：源码显示层 base64 内联图片短标记（mask/unmask/光标补偿）
+import {
+  maskBase64Images,
+  unmaskBase64Images,
+  hasRawBase64Image,
+  adjustCursorForMask,
+  type Base64Tokens,
+} from "../../utils/base64ImageMask";
+// v0.6.0：AI 翻译（气泡 + 桥接 + 服务）
+import { TranslateBubble } from "./TranslateBubble";
+import { useTranslateStore, type TranslateSourceMode, type BubbleAnchor } from "../../stores/translateStore";
+import { translateService, TranslateServiceError, parseTranslateError } from "../../services/translateService";
+import {
+  extractFromSelection,
+  extractFromIframe,
+  applyTranslation,
+  getTextareaSelectionAnchor,
+  buildSourceRewrite,
+} from "../../services/translateBridge";
+// v0.6.1：全文翻译（悬浮按钮 + 切分/重组/循环 + 进度状态 + 版本快照）
+import { FullTranslateButton } from "./FullTranslateButton";
+import { ModeSwitchButton } from "./ModeSwitchButton";
+import { TranslateUndoToast } from "./TranslateUndoToast";
+import { useFullTranslateStore } from "../../stores/fullTranslateStore";
+import {
+  hasTranslatableText,
+  splitDocumentForTranslation,
+  rebuildTranslatedDocument,
+  runFullTranslateLoop,
+  createContextAbortChecker,
+} from "../../services/fullTranslate";
+import { versionSnapshotService } from "../../services/versionSnapshotService";
 import "../../styles/editor.css";
 
 // ─── 源码模式撤销/恢复栈（增量差异存储）──────────────
@@ -125,6 +159,10 @@ export function shouldSkipProseMirrorSync(isMdFile: boolean, fromSource: boolean
   return false;
 }
 
+// v0.6.3 P2-14：翻译前快照时间节流（模块级，同一文件 10 分钟内只记录一次）
+const TRANSLATE_SNAPSHOT_THROTTLE_MS = 10 * 60 * 1000;
+let lastTranslateSnapshot = { path: "", at: 0 };
+
 interface EditorContainerProps {
   content?: string;
   filePath?: string | null;
@@ -141,7 +179,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const focusOverlayRef = useRef<HTMLDivElement>(null);
   const onContentChangeRef = useRef(onContentChange);
   const onEditorReadyRef = useRef(onEditorReady);
-  onContentChangeRef.current = onContentChange;
+  // v0.6.6 问题4：源码显示层 base64 短标记表（marker → dataUrl，会话内有效，不落盘）
+  const base64TokensRef = useRef<Base64Tokens>(new Map());
+  // 出口统一 unmask：上层（App.tsx 的 content state / Ctrl+S 保存 / localStorage）
+  // 拿到的始终是真实内容（含完整 base64），磁盘格式不受显示层折叠影响
+  onContentChangeRef.current = (masked: string) => {
+    onContentChange?.(unmaskBase64Images(masked, base64TokensRef.current));
+  };
   onEditorReadyRef.current = onEditorReady;
 
   const setDirty = useEditorStore((s) => s.setDirty);
@@ -149,6 +193,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const setWordCount = useEditorStore((s) => s.setWordCount);
   const focusMode = useEditorStore((s) => s.focusMode);
   const viewMode = useEditorStore((s) => s.viewMode);
+  const setViewMode = useEditorStore((s) => s.setViewMode);
   const setSourceInsertHandler = useEditorStore((s) => s.setSourceInsertHandler);
   const setUndoHandler = useEditorStore((s) => s.setUndoHandler);
   const setRedoHandler = useEditorStore((s) => s.setRedoHandler);
@@ -167,6 +212,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // v0.4.0：分屏比例（持久化），用于 split 模式左右宽度分配
   const splitRatio = useSettingsStore((s) => s.splitRatio);
   const setSplitRatio = useSettingsStore((s) => s.setSplitRatio);
+  // v0.6.0：AI 翻译总开关（右键菜单项显示 + 入口判断）
+  const translateEnabled = useSettingsStore((s) => s.translate.translateEnabled);
 
   const isSourceMode = viewMode === "edit" || viewMode === "split";
 
@@ -199,6 +246,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const lastForceUpdateKeyRef = useRef(forceUpdateKey);
   const lastSyncDiskRef = useRef(content);
 
+  // v0.6.1 问题3：翻译回写进行中标记（PM dispatch 同步触发 onDocChange，用此 ref 区分翻译修改与用户输入）
+  const applyingTranslationRef = useRef(false);
+
   // 源码内容
   const [sourceContent, setSourceContent] = useState(content);
   const sourceTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -207,7 +257,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const lastTextareaCursorRef = useRef(0);
 
   // 自动保存：需要在 sourceContentRef 声明之后调用
-  useAutoSave(viewRef, sourceContentRef);
+  // v0.6.6 问题4：getter ref 拦截读取——自动保存/版本快照拿到 unmask 后的真实内容
+  // （textarea 显示层为短标记，写盘必须还原完整 base64）
+  const autoSaveSourceRef = {
+    get current() {
+      return unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+    },
+  } as React.MutableRefObject<string>;
+  useAutoSave(viewRef, autoSaveSourceRef);
 
   // 分屏预览容器
   // iframe 引用在 previewIframeRef 中管理
@@ -237,12 +294,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   // 当 content prop 变化（文件切换）时，同步 sourceContent
   // 编辑/分屏模式需要同步；非 md 文件在阅读模式下也需要同步（纯文本预览依赖 sourceContent）
+  // v0.6.6 问题4：同步进入源码显示层前 mask base64 图片（短标记），
+  // tokens 跨 content 更新保留（标记复用、序号稳定），文件切换时清空重建
+  const lastMaskFilePathRef = useRef(filePath);
   useEffect(() => {
     if (isSourceMode || !isMdFile) {
-      setSourceContent(content);
-      sourceContentRef.current = content;
+      if (lastMaskFilePathRef.current !== filePath) {
+        base64TokensRef.current = new Map();
+        lastMaskFilePathRef.current = filePath;
+      }
+      const { text: masked } = maskBase64Images(content, base64TokensRef.current);
+      setSourceContent(masked);
+      sourceContentRef.current = masked;
     }
-  }, [content, isSourceMode, isMdFile]);
+  }, [content, isSourceMode, isMdFile, filePath]);
 
   // ─── 撤销/恢复 ────────────────────────────────
   const pushUndoEntry = useCallback((entry: HistoryEntry) => {
@@ -299,7 +364,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     sourceContentRef.current = undoneContent;
     onContentChangeRef.current?.(undoneContent);
     setDirtyRef.current(true);
-    lastContentRef.current = undoneContent;
+    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+    lastContentRef.current = unmaskBase64Images(undoneContent, base64TokensRef.current);
     requestAnimationFrame(() => {
       const ta = sourceTextareaRef.current;
       if (ta) {
@@ -330,7 +396,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     sourceContentRef.current = redoneContent;
     onContentChangeRef.current?.(redoneContent);
     setDirtyRef.current(true);
-    lastContentRef.current = redoneContent;
+    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+    lastContentRef.current = unmaskBase64Images(redoneContent, base64TokensRef.current);
     requestAnimationFrame(() => {
       const ta = sourceTextareaRef.current;
       if (ta) {
@@ -371,7 +438,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         sourceContentRef.current = newContent;
         onContentChangeRef.current?.(newContent);
         setDirtyRef.current(true);
-        lastContentRef.current = newContent;
+        // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+        lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
         const cursorPos = selected ? start + syntax.length : (cursorOffset !== undefined ? start + cursorOffset : start + Math.floor(syntax.length / 2));
         const restore = () => {
           const ta = sourceTextareaRef.current;
@@ -416,6 +484,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         lastContentRef.current = markdown;
         onContentChangeRef.current?.(markdown);
         setDirtyRef.current(true);
+        // v0.6.1 问题3：翻译回写（替换/双语）的修改不自动保存；
+        // 用户手动输入则恢复正常自动保存
+        useEditorStore.getState().setSuppressAutoSave(applyingTranslationRef.current);
+        // v0.6.1 问题2：用户手动编辑后原文快照失效，清除"取消翻译"气泡
+        if (!applyingTranslationRef.current) {
+          useEditorStore.getState().setTranslateUndoSnapshot(null);
+        }
       },
       onSelectionChange: (line, text) => {
         setCursorLineRef.current(line);
@@ -427,6 +502,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         viewRef.current = v;
         onEditorReadyRef.current?.(v);
       },
+      // v0.6.0：PM 选区「译」浮动按钮触发（ref 转发最新闭包，编辑器只创建一次）
+      onTranslateTrigger: () => startTranslateRef.current(),
+      // v0.6.0：总开关关闭时不显示选区浮动按钮（动态读取设置）
+      translateEnabledGetter: () => useSettingsStore.getState().translate.translateEnabled,
+      // v0.6.6 问题2：阅读模式 Slash 命令触发状态（插件检测后回调，驱动 SlashCommandPm 渲染）
+      onSlashStateChange: (s) => setPmSlash(s),
     });
     if (view) viewRef.current = view;
     return () => {
@@ -538,9 +619,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (fromPreview && toSource) {
       // ── 阅读 → 编辑/分屏：从 ProseMirror 同步到 textarea ──
       try {
-        const mdText = getMarkdownFromDoc(view.state.doc);
-        setSourceContent(mdText);
-        sourceContentRef.current = mdText;
+        // v0.6.6 问题4：PM 序列化输出含完整 base64 → 显示层 mask 为短标记
+        // （data URL 不含换行，mask 不改变行结构，光标行号映射不受影响）
+        const { text: mdMasked } = maskBase64Images(getMarkdownFromDoc(view.state.doc), base64TokensRef.current);
+        setSourceContent(mdMasked);
+        sourceContentRef.current = mdMasked;
 
         // 映射光标位置
         const { from } = view.state.selection;
@@ -552,7 +635,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         requestAnimationFrame(() => {
           const textarea = sourceTextareaRef.current;
           if (textarea) {
-            const lines = mdText.split("\n");
+            const lines = mdMasked.split("\n");
             let pos = 0;
             for (let i = 0; i < Math.min(lineIndex, lines.length - 1); i++) {
               pos += lines[i].length + 1;
@@ -562,8 +645,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           }
         });
       } catch {
-        setSourceContent(content);
-        sourceContentRef.current = content;
+        const { text: fallbackMasked } = maskBase64Images(content, base64TokensRef.current);
+        setSourceContent(fallbackMasked);
+        sourceContentRef.current = fallbackMasked;
         pendingScrollRef.current = { targetMode: viewMode, percent: sourcePercent };
       }
 
@@ -573,7 +657,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // ── 编辑/分屏 → 阅读：从 textarea 同步到 ProseMirror ──
       if (sourceContent) {
         try {
-          const newDoc = markdownToDoc(sourceContent);
+          // v0.6.6 问题4：textarea 显示层是短标记 → 还原完整 base64 后再解析 PM doc
+          const newDoc = markdownToDoc(unmaskBase64Images(sourceContent, base64TokensRef.current));
           const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
 
           // 映射光标位置
@@ -675,19 +760,37 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   // ─── 源码编辑内容变化 ──────────────────────────
   const handleSourceChange = useRef((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newContent = e.target.value;
     const textarea = e.target;
+    let newContent = textarea.value;
+    let cursorPos = textarea.selectionStart;
+    // v0.6.6 问题4：粘贴/输入 base64 图片 → 实时替换为短标记并补偿光标
+    if (hasRawBase64Image(newContent)) {
+      const { text: masked, replacements } = maskBase64Images(newContent, base64TokensRef.current);
+      if (replacements.length > 0) {
+        cursorPos = adjustCursorForMask(cursorPos, replacements);
+        newContent = masked;
+        // 受控组件：直接同步 DOM value 与光标（React setState 相同值不重渲染）
+        textarea.value = masked;
+        textarea.setSelectionRange(cursorPos, cursorPos);
+      }
+    }
     recordUndoEntry(
       sourceContentRef.current,
       newContent,
-      textarea.selectionStart,
+      cursorPos,
       textarea.scrollTop,
     );
     setSourceContent(newContent);
     onContentChangeRef.current?.(newContent);
     setDirtyRef.current(true);
-    lastContentRef.current = newContent;
-    lastTextareaCursorRef.current = textarea.selectionStart;
+    // v0.6.1 问题3：用户手动编辑恢复正常自动保存（解除翻译回写抑制）
+    useEditorStore.getState().setSuppressAutoSave(false);
+    // v0.6.1 问题2：用户手动编辑后原文快照失效，清除"取消翻译"气泡
+    useEditorStore.getState().setTranslateUndoSnapshot(null);
+    // lastContentRef 与 content prop 同为真实坐标（出口 unmask 后的值），
+    // 保证行 551 的相等检查不会因坐标系不同而误触发 PM 全量重建
+    lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
+    lastTextareaCursorRef.current = cursorPos;
 
     // G11：源码模式下更新字数统计（防抖 300ms，与 ProseMirror 模式一致）
     if (wordCountTimerRef.current) clearTimeout(wordCountTimerRef.current);
@@ -695,7 +798,6 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
     // SlashCommand 触发检测：行首 / 且不在代码块内
     // 后续 query 更新和失效关闭由 SlashCommand 组件内部监听 input 处理
-    const cursorPos = textarea.selectionStart;
     const trigger = findSlashTrigger(newContent, cursorPos);
     if (trigger.trigger && !isInCodeBlock(newContent, cursorPos)) {
       setSlashCommandOpen(true);
@@ -713,16 +815,24 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const selected = currentContent.substring(start, end);
     const newContent = currentContent.substring(0, start) + text + currentContent.substring(end);
     const scrollTop = textarea.scrollTop;
+    // v0.6.6 问题4：插入内容含 base64 图片（如 ImageInsertDialog）→ mask 为短标记
+    let finalContent = newContent;
+    let newCursorPos = selected ? start + text.length : (cursorOffset !== undefined ? start + cursorOffset : start + text.length);
+    if (hasRawBase64Image(newContent)) {
+      const { text: masked, replacements } = maskBase64Images(newContent, base64TokensRef.current);
+      if (replacements.length > 0) {
+        finalContent = masked;
+        newCursorPos = adjustCursorForMask(newCursorPos, replacements);
+      }
+    }
     // 直接推入差异（对话框插入是离散操作，无需防抖）
-    const diff = computeDiff(currentContent, newContent);
+    const diff = computeDiff(currentContent, finalContent);
     pushUndoEntry({ ...diff, cursorPos: start, scrollTop });
-    setSourceContent(newContent);
-    sourceContentRef.current = newContent;
-    onContentChangeRef.current?.(newContent);
+    setSourceContent(finalContent);
+    sourceContentRef.current = finalContent;
+    onContentChangeRef.current?.(finalContent);
     setDirtyRef.current(true);
-    lastContentRef.current = newContent;
-    // 有选中时移到插入文本末尾，否则按 cursorOffset 定位
-    const newCursorPos = selected ? start + text.length : (cursorOffset !== undefined ? start + cursorOffset : start + text.length);
+    lastContentRef.current = unmaskBase64Images(finalContent, base64TokensRef.current);
     const restore = () => {
       const ta = sourceTextareaRef.current;
       if (ta) {
@@ -766,7 +876,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     sourceContentRef.current = newContent;
     onContentChangeRef.current?.(newContent);
     setDirtyRef.current(true);
-    lastContentRef.current = newContent;
+    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+    lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
 
     // 恢复光标位置（rAF + setTimeout 双保险，与 insertTextAtCursor 一致）
     const restore = () => {
@@ -802,6 +913,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // ─── SlashCommand 菜单 open 状态 ───────────────────
   // 仅在源码模式 + Markdown 文件 + 行首输入 / 时打开
   const [slashCommandOpen, setSlashCommandOpen] = useState(false);
+  // ─── v0.6.6 问题2：阅读模式 Slash 触发状态（由 ProseMirror 插件回调更新）───
+  const [pmSlash, setPmSlash] = useState<SlashState | null>(null);
 
   // ─── 打开链接对话框（携带选中文本作为 initialText）────
   const openLinkDialog = useCallback(() => {
@@ -895,7 +1008,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       sourceContentRef.current = newText;
       onContentChangeRef.current?.(newText);
       setDirtyRef.current(true);
-      lastContentRef.current = newText;
+      // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+      lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
       const newCursorPos = start + cursorOffset;
       const restore = () => {
         const ta = sourceTextareaRef.current;
@@ -920,7 +1034,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       sourceContentRef.current = newText;
       onContentChangeRef.current?.(newText);
       setDirtyRef.current(true);
-      lastContentRef.current = newText;
+      // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+      lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
       const newCursorPos = start + cursorOffset;
       const restore = () => {
         const ta = sourceTextareaRef.current;
@@ -947,7 +1062,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setSourceContent(newContent);
     onContentChangeRef.current?.(newContent);
     setDirtyRef.current(true);
-    lastContentRef.current = newContent;
+    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+    lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
 
     const newCursorPos = start + cursorOffset;
     const restore = () => {
@@ -1033,6 +1149,498 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
   }, [isSourceMode, isMdFile, autoPairEnabled]);
 
+  // ─── v0.6.0：AI 翻译入口接线 ────────────────────
+  /** 当前翻译任务上下文（原文/来源通道/textarea 选区位置；重试与回写用） */
+  const translateCtxRef = useRef<{
+    text: string;
+    sourceMode: TranslateSourceMode;
+    anchor: BubbleAnchor;
+    start?: number;
+    end?: number;
+  } | null>(null);
+  // startTranslate/handleTranslateApply 的最新引用转发（createEditor 只初始化一次 + 命令监听挂载一次）
+  // v0.6.2 问题3：startTranslate 支持 fallbackToFull 参数（「译」按钮无选区时回退全文翻译）
+  const startTranslateRef = useRef<(fallbackToFull?: boolean) => void>(() => {});
+  const handleTranslateApplyRef = useRef<(mode: "replace" | "bilingual", translated: string) => void>(() => {});
+
+  // v0.6.3 P0-1/P0-2：当前活跃文档上下文（latest-ref，每次渲染刷新）。
+  // - 全文翻译 shouldAbort 用「任务启动闭包快照 vs 此 ref」检测标签切换
+  // - 翻译撤销快照的写入/校验用它读写当前 filePath/forceUpdateKey
+  //   （handleTranslateApply 等空依赖 useCallback 拿不到最新 props，必须走 ref）
+  const activeFileRef = useRef<string | null | undefined>(undefined);
+  activeFileRef.current = filePath;
+  const activeKeyRef = useRef<number>(0);
+  activeKeyRef.current = forceUpdateKey ?? 0;
+
+  /** 执行翻译任务：打开气泡 → 流式调用 → finish/fail；resultMode 非 bubble 时自动应用结果 */
+  const runTranslate = useCallback((
+    text: string,
+    sourceMode: TranslateSourceMode,
+    anchor: BubbleAnchor,
+    start?: number,
+    end?: number,
+  ) => {
+    // v0.6.2 问题4：无可译文字（纯符号/纯链接选区）静默返回，不发请求省 token
+    if (!hasTranslatableText(text)) return;
+    translateCtxRef.current = { text, sourceMode, anchor, start, end };
+    useTranslateStore.getState().openBubble(sourceMode, anchor);
+
+    const cfg = useSettingsStore.getState().translate;
+    translateService
+      .translate(text, (chunk) => useTranslateStore.getState().appendChunk(chunk))
+      .then((result) => {
+        useTranslateStore.getState().finish(result);
+        const mode = cfg.translateResultMode;
+        // preview 通道无回写能力，强制气泡交互；clipboard 模式对任何通道均直接复制
+        if (mode === "clipboard") {
+          navigator.clipboard?.writeText(result.translated).catch(() => undefined);
+          useTranslateStore.getState().close();
+        } else if (sourceMode !== "preview" && (mode === "replace" || mode === "bilingual")) {
+          handleTranslateApplyRef.current(mode, result.translated);
+        }
+      })
+      .catch((e) => {
+        const info = e instanceof TranslateServiceError ? e.info : parseTranslateError(e);
+        // CANCELLED 静默：新任务已 openBubble 重置状态，旧任务的 fail 会污染新任务
+        if (info.code === "CANCELLED") return;
+        useTranslateStore.getState().fail(info.code, info.detail);
+      });
+  }, []);
+
+  /**
+   * 翻译触发入口（右键菜单 / F6 / 命令面板 / PM 选区浮动按钮统一走这里）。
+   * 总开关关闭时所有入口静默返回。
+   * 按当前模式选择提取通道：
+   * - preview+md：PM 选区（Markdown 结构保真，可回写）
+   * - edit/split：textarea 选区（Markdown 源码直接回写）
+   * - split 且 textarea 无选区：iframe 预览选区（纯文本，仅复制）
+   * - preview+非 md：DOM 选区（纯文本，仅复制）
+   * v0.6.2 问题3：fallbackToFull=true 时（「译」按钮入口），所有通道均无有效选区
+   * 则回退到全文翻译（非 md 文件全文翻译不支持，静默返回）
+   */
+  const startTranslate = useCallback((fallbackToFull?: boolean) => {
+    // 总开关关闭：所有翻译入口不响应
+    if (!useSettingsStore.getState().translate.translateEnabled) return;
+    // v0.6.3 P1-2：全文翻译运行中不响应选中翻译——translateService.translate 无条件取消旧任务，
+    // 会导致整篇翻译被静默中止且已完成段落的译文全部作废
+    if (useFullTranslateStore.getState().status === "running") return;
+
+    // 1. PM 阅读模式（md 文件）
+    if (viewMode === "preview" && isMdFile) {
+      const view = viewRef.current;
+      if (!view) return;
+      const extract = extractFromSelection(view);
+      if (!extract) {
+        // v0.6.2 问题3：无有效选区且来自「译」按钮 → 回退全文翻译
+        if (fallbackToFull) startFullTranslateRef.current();
+        return;
+      }
+      let anchor: BubbleAnchor;
+      try {
+        const coords = view.coordsAtPos(view.state.selection.to);
+        anchor = { x: coords.left, y: coords.bottom };
+      } catch {
+        anchor = { x: window.innerWidth / 2, y: 100 };
+      }
+      runTranslate(extract.text, "pm", anchor);
+      return;
+    }
+
+    // 2. 源码模式（edit/split）：textarea 选区优先
+    if (isSourceMode) {
+      const textarea = sourceTextareaRef.current;
+      if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
+        const text = sourceContentRef.current.slice(textarea.selectionStart, textarea.selectionEnd);
+        if (text.trim()) {
+          runTranslate(text, "source", getTextareaSelectionAnchor(textarea), textarea.selectionStart, textarea.selectionEnd);
+          return;
+        }
+      }
+      // 3. split 模式 textarea 无选区 → iframe 预览选区（纯文本通道）
+      if (viewMode === "split") {
+        const iframe = previewIframeRef.current;
+        const doc = iframe?.contentDocument;
+        const text = doc ? extractFromIframe(doc) : null;
+        if (doc && text) {
+          const sel = doc.getSelection();
+          const iframeRect = iframe!.getBoundingClientRect();
+          let anchor: BubbleAnchor = { x: iframeRect.left + 100, y: iframeRect.top + 100 };
+          if (sel && sel.rangeCount > 0) {
+            const rect = sel.getRangeAt(0).getBoundingClientRect();
+            anchor = { x: iframeRect.left + rect.right, y: iframeRect.top + rect.bottom };
+          }
+          runTranslate(text, "preview", anchor);
+          return;
+        }
+      }
+      // v0.6.2 问题3：textarea 与 iframe 均无选区且来自「译」按钮 → 回退全文翻译
+      if (fallbackToFull) startFullTranslateRef.current();
+      return;
+    }
+
+    // 4. preview+非 md 文件：主文档 DOM 选区（纯文本通道）
+    if (viewMode === "preview" && !isMdFile) {
+      const sel = document.getSelection();
+      const text = sel ? sel.toString().trim() : "";
+      if (sel && text && sel.rangeCount > 0) {
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        runTranslate(text, "preview", { x: rect.right, y: rect.bottom });
+      }
+    }
+  }, [viewMode, isMdFile, isSourceMode, runTranslate]);
+  startTranslateRef.current = startTranslate;
+
+  /** 译文回写：pm 通道走 translateBridge（replace 失败降级 bilingual）；source 通道走 buildSourceRewrite */
+  const handleTranslateApply = useCallback((mode: "replace" | "bilingual", translated: string) => {
+    const ctx = translateCtxRef.current;
+    if (!ctx || !translated.trim()) return;
+
+    if (ctx.sourceMode === "pm") {
+      const view = viewRef.current;
+      if (!view) return;
+      // v0.6.1 问题2：记录回写前全文快照（取消翻译恢复用）
+      let original: string | null = null;
+      try {
+        original = getMarkdownFromDoc(view.state.doc);
+      } catch {
+        original = null;
+      }
+      // replace 失败（结构失配/解析失败）自动降级 bilingual 引用块插入
+      // v0.6.1 问题3：标记翻译回写中，onDocChange 据此抑制自动保存
+      applyingTranslationRef.current = true;
+      let ok = false;
+      try {
+        ok = applyTranslation(view, translated, mode) ||
+          (mode === "replace" && applyTranslation(view, translated, "bilingual"));
+      } finally {
+        applyingTranslationRef.current = false;
+      }
+      if (ok) {
+        useTranslateStore.getState().close();
+        translateCtxRef.current = null;
+        // v0.6.1 问题2：回写成功后记录原文快照，显示"取消翻译"气泡
+        // v0.6.3 P0-2：快照绑定文档上下文（filePath/key），恢复前校验归属
+        if (original !== null) {
+          useEditorStore.getState().setTranslateUndoSnapshot({
+            content: original,
+            filePath: activeFileRef.current ?? null,
+            key: activeKeyRef.current,
+          });
+        }
+      }
+      // 失败保留气泡，用户可复制译文
+      return;
+    }
+
+    if (ctx.sourceMode === "source" && ctx.start !== undefined && ctx.end !== undefined) {
+      const rewrite = buildSourceRewrite(sourceContentRef.current, ctx.start, ctx.end, translated, mode);
+      if (!rewrite) return;
+      // v0.6.1 问题2：记录回写前全文快照（取消翻译恢复用）
+      const original = sourceContentRef.current;
+      setSourceContent(rewrite.content);
+      onContentChangeRef.current?.(rewrite.content);
+      setDirtyRef.current(true);
+      // v0.6.1 问题3：翻译回写的修改不自动保存
+      useEditorStore.getState().setSuppressAutoSave(true);
+      // v0.6.1 问题2：记录原文快照，显示"取消翻译"气泡
+      // v0.6.3 P0-2：快照绑定文档上下文（filePath/key），恢复前校验归属
+      useEditorStore.getState().setTranslateUndoSnapshot({
+        content: original,
+        filePath: activeFileRef.current ?? null,
+        key: activeKeyRef.current,
+      });
+      // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+      lastContentRef.current = unmaskBase64Images(rewrite.content, base64TokensRef.current);
+      useTranslateStore.getState().close();
+      translateCtxRef.current = null;
+      // 光标移到译文末尾并聚焦
+      const textarea = sourceTextareaRef.current;
+      if (textarea) {
+        requestAnimationFrame(() => {
+          textarea.focus();
+          textarea.setSelectionRange(rewrite.cursor, rewrite.cursor);
+        });
+      }
+    }
+  }, []);
+  handleTranslateApplyRef.current = handleTranslateApply;
+
+  /** 复制译文到剪贴板 */
+  const handleTranslateCopy = useCallback((text: string) => {
+    navigator.clipboard?.writeText(text).catch(() => undefined);
+  }, []);
+
+  /** 重试上次翻译（复用任务上下文的原文与来源通道，锚点取当前气泡位置） */
+  const handleTranslateRetry = useCallback(() => {
+    const ctx = translateCtxRef.current;
+    if (!ctx) return;
+    const anchor = useTranslateStore.getState().anchor ?? ctx.anchor;
+    runTranslate(ctx.text, ctx.sourceMode, anchor, ctx.start, ctx.end);
+  }, [runTranslate]);
+
+  // ─── v0.6.1：全文翻译 ────────────────────
+  const startFullTranslateRef = useRef<() => void>(() => {});
+
+  /**
+   * 全文翻译回写（一次性替换整篇文档）。
+   * - preview+md：直接替换 PM doc（单事务，Ctrl+Z 可整体撤销）
+   * - 任意模式：同步 sourceContent 与 App 层 content state，置脏
+   * - v0.6.1 问题2：undoSnapshot 非空时记录原文快照（显示"取消翻译"气泡）
+   */
+  const applyFullTranslation = useCallback((newContent: string, undoSnapshot?: string) => {
+    // v0.6.6 问题4：坐标归一化——输入可能来自全文翻译（真实内容）或
+    // 选中翻译回写的快照（masked 坐标），先 unmask 统一为真实内容
+    const realContent = unmaskBase64Images(newContent, base64TokensRef.current);
+    // PM 模式直接替换 doc；设置 lastContentRef 防止 content effect 重复替换
+    if (viewMode === "preview" && viewRef.current) {
+      try {
+        const view = viewRef.current;
+        const newDoc = markdownToDoc(realContent);
+        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
+        tr.setSelection(TextSelection.atStart(tr.doc));
+        tr.setMeta("fileSwitch", true); // 整篇替换后滚动交由联动逻辑处理
+        // v0.6.1 问题3：标记翻译回写中，onDocChange 据此抑制自动保存
+        applyingTranslationRef.current = true;
+        try {
+          view.dispatch(tr);
+        } finally {
+          applyingTranslationRef.current = false;
+        }
+      } catch {
+        // PM 解析失败：仍写入 sourceContent（切模式时同步），不阻断
+      }
+    }
+    // 显示层 mask（无 base64 时零开销原样返回）；lastContentRef 存真实坐标
+    const { text: masked } = maskBase64Images(realContent, base64TokensRef.current);
+    setSourceContent(masked);
+    sourceContentRef.current = masked;
+    lastContentRef.current = realContent;
+    // 出口统一 unmask：onContentChange 拿到的是真实内容（masked → realContent）
+    onContentChangeRef.current?.(masked);
+    setDirtyRef.current(true);
+    // v0.6.1 问题3：全文翻译回写的修改不自动保存，等待用户手动保存或继续编辑
+    useEditorStore.getState().setSuppressAutoSave(true);
+    // v0.6.1 问题2：记录原文快照（undefined 表示不更新，如恢复原文场景）
+    // v0.6.3 P0-2：快照绑定文档上下文（filePath/key），恢复前校验归属
+    if (undoSnapshot !== undefined) {
+      useEditorStore.getState().setTranslateUndoSnapshot({
+        content: undoSnapshot,
+        filePath: activeFileRef.current ?? null,
+        key: activeKeyRef.current,
+      });
+    }
+  }, [viewMode]);
+
+  /**
+   * v0.6.1 问题2：取消翻译 —— 用原文快照整体恢复文档。
+   * 恢复的是原文（磁盘已知内容），不抑制自动保存；
+   * 恢复后内容与最近磁盘同步一致时清除脏标记
+   */
+  const undoTranslation = useCallback(() => {
+    const snap = useEditorStore.getState().translateUndoSnapshot;
+    if (snap === null) return;
+    // v0.6.3 P0-2：快照绑定文档上下文——文件路径或外部更新计数不匹配时快照已失效，
+    // 拒绝恢复并清除（防止 A 文件的原文灌进 B 文件/覆盖版本恢复的内容）
+    if (snap.filePath !== (activeFileRef.current ?? null) || snap.key !== activeKeyRef.current) {
+      useEditorStore.getState().setTranslateUndoSnapshot(null);
+      useEditorStore.getState().setSuppressAutoSave(false);
+      return;
+    }
+    const original = snap.content;
+    // 恢复原文：不记录新快照（清除气泡）、解除自动保存抑制
+    // v0.6.6 问题4：快照可能是 masked 坐标（选中翻译回写场景），
+    // applyFullTranslation 内部归一化；与磁盘内容比较也需统一为真实坐标
+    applyFullTranslation(original);
+    useEditorStore.getState().setTranslateUndoSnapshot(null);
+    useEditorStore.getState().setSuppressAutoSave(false);
+    // 恢复后内容与最近磁盘内容一致 → 不再是脏状态
+    if (unmaskBase64Images(original, base64TokensRef.current) === lastSyncDiskRef.current) {
+      setDirtyRef.current(false);
+      const { activeTabIdx } = useEditorStore.getState();
+      useEditorStore.getState().updateTabDirty(activeTabIdx, false);
+    }
+  }, [applyFullTranslation]);
+
+  // ── v0.6.4 问题1c：失败段气泡 ──────────────────────────────
+  // 翻译失败的段在内容首处以气泡提示（底部栏不再显示失败），5 秒后自动消失
+  const [segmentFailTip, setSegmentFailTip] = useState<{ text: string; count: number } | null>(null);
+  const segmentFailTipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** 显示失败段气泡（重复调用重置计时；切文档/再次翻译时由调用方清除） */
+  const showSegmentFailTip = useCallback((failedText: string, totalFailed: number) => {
+    if (segmentFailTipTimerRef.current) clearTimeout(segmentFailTipTimerRef.current);
+    setSegmentFailTip({ text: failedText, count: totalFailed });
+    segmentFailTipTimerRef.current = setTimeout(() => setSegmentFailTip(null), 5000);
+  }, []);
+
+  /**
+   * 全文翻译入口（悬浮按钮 / Shift+F6 / 命令面板统一走这里）。
+   * 流程：取全文 → 切分 → 快照 → 逐段串行翻译（进度/取消）→ 一次性重组回写。
+   * 失败安全：任何失败/中断/标签切换路径均不写入，原文零破坏。
+   */
+  const startFullTranslate = useCallback(() => {
+    const ftStore = useFullTranslateStore.getState();
+    // 运行中再次触发 = 取消
+    if (ftStore.status === "running") {
+      ftStore.requestCancel();
+      translateService.cancel().catch(() => undefined);
+      return;
+    }
+    if (!useSettingsStore.getState().translate.translateEnabled) return;
+    if (!isMdFile) return; // 非 md 代码文件不支持全文翻译
+
+    // 取当前全文内容（preview 走 PM 序列化；edit/split 走 sourceContent）
+    // v0.6.6 问题4：sourceContent 是 masked 短标记坐标 → unmask 还原真实内容，
+    // 保证版本快照、回写校验与译文重组都在真实坐标系进行
+    let fullText: string;
+    if (viewMode === "preview") {
+      const view = viewRef.current;
+      if (!view) return;
+      try {
+        fullText = getMarkdownFromDoc(view.state.doc);
+      } catch {
+        return;
+      }
+    } else {
+      fullText = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+    }
+
+    const units = splitDocumentForTranslation(fullText);
+    if (units.length === 0) return; // 无可译内容（纯代码/空文档）静默返回
+
+    // 快照先行（有文件路径时），支持从版本历史恢复原文
+    // v0.6.3 P2-14：时间节流——同一文件 10 分钟内不重复记录翻译前快照，
+    // 避免反复触发全文翻译把用户真实的版本历史挤掉（上限 5 条）
+    if (
+      filePath &&
+      (lastTranslateSnapshot.path !== filePath ||
+        Date.now() - lastTranslateSnapshot.at > TRANSLATE_SNAPSHOT_THROTTLE_MS)
+    ) {
+      lastTranslateSnapshot = { path: filePath, at: Date.now() };
+      versionSnapshotService.recordSnapshot(filePath, fullText).catch(() => undefined);
+    }
+
+    // v0.6.3 P0-1：中止判断 = 任务启动上下文（闭包快照）vs 当前活跃上下文（latest-ref）。
+    // 原实现拿闭包捕获值与启动时写入的 ref 比较，结构性恒 false，切标签后译文会写入错误文档
+    ftStore.start(units.length);
+    const shouldAbort = createContextAbortChecker(
+      { filePath, key: forceUpdateKey ?? 0 },
+      () => ({ filePath: activeFileRef.current, key: activeKeyRef.current }),
+      () => useFullTranslateStore.getState().cancelRequested,
+    );
+
+    runFullTranslateLoop(units, {
+      // 复用选中翻译通道（Rust 单任务模型，一次一段；流式 chunk 不展示）
+      translateUnit: (text) => translateService.translate(text, () => undefined),
+      onProgress: () => useFullTranslateStore.getState().tick(),
+      shouldAbort,
+      errorCodeOf: (e) =>
+        e instanceof TranslateServiceError ? e.info.code : parseTranslateError(e).code,
+    }).then((outcome) => {
+      const s = useFullTranslateStore.getState();
+      if (outcome.cancelled) {
+        s.reset();
+        return;
+      }
+      if (outcome.errorCode) {
+        s.fail(outcome.errorCode);
+        return;
+      }
+      // 全部段落失败：视为整体失败（不写入）
+      // v0.6.3 P1-5：上报真实错误码（如 RATE/AUTH），不再固定 STREAM 误导排查
+      if (outcome.failedCount >= units.length) {
+        s.fail(outcome.lastErrorCode ?? "STREAM");
+        return;
+      }
+      // 写入前再次确认未发生标签切换
+      if (shouldAbort()) {
+        s.reset();
+        return;
+      }
+      // v0.6.3 P0-3：回写前校验文档未被编辑——当前内容与启动时快照一致才允许整体回写，
+      // 不一致则放弃回写（整篇替换会静默丢弃翻译期间的用户编辑）
+      let currentText: string | null;
+      try {
+        if (viewMode === "preview" && viewRef.current) {
+          currentText = getMarkdownFromDoc(viewRef.current.state.doc);
+        } else {
+          // v0.6.6 问题4：与 fullText 同坐标系（真实内容）比较
+          currentText = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+        }
+      } catch {
+        currentText = null;
+      }
+      if (currentText !== fullText) {
+        s.fail("DOC_CHANGED");
+        return;
+      }
+      const newContent = rebuildTranslatedDocument(fullText, units, outcome.translations);
+      // v0.6.1 问题2：传入原文快照，回写后显示"取消翻译"气泡
+      applyFullTranslation(newContent, fullText);
+      s.finish(outcome.failedCount);
+      // v0.6.4 问题1c：失败段在内容首处以气泡提示（底部栏不再显示失败）
+      if (outcome.failedCount > 0) {
+        const idx = outcome.translations.indexOf(null);
+        const firstFailed = idx >= 0 ? units[idx] : null;
+        showSegmentFailTip(firstFailed?.text ?? "", outcome.failedCount);
+      }
+    });
+  }, [viewMode, isMdFile, filePath, forceUpdateKey, applyFullTranslation, showSegmentFailTip]);
+  startFullTranslateRef.current = startFullTranslate;
+
+  // v0.6.4 问题1b：切换文档时清除上一文档的翻译状态（done 提示/系统性错误/运行进度
+  // 均不跨文档残留；运行中的任务由 shouldAbort 上下文检测中止）
+  useEffect(() => {
+    const s = useFullTranslateStore.getState();
+    if (s.status !== "idle") s.reset();
+    if (segmentFailTipTimerRef.current) clearTimeout(segmentFailTipTimerRef.current);
+    setSegmentFailTip(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePath]);
+
+  // 全文翻译运行中：Esc 中断
+  const fullTranslateRunning = useFullTranslateStore((s) => s.status === "running");
+  useEffect(() => {
+    if (!fullTranslateRunning) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        const s = useFullTranslateStore.getState();
+        s.requestCancel();
+        translateService.cancel().catch(() => undefined);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullTranslateRunning]);
+
+  // v0.6.2 问题2：翻译回写成功后（"取消翻译"气泡可见期间），Esc 恢复原文。
+  // 翻译气泡打开时（status 非 idle）Esc 优先关闭气泡，不触发恢复原文
+  const translateUndoSnapshot = useEditorStore((s) => s.translateUndoSnapshot);
+  useEffect(() => {
+    if (translateUndoSnapshot === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (useTranslateStore.getState().status !== "idle") return;
+      e.preventDefault();
+      undoTranslation();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [translateUndoSnapshot, undoTranslation]);
+
+  // 监听命令面板/快捷键转发的 edit.translate 命令（App.tsx 派发，统一入口 startTranslate）
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent).detail?.id;
+      if (id === "edit.translate") startTranslateRef.current();
+      // v0.6.1：全文翻译（Shift+F6 / 命令面板 / 悬浮按钮共用入口）
+      if (id === "edit.translateDocument") startFullTranslateRef.current();
+    };
+    window.addEventListener("lightmd:command", handler);
+    return () => window.removeEventListener("lightmd:command", handler);
+  }, []);
+
   // ─── textarea 右键菜单 ──────────────────────────
   const handleTextareaContextMenu = useCallback((e: React.MouseEvent<HTMLTextAreaElement>) => {
     if (!isSourceMode || !isMdFile) return;
@@ -1049,6 +1657,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     switch (action) {
       case "undo": handleUndo(); return;
       case "redo": handleRedo(); return;
+      // v0.6.0：AI 翻译当前选区（textarea 通道）
+      case "translate": startTranslateRef.current(); return;
       case "bold":
       case "italic":
       case "strikethrough":
@@ -1127,6 +1737,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 如果依赖 content 会导致菜单刚打开就被关闭（菜单一闪而过）
   useEffect(() => {
     setSlashCommandOpen(false);
+    // v0.6.6 问题2：阅读模式 Slash 菜单同步关闭（防止模式/文件切换后残留）
+    setPmSlash(null);
   }, [filePath, viewMode]);
 
   // ─── 专注模式 ──────────────────────────────────
@@ -1694,9 +2306,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (viewMode !== "split") return "";
       if (!isMdFile) {
         // v0.4.0：非 Markdown 文件用 renderCodeFilePreview 生成带语法高亮的 HTML
-        return renderCodeFilePreview(debouncedSourceContent, currentLanguage);
+        // v0.6.6 问题4：unmask 还原 base64（显示层短标记不进预览）
+        return renderCodeFilePreview(unmaskBase64Images(debouncedSourceContent, base64TokensRef.current), currentLanguage);
       }
-      let html = renderMarkdownToHtml(debouncedSourceContent);
+      // v0.6.6 问题4：unmask 还原 base64 后再渲染，短标记会导致预览图裂
+      let html = renderMarkdownToHtml(unmaskBase64Images(debouncedSourceContent, base64TokensRef.current));
       // 将相对路径图片 src 转换为 Tauri webview 可访问的 asset:// URL
       html = html.replace(/(<img\s[^>]*src=")([^"]+)(")/g, (_match, prefix: string, src: string, suffix: string) => {
         return `${prefix}${resolveImageSrc(src, filePath)}${suffix}`;
@@ -1717,7 +2331,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 仅在阅读模式 + 非 md 文件时计算，依赖 sourceContent 和 currentLanguage
   const codePreviewHtml = useMemo(() => {
     if (isMdFile || viewMode !== "preview") return "";
-    return renderCodeFilePreview(sourceContent, currentLanguage);
+    // v0.6.6 问题4：unmask 还原 base64（显示层短标记不进预览）
+    return renderCodeFilePreview(unmaskBase64Images(sourceContent, base64TokensRef.current), currentLanguage);
   }, [sourceContent, isMdFile, viewMode, currentLanguage]);
 
   // 将预览 HTML 写入 iframe，隔离 DOM 减少 GC 压力
@@ -2031,6 +2646,47 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
       {/* ─── 主内容区域 ──────────────────────────── */}
       <div className="editor-main-area">
+        {/* v0.6.1 问题5：模式切换悬浮按钮（阅读=羽毛笔→分屏 / 分屏=书本→阅读） */}
+        {(viewMode === "preview" || viewMode === "split") && isMdFile && (
+          <ModeSwitchButton
+            viewMode={viewMode}
+            onSwitch={(m) => setViewMode(m)}
+          />
+        )}
+
+        {/* v0.6.2 问题3：「译」字按钮智能判断——有选中文本时翻译选区，无选区时全文翻译；
+            翻译运行中点击 = 取消（startFullTranslate 内部处理） */}
+        {(viewMode === "preview" || viewMode === "split") && isMdFile && translateEnabled && (
+          <FullTranslateButton
+            onStart={() => {
+              if (fullTranslateRunning) {
+                startFullTranslateRef.current(); // 运行中点击 = 取消
+                return;
+              }
+              // 有选区 → 部分翻译；无选区（fallback）→ 全文翻译
+              startTranslateRef.current(true);
+            }}
+          />
+        )}
+
+        {/* v0.6.1 问题2：翻译回写后浮动"取消翻译"气泡，点击恢复原文 */}
+        <TranslateUndoToast onUndo={undoTranslation} />
+
+        {/* v0.6.4 问题1c：翻译失败的段在内容首处以气泡提示（5 秒自动消失） */}
+        {segmentFailTip && (
+          <div className="segment-fail-tip" role="status" data-testid="segment-fail-tip">
+            <span className="segment-fail-icon" aria-hidden="true">⚠</span>
+            <span className="segment-fail-msg">
+              {t("translate.full.segmentFailedCount", { count: segmentFailTip.count })}
+            </span>
+            {segmentFailTip.text && (
+              <span className="segment-fail-preview" title={segmentFailTip.text}>
+                {segmentFailTip.text.replace(/\s+/g, " ").slice(0, 60)}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* ProseMirror 编辑器：阅读模式可见（仅 Markdown 文件） */}
         <div
           ref={editorRef}
@@ -2128,7 +2784,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             setSourceContent(newContent);
             onContentChangeRef.current?.(newContent);
             setDirtyRef.current(true);
-            lastContentRef.current = newContent;
+            // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+            lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
           }}
           initialShowReplace={showSearchReplace}
           isMdFile={isMdFile}
@@ -2189,6 +2846,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         hasSelection={contextMenu.hasSelection}
         canUndo={undoStackRef.current.length > 0}
         canRedo={redoStackRef.current.length > 0}
+        isMdFile={isMdFile}
+        translateEnabled={translateEnabled}
         onAction={handleContextMenuAction}
         onClose={() => setContextMenu((s) => ({ ...s, open: false }))}
       />
@@ -2201,6 +2860,22 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           onClose={handleSlashClose}
         />
       )}
+
+      {/* v0.6.6 问题2：阅读模式 SlashCommand 菜单（ProseMirror 插件触发） */}
+      {!isSourceMode && isMdFile && pmSlash && (
+        <SlashCommandPm
+          view={viewRef.current}
+          slash={pmSlash}
+          onClose={() => setPmSlash(null)}
+        />
+      )}
+
+      {/* v0.6.0：AI 翻译结果气泡（Portal 渲染到 body，idle 时组件内部返回 null） */}
+      <TranslateBubble
+        onApply={handleTranslateApply}
+        onCopy={handleTranslateCopy}
+        onRetry={handleTranslateRetry}
+      />
     </div>
   );
 }

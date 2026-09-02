@@ -120,6 +120,24 @@ export const commands: Command[] = [
     keywords: ["替换", "replace"],
     action: () => dispatchCommand("edit.replace"),
   },
+  // v0.6.0：AI 翻译选中内容（快捷键 F6）
+  {
+    id: "edit.translate",
+    titleKey: "command.edit.translate",
+    shortcut: "F6",
+    group: "edit",
+    keywords: ["翻译", "translate", "ai"],
+    action: () => dispatchCommand("edit.translate"),
+  },
+  // v0.6.1：AI 全文翻译（快捷键 Shift+F6）
+  {
+    id: "edit.translateDocument",
+    titleKey: "command.edit.translateDocument",
+    shortcut: "Shift+F6",
+    group: "edit",
+    keywords: ["全文翻译", "整篇翻译", "translate", "document", "ai"],
+    action: () => dispatchCommand("edit.translateDocument"),
+  },
   // ─── 视图分组 ──────────────────────────────
   {
     id: "view.preview",

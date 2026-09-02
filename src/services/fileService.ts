@@ -127,5 +127,10 @@ export const fileService = {
 };
 
 export function isTauri(): boolean {
-  return typeof window !== "undefined" && !!(window as any).__TAURI__;
+  // v0.6.3 S-2：withGlobalTauri 已关闭（window.__TAURI__ 不再暴露，防脚本注入直达 IPC），
+  // 改检测 Tauri v2 始终注入的内部对象 __TAURI_INTERNALS__
+  return (
+    typeof window !== "undefined" &&
+    !!(window as any).__TAURI_INTERNALS__
+  );
 }

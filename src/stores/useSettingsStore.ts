@@ -25,6 +25,40 @@ export const THEMES: readonly Theme[] = Object.freeze([
   "solarized",
 ]);
 
+/** v0.6.0：AI 翻译结果模式 */
+export type TranslateResultMode = "bubble" | "replace" | "bilingual" | "clipboard";
+
+/** v0.6.0：AI 翻译配置（persist；API Key 单独走 keyring，绝不进 localStorage） */
+export interface TranslateSettings {
+  /** AI 翻译总开关（关闭后所有翻译入口不响应） */
+  translateEnabled: boolean;
+  /** Provider 预设标识：deepseek | zhipu | minimax | alibaba | kimi | volcengine | doubao | gemini | claude | modelscope | siliconflow | openai | custom */
+  translateProviderPreset: string;
+  translateBaseUrl: string;
+  translateModel: string;
+  /** 目标语言：auto（中英互译）| zh-CN | en | ja | ko | ... */
+  translateTargetLang: string;
+  /** 语体：正式 | 口语 | 技术文档 */
+  translateTone: string;
+  /** 结果模式：bubble=气泡手动确认（默认）| replace | bilingual | clipboard */
+  translateResultMode: TranslateResultMode;
+  /** 自定义 Prompt 模板（空串 = 使用内置模板） */
+  translateCustomPrompt: string;
+}
+
+/** v0.6.0：AI 翻译默认配置（默认 DeepSeek，模型角色 deepseek-v4-flash）
+ * v0.6.2 问题1：translateEnabled 默认关闭（新装用户不自动开启，需在设置中手动开启） */
+export const DEFAULT_TRANSLATE_SETTINGS: TranslateSettings = {
+  translateEnabled: false,
+  translateProviderPreset: "deepseek",
+  translateBaseUrl: "https://api.deepseek.com/v1",
+  translateModel: "deepseek-v4-flash",
+  translateTargetLang: "auto",
+  translateTone: "正式",
+  translateResultMode: "bubble",
+  translateCustomPrompt: "",
+};
+
 interface SettingsState {
   theme: Theme;
   fontSize: number;
@@ -55,6 +89,8 @@ interface SettingsState {
   outlineWidth: number;
   /** v0.4.0: 分屏左右比例（默认 0.5，范围 0.3~0.7） */
   splitRatio: number;
+  /** v0.6.0: AI 翻译配置（API Key 走 keyring，不在此处） */
+  translate: TranslateSettings;
 
   setTheme: (theme: Theme) => void;
   setFontSize: (size: number) => void;
@@ -80,6 +116,8 @@ interface SettingsState {
   setOutlineWidth: (w: number) => void;
   /** v0.4.0：设置分屏比例（钳制 0.3~0.7） */
   setSplitRatio: (r: number) => void;
+  /** v0.6.0：合并更新 AI 翻译配置 */
+  setTranslateConfig: (cfg: Partial<TranslateSettings>) => void;
 }
 
 /** 钳制到 [min, max] 范围内 */
@@ -121,6 +159,8 @@ export const useSettingsStore = create<SettingsState>()(
       outlineWidth: 240,
       // v0.4.0：分屏默认比例 0.5（左右各半）
       splitRatio: 0.5,
+      // v0.6.0：AI 翻译默认配置（旧 localStorage 缺字段时自动回退默认值）
+      translate: { ...DEFAULT_TRANSLATE_SETTINGS },
 
       setTheme: (theme) => set({ theme }),
       setFontSize: (fontSize) => set({ fontSize }),
@@ -152,9 +192,22 @@ export const useSettingsStore = create<SettingsState>()(
       setOutlineWidth: (w) => set({ outlineWidth: clamp(Math.round(w), 180, 480) }),
       // v0.4.0：钳制到 0.3~0.7
       setSplitRatio: (r) => set({ splitRatio: clamp(r, 0.3, 0.7) }),
+      // v0.6.0：合并更新 AI 翻译配置（浅合并，未知字段忽略）
+      setTranslateConfig: (cfg) =>
+        set((s) => ({ translate: { ...s.translate, ...cfg } })),
     }),
     {
       name: "lightmd-settings",
+      // v0.6.0：自定义合并——translate 嵌套对象做字段级回退，
+      // 旧 localStorage 无 translate 或字段缺失时回退默认值
+      merge: (persisted, current) => {
+        const p = (persisted || {}) as Partial<SettingsState>;
+        return {
+          ...current,
+          ...p,
+          translate: { ...current.translate, ...(p.translate || {}) },
+        };
+      },
       // hydration 完成后同步 i18n 模块缓存
       onRehydrateStorage: () => (state) => {
         if (state && state.language) {

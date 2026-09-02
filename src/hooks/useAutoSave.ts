@@ -26,6 +26,8 @@ export function useAutoSave(
 ) {
   const filePath = useEditorStore((s) => s.filePath);
   const isDirty = useEditorStore((s) => s.isDirty);
+  // v0.6.1 问题3：翻译回写（直接替换/双语对照）的修改不自动保存，等待用户手动保存或继续编辑
+  const suppressAutoSave = useEditorStore((s) => s.suppressAutoSave);
   const setDirty = useEditorStore((s) => s.setDirty);
   const updateTabDirty = useEditorStore((s) => s.updateTabDirty);
   const viewMode = useEditorStore((s) => s.viewMode);
@@ -71,15 +73,16 @@ export function useAutoSave(
     }
   }, [filePath, setDirty, updateTabDirty, sourceContentRef]);
 
-  // 定时自动保存（仅在 isDirty 且有 filePath 时触发）
+  // 定时自动保存（仅在 isDirty 且有 filePath 时触发；
+  // v0.6.1 问题3：翻译回写后的 suppressAutoSave 期间不启动定时器）
   useEffect(() => {
-    if (!isDirty || !filePath || autoSaveInterval <= 0) return;
+    if (!isDirty || !filePath || autoSaveInterval <= 0 || suppressAutoSave) return;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(save, autoSaveInterval);
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isDirty, autoSaveInterval, save, filePath]);
+  }, [isDirty, autoSaveInterval, save, filePath, suppressAutoSave]);
 
   return { save };
 }

@@ -72,7 +72,8 @@ export function markdownToDoc(markdown: string): Node {
   const tokens = rawTokens as unknown as Token[];
   // 获取 heading-anchor 插件收集的标题列表，供 toc 节点使用
   const headings = (env.__headings as TocHeading[] | undefined) || collectHeadings(tokens);
-  const content = parseBlockTokens(tokens, 0, tokens.length, headings);
+  // v0.6.6 问题1：传入源码串，供顶层解析基于 token map 行号还原空行 → 空段落
+  const content = parseBlockTokens(tokens, 0, tokens.length, headings, markdown);
   try {
     return schema.topNodeType.create(null, content);
   } catch (e) {
@@ -87,17 +88,58 @@ export function markdownToDoc(markdown: string): Node {
 
 export function markdownToInline(markdown: string): Node[] {
   const rawTokens = md.parseInline(markdown, {});
-  return parseInlineTokens(rawTokens as unknown as Token[]);
+  // v0.6.0 修复：parseInline 返回单个 inline token，其 children 才是行内 token 流
+  // （此前直接传外层 token 导致始终返回空数组）
+  const children = (rawTokens[0] as unknown as Token | undefined)?.children || [];
+  return parseInlineTokens(children);
 }
 
 // ─── 块级 token 解析 ──────────────────────────────────────
 
-function parseBlockTokens(tokens: Token[], start: number, end: number, headings?: TocHeading[]): Node[] {
+/**
+ * v0.6.6 问题1：计算 markdown 源码的逻辑行数（末尾换行符后无内容不算一行）
+ */
+function countSourceLines(source: string): number {
+  if (!source) return 0;
+  const lines = source.split("\n");
+  return source.endsWith("\n") ? lines.length - 1 : lines.length;
+}
+
+/**
+ * v0.6.6 问题1：顶层解析时基于 token map 行号还原空行对应的空段落。
+ *
+ * markdown-it 不为空行生成 token，空文档/文档末尾的多个空行
+ * （用户显式按回车产生）在解析后全部丢失——切页签/重开后换行消失。
+ * 规则（与 serializer 的输出格式互逆）：
+ * - 文档开头 m 个空行 → m 个空段落
+ * - 相邻块之间 gap 个空行 → gap-1 个空段落（gap=1 为正常段落分隔）
+ * - 文档末尾 t 个空行 → t-1 个空段落
+ * - 全空白文档 w 个空行 → w 个空段落
+ *
+ * 仅顶层调用传入 source（嵌套块如引用块内部空行不还原，保持原行为）。
+ */
+function parseBlockTokens(tokens: Token[], start: number, end: number, headings?: TocHeading[], source?: string): Node[] {
   const nodes: Node[] = [];
   let i = start;
+  let prevEndLine: number | null = null;
 
   while (i < end) {
     const token = tokens[i];
+    // 块级 open/自闭合 token 携带 map（close/inline token 无有效 map）
+    let anchorMap: [number, number] | null = null;
+    if (source !== undefined && token.map && token.nesting >= 0 && token.block) {
+      anchorMap = token.map;
+      if (prevEndLine === null) {
+        for (let k = 0; k < token.map[0]; k++) {
+          nodes.push(schema.nodes.paragraph.create());
+        }
+      } else {
+        const gap = token.map[0] - prevEndLine;
+        for (let k = 1; k < gap; k++) {
+          nodes.push(schema.nodes.paragraph.create());
+        }
+      }
+    }
     const result = parseBlockToken(tokens, i, end, headings);
     if (result) {
       // 支持返回多个节点（如脚注块包含多个脚注定义）
@@ -109,6 +151,23 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
       i = result.nextIndex;
     } else {
       i++;
+    }
+    if (anchorMap) prevEndLine = anchorMap[1];
+  }
+
+  // 尾部/全空白文档的空行还原
+  if (source !== undefined) {
+    const totalLines = countSourceLines(source);
+    if (prevEndLine !== null) {
+      const tail = totalLines - prevEndLine;
+      for (let k = 1; k < tail; k++) {
+        nodes.push(schema.nodes.paragraph.create());
+      }
+    } else if (totalLines > 0) {
+      // 无任何块 token：全空白文档，空行数 = 空段落数
+      for (let k = 0; k < totalLines; k++) {
+        nodes.push(schema.nodes.paragraph.create());
+      }
     }
   }
   return nodes;

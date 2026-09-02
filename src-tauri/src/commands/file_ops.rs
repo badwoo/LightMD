@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use tauri::Manager;
+
 /// 限制读取文件的最大大小 (50MB)
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
 
@@ -21,13 +23,18 @@ fn resolve_path(path: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub async fn read_file(path: String) -> Result<String, String> {
+pub async fn read_file(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let path = resolve_path(&path)?;
     if !path.exists() {
         return Err(format!("文件不存在: {}", path.display()));
     }
     if !path.is_file() {
         return Err(format!("路径不是文件: {}", path.display()));
+    }
+    // v0.6.3 S-3：asset 协议作用域已收敛为空，打开文件时动态授权其所在目录（递归），
+    // 供 markdown 相对路径图片预览使用；授权失败不阻断文件读取
+    if let Some(parent) = path.parent() {
+        let _ = app.asset_protocol_scope().allow_directory(parent, true);
     }
     let meta = path
         .metadata()
