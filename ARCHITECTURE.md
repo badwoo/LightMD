@@ -212,3 +212,71 @@ App.tsx (顶层状态协调)
 - 文件读取限制 50MB
 - 目标文件存在时重命名操作拒绝执行
 - 全局通知确保错误不会静默失败
+
+## 八、AI 子系统架构（v0.6.0 引入，v0.7.5 扩展）
+
+AI 能力（翻译 / 续写 / 润色 / 摘要 / 对话）共用一套后端基建，前端按功能拆分服务与状态。
+
+### 8.1 分层
+
+```
+前端入口层（EditorContainer / StatusBar）
+    │  用户操作 → lightmd:command 事件 → EditorContainer 统一接线
+    ▼
+前端服务层（services/）
+    translateService  ── 选中翻译 / 全文翻译（并发槽位）
+    aiAssistService   ── 续写 / 润色 / 摘要（单轮任务）
+    aiChatService     ── AI 对话（多轮 messages + 上下文截断/历史截断）
+    fullTranslate     ── 文档切分 / 重组 / 并发循环
+    │  invoke + tauri::ipc::Channel（流式增量）
+    ▼
+Rust 命令层（commands/）
+    translate.rs   ── translate_text / cancel_translate / Key 管理 / 模型列表
+    ai_assist.rs   ── ai_assist_text（续写·润色·摘要）/ ai_chat（对话）
+    │
+    ▼
+Rust 领域层（translate/）
+    prompt.rs    ── Prompt 模板（翻译 / 续写 / 润色 / 摘要 / 对话 system）
+    provider.rs  ── OpenAI 兼容客户端：SSE 解析、错误码协议、
+                    stream_chat_completions（翻译与对话共用的流式读取）
+    segment.rs   ── {{N}} 占位符提取 / 回填 / 校验（仅翻译通道）
+    mod.rs       ── TranslateState：单任务槽 + 全文翻译并发槽位
+```
+
+### 8.2 关键设计
+
+| 主题 | 方案 |
+|---|---|
+| 任务互斥 | `TranslateState` 单任务槽：翻译 / 续写 / 润色 / 摘要 / 对话任一时刻仅一个在途，新任务自动取消旧任务；全文翻译走独立并发槽位（按 task_id 取消，互不干扰） |
+| 流式 | Rust 侧 `Channel<String>` 推送增量；前端 rAF 批量刷新（气泡 / 对话窗均同款），避免每个 chunk 触发一次 React 渲染 |
+| 取消 | `AtomicBool` 取消标志，SSE 读取循环每次 chunk 前检查；前端另有请求序号守卫，丢弃旧任务的残余 chunk / 迟到结果 |
+| 错误协议 | `NETWORK\|` / `AUTH\|` / `RATE\|` / `TRUNCATED\|` / `STREAM\|` / `CANCELLED` / `NO_KEY\|` / `PROVIDER\|{status}\|{msg}` / `DOC_CHANGED`，前端 `parseTranslateError` 统一解析为 i18n 文案 |
+| API Key | 存于系统凭据管理器（keyring），按 provider 独立条目；前端只能拿到布尔值 |
+| 占位符保护 | 仅翻译通道：发送前把链接 / 行内代码 / 图片整体替换为 `{{N}}`，收到译文后回填并校验；对话与续写等自由生成通道不做 mask（占位符反而会干扰指令） |
+| 回写安全 | 一律使用**任务启动时的快照**（PM 选区 from/to + doc 引用；source 通道 textarea 切片位置）定位，禁止用"当前选区"；整篇替换前做 DOC_CHANGED 校验（当前全文 === 发送时快照），不一致则拒绝；回写后记录原文快照，支持一键恢复 |
+| 滚动跟随与 Esc（v0.7.5） | 阅读/源码模式的"按键后跟随光标"依赖 keydown 记录的滚动基线。气泡的 Esc 在 `window` 捕获阶段 `stopPropagation()`，编辑器捕获 keydown 收不到该键而 keyup 仍到达，旧实现会用**上一次按键的陈旧基线**恢复 `scrollTop`（表现为"按 Esc 后文档跳回开头"）。现由 `utils/typewriter.ScrollKeyBaseline` 强制 keydown/keyup 配对：未配对的 keyup 一律不参与滚动计算，编辑器 blur 时作废基线 |
+
+### 8.3 v0.7.5 新增文件
+
+```
+src/services/aiChatService.ts          对话服务：上下文/历史截断 + 消息组装 + 流式调用
+src/stores/aiChatStore.ts              对话窗状态机（开关/几何/消息/流式/上下文预览）
+src/components/editor/AiChatDialog.tsx 对话浮动窗 UI
+src/components/editor/AiChatDialog.css 对话窗样式（全量主题 CSS 变量）
+src/utils/aiChatTemplates.ts           快捷指令模板常量（含 i18n key、默认范围与目标语言解析）
+```
+
+### 8.4 v0.7.5 细节优化涉及的关键点
+
+| 项 | 位置 |
+|---|---|
+| Esc 不再重置阅读进度 | `utils/typewriter.ts`（`ScrollKeyBaseline` 系列）+ `EditorContainer` 两处 keydown/keyup/blur 监听 |
+| 气泡颜色同步底部栏 AI 按钮 | `StatusBar.tsx`（`aiEntryColorStyle` 注入 `--ai-entry-color`）+ `StatusBar.css` |
+| 续写立即占位 ghost | `core/plugins/ai-ghost.ts`（`AiGhostState.placeholder`）+ `EditorContainer` 的 `runAiGhost` / `runSourceAiGhost` |
+| 窗口内嵌 AI 翻译 | `utils/aiChatTemplates.ts`（translate 模板 + `resolveTemplateInstruction`）+ `AiChatDialog` 的「译」动作 |
+| 对话窗自由拖动 | `AiChatDialog` 的 `clampChatRect`（只钳制尺寸，不钳制位置）+ `isAiChatRectVisible`（仅作重开时的安全网） |
+
+Rust 侧：`translate/prompt.rs` 新增 `AI_CHAT_SYSTEM_PROMPT`；`translate/provider.rs`
+新增 `ChatMessage` / `build_chat_body` / `chat_temperature` / `chat_stream`（与
+`translate_stream` 共用 `stream_chat_completions`）；`commands/ai_assist.rs` 新增
+`ai_chat` 命令并在 `lib.rs` 注册。

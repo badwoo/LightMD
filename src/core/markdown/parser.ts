@@ -40,6 +40,20 @@ function getAttr(token: Token, name: string): string | null {
   return found ? found[1] : null;
 }
 
+// v0.7.3 改进6(S2)：链接 URL scheme 白名单。
+// 校验 LLM 输出/恶意文档写入的 href，javascript:/data:/vbscript:/file: 等
+// 危险 scheme 拒绝，其余放行。拒绝时返回 null → 保留文本但不渲染为可点击链接。
+export function sanitizeLinkHref(href: string): string | null {
+  const h = href.trim();
+  if (!h) return null; // 空链接
+  const m = /^([a-z][a-z0-9.+-]*):/i.exec(h);
+  if (!m) return h; // 无 scheme：相对路径/锚点/纯文本放行
+  const protocol = m[1].toLowerCase();
+  const BAD = ["javascript", "data", "vbscript", "file"];
+  if (BAD.includes(protocol)) return null;
+  return h; // http/https/ftp/mailto/tel 及未知 scheme 放行（与 markdown-it 语义对齐）
+}
+
 const schema = lightMDSchema;
 
 // 配置 markdown-it
@@ -63,6 +77,11 @@ md.use(supPlugin);
 md.use(emojiPlugin);
 md.use(footnotePlugin);
 md.use(deflistPlugin);
+
+// v0.7.3 改进6(S2)：链接 scheme 白名单——markdown-it 在解析层即拒绝
+// javascript:/data:/vbscript:/file: 链接（渲染为纯文本，不出 <a href="">），
+// 与 PM 回写的 sanitizeLinkHref 双层防护（防提示注入产出的恶意链接）
+md.validateLink = (url: string) => sanitizeLinkHref(url) !== null;
 
 // ─── 公开 API ──────────────────────────────────────────────
 
@@ -122,13 +141,27 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
   const nodes: Node[] = [];
   let i = start;
   let prevEndLine: number | null = null;
+  // v0.7.0 修复1b：源码行缓存，供 map 尾部空行收缩判断
+  const sourceLines: string[] | null = source !== undefined ? source.split("\n") : null;
 
   while (i < end) {
     const token = tokens[i];
     // 块级 open/自闭合 token 携带 map（close/inline token 无有效 map）
     let anchorMap: [number, number] | null = null;
     if (source !== undefined && token.map && token.nesting >= 0 && token.block) {
-      anchorMap = token.map;
+      // v0.7.0 修复1b：markdown-it 的列表类 token map 会吞掉块后的连续空行
+      // （如 "- a\n- b\n\n" 的 bullet_list map=[0,3]，末尾空行被并入 map），
+      // 直接以 map[1] 作为结束行会把末尾/块间空段落数算成 0，切标签后空行丢失。
+      // 修复：从 map 尾部收缩掉空行，得到实际内容结束行（对 fence/table 等尾部
+      // 本就是内容行的块无影响，仅列表类会被收缩）。
+      let endLine = token.map[1];
+      while (
+        sourceLines && endLine > token.map[0] &&
+        endLine <= sourceLines.length && !sourceLines[endLine - 1].trim()
+      ) {
+        endLine--;
+      }
+      anchorMap = [token.map[0], endLine];
       if (prevEndLine === null) {
         for (let k = 0; k < token.map[0]; k++) {
           nodes.push(schema.nodes.paragraph.create());
@@ -159,8 +192,13 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
   if (source !== undefined) {
     const totalLines = countSourceLines(source);
     if (prevEndLine !== null) {
+      // v0.7.0 修复5：末尾 t 个换行 → t 个空段落（原 t-1）
+      // 旧规则与旧序列化编码（首空段 2 换行）互逆；新序列化末尾空段每段单换行
+      // （N 空段 = N+1 换行）后改为 t 个：与源码模式"每次回车 1 换行"语义对齐，
+      // 修复用户末尾按回车后切标签/模式往返每次吞掉末尾空行的问题。
+      // 注：首个换行是最后一块的行终止符（"abc\n" → 0 空段，标准结尾无空行）。
       const tail = totalLines - prevEndLine;
-      for (let k = 1; k < tail; k++) {
+      for (let k = 0; k < tail; k++) {
         nodes.push(schema.nodes.paragraph.create());
       }
     } else if (totalLines > 0) {
@@ -368,8 +406,10 @@ function parseBlockquote(tokens: Token[], index: number, headings?: TocHeading[]
 function parseFence(tokens: Token[], index: number): ParseResult {
   const token = tokens[index];
   const language = token.info?.trim().split(/\s+/)[0] || "";
-  // 代码块内容为空时用零宽空格占位（ProseMirror 不允许空文本节点）
-  const textContent = token.content || "\u200B";
+  // v0.7.0 修复1b：markdown-it 的 fence content 含最后行的换行符（"x\n"），
+  // 若不去掉，序列化时 close 标记前会多出一个空行（"```js\nx\n\n```"）。
+  // 只去一个尾随换行，块内末尾空行（"a\n\n" → "a\n"）仍完整保留。
+  const textContent = (token.content || "").replace(/\n$/, "") || "\u200B";
 
   // mermaid 语言使用专用的 mermaid_block 节点
   if (language === "mermaid") {
@@ -667,7 +707,13 @@ function parseInlineTokens(tokens: Token[]): Node[] {
       if (markType === "link") {
         const href = getAttr(t, "href") || "";
         const title = getAttr(t, "title") || "";
-        nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("link", { href, title })])));
+        // v0.7.3 改进6(S2)：危险 scheme 拒绝 → 保留文本但不渲染为可点击链接
+        const safeHref = sanitizeLinkHref(href);
+        if (safeHref) {
+          nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("link", { href: safeHref, title })])));
+        } else {
+          nodes.push(...innerNodes);
+        }
       } else if (markType === "strong") {
         nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("strong")])));
       } else if (markType === "em") {

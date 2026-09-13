@@ -368,6 +368,59 @@ describe("v0.6.1 runFullTranslateLoop", () => {
     expect(progress).toEqual([1, 2, 3]);
     expect(outcome.failedCount).toBe(1);
   });
+
+  // v0.7.3 U6：每段开始前回调 onSegmentStart，供状态栏展示当前段
+  it("onSegmentStart 每段开始前回调当前段", async () => {
+    const segments: string[] = [];
+    const outcome = await runFullTranslateLoop(units, {
+      ...baseOpts,
+      onSegmentStart: (u) => segments.push(u.text),
+      translateUnit: async (text) => ok(`译:${text}`),
+    });
+    expect(segments).toEqual(["第一段", "第二段", "第三段"]);
+    expect(outcome.translations.length).toBe(3);
+  });
+
+  // ─── v0.7.3 改进9(P4-2)：并发池 ──────────────────────────────
+  it("concurrency=3 全部成功：结果与段下标一一对应", async () => {
+    const seenIndices: number[] = [];
+    const outcome = await runFullTranslateLoop(units, {
+      ...baseOpts,
+      concurrency: 3,
+      translateUnit: async (text, index) => {
+        seenIndices.push(index!);
+        return ok(`译:${text}`);
+      },
+    });
+    expect(outcome.translations).toEqual(["译:第一段", "译:第二段", "译:第三段"]);
+    expect(outcome.failedCount).toBe(0);
+    expect(outcome.errorCode).toBeNull();
+    // 并发下标覆盖 0..2（顺序不保证，但集合一致）
+    expect([...seenIndices].sort()).toEqual([0, 1, 2]);
+  });
+
+  it("并发下 AUTH 系统性错误中止整轮", async () => {
+    const outcome = await runFullTranslateLoop(units, {
+      ...baseOpts,
+      concurrency: 3,
+      translateUnit: async (text) => {
+        if (text === "第二段") throw new Error("AUTH");
+        return ok(`译:${text}`);
+      },
+    });
+    expect(outcome.errorCode).toBe("AUTH");
+  });
+
+  it("并发下 onProgress 累计到总段数", async () => {
+    const progress: number[] = [];
+    await runFullTranslateLoop(units, {
+      ...baseOpts,
+      concurrency: 2,
+      onProgress: (d) => progress.push(d),
+      translateUnit: async (text) => ok(`译:${text}`),
+    });
+    expect(progress[progress.length - 1]).toBe(3);
+  });
 });
 
 // ─── fullTranslateStore ──────────────────────────────────

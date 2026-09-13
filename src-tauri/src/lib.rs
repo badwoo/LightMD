@@ -121,6 +121,12 @@ pub fn run() {
             commands::translate::test_translate_connection,
             commands::translate::set_translate_key,
             commands::translate::has_translate_key,
+            // v0.7.2 P2：动态拉取厂商模型列表
+            commands::translate::list_translate_models,
+            // v0.7.0：AI 助手（续写/润色/摘要，复用翻译基建与单任务模型）
+            commands::ai_assist::ai_assist_text,
+            // v0.7.5：AI 对话（多轮 messages + 内置 system 提示词，共享同一任务槽）
+            commands::ai_assist::ai_chat,
             export::export_pdf,
             export::export_html_to_pdf,
         ])

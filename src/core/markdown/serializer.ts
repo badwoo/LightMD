@@ -13,8 +13,29 @@ import type { Node, Mark } from "prosemirror-model";
  *   导致切换页签/重开后换行丢失；现在仅保证恰好以单个换行结尾
  */
 export function docToMarkdown(doc: Node): string {
+  // v0.7.0 修复5：先收集顶层块，识别末尾连续空段落
+  // 旧编码（首空段 2 换行 + 后续各 1 换行 = N+2 换行）与旧解析规则（t-2 空段）互逆，
+  // 但与源码模式 textarea 的"每次回车 1 个换行"语义不对称：用户末尾按 k 次回车
+  // （k 换行）解析后只剩 k-2 个空段落（k≤2 时全部丢失）——切标签/切模式后"回车没了"。
+  // 新编码：末尾空段落每个 1 换行（N 空段 = N+1 换行），配合 parser 新末尾规则
+  // （tail 换行 = tail 空段落）实现文本级完全保真往返（k 换行 ↔ k-1 空段落）。
+  const blocks: Node[] = [];
+  doc.forEach((node) => blocks.push(node));
+  let trailing = 0;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.type.name === "paragraph" && b.content.size === 0) trailing++;
+    else break;
+  }
+  const bodyCount = blocks.length - trailing;
+
   const parts: string[] = [];
-  doc.forEach((node, _offset, index) => {
+  blocks.forEach((node, index) => {
+    // 末尾连续空段落：每个编码单个换行（不加间隔——末尾无需块分隔符）
+    if (index >= bodyCount) {
+      parts.push("\n");
+      return;
+    }
     const md = blockToMarkdown(node);
     if (md !== null) {
       // 在块之间添加空行（分割线、列表项之间特殊处理）
@@ -193,23 +214,28 @@ function taskListToMarkdown(node: Node): string {
     taskListNode.forEach((taskItem) => {
       const checked = taskItem.attrs.checked ? "x" : " ";
       let isFirstChild = true;
+      // v0.7.0 修复1c：本项首行（"- [ ] xxx"）在 lines 中的索引。
+      // task 项在 markdown 中只能单行表达（task-list-plugin 逐行解析），
+      // item 内的后续段落若序列化为缩进续行，解析时会断裂列表并丢失内容。
+      // 修复：后续块级内容取文本合并追加到首行，保证内容不丢失。
+      let firstLineIdx = -1;
       taskItem.forEach((child) => {
         if (isFirstChild && child.type.name === "paragraph") {
           const content = inlineToMarkdown(child);
           lines.push(`${indent}- [${checked}] ${content}`);
+          firstLineIdx = lines.length - 1;
           isFirstChild = false;
         } else if (child.type.name === "task_list") {
           // 嵌套任务列表：递归序列化，增加 2 空格缩进
           serializeItems(child, indent + "  ");
           isFirstChild = false;
         } else {
-          // 其他块级内容：4空格缩进
-          const childMd = blockToMarkdown(child);
-          if (!childMd) return;
-          const subIndent = indent + "    ";
-          childMd.trimEnd().split("\n").forEach((line) => {
-            if (line) lines.push(`${subIndent}${line}`);
-          });
+          // 其他块级内容：合并到首行（空段落跳过）
+          const text = child.type.name === "paragraph" ? inlineToMarkdown(child) : child.textContent;
+          if (text.trim() && firstLineIdx >= 0 && lines[firstLineIdx] !== undefined) {
+            const sep = lines[firstLineIdx].endsWith(" ") ? "" : " ";
+            lines[firstLineIdx] += sep + text;
+          }
           isFirstChild = false;
         }
       });

@@ -781,6 +781,61 @@
   opacity: 0.4; letter-spacing: 3px; font-weight: 300;
 }
 
+/* ─── v0.7.0：AI 续写幽灵文本（光标处流式预览，Tab 采纳 / Esc 放弃） ─── */
+.ai-ghost {
+  white-space: pre-wrap;
+  pointer-events: none; /* 装饰不拦截鼠标 */
+}
+
+/* v0.7.3 改进10(U3)：source 模式续写 ghost overlay——
+   覆盖在 textarea 之上，样式与 textarea 同构（见 syncTextareaMetrics），
+   透明复刻全文保证换行对齐，仅 ghost 片段以灰斜体显示，Tab 采纳 / Esc 放弃 */
+.source-ghost-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* 不拦截 textarea 交互 */
+  z-index: 1;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.ai-ghost-text {
+  color: var(--text-tertiary);
+  font-style: italic;
+  opacity: 0.75;
+}
+
+/* v0.7.5 优化3：占位态（续写中…）——更淡 + 呼吸动画，明确"正在生成，稍后会替换" */
+.ai-ghost-placeholder .ai-ghost-text,
+.ai-ghost-text.ai-ghost-placeholder {
+  opacity: 0.55;
+  animation: ai-ghost-breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes ai-ghost-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.ai-ghost-hint {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
+  vertical-align: middle;
+  opacity: 0.85;
+}
+
 /* ─── 主内容区域 ──────────────────────────────── */
 /* v0.6.1：position:relative 作为全文翻译悬浮按钮的定位上下文 */
 .editor-main-area { flex: 1; display: flex; overflow: hidden; position: relative; }

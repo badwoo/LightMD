@@ -312,6 +312,69 @@ describe("v0.6.0 translateBridge - buildApplyTransaction", () => {
   });
 });
 
+describe("v0.7.3 D1 - buildApplyTransaction 选区快照定位（防错位回写）", () => {
+  it("提供快照 → replace 用快照坐标替换（而非漂移后的当前选区）", () => {
+    // 目标 doc：hello brave world、"brave" 由 from:12 到 to:17
+    const doc = markdownToDoc("hello brave world");
+    const { from, to } = findTextPos(doc, "brave");
+    // 模拟任务启动时的快照 = 选中 "brave"
+    const snapshot = { from, to, doc };
+    // 模拟回写时用户选区已漂移到别处（如单击到 "hello" 空位）
+    const drifted = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, 1, 1), // 空选区在首字符
+    });
+    const tr = buildApplyTransaction(drifted, "勇敢", "replace", snapshot);
+    expect(tr).not.toBeNull();
+    // 仍应替换 "brave" 为 "勇敢"，而非在 1:1 处空插
+    expect(tr!.doc.textContent).toBe("hello 勇敢 world");
+  });
+
+  it("doc 引用一致才启用快照；已编辑的 doc 回退到当前选区", () => {
+    const doc = markdownToDoc("hello brave world");
+    const { from, to } = findTextPos(doc, "brave");
+    // 快照 doc 与后续编辑后 doc 不同引用（文档已变化）→ 快照失效，用当前选区
+    const editedDoc = markdownToDoc("hello X world");
+    const state = EditorState.create({
+      doc: editedDoc,
+      selection: TextSelection.create(editedDoc, 7, 7),
+    });
+    const tr = buildApplyTransaction(
+      state,
+      "新文本",
+      "replace",
+      { from, to, doc } // 旧 doc 快照
+    );
+    // editedDoc 中从 pos1 起 no X position... 选区在 pos7-7（"X" 后）
+    expect(tr).not.toBeNull();
+  });
+
+  it("bilingual 用快照终点插入（防选区漂移到错误段落）", () => {
+    const doc = markdownToDoc("第一段 brave 内容\n\n第二段");
+    const { from, to } = findTextPos(doc, "brave");
+    const snapshot = { from, to, doc };
+    // 回写时选区漂移到第二段
+    const driftedEnd = findTextPos(doc, "第二段");
+    const drifted = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, driftedEnd.from, driftedEnd.to),
+    });
+    const tr = buildApplyTransaction(drifted, "> 勇敢", "bilingual", snapshot);
+    expect(tr).not.toBeNull();
+    const mdOut = docToMarkdown(tr!.doc);
+    // 引用块应插在 "brave" 所在第一段、而非第二段（index 在 "第二段" 之前）
+    expect(mdOut).toContain("> 勇敢");
+    expect(mdOut.indexOf("勇敢")).toBeGreaterThan(-1);
+    expect(mdOut.indexOf("勇敢")).toBeLessThan(mdOut.indexOf("第二段"));
+  });
+
+  it("无快照时沿用当前选区（兼容旧行为）", () => {
+    const state = stateWithSelection("hello world", "world");
+    const tr = buildApplyTransaction(state, "世界", "replace");
+    expect(tr!.doc.textContent).toBe("hello 世界");
+  });
+});
+
 describe("v0.6.0 translateBridge - applyTranslation (view 包装)", () => {
   it("dispatch 生效并返回 true", () => {
     const state = stateWithSelection("hello world", "world");

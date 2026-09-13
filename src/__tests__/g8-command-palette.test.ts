@@ -110,8 +110,19 @@ const tEn = (key: string): string => {
 describe("G8: 命令注册中心", () => {
   it("命令注册数量 ≥ 20（覆盖五大分组）", () => {
     expect(commands.length).toBeGreaterThanOrEqual(20);
-    // 实际注册 35 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument）
-    expect(commands.length).toBe(35);
+    // 实际注册 36 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument；
+    // v0.7.5 新增 ai.chat）
+    expect(commands.length).toBe(36);
+  });
+
+  it("ai.chat 命令快捷键为 Ctrl+K（v0.7.5 AI 对话，保持所有 AI 入口命令面板可达）", () => {
+    const cmd = commands.find((c) => c.id === "ai.chat");
+    expect(cmd).toBeTruthy();
+    expect(cmd?.shortcut).toBe("Ctrl+K");
+    expect(cmd?.titleKey).toBe("command.ai.chat");
+    expect(cmd?.group).toBe("edit");
+    // 关键词覆盖中英文检索
+    expect(cmd?.keywords).toEqual(expect.arrayContaining(["AI对话", "chat", "问答"]));
   });
 
   it("edit.translate 命令快捷键为 F6", () => {

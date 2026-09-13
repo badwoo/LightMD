@@ -11,10 +11,11 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 
 // ─── mocks（必须在 import 组件之前） ───────────────────────
-const { mockSetKey, mockHasKey, mockTestConnection } = vi.hoisted(() => ({
+const { mockSetKey, mockHasKey, mockTestConnection, mockListModels } = vi.hoisted(() => ({
   mockSetKey: vi.fn(),
   mockHasKey: vi.fn(),
   mockTestConnection: vi.fn(),
+  mockListModels: vi.fn(),
 }));
 
 vi.mock("../services/translateService", () => ({
@@ -22,6 +23,7 @@ vi.mock("../services/translateService", () => ({
     setKey: mockSetKey,
     hasKey: mockHasKey,
     testConnection: mockTestConnection,
+    listModels: mockListModels,
   },
 }));
 
@@ -31,11 +33,12 @@ import { useSettingsStore, DEFAULT_TRANSLATE_SETTINGS, type TranslateSettings } 
 describe("v0.6.0 applyProviderPreset（纯函数）", () => {
   const current: TranslateSettings = { ...DEFAULT_TRANSLATE_SETTINGS };
 
-  it("包含 13 个预设（deepseek 默认 + 8 家新增供应商 + zhipu/siliconflow/openai/custom）", () => {
+  it("包含 22 个预设（deepseek 默认 + 国内主流厂商 + 国际厂商 + custom）", () => {
     expect(Object.keys(TRANSLATE_PROVIDERS).sort()).toEqual([
-      "alibaba", "claude", "custom", "deepseek", "doubao", "gemini",
-      "kimi", "minimax", "modelscope", "openai", "siliconflow",
-      "volcengine", "zhipu",
+      "alibaba", "antling", "baichuan", "baidu", "claude", "custom", "deepseek",
+      "doubao", "gemini", "hunyuan", "kimi", "kimicode", "lingyi", "minimax",
+      "modelscope", "openai", "sensenova", "siliconflow", "stepfun",
+      "volcengine", "xunfei", "zhipu",
     ]);
   });
 
@@ -44,7 +47,9 @@ describe("v0.6.0 applyProviderPreset（纯函数）", () => {
     expect(patch).toEqual({
       translateProviderPreset: "kimi",
       translateBaseUrl: "https://api.moonshot.cn/v1",
-      translateModel: "kimi-k2-0905-preview",
+      translateModel: "kimi-k3",
+      // v0.7.3：kimi/kimicode 系仅允许 temperature=1（否则 400），切预设默认置 1
+      translateTemperature: 1,
     });
   });
 
@@ -87,6 +92,7 @@ describe("v0.6.0 SettingsDialog AI 翻译分组", () => {
     mockSetKey.mockReset().mockResolvedValue(undefined);
     mockHasKey.mockReset().mockResolvedValue(false);
     mockTestConnection.mockReset().mockResolvedValue(undefined);
+    mockListModels.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => cleanup());
@@ -94,7 +100,8 @@ describe("v0.6.0 SettingsDialog AI 翻译分组", () => {
   it("渲染全部翻译配置字段（默认值来自 store）", async () => {
     render(<SettingsDialog onClose={() => {}} />);
     // 分组标题（getByText 找不到会抛错，即存在性断言）
-    expect(screen.getByText("AI 翻译").tagName).toBe("H3");
+    // v0.7.0：API 配置从"AI 翻译"分组升级为全局"AI"分组（翻译/续写/润色/摘要共用）
+    expect(screen.getByText("AI").tagName).toBe("H3");
     // Provider 默认 deepseek
     const provider = screen.getByTestId("translate-provider") as HTMLSelectElement;
     expect(provider.value).toBe("deepseek");
@@ -118,11 +125,11 @@ describe("v0.6.0 SettingsDialog AI 翻译分组", () => {
   it("Provider 切换：自动填充 baseUrl/默认模型并实时写 store", () => {
     render(<SettingsDialog onClose={() => {}} />);
     fireEvent.change(screen.getByTestId("translate-provider"), { target: { value: "kimi" } });
-    // store 实时更新（kimi 预设默认模型 kimi-k2-0905-preview）
+    // store 实时更新（kimi 预设默认模型 kimi-k3）
     const cfg = useSettingsStore.getState().translate;
     expect(cfg.translateProviderPreset).toBe("kimi");
     expect(cfg.translateBaseUrl).toBe("https://api.moonshot.cn/v1");
-    expect(cfg.translateModel).toBe("kimi-k2-0905-preview");
+    expect(cfg.translateModel).toBe("kimi-k3");
     // UI 同步
     expect((screen.getByTestId("translate-base-url") as HTMLInputElement).value).toBe(
       "https://api.moonshot.cn/v1"
@@ -147,16 +154,16 @@ describe("v0.6.0 SettingsDialog AI 翻译分组", () => {
 
   it("模型角色 datalist：渲染当前供应商的推荐模型列表", () => {
     render(<SettingsDialog onClose={() => {}} />);
-    // 默认 deepseek → 3 个模型角色选项
+    // 默认 deepseek → 2 个模型角色选项（v0.7.2 P0 刷新后的列表）
     const datalist = screen.getByTestId("translate-model-options") as HTMLDataListElement;
     const options = Array.from(datalist.querySelectorAll("option")).map((o) => o.value);
-    expect(options).toEqual(["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"]);
+    expect(options).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
     // 切换供应商后 datalist 跟随更新
     fireEvent.change(screen.getByTestId("translate-provider"), { target: { value: "gemini" } });
     const optionsAfter = Array.from(
       (screen.getByTestId("translate-model-options") as HTMLDataListElement).querySelectorAll("option")
     ).map((o) => o.value);
-    expect(optionsAfter).toEqual(["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"]);
+    expect(optionsAfter).toEqual(TRANSLATE_PROVIDERS.gemini.models);
   });
 
   it("总开关：切换为关闭实时写 store", () => {
@@ -179,14 +186,15 @@ describe("v0.6.0 SettingsDialog AI 翻译分组", () => {
     expect(fields?.className).toContain("disabled");
   });
 
-  it("API Key 保存：调 setKey 后清空输入并显示已配置", async () => {
+  it("API Key 保存：调 setKey（带当前 provider）后清空输入并显示已配置", async () => {
     mockHasKey.mockResolvedValue(false);
     render(<SettingsDialog onClose={() => {}} />);
     const input = screen.getByTestId("translate-api-key-input") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "sk-test-123" } });
     fireEvent.click(screen.getByTestId("translate-api-key-save"));
     await waitFor(() => {
-      expect(mockSetKey).toHaveBeenCalledWith("sk-test-123");
+      // v0.7.2 P1：默认 provider 为 deepseek，Key 写入其独立条目
+      expect(mockSetKey).toHaveBeenCalledWith("deepseek", "sk-test-123");
     });
     // 输入清空（不回显）+ 状态变为已配置
     await waitFor(() => {
@@ -207,7 +215,9 @@ describe("v0.6.0 SettingsDialog AI 翻译分组", () => {
     await waitFor(() => {
       expect(screen.getByTestId("translate-test-status").textContent).toContain("连接成功");
     });
+    // v0.7.2 P1：测试连接同样带 provider
     expect(mockTestConnection).toHaveBeenCalledWith(
+      "deepseek",
       DEFAULT_TRANSLATE_SETTINGS.translateBaseUrl,
       DEFAULT_TRANSLATE_SETTINGS.translateModel
     );
@@ -222,6 +232,40 @@ describe("v0.6.0 SettingsDialog AI 翻译分组", () => {
       expect(status).toContain("连接失败");
       expect(status).toContain("invalid key");
     });
+  });
+
+  it("v0.7.2 修复回归：获取模型列表成功后浮层显示全部模型，点击填入并关闭（datalist 文本过滤 bug）", async () => {
+    // 复现条件：输入框已有默认模型文本，datalist 原生行为会按其过滤导致只显示 1 项
+    mockListModels.mockResolvedValue(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    render(<SettingsDialog onClose={() => {}} />);
+    const modelInput = screen.getByTestId("translate-model") as HTMLInputElement;
+    expect(modelInput.value).toBe("deepseek-v4-flash"); // 前置：输入框已有文本
+    fireEvent.click(screen.getByTestId("translate-fetch-models"));
+    // 候选浮层展示全量 2 项（不因输入框文本被过滤）
+    await waitFor(() => {
+      expect(screen.getAllByTestId("translate-model-menu-item").length).toBe(2);
+    });
+    expect(screen.getByTestId("translate-fetch-status").textContent).toContain("2");
+    // 点击第 2 项 → 填入输入框，浮层关闭
+    fireEvent.click(screen.getAllByTestId("translate-model-menu-item")[1]);
+    expect(modelInput.value).toBe("deepseek-v4-pro");
+    expect(screen.queryByTestId("translate-model-menu")).toBeNull();
+    expect(useSettingsStore.getState().translate.translateModel).toBe("deepseek-v4-pro");
+  });
+
+  it("获取模型列表失败：回退静态预设列表并显示原因", async () => {
+    mockListModels.mockRejectedValue(new Error("NETWORK: timeout"));
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("translate-fetch-models"));
+    await waitFor(() => {
+      expect(screen.getByTestId("translate-fetch-status").textContent).toContain("获取失败");
+    });
+    // 不出现候选浮层，datalist 回退静态预设
+    expect(screen.queryByTestId("translate-model-menu")).toBeNull();
+    const options = screen.getByTestId("translate-model-options").children;
+    expect(Array.from(options).map((o) => o.getAttribute("value"))).toEqual(
+      TRANSLATE_PROVIDERS.deepseek.models
+    );
   });
 
   it("结果模式切换实时写 store", () => {

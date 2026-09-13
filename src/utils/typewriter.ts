@@ -63,6 +63,69 @@ export function isModifierKey(key: string): boolean {
 }
 
 /**
+ * v0.7.5 修复：键盘滚动跟随的基线（keydown 记录 / keyup 消费）
+ *
+ * **问题现象**：按 Esc 取消 AI 翻译/摘要/润色气泡（或对话窗）后，文档"有概率"
+ * 跳回开头，阅读进度被打断。
+ *
+ * **根因**：气泡的 Esc 处理走 `window` 捕获监听并 `stopPropagation()`
+ * （TranslateBubble / AiAssistBubble / AiChatDialog 均如此），编辑器 DOM 上的
+ * **捕获阶段 keydown** 因此收不到该键；但 keyup 是独立事件、不受影响仍会冒泡到
+ * 编辑器。于是 handleKeyUp 拿着"上一次按键"遗留的 savedCursorY / savedScrollTop /
+ * cursorWasOutside 计算：
+ * - 命中"普通字符且光标在视口内"分支 → 把 scrollTop **恢复成上一次按键时的旧值**；
+ * - 若光标被判定在视口外（陈旧值）→ 触发 scrollToVisible/scrollToCenter 追光标。
+ * 上一次按键若发生在文档开头附近，文档就跳回开头；是否需要跳取决于"上次按键位置
+ * 与当前滚动位置是否恰好不同"，所以表现为"有概率"。
+ *
+ * **修复**：只有本处理器见过配套 keydown 的 keyup 才允许进入滚动跟随逻辑。
+ */
+export interface ScrollKeyBaseline {
+  /** 是否已记录本次按键的 keydown；false 时其余字段是陈旧值，不可用于恢复滚动 */
+  seen: boolean;
+  /** keydown 时的光标 Y（相对内容顶部） */
+  cursorY: number;
+  /** keydown 时的 scrollTop */
+  scrollTop: number;
+  /** keydown 时光标是否在视口外 */
+  cursorWasOutside: boolean;
+}
+
+/** 创建滚动跟随基线（每个编辑器实例/模式各持一份） */
+export function createScrollKeyBaseline(): ScrollKeyBaseline {
+  return { seen: false, cursorY: 0, scrollTop: 0, cursorWasOutside: false };
+}
+
+/** keydown：记录本次按键的滚动基线并标记"已与本处理器配对" */
+export function markScrollKeyDown(
+  baseline: ScrollKeyBaseline,
+  cursorY: number,
+  scrollTop: number,
+  cursorWasOutside: boolean
+): void {
+  baseline.seen = true;
+  baseline.cursorY = cursorY;
+  baseline.scrollTop = scrollTop;
+  baseline.cursorWasOutside = cursorWasOutside;
+}
+
+/**
+ * keyup：消费基线。
+ *
+ * @returns true 表示"本次 keyup 有配套的、被本处理器看到的 keydown"，调用方可安全
+ *          使用基线做滚动跟随；false 表示 keydown 被吞（气泡 Esc 的 window 捕获
+ *          监听 stopPropagation、或焦点不在编辑器），基线是陈旧值，调用方**必须跳过**
+ *          ——否则会把文档滚回上一次按键时的位置（即"按 Esc 跳回开头"）。
+ *
+ * 无论返回值如何都会复位 seen，避免一次 keydown 被后续多个 keyup 复用。
+ */
+export function consumeScrollKeyUp(baseline: ScrollKeyBaseline): boolean {
+  if (!baseline.seen) return false;
+  baseline.seen = false;
+  return true;
+}
+
+/**
  * 判断普通字符输入时是否应跳过滚动
  *
  * 修复阅读模式屏幕闪烁抖动 bug 的核心逻辑：

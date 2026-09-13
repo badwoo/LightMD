@@ -14,6 +14,7 @@ import type { EditorView } from "prosemirror-view";
 import type { EditorState, Transaction } from "prosemirror-state";
 import { TextSelection } from "prosemirror-state";
 import { Slice, Fragment } from "prosemirror-model";
+import type { Node as PMNode } from "prosemirror-model";
 import { lightMDSchema } from "../core/schema";
 import { docToMarkdown } from "../core/markdown/serializer";
 import { markdownToInline, markdownToDoc } from "../core/markdown/parser";
@@ -86,15 +87,23 @@ export function extractFromIframe(doc: Document): string | null {
 
 // ─── 防御性清洗 ──────────────────────────────────────────
 
-/** 剥离 LLM 常见前后缀：``` 包裹、"以下是翻译：" 类前缀、结尾客套语（循环至稳定） */
+/**
+ * 剥离 LLM 常见前后缀：``` 包裹、"以下是翻译：" 类前缀、结尾客套语（循环至稳定）
+ *
+ * v0.7.5 例外：围栏语言为 `mermaid` 时**不剥壳**。
+ * 原实现会把"整段文本被 ``` 包裹"视为模型多余的包装而剥掉；但「文生图表」的
+ * 合法输出恰好就是整段只有一个 ```mermaid 围栏——剥掉围栏后图表源码会以普通
+ * 段落落盘，mermaid 实时渲染管线接管不到，功能首版即坏。故对 mermaid 围栏
+ * 保留原样（`$$` 公式块不受该正则影响，无需额外例外）。
+ */
 export function sanitizeTranslated(text: string): string {
   let t = text.trim();
   for (let round = 0; round < 3; round++) {
     const before = t;
     // 首尾代码围栏包裹：```lang\n...\n```
-    const fenceMatch = t.match(/^```[a-zA-Z0-9_+-]*[ \t]*\n([\s\S]*?)\n?[ \t]*```$/);
-    if (fenceMatch) {
-      t = fenceMatch[1].trim();
+    const fenceMatch = t.match(/^```([a-zA-Z0-9_+-]*)[ \t]*\n([\s\S]*?)\n?[ \t]*```$/);
+    if (fenceMatch && fenceMatch[1].toLowerCase() !== "mermaid") {
+      t = fenceMatch[2].trim();
     }
     // 前缀：好的，以下是翻译：/ 翻译如下：/ Translation: 等
     t = t.replace(
@@ -114,20 +123,41 @@ export function sanitizeTranslated(text: string): string {
 
 // ─── 回写 ────────────────────────────────────────────────
 
-/** 构建回写事务（核心纯逻辑，可测试）。返回 null 表示译文无效或结构失配。 */
+/** 构建回写事务（核心纯逻辑，可测试）。返回 null 表示译文无效或结构失配。
+ *  v0.7.3 改进1(D1)：支持传入任务启动时的选区快照（from/to + 对应 doc 引用），
+ *  优先以快照定位替换目标，避免流式期间用户选区漂移导致译文错位替换/插入。 */
 export function buildApplyTransaction(
   state: EditorState,
   translated: string,
-  mode: ApplyMode
+  mode: ApplyMode,
+  snapshot?: { from: number; to: number; doc: PMNode }
 ): Transaction | null {
   const clean = sanitizeTranslated(translated);
   if (!clean) return null;
 
-  const { selection } = state;
+  // 快照仅在文档未被编辑时可靠（doc 引用一致），否则回退到当前选区
+  const useSnapshot =
+    snapshot &&
+    snapshot.doc === state.doc &&
+    typeof snapshot.from === "number" &&
+    typeof snapshot.to === "number";
+  const anchorTo = useSnapshot ? snapshot!.to : state.selection.to;
 
+  // bilingual：译文插入到快照终点（非当前选区末端）
   if (mode === "bilingual") {
-    return buildBilingualInsert(state, selection.to, clean);
+    return buildBilingualInsert(state, anchorTo, clean);
   }
+
+  // replace 模式：以快照坐标构造选区作为替换目标（防选区漂移），否则用当前选区
+  const selection =
+    useSnapshot
+      ? TextSelection.create(state.doc, snapshot!.from, snapshot!.to)
+      : state.selection;
+
+  // 事务需持有与替换目标一致的选区，否则 replaceSelection 会用当前（漂移）选区
+  const baseTr = useSnapshot
+    ? state.tr.setSelection(selection)
+    : state.tr;
 
   // replace 模式：NodeSelection（整节点选中）不支持替换语义
   if (!(selection instanceof TextSelection)) return null;
@@ -137,13 +167,13 @@ export function buildApplyTransaction(
       // 行内替换：译文按行内 Markdown 解析（粗体/斜体/链接保留，不产生块结构）
       const nodes = markdownToInline(clean);
       const slice = new Slice(Fragment.fromArray(nodes), 0, 0);
-      return state.tr.replaceSelection(slice);
+      return baseTr.replaceSelection(slice);
     }
     // 块级替换：译文按块解析，open depths 沿用原选区（保持与前后段落的拼接关系）
     const doc = markdownToDoc(clean);
     const original = selection.content();
     const slice = new Slice(doc.content, original.openStart, original.openEnd);
-    return state.tr.replaceSelection(slice);
+    return baseTr.replaceSelection(slice);
   } catch {
     // 解析失败（译文含 schema 不支持的构造）→ 调用方降级走双语插入
     return null;
@@ -154,9 +184,10 @@ export function buildApplyTransaction(
 export function applyTranslation(
   view: EditorView,
   translated: string,
-  mode: ApplyMode
+  mode: ApplyMode,
+  snapshot?: { from: number; to: number; doc: PMNode }
 ): boolean {
-  const tr = buildApplyTransaction(view.state, translated, mode);
+  const tr = buildApplyTransaction(view.state, translated, mode, snapshot);
   if (!tr) return false;
   view.dispatch(tr);
   return true;

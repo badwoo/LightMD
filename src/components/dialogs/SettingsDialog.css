@@ -324,3 +324,74 @@ label.settings-switch {
   opacity: 0.45;
   pointer-events: none;
 }
+
+/* v0.7.3 U2：AI 子开关与配置统一左缩进，体现「AI 总开关 → 子功能」层级 */
+.translate-sub-group {
+  margin-left: 16px;
+  border-left: 2px solid var(--border-color, rgba(128, 128, 128, 0.25));
+  padding-left: 10px;
+}
+
+/* v0.7.2 修复：获取模型列表成功后的完整候选浮层（datalist 会按输入框文本过滤，无法展示全量） */
+.translate-model-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  z-index: 50;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.translate-model-menu-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-light, var(--border-color));
+}
+
+.translate-model-menu-close {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.translate-model-menu-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.translate-model-menu-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.translate-model-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-primary);
+  border-radius: 6px;
+}
+
+.translate-model-menu-item:hover {
+  background: var(--bg-hover);
+}

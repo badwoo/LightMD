@@ -1,12 +1,12 @@
 /**
- * v0.6.0：translateTooltip 插件测试
+ * v0.6.0 + v0.7.3：translateTooltip 插件测试
  *
  * 覆盖：
  * 1. shouldShowTrigger：空选区 false / 文本选区 true / code_block 选区 false
- * 2. buildTriggerDecorations：decoration 位于选区末尾位置
- * 3. createTriggerButton：click 触发回调携带按钮元素
+ * 2. v0.7.3 positionFloatingTrigger：真浮动定位（右缘对齐、顶部越界回落、视口钳制）
+ * 3. createTriggerButton：click 触发回调 / mousedown 阻止默认行为
  * 4. 插件状态机：mouseup 后显示、选区清除后隐藏（apply 重算）
- * 5. 集成：EditorView 渲染 widget、点击按钮经 findViewFromDOM 回调 view
+ * 5. 集成：EditorView 渲染浮动按钮（挂载于 body，不再占文本空间）、点击回调 view
  */
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -18,7 +18,7 @@ import {
   translateTooltipKey,
   shouldShowTrigger,
   createTriggerButton,
-  buildTriggerDecorations,
+  positionFloatingTrigger,
   createTranslateTooltipPlugin,
   findViewFromDOM,
 } from "../core/plugins/translateTooltip";
@@ -64,6 +64,16 @@ function flushTimeout(): Promise<void> {
   return new Promise((r) => setTimeout(r, 5));
 }
 
+/** 获取 body 下当前可见的浮动「译」按钮（v0.7.3：浮动元素挂载于 body） */
+function floatingBtn(): HTMLSpanElement | null {
+  const floatEl = document.body.querySelector(
+    ".translate-trigger-float"
+  ) as HTMLElement | null;
+  if (!floatEl) return null;
+  if (floatEl.style.display === "none") return null;
+  return floatEl.querySelector(".translate-trigger") as HTMLSpanElement | null;
+}
+
 describe("v0.6.0 translateTooltip - shouldShowTrigger", () => {
   it("空选区不显示", () => {
     const state = makeState("hello world");
@@ -81,15 +91,50 @@ describe("v0.6.0 translateTooltip - shouldShowTrigger", () => {
   });
 });
 
-describe("v0.6.0 translateTooltip - buildTriggerDecorations", () => {
-  it("decoration 位于选区末尾", () => {
-    const state = makeState("hello world", "world");
-    const decoSet = buildTriggerDecorations(state, () => {});
-    const found = decoSet.find();
-    expect(found.length).toBe(1);
-    expect(found[0].from).toBe(state.selection.to);
-    // widget decoration：spec.key 标识
-    expect((found[0] as { spec?: { key?: string } }).spec?.key).toBe("translate-trigger");
+describe("v0.7.3 translateTooltip - positionFloatingTrigger 真浮动定位", () => {
+  function rect(l: number, t: number, r: number, b: number) {
+    return { left: l, top: t, right: r, bottom: b };
+  }
+  const SIZE = { width: 28, height: 28 };
+
+  it("浮动于选区右上角（右缘贴合选区、位于选区首行上方）", () => {
+    const el = document.createElement("div");
+    const from = rect(100, 200, 300, 220);
+    const to = rect(300, 200, 500, 220);
+    const { left, top } = positionFloatingTrigger(el, from, to, { width: 800, height: 600 }, SIZE);
+    // 右缘 = max(right)=500，按钮右缘贴选区右缘 → x = 500 - 28 - 4 = 468
+    // 首行 y = min(top)=200，按钮在选区上方 → y = 200 - 28 - 4 = 168
+    expect(left).toBe(468);
+    expect(top).toBe(168);
+    expect(el.style.left).toBe("468px");
+    expect(el.style.top).toBe("168px");
+  });
+
+  it("顶部越界时落到选区首行下方", () => {
+    const el = document.createElement("div");
+    const from = rect(100, 2, 300, 22);
+    const to = rect(300, 2, 500, 22);
+    const { left, top } = positionFloatingTrigger(el, from, to, { width: 800, height: 600 }, SIZE);
+    // y = 2 - 28 - 4 = -30 < MARGIN(8) → 落到首行下方 y = 2 + 4 = 6
+    expect(top).toBe(6);
+  });
+
+  it("左侧越界时钳制到 MARGIN", () => {
+    const el = document.createElement("div");
+    const from = rect(0, 200, 30, 220);
+    const to = rect(30, 200, 40, 220);
+    const { left } = positionFloatingTrigger(el, from, to, { width: 800, height: 600 }, SIZE);
+    // x = max(right)-28-4 = 40-32 = 8，未小于 MARGIN(8) → 8
+    expect(left).toBe(8);
+  });
+
+  it("右侧越界时钳制回视口内", () => {
+    const el = document.createElement("div");
+    const from = rect(760, 200, 790, 220);
+    const to = rect(790, 200, 800, 220);
+    const { left } = positionFloatingTrigger(el, from, to, { width: 800, height: 600 }, SIZE);
+    // x = 800-32 = 768 > 宽-MARGIN-width... 检查越界 → 钳制
+    expect(left).toBe(800 - SIZE.width - 8);
   });
 });
 
@@ -139,7 +184,7 @@ describe("v0.6.0 translateTooltip - 插件状态机", () => {
   });
 });
 
-describe("v0.6.0 translateTooltip - EditorView 集成", () => {
+describe("v0.6.0 translateTooltip - EditorView 集成（v0.7.3 真浮动）", () => {
   let view: EditorView;
   let mount: HTMLElement;
 
@@ -148,13 +193,13 @@ describe("v0.6.0 translateTooltip - EditorView 集成", () => {
     mount?.remove();
   });
 
-  it("mouseup 后显示按钮 widget，点击触发回调", async () => {
+  it("mouseup 后浮动按钮显示于 body，点击触发回调", async () => {
     const onTrigger = vi.fn();
     const state = makeState("hello world", "world", onTrigger);
     ({ view, mount } = mountView(state));
 
-    // 初始无按钮
-    expect(mount.querySelector(".translate-trigger")).toBeNull();
+    // 初始无可见按钮（浮动元素 display:none）
+    expect(floatingBtn()).toBeNull();
 
     // 模拟 mouseup（左键）——{ mount } 模式下 mount 即 .ProseMirror 根节点
     mount.dispatchEvent(
@@ -162,13 +207,13 @@ describe("v0.6.0 translateTooltip - EditorView 集成", () => {
     );
     await flushTimeout();
 
-    // 状态刷新为可见，widget 渲染
+    // 状态刷新为可见，浮动按钮渲染（挂载于 body，不占文档空间）
     expect(translateTooltipKey.getState(view.state)).toBe(true);
-    const btn = mount.querySelector(".translate-trigger") as HTMLSpanElement;
+    const btn = floatingBtn();
     expect(btn).not.toBeNull();
 
-    // 点击按钮 → findViewFromDOM 定位 view → 回调
-    btn.click();
+    // 点击按钮 → onTrigger 携带 view
+    btn!.click();
     expect(onTrigger).toHaveBeenCalledWith(view);
   });
 
@@ -178,13 +223,13 @@ describe("v0.6.0 translateTooltip - EditorView 集成", () => {
 
     // 触发显示
     view.dispatch(view.state.tr.setMeta(translateTooltipKey, true));
-    expect(mount.querySelector(".translate-trigger")).not.toBeNull();
+    expect(floatingBtn()).not.toBeNull();
 
-    // 折叠选区 → apply 重算隐藏
+    // 折叠选区 → apply 重算隐藏，浮动元素 display:none
     view.dispatch(
       view.state.tr.setSelection(TextSelection.create(view.state.doc, 12))
     );
-    expect(mount.querySelector(".translate-trigger")).toBeNull();
+    expect(floatingBtn()).toBeNull();
   });
 
   it("findViewFromDOM 对未挂载元素返回 null", () => {
@@ -193,14 +238,14 @@ describe("v0.6.0 translateTooltip - EditorView 集成", () => {
   });
 
   // ─── v0.6.0 优化：气泡图标 + 总开关 ──────────
-  it("按钮渲染 SVG 气泡图标（含「译」字与气泡轮廓）", async () => {
+  it("浮动按钮渲染 SVG 气泡图标（含「译」字与气泡轮廓）", async () => {
     const state = makeState("hello world", "world");
     ({ view, mount } = mountView(state));
     mount.dispatchEvent(
       new MouseEvent("mouseup", { bubbles: true, button: 0, cancelable: true })
     );
     await flushTimeout();
-    const btn = mount.querySelector(".translate-trigger") as HTMLSpanElement;
+    const btn = floatingBtn() as HTMLSpanElement;
     // SVG 气泡轮廓 + 译字 glyph
     expect(btn.querySelector("svg .translate-trigger-bubble")).not.toBeNull();
     expect(btn.querySelector("svg .translate-trigger-glyph")?.textContent).toBe("译");
@@ -227,6 +272,6 @@ describe("v0.6.0 translateTooltip - EditorView 集成", () => {
     await flushTimeout();
     // 有选区但开关关闭 → 不显示
     expect(translateTooltipKey.getState(view.state)).toBe(false);
-    expect(mount.querySelector(".translate-trigger")).toBeNull();
+    expect(floatingBtn()).toBeNull();
   });
 });

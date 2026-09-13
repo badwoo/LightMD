@@ -19,8 +19,31 @@ export interface TranslateUndoSnapshot {
   content: string;
   /** 回写时的文件路径（null = 未保存的新文件） */
   filePath: string | null;
-  /** 回写时的 forceUpdateKey（外部内容替换计数，版本恢复/磁盘重载会变化） */
+  /**
+   * 回写时的 forceUpdateKey（保留字段，仅作记录）。
+   * v0.7.4 问题4：不再用于归属校验——切标签会递增该计数（App.handleTabSwitch），
+   * "全文翻译 → 切走 → 切回" 属正常操作却会让 key 变化，用它校验会导致
+   * "取消翻译"按钮可见但点击无效。归属判定统一走 isTranslateSnapshotForFile。
+   */
   key: number;
+}
+
+/**
+ * v0.7.4 问题4：判断翻译撤销快照是否属于指定文档。
+ *
+ * 只按 filePath 判定归属：filePath 是文档的稳定标识，而 key（forceUpdateKey）
+ * 会因切换标签/窗口等外部更新递增，不能代表"换了文档"。
+ * 该判定被"取消翻译"气泡渲染（TranslateUndoToast）与恢复逻辑（undoTranslation）
+ * 共用，避免两处规则不一致导致按钮可见却点击无效。
+ *
+ * filePath 为 null 时（未保存的新文件，仅浏览器演示态可能出现）仅有一个文档实例，
+ * 同为 null 即视为归属一致。
+ */
+export function isTranslateSnapshotForFile(
+  snapshot: TranslateUndoSnapshot | null,
+  filePath: string | null | undefined,
+): boolean {
+  return snapshot !== null && snapshot.filePath === (filePath ?? null);
 }
 
 interface EditorState {
@@ -111,7 +134,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   // v0.4.0：默认 markdown，打开非 md 文件时由 App.tsx 设置为对应语言
   currentLanguage: "markdown",
 
-  openFile: (path) => set({ filePath: path, isDirty: false, suppressAutoSave: false, translateUndoSnapshot: null, cursorLine: 0 }),
+  // v0.7.4 修复：不再清 translateUndoSnapshot——全文翻译/润色的"取消"快照应
+  // 跨标签切换保留（切走再切回同一文档、且文档未编辑/未关闭时气泡仍在）。
+  // 快照本身绑定 filePath/key，恢复时按归属校验；Toast 显示也按文件归属过滤，
+  // 故跨文档不会误恢复/误显示。
+  openFile: (path) => set({ filePath: path, isDirty: false, suppressAutoSave: false, cursorLine: 0 }),
   setCurrentLanguage: (lang) => set({ currentLanguage: lang }),
   setDirty: (dirty) => set({ isDirty: dirty }),
   setSuppressAutoSave: (v) => set({ suppressAutoSave: v }),
@@ -170,16 +197,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       activeTabIdx: s.openTabs.length,
     };
   }),
-  // v0.6.3 P0-2/P2-4：切换/关闭激活标签时清除翻译撤销快照并解除自动保存抑制。
-  // 结构性防御：当前 App 层切换路径最终都会调 openFile（已清理），
-  // 但 store 是公共 API，任何未走 openFile 的调用方不应留下跨文档的快照/抑制状态
+  // v0.6.3 P0-2/P2-4：切换激活标签时清除翻译撤销快照并解除自动保存抑制。……
+  // v0.7.4 修复：切换激活标签不再清 translateUndoSnapshot——"取消翻译"气泡应
+  // 在切走再切回同一文档时保留（恢复时按 filePath/key 归属校验，跨文档不会误恢复）。
   setActiveTab: (idx) =>
     set((s) => (idx === s.activeTabIdx
       ? { activeTabIdx: idx }
-      : { activeTabIdx: idx, translateUndoSnapshot: null, suppressAutoSave: false })),
+      : { activeTabIdx: idx, suppressAutoSave: false })),
   closeTab: (idx) => {
     const state = get();
     const closedTab = state.openTabs[idx] || null;
+    // v0.7.4：清翻译快照仅当关闭的就是快照所属文件——保证"取消翻译"气泡跨标签
+    // 切换保留（恢复时按 filePath/key 归属校验），且该文档被真正关闭后快照不残留
+    const closedPath = closedTab?.path ?? null;
+    const snap = state.translateUndoSnapshot;
+    const clearTranslateState =
+      idx === state.activeTabIdx || (snap !== null && snap.filePath === closedPath);
     set((s) => {
       const newTabs = s.openTabs.filter((_, i) => i !== idx);
       // 调整激活索引
@@ -193,8 +226,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (newActiveIdx >= newTabs.length) {
         newActiveIdx = Math.max(0, newTabs.length - 1);
       }
-      // v0.6.3 P0-2：关闭的是激活标签 → 活跃文档变化，清除翻译快照/保存抑制
-      const clearTranslateState = idx === s.activeTabIdx;
       return {
         openTabs: newTabs,
         activeTabIdx: newActiveIdx,

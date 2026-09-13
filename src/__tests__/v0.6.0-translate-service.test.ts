@@ -57,6 +57,7 @@ describe("v0.6.0 translateService", () => {
     MockChannel.last = null;
     // 重置翻译配置为默认值
     useSettingsStore.getState().setTranslateConfig({
+      translateProviderPreset: "zhipu",
       translateBaseUrl: "https://open.bigmodel.cn/api/paas/v4",
       translateModel: "glm-4-flash",
       translateTargetLang: "auto",
@@ -205,8 +206,9 @@ describe("v0.6.0 translateService", () => {
       completionTokens: 5,
     };
 
-    it("invoke 参数来自 settings 配置", async () => {
+    it("invoke 参数来自 settings 配置（v0.7.2 P1：含 provider）", async () => {
       useSettingsStore.getState().setTranslateConfig({
+        translateProviderPreset: "deepseek",
         translateBaseUrl: "https://api.deepseek.com/v1",
         translateModel: "deepseek-chat",
         translateTargetLang: "en",
@@ -221,6 +223,7 @@ describe("v0.6.0 translateService", () => {
       expect(call).toBeTruthy();
       expect(call![1]).toMatchObject({
         text: "你好",
+        provider: "deepseek",
         baseUrl: "https://api.deepseek.com/v1",
         model: "deepseek-chat",
         targetLang: "en",
@@ -305,10 +308,11 @@ describe("v0.6.0 translateService", () => {
 
   // ─── testConnection / setKey / hasKey ──────────────────
   describe("testConnection", () => {
-    it("透传 baseUrl/model 到 test_translate_connection", async () => {
+    it("透传 provider/baseUrl/model 到 test_translate_connection（v0.7.2 P1）", async () => {
       mockInvoke.mockResolvedValue(undefined);
-      await translateService.testConnection("https://api.test.com", "model-x");
+      await translateService.testConnection("zhipu", "https://api.test.com", "model-x");
       expect(mockInvoke).toHaveBeenCalledWith("test_translate_connection", {
+        provider: "zhipu",
         baseUrl: "https://api.test.com",
         model: "model-x",
       });
@@ -317,48 +321,51 @@ describe("v0.6.0 translateService", () => {
     it("错误包装为 TranslateServiceError", async () => {
       mockInvoke.mockRejectedValue("AUTH|bad key");
       await expect(
-        translateService.testConnection("https://api.test.com", "model-x")
+        translateService.testConnection("zhipu", "https://api.test.com", "model-x")
       ).rejects.toMatchObject({ info: { code: "AUTH" } });
     });
 
     it("非 Tauri 环境抛 NETWORK", async () => {
       mockIsTauri.mockReturnValue(false);
       await expect(
-        translateService.testConnection("https://api.test.com", "model-x")
+        translateService.testConnection("zhipu", "https://api.test.com", "model-x")
       ).rejects.toMatchObject({ info: { code: "NETWORK" } });
     });
   });
 
   describe("setKey", () => {
-    it("透传 key 到 set_translate_key", async () => {
+    it("透传 provider/key 到 set_translate_key（v0.7.2 P1：按厂商独立存储）", async () => {
       mockInvoke.mockResolvedValue(undefined);
-      await translateService.setKey("sk-test");
-      expect(mockInvoke).toHaveBeenCalledWith("set_translate_key", { key: "sk-test" });
+      await translateService.setKey("kimi", "sk-test");
+      expect(mockInvoke).toHaveBeenCalledWith("set_translate_key", {
+        provider: "kimi",
+        key: "sk-test",
+      });
     });
 
     it("错误包装为 TranslateServiceError", async () => {
       mockInvoke.mockRejectedValue("NETWORK|os error");
-      await expect(translateService.setKey("sk-test")).rejects.toMatchObject({
+      await expect(translateService.setKey("kimi", "sk-test")).rejects.toMatchObject({
         info: { code: "NETWORK" },
       });
     });
   });
 
   describe("hasKey", () => {
-    it("返回 keyring 检查结果", async () => {
+    it("透传 provider 到 has_translate_key（v0.7.2 P1）", async () => {
       mockInvoke.mockResolvedValue(true);
-      await expect(translateService.hasKey()).resolves.toBe(true);
-      expect(mockInvoke).toHaveBeenCalledWith("has_translate_key");
+      await expect(translateService.hasKey("kimi")).resolves.toBe(true);
+      expect(mockInvoke).toHaveBeenCalledWith("has_translate_key", { provider: "kimi" });
     });
 
     it("invoke 失败时返回 false（不抛错）", async () => {
       mockInvoke.mockRejectedValue(new Error("boom"));
-      await expect(translateService.hasKey()).resolves.toBe(false);
+      await expect(translateService.hasKey("kimi")).resolves.toBe(false);
     });
 
     it("非 Tauri 环境返回 false", async () => {
       mockIsTauri.mockReturnValue(false);
-      await expect(translateService.hasKey()).resolves.toBe(false);
+      await expect(translateService.hasKey("kimi")).resolves.toBe(false);
       expect(mockInvoke).not.toHaveBeenCalled();
     });
   });

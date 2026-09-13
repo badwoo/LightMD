@@ -38,8 +38,13 @@ export const enUS: Record<string, string> = {
   // N1：自动配对补全开关
   "settings.autoPair": "Auto Pair",
   // ─── v0.6.0：AI 翻译设置 ────────────────────
-  "settings.translate": "AI Translate",
-  "settings.translate.enabled": "Enable AI Translate",
+  "settings.translate": "AI",
+  "settings.translate.enabled": "Enable AI features",
+  "settings.translate.enabled.translate": "AI Translate",
+  // v0.7.3 U2: when master AI switch is off, children are gated/commented
+  "settings.translate.controlledByMaster": "Controlled by the \"Enable AI\" master switch",
+  // v0.7.0: shared global API config (AI group upgrade)
+  "settings.translate.apiShared": "The API config below is global: translation / continue / polish / summary share it",
   "settings.translate.provider": "Provider",
   "settings.translate.provider.deepseek": "DeepSeek (default)",
   "settings.translate.provider.zhipu": "Zhipu AI",
@@ -48,6 +53,15 @@ export const enUS: Record<string, string> = {
   "settings.translate.provider.kimi": "Kimi (Moonshot)",
   "settings.translate.provider.volcengine": "Volcengine Ark",
   "settings.translate.provider.doubao": "Doubao Seed",
+  "settings.translate.provider.kimicode": "Kimi Code",
+  "settings.translate.provider.hunyuan": "Tencent Hunyuan",
+  "settings.translate.provider.xunfei": "iFlytek Spark",
+  "settings.translate.provider.stepfun": "StepFun",
+  "settings.translate.provider.baidu": "Baidu ERNIE (AI Studio)",
+  "settings.translate.provider.lingyi": "01.AI (Yi)",
+  "settings.translate.provider.baichuan": "Baichuan AI",
+  "settings.translate.provider.sensenova": "SenseTime SenseNova",
+  "settings.translate.provider.antling": "Ant Ling Studio",
   "settings.translate.provider.gemini": "Google Gemini",
   "settings.translate.provider.claude": "Anthropic Claude",
   "settings.translate.provider.modelscope": "ModelScope",
@@ -62,7 +76,24 @@ export const enUS: Record<string, string> = {
   "settings.translate.apiKeyNotConfigured": "Not configured",
   "settings.translate.baseUrl": "API Base URL",
   "settings.translate.baseUrlInsecure": "Warning: http:// sends the API Key in plaintext. Prefer https://",
+  "settings.translate.triggerTitle": "AI Translate (F6)",
+  "settings.translate.ghostHint": "Tab ⏎ · Esc ✕",
+  // v0.7.4 feature 7: AI bubble context menu item
+  "settings.translate.hideAiBubble": "Hide AI bubble",
+  // v0.7.5 feature 2: per-task dynamic label ({glyph} = 续/润/摘/问)
+  "settings.translate.hideBubbleTask": "Hide \"{glyph}\" bubble",
+  // v0.7.5 feature 3: translate bubble color
+  "settings.translate.bubbleColor": "\"译\" bubble color",
+  "settings.translate.bubbleColorReset": "Follow theme",
+  "settings.translate.bubbleColorHint": "Follows the theme accent by default",
   "settings.translate.model": "Model",
+  "settings.translate.fetchModels": "Fetch Models",
+  "settings.translate.fetchingModels": "Fetching...",
+  "settings.translate.fetchModelsOk": "Fetched {count} available models",
+  "settings.translate.fetchModelsEmpty": "Endpoint returned no models",
+  "settings.translate.fetchModelsFail": "Fetch failed, using preset list",
+  "settings.translate.modelMenuPreset": "Recommended models (any model name can be typed)",
+  "settings.translate.kimiOverseaHint": "For overseas networks, change the base URL above to https://api.moonshot.ai/v1 (same Key)",
   "settings.translate.test": "Test Connection",
   "settings.translate.testing": "Testing...",
   "settings.translate.testOk": "Connected",
@@ -73,6 +104,10 @@ export const enUS: Record<string, string> = {
   "settings.translate.tone.formal": "Formal",
   "settings.translate.tone.casual": "Casual",
   "settings.translate.tone.technical": "Technical",
+  // v0.7.3：采样温度（修复 kimi 等仅允许 temperature=1 的厂商 400 报错）
+  "settings.translate.temperature": "Temperature",
+  "settings.translate.temperatureHint": "Lower is more deterministic and cost-effective; default 0.1",
+  "settings.translate.temperatureKimiHint": "This Kimi model only allows Temperature=1 (set automatically); keep it at 1 if you get a 400 error",
   "settings.translate.resultMode": "Result Mode",
   "settings.translate.resultMode.bubble": "Bubble confirm (default)",
   "settings.translate.resultMode.replace": "Replace directly",
@@ -367,6 +402,10 @@ export const enUS: Record<string, string> = {
   "menu.strikethrough": "Strikethrough",
   "menu.inlineCode": "Inline Code",
   "menu.translate": "AI Translate",
+  // v0.7.0: AI assist (continue / polish / summary)
+  "menu.aiContinue": "AI Continue",
+  "menu.aiPolish": "AI Polish",
+  "menu.aiSummary": "AI Summary",
   "menu.insertLink": "Insert Link",
   "menu.insertImage": "Insert Image",
   "menu.insertTable": "Insert Table",
@@ -424,6 +463,12 @@ export const enUS: Record<string, string> = {
   "command.edit.translate": "AI Translate Selection",
   // v0.6.1: Full document translate
   "command.edit.translateDocument": "AI Translate Document",
+  // v0.7.0: AI assist (continue / polish / summary)
+  "command.edit.aiContinue": "AI Continue Writing (at cursor)",
+  "command.edit.aiPolish": "AI Polish Selection",
+  "command.edit.aiSummary": "AI Generate Summary",
+  // v0.7.5 feature 1: AI chat (Ctrl+K)
+  "command.ai.chat": "AI Chat",
   // View group commands
   "command.view.preview": "Read Mode",
   "command.view.edit": "Edit Mode",
@@ -505,10 +550,108 @@ export const enUS: Record<string, string> = {
   "common.insert": "Insert",
   // ─── v0.6.0 AI Translate ───────────────────────────────
   "translate.title": "AI Translate",
+  // ─── v0.7.0 AI assist (continue / polish / summary) ────
+  "ai.title.continue": "AI Continue",
+  "ai.title.polish": "AI Polish",
+  "ai.title.summary": "AI Summary",
+  "ai.title.summary.selection": "AI Summary · Selection",
+  "ai.title.summary.full": "AI Summary · Full document",
+  // v0.7.5 feature 2: "问" bubble (opens the AI chat window; same as Ctrl+K)
+  "ai.title.chat": "AI Chat (Ctrl+K)",
+  "ai.insert": "Insert at cursor",
+  "ai.replace": "Replace selection",
+  "ai.stop": "Stop",
+  "ai.error.empty": "No content available",
+  "ai.ghostHint": "Tab to accept · Esc to discard",
+  // v0.7.5 optimization 3: placeholder ghost shown before the first chunk arrives
+  "ai.continuing": "Continuing...",
+  // v0.7.3 U1：AI 助手静默失败改 toast
+  "ai.disabledNotify": "AI is disabled. Enable it in settings",
+  "ai.continueEmptyNotify": "No text before the cursor to continue",
+  "ai.polishNoSelectionNotify": "Please select text to polish first",
+  "statusbar.ai": "AI Assistant",
+  // v0.7.5 feature 1: "AI Chat" entry in the status bar AI drawer
+  "statusbar.ai.chat": "AI Chat",
+  // ─── v0.7.5 feature 1: AI chat floating window ──────────
+  "ai.chat.title": "AI Chat",
+  "ai.chat.placeholder": "Type an instruction… (Enter to send / Shift+Enter for newline)",
+  "ai.chat.send": "Send",
+  "ai.chat.stop": "Stop",
+  "ai.chat.loading": "Generating…",
+  "ai.chat.empty": "Type an instruction to start, or pick a quick template above",
+  "ai.chat.minimize": "Collapse",
+  "ai.chat.expand": "Expand",
+  "ai.chat.close": "Close",
+  // Context chip (selection / whole document / none)
+  "ai.chat.ctx.label": "Context",
+  "ai.chat.ctx.switchHint": "Click to cycle context: selection → document → none",
+  "ai.chat.ctx.selection": "Selection {count} chars",
+  "ai.chat.ctx.document": "Document {count} chars",
+  "ai.chat.ctx.documentTruncated": "Document {count} chars (truncated to {max})",
+  "ai.chat.ctx.none": "No context",
+  "ai.chat.ctx.degraded": "Selection lost, using document ({count} chars)",
+  "ai.chat.templates": "Templates",
+  // Action bar
+  "ai.chat.action.insert": "Insert at cursor",
+  "ai.chat.action.replaceSelection": "Replace selection",
+  "ai.chat.action.replaceDoc": "Replace document",
+  "ai.chat.action.copy": "Copy",
+  "ai.chat.action.copied": "Copied",
+  "ai.chat.action.regenerate": "Regenerate",
+  // v0.7.5 optimization 4: in-window AI translation (translate / restore a single answer)
+  "ai.chat.action.translate": "译",
+  "ai.chat.action.translateBack": "Original",
+  // Action failures
+  "ai.chat.docChanged": "The document was edited during the chat; \"Replace document\" was skipped",
+  "ai.chat.replaceSelectionMissing": "The selection captured at send time is no longer valid; use \"Insert at cursor\" instead",
+  "ai.chat.error.tooLong": "Instruction or context is too long. Please shorten and retry",
+  "ai.chat.translateTooLong": "This answer exceeds 4000 characters and cannot be translated in the window",
+  // Quick templates (label = chip text; prompt = prefilled instruction)
+  "ai.chat.tpl.mermaid": "Diagram",
+  "ai.chat.tpl.mermaid.prompt": "Turn the following content into a Mermaid flowchart/sequence diagram (pick a suitable type), output only a mermaid code block",
+  // v0.7.5 optimization 4: AI translate template (translates the selection when one exists)
+  "ai.chat.tpl.translate": "AI Translate",
+  "ai.chat.tpl.translate.prompt": "Translate the following content into {target}; output only the translation, with no preamble or explanation",
+  "ai.chat.tpl.translate.promptAuto": "Translate the following content (Chinese to English, English to Chinese); output only the translation, with no preamble or explanation",
+  "ai.chat.tpl.formula": "Formula",
+  "ai.chat.tpl.formula.prompt": "Convert the following math description into a LaTeX formula wrapped in $$",
+  "ai.chat.tpl.summary": "Summary",
+  "ai.chat.tpl.summary.prompt": "Write a 150–300 word summary of the following content",
+  "ai.chat.tpl.frontmatter": "Title & tags",
+  "ai.chat.tpl.frontmatter.prompt": "For this document, produce 1 concise title + 3–6 tags as YAML frontmatter (title/tags)",
+  "ai.chat.tpl.rewrite": "Rewrite all",
+  "ai.chat.tpl.rewrite.prompt": "Rewrite the following document: keep the meaning and Markdown structure, improve the expression",
+  "ai.chat.tpl.analyze": "Analyze",
+  "ai.chat.tpl.analyze.prompt": "Analyze the following document: key points, structure, and improvement opportunities, summarized in a table",
+  // v0.7.4 feature 8: AI settings gear panel
+  "statusbar.ai.settings": "AI Settings",
+  "statusbar.ai.fixed": "Fix AI entry",
+  "statusbar.ai.bubble": "Selection AI bubble",
+  "statusbar.ai.bubbleDelay": "Bubble delay",
+  "statusbar.ai.colorCont": "Continue bubble color",
+  "statusbar.ai.colorPolish": "Polish bubble color",
+  "statusbar.ai.colorSummary": "Summary bubble color",
+  // v0.7.5 feature 2: per-task bubble visibility + "问" bubble color
+  "statusbar.ai.bubbleContinue": "\"续\" continue bubble",
+  "statusbar.ai.bubblePolish": "\"润\" polish bubble",
+  "statusbar.ai.bubbleSummary": "\"摘\" summary bubble",
+  "statusbar.ai.bubbleChat": "\"问\" AI chat bubble",
+  "statusbar.ai.colorChat": "AI chat bubble color",
+  // v0.7.0 feature 1: translate bubble context menu
+  "translate.menu.disableAI": "Disable AI translate",
+  "translate.menu.hideBubble": "Hide translate bubble",
+  // v0.7.0 feature 3: translate entry quick settings
+  "translate.entry.settings": "Translate settings",
+  "translate.entry.showBubble": "Selection translate bubble",
+  // v0.7.0 fix 4: bubble delay slider
+  "translate.entry.bubbleDelay": "Bubble delay",
+  // v0.7.5 feature 3: translate bubble color (same field as in settings)
+  "translate.entry.bubbleColor": "\"译\" bubble color",
   // v0.6.1: Full document translate
   "translate.full.title": "Translate (selection, or whole document if none)",
   "translate.full.runningTip": "Translating. Click to cancel",
   "translate.full.progress": "Translating {done}/{total}",
+  "translate.full.currentSegment": "Now: {text}",
   "translate.full.done": "Translation complete",
   "translate.full.cancel": "Cancel translation",
   "translate.full.dismiss": "Dismiss",
@@ -528,6 +671,8 @@ export const enUS: Record<string, string> = {
   "translate.copied": "Copied",
   "translate.warning.placeholders": "Some format marks may be lost. Bilingual mode is recommended",
   "translate.tokens": "tokens",
+  "translate.tokensIn": "In",
+  "translate.tokensOut": "Out",
   "translate.error.NETWORK": "Network error. Please check your connection",
   "translate.error.AUTH": "Invalid or missing API Key. Please configure it in Settings",
   "translate.error.RATE": "Too many requests. Please retry later",
@@ -538,4 +683,11 @@ export const enUS: Record<string, string> = {
   "translate.error.TOO_LONG": "Selection exceeds the 4000-character limit",
   "translate.error.EMPTY": "No text selected",
   "translate.error.DOC_CHANGED": "Document changed during translation. Result not applied",
+  // v0.7.3 U1：静默失败改 toast 的反馈文案
+  "translate.noTranslatable": "No translatable text in selection (symbols/links/images only)",
+  "translate.disabledNotify": "AI is disabled. Enable it in settings",
+  "translate.fullRunningNotify": "Full-text translation in progress. Finish or cancel it first",
+  "translate.noSelectionNotify": "Please select text to translate first",
+  "translate.copiedToClipboardHidden": "Translation copied to clipboard (bubble hidden)",
+  "translate.failedNotify": "Translation failed. See details",
 };

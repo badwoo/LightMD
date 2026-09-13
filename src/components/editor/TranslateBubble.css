@@ -1,6 +1,230 @@
 /* v0.6.0 AI 翻译气泡 —— 全部使用主题 CSS 变量，自动适配 6 主题 */
 
+/* ─── MiniContextMenu 轻量右键菜单（v0.7.0：气泡 / 「译」入口共用） ─────────── */
+.mini-context-menu {
+  position: fixed;
+  z-index: 2100;
+  min-width: 150px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+}
+
+.mini-context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mini-context-menu-item:hover {
+  background: var(--accent-color, #4a9eff);
+  color: var(--bg-primary);
+}
+
+/* ─── v0.7.0 修复5：AI 摘要气泡（Word 批注风格：更大、艺术感、偏左靠阅读区空白） ─── */
+.ai-summary-bubble {
+  width: min(480px, 46vw);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
+  overflow: visible; /* 允许"}"符号与顶部渐变饰条溢出 */
+}
+
+/* 顶部渐变饰条（accent → 紫，呼应 AI 字标配色） */
+.ai-summary-bubble::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  border-radius: 14px 14px 0 0;
+  background: linear-gradient(90deg, var(--accent-color, #4a9eff), #a855f7);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* 标题前的大引号装饰（衬线，艺术感） */
+.ai-summary-bubble .translate-bubble-title::before {
+  content: "\201C";
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent-color, #4a9eff);
+  margin-right: 2px;
+  opacity: 0.65;
+}
+
+/* 正文：更大字号、舒展行高（长摘要阅读友好） */
+.ai-summary-bubble .translate-bubble-body {
+  overflow-y: auto;
+  min-height: 120px;
+  max-height: 52vh;
+  padding: 14px 16px;
+  font-size: 14px;
+}
+
+.ai-summary-bubble .translate-bubble-text {
+  line-height: 1.8;
+}
+
+/* 全文摘要"}"收拢符号：气泡左外侧大号渐变衬线花括号（全文批注意象） */
+.ai-summary-brace {
+  position: absolute;
+  left: -30px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 60px;
+  font-weight: 400;
+  line-height: 1;
+  background: linear-gradient(180deg, var(--accent-color, #4a9eff), #a855f7);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: var(--accent-color, #4a9eff); /* 不支持渐变文字时的回退 */
+  user-select: none;
+  pointer-events: none;
+}
+
+/* 选段摘要虚线连接层（fixed 全屏 SVG 覆盖，不拦截交互，层级在气泡之下） */
+.ai-summary-connector {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 999;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.ai-summary-connector-path {
+  fill: none;
+  stroke: var(--accent-color, #4a9eff);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
+/* 锚点端小圆点（指向选区/光标处） */
+.ai-summary-connector-dot {
+  fill: var(--accent-color, #4a9eff);
+  opacity: 0.9;
+}
+
+/* ─── v0.7.4：AI 摘要气泡可拖拽移动 / 可缩放 / 标题栏译字翻译入口 ─── */
+/* 摘要气泡默认 absolute 定位（left/top 由 JS 计算），拖拽时实时更新 */
+.ai-summary-bubble {
+  position: absolute;
+}
+
+/* 标题栏作为拖拽手柄（摘要气泡可拖动移动）；cursor 提示可拖 */
+.ai-bubble-drag-handle {
+  cursor: default;
+}
+.ai-summary-bubble .ai-bubble-drag-handle {
+  cursor: grab;
+}
+.ai-summary-bubble .ai-bubble-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* 右下角拖拽缩放手柄（放大摘要气泡） */
+.ai-bubble-resize-handle {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 2;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+.ai-bubble-resize-handle::before {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid var(--text-tertiary);
+  border-bottom: 2px solid var(--text-tertiary);
+  border-radius: 1px;
+}
+.ai-bubble-resize-handle:hover {
+  opacity: 1;
+}
+
+/* 标题栏「译」字翻译入口（点按反馈 / 激活态高亮） */
+.ai-bubble-translate {
+  margin-left: 6px;
+  padding: 0 6px;
+  min-width: 26px;
+  height: 22px;
+  line-height: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.05s ease;
+  user-select: none;
+}
+.ai-bubble-translate:hover {
+  color: var(--accent-color, #4a9eff);
+  border-color: var(--accent-color, #4a9eff);
+}
+.ai-bubble-translate:active {
+  /* 点按的"按下"反馈 */
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+/* 激活态（已翻译为译文，再点恢复原文） */
+.ai-bubble-translate.is-active {
+  background: var(--accent-color, #4a9eff);
+  border-color: var(--accent-color, #4a9eff);
+  color: #fff;
+}
+.ai-bubble-translate:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* ─── 选区浮动气泡图标按钮（v0.6.0 优化：SVG 气泡图标） ─────────── */
+/* v0.7.3：真浮动容器（position:fixed 由插件内联设置，此样式只负责布局外观）*/
+.translate-trigger-float {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  gap: 2px; /* v0.7.4 功能7：一排 [译][续][润][摘] 按钮间的间隙 */
+  pointer-events: auto;
+}
+
+/* 浮动容器内不再需要内联 widget 的缩进 margin（消除右侧占位对文本的挤压） */
+.translate-trigger-float .translate-trigger {
+  margin-left: 0;
+}
+
+/* v0.7.5 功能3：「译」按钮支持颜色设置——经 JS 注入 --ai-btn-color（与 AI 按钮同款机制）。
+   未设置时全部回退到 v0.7.4 的原样式（border-color / accent），外观零变化。 */
 .translate-trigger {
   display: inline-flex;
   align-items: center;
@@ -10,7 +234,7 @@
   margin-left: 4px;
   border-radius: 50%;
   background: var(--bg-primary);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--ai-btn-color, var(--border-color));
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
   cursor: pointer;
   vertical-align: middle;
@@ -19,19 +243,19 @@
 }
 
 .translate-trigger:hover {
-  background: var(--accent-color, #4a9eff);
-  border-color: var(--accent-color, #4a9eff);
+  background: var(--ai-btn-color, var(--accent-color, #4a9eff));
+  border-color: var(--ai-btn-color, var(--accent-color, #4a9eff));
 }
 
-/* 气泡轮廓：默认描边填充反色，hover 反转为填充式图标 */
+/* 气泡轮廓：默认描边填充反色，hover 反转为填充式图标（颜色设置仅影响图标笔画） */
 .translate-trigger .translate-trigger-bubble {
   fill: var(--bg-primary);
-  stroke: var(--text-primary);
+  stroke: var(--ai-btn-color, var(--text-primary));
   stroke-width: 1.6;
 }
 
 .translate-trigger .translate-trigger-glyph {
-  fill: var(--text-primary);
+  fill: var(--ai-btn-color, var(--text-primary));
 }
 
 .translate-trigger:hover .translate-trigger-bubble {
@@ -41,6 +265,34 @@
 
 .translate-trigger:hover .translate-trigger-glyph {
   fill: var(--bg-primary);
+}
+
+/* ─── v0.7.4 功能7：AI 气泡按钮（续/润/摘） ─────────── */
+/* 与「译」按钮同尺寸的纯文字小按钮。边框/配色经 JS 注入 CSS 变量 --ai-btn-color，
+   取不到时回退主题 accent 默认色；可用悬停用主题 accent。 */
+.translate-trigger-float .translate-ai-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--ai-btn-color, var(--accent-color, #4a9eff));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  vertical-align: middle;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ai-btn-color, var(--text-primary));
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.translate-trigger-float .translate-ai-trigger:hover {
+  background: var(--ai-btn-color, var(--accent-color, #4a9eff));
+  border-color: var(--ai-btn-color, var(--accent-color, #4a9eff));
+  color: #fff;
 }
 
 .translate-bubble {

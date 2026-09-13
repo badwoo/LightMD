@@ -7,7 +7,7 @@
  * - 样式复用 full-translate-btn 的变量体系，自动适配 6 主题
  */
 import { useT } from "../../i18n";
-import { useEditorStore } from "../../stores/useEditorStore";
+import { useEditorStore, isTranslateSnapshotForFile } from "../../stores/useEditorStore";
 import "./FullTranslateButton.css";
 
 interface TranslateUndoToastProps {
@@ -18,7 +18,11 @@ interface TranslateUndoToastProps {
 export function TranslateUndoToast({ onUndo }: TranslateUndoToastProps) {
   const t = useT();
   const snapshot = useEditorStore((s) => s.translateUndoSnapshot);
-  if (snapshot === null) return null;
+  // v0.7.4 问题4：快照按 filePath 归属过滤（与 undoTranslation 恢复判定共用同一规则）——
+  // 切换文档时快照被保留，仅在当前激活文档与快照所属文档一致时才渲染，
+  // 避免 A 文档的气泡在切换到 B 文档时误显示。
+  const currentFilePath = useEditorStore((s) => s.filePath);
+  if (!isTranslateSnapshotForFile(snapshot, currentFilePath)) return null;
 
   return (
     <button

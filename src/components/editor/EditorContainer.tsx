@@ -16,8 +16,8 @@ import { setMermaidTheme } from "../../core/plugins/mermaid-block";
 import { TextSelection } from "prosemirror-state";
 import { undo, redo } from "prosemirror-history";
 import type { EditorView } from "prosemirror-view";
-import { useEditorStore, type ViewMode } from "../../stores/useEditorStore";
-import { useSettingsStore } from "../../stores/useSettingsStore";
+import { useEditorStore, isTranslateSnapshotForFile, type ViewMode } from "../../stores/useEditorStore";
+import { useSettingsStore, isAiChatRectVisible } from "../../stores/useSettingsStore";
 import { useAutoSave } from "../../hooks/useAutoSave";
 import { useResizable } from "../../hooks/useResizable";
 import { useT, t as translate } from "../../i18n";
@@ -46,8 +46,8 @@ import { highlightCodeBlocksInHtml, getPrismCss, renderCodeFilePreview } from ".
 import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc } from "../../utils/imagePath";
 import { calculateWordCount } from "../../utils/wordCount";
-import { findParagraphRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight } from "../../utils/focus-paragraph";
-import { isTypewriterTriggerKey, isModifierKey, computeTypewriterScrollTop, shouldSkipScrollForCharInput, computeScrollPercent, isCursorOutsideViewport, computeSyncScrollTop, shouldSkipInitialScrollToCenter, computeRestoreScrollTop, computeViewportCenter } from "../../utils/typewriter";
+import { findParagraphRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight, syncTextareaMetrics, buildSourceGhostHtml } from "../../utils/focus-paragraph";
+import { isTypewriterTriggerKey, isModifierKey, computeTypewriterScrollTop, shouldSkipScrollForCharInput, computeScrollPercent, isCursorOutsideViewport, computeSyncScrollTop, shouldSkipInitialScrollToCenter, computeRestoreScrollTop, computeViewportCenter, createScrollKeyBaseline, markScrollKeyDown, consumeScrollKeyUp } from "../../utils/typewriter";
 // v0.6.6 问题4：源码显示层 base64 内联图片短标记（mask/unmask/光标补偿）
 import {
   maskBase64Images,
@@ -68,10 +68,32 @@ import {
   buildSourceRewrite,
 } from "../../services/translateBridge";
 // v0.6.1：全文翻译（悬浮按钮 + 切分/重组/循环 + 进度状态 + 版本快照）
-import { FullTranslateButton } from "./FullTranslateButton";
+import {
+  FullTranslateButton,
+} from "./FullTranslateButton";
+// v0.7.0 修复1：选区「译」浮动按钮右键菜单（与翻译气泡同款快捷菜单）
+import { MiniContextMenu } from "./MiniContextMenu";
+import { translateTooltipKey, AI_BUBBLE_DEFS, type AiAssistTask } from "../../core/plugins/translateTooltip";
 import { ModeSwitchButton } from "./ModeSwitchButton";
 import { TranslateUndoToast } from "./TranslateUndoToast";
 import { useFullTranslateStore } from "../../stores/fullTranslateStore";
+// v0.7.0：AI 助手（续写 ghost / 润色 / 摘要气泡 + 服务 + 状态）
+import { AiAssistBubble } from "./AiAssistBubble";
+import { aiAssistService, type AiTask } from "../../services/aiAssistService";
+import { useAiAssistStore, type AiAssistSourceMode } from "../../stores/aiAssistStore";
+// v0.7.5：AI 对话（浮动窗口 + 服务 + 状态）
+import { AiChatDialog } from "./AiChatDialog";
+import { useAiChatStore } from "../../stores/aiChatStore";
+import {
+  aiChatService,
+  buildChatRequestMessages,
+  truncateChatContext,
+  hasUsableContext,
+  type AiChatContextScope,
+} from "../../services/aiChatService";
+import { setAiGhost, clearAiGhost, aiGhostKey } from "../../core/plugins/ai-ghost";
+import { Slice } from "prosemirror-model";
+import type { Node as PMNode } from "prosemirror-model";
 import {
   hasTranslatableText,
   splitDocumentForTranslation,
@@ -80,6 +102,10 @@ import {
   createContextAbortChecker,
 } from "../../services/fullTranslate";
 import { versionSnapshotService } from "../../services/versionSnapshotService";
+// v0.7.3 U1：静默失败改 toast 反馈（用户触达度最高的体验修复）
+import { notifyWarning, notifySuccess } from "../../services/notificationService";
+// v0.7.0 bug修复：按文件记录浏览进度（切换标签保留，重新打开重置）
+import { fileScrollProgress } from "../../services/fileScrollProgress";
 import "../../styles/editor.css";
 
 // ─── 源码模式撤销/恢复栈（增量差异存储）──────────────
@@ -98,6 +124,62 @@ interface HistoryEntry {
 }
 
 const MAX_HISTORY = 30;
+
+/**
+ * v0.7.5 功能2：比较"被独立隐藏的 AI 气泡任务"列表是否等价。
+ *
+ * zustand 的 setTranslateConfig 每次都会产生新数组引用，直接比较引用会导致
+ * 任何设置变更都触发浮动按钮刷新；此处按内容比较（顺序无关），避免无谓 dispatch。
+ */
+export function sameTaskList(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const x = a ?? [];
+  const y = b ?? [];
+  if (x.length !== y.length) return false;
+  return x.every((item) => y.includes(item));
+}
+
+/**
+ * v0.7.5 功能2：任务 → 气泡字形映射（右键菜单「隐藏『润』气泡」动态文案用）。
+ * 由插件导出的 AI_BUBBLE_DEFS 派生，保证字形与一排按钮完全一致（单源）。
+ */
+export const AI_BUBBLE_GLYPHS: Record<AiAssistTask, string> = Object.fromEntries(
+  AI_BUBBLE_DEFS.map((d) => [d.task, d.text])
+) as Record<AiAssistTask, string>;
+
+/**
+ * v0.7.5 功能1（F5）：「替换全文」的 DOC_CHANGED 守卫判定（纯函数，便于单测）。
+ *
+ * 对话期间文档可能被手动编辑，整篇替换会静默丢弃这些编辑（v0.6.3 P0-3 教训）。
+ * 仅当当前全文与**发送时快照**完全一致时才允许替换；读取失败（null）一律拒绝。
+ */
+export function canReplaceDocument(currentText: string | null, snapshot: string): boolean {
+  return currentText !== null && currentText === snapshot;
+}
+
+/**
+ * v0.7.5 功能5：「替换选区」的发送时快照是否仍有效（纯函数，便于单测）。
+ *
+ * PM 的 doc 是不可变的——任何编辑都会产生新的 doc 对象，因此引用相等即"文档未变"，
+ * 此时快照的 from/to 语义可靠。引用不等时必须**拒绝**而不是退化用"当前选区"：
+ * 对话窗可能开着很久，用户此刻的选区往往在别处，退化路径会把回答写到错误的文字上。
+ */
+export function isPmSelectionSnapshotValid(
+  snapshotDoc: PMNode | undefined,
+  currentDoc: PMNode | undefined
+): snapshotDoc is PMNode {
+  return !!snapshotDoc && snapshotDoc === currentDoc;
+}
+
+/**
+ * v0.7.5：source（textarea）通道的切片坐标是否仍有效（同一判定思路）。
+ * textarea 没有 doc 引用可比对，只能要求全文逐字未变。
+ */
+export function isSourceSelectionSnapshotValid(
+  snapshot: string | undefined,
+  current: string
+): boolean {
+  return snapshot !== undefined && snapshot === current;
+}
 
 /** 计算两个字符串的最小差异（基于简单的前后缀匹配） */
 function computeDiff(oldText: string, newText: string): { start: number; deleted: string; inserted: string } {
@@ -505,7 +587,62 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // v0.6.0：PM 选区「译」浮动按钮触发（ref 转发最新闭包，编辑器只创建一次）
       onTranslateTrigger: () => startTranslateRef.current(),
       // v0.6.0：总开关关闭时不显示选区浮动按钮（动态读取设置）
-      translateEnabledGetter: () => useSettingsStore.getState().translate.translateEnabled,
+      // v0.7.0：隐藏翻译小气泡时选区「译」按钮也不显示（气泡已隐藏，触发无反馈）
+      // v0.7.0 修复1：双开关语义——全局 AI 总开关 + 翻译子开关都开启才显示
+      translateEnabledGetter: () => {
+        const s = useSettingsStore.getState();
+        return s.aiEnabled && s.translate.translateEnabled && !s.translate.translateBubbleHidden;
+      },
+      // v0.7.0 修复1/4：延迟出现 + 右键快捷菜单（回调经 ref 转发最新闭包）
+      // v0.7.3 改进8(D5)：title 走 i18n，不再硬编码中文
+      translateTooltipOptions: {
+        getDelay: () => useSettingsStore.getState().translate.translateBubbleDelayMs,
+        onContextMenu: (_btn, e) => triggerMenuPosRef.current(e.clientX, e.clientY),
+        title: translate("settings.translate.triggerTitle"),
+        // v0.7.4 功能7 / v0.7.5 功能2：AI 气泡（续/润/摘/问）接线。
+        // onAiAction：「问」打开 AI 对话窗（不走 startAiAssist 气泡任务流），
+        // 其余三个复用 startAiAssist（经 ref 转发最新闭包，选区提取逻辑一致）
+        onAiAction: (task) => {
+          if (task === "chat") startAiChatRef.current();
+          else startAiAssistRef.current(task);
+        },
+        // 任一 AI 按钮右键 → 渲染「隐藏『X』气泡」快捷菜单（按被点按钮的 task 动态文案）
+        onAiContextMenu: (btn, e) => {
+          const task = (btn as HTMLElement).dataset.task;
+          if (!task) {
+            aiMenuPosRef.current(e.clientX, e.clientY, null);
+            return;
+          }
+          aiMenuPosRef.current(e.clientX, e.clientY, task as AiAssistTask);
+        },
+        // v0.7.5 功能2：按任务独立显隐——总开关关闭（aiAssistBubbleEnable=false）
+        // 或该任务被独立隐藏（hiddenTasks 命中）均不显示；互不影响其余气泡
+        isBubbleHidden: (task) => {
+          const tr = useSettingsStore.getState().translate;
+          return !tr.aiAssistBubbleEnable || tr.aiAssistBubbleHiddenTasks.includes(task);
+        },
+        // 各 AI 按钮颜色（空串 → 插件回退主题默认色）
+        getBubbleColor: (task) => {
+          const tr = useSettingsStore.getState().translate;
+          if (task === "continue") return tr.aiAssistBubbleColorContinue || undefined;
+          if (task === "polish") return tr.aiAssistBubbleColorPolish || undefined;
+          if (task === "summary") return tr.aiAssistBubbleColorSummary || undefined;
+          return tr.aiAssistBubbleColorChat || undefined;
+        },
+        // v0.7.5 功能3：「译」按钮颜色（空串 → 回退主题默认色，外观与 v0.7.4 一致）
+        getTranslateColor: () => useSettingsStore.getState().translate.translateBubbleColor || undefined,
+        // v0.7.4 修复2：AI 三个气泡延迟（从 mouseup 起算，独立于「译」按钮延迟）
+        getAiDelay: () => useSettingsStore.getState().translate.aiAssistBubbleDelayMs,
+        // 各 AI 按钮 title（i18n）
+        getAiTitle: (task) => {
+          if (task === "continue") return translate("ai.title.continue");
+          if (task === "polish") return translate("ai.title.polish");
+          if (task === "summary") return translate("ai.title.summary");
+          return translate("ai.title.chat");
+        },
+      },
+      // v0.7.3 改进8(D5)：AI 续写 ghost 采纳提示文案走 i18n
+      aiGhostHint: translate("settings.translate.ghostHint"),
       // v0.6.6 问题2：阅读模式 Slash 命令触发状态（插件检测后回调，驱动 SlashCommandPm 渲染）
       onSlashStateChange: (s) => setPmSlash(s),
     });
@@ -532,11 +669,40 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const percent = computeScrollPercent(container.scrollHeight, container.clientHeight, container.scrollTop);
       if (percent !== null) {
         pmScrollPercentRef.current = percent;
+        // v0.7.0 bug修复：按文件记录浏览进度（标签切换保留；重新打开由 App 层 clear 重置）
+        fileScrollProgress.set(activeFileRef.current, percent);
       }
     };
     container.addEventListener("scroll", handler);
     return () => container.removeEventListener("scroll", handler);
   }, [content, forceUpdateKey]);
+
+  // ─── v0.7.4 修复1/2 / v0.7.5 功能2/3：AI 气泡设置变化 → 刷新浮动按钮 ──────────
+  // AI 气泡的显示/颜色由设置驱动，而设置变化不会产生 PM 事务，
+  // 插件因此无法感知（此前右键隐藏后需重新选文本才恢复显示、改色不生效）。
+  // 用 store 订阅（不引起组件重渲染）+ 空事务 dispatch 触发插件 view().update
+  // → updateFloating 重读 isBubbleHidden/getBubbleColor/getTranslateColor，即时生效。
+  useEffect(() => {
+    const unsubscribe = useSettingsStore.subscribe((state, prevState) => {
+      const cur = state.translate;
+      const prev = prevState.translate;
+      const changed =
+        cur.aiAssistBubbleEnable !== prev.aiAssistBubbleEnable ||
+        cur.aiAssistBubbleDelayMs !== prev.aiAssistBubbleDelayMs ||
+        cur.aiAssistBubbleColorContinue !== prev.aiAssistBubbleColorContinue ||
+        cur.aiAssistBubbleColorPolish !== prev.aiAssistBubbleColorPolish ||
+        cur.aiAssistBubbleColorSummary !== prev.aiAssistBubbleColorSummary ||
+        // v0.7.5 功能2/3：独立隐藏列表（数组需比较内容）与「问」「译」颜色
+        cur.aiAssistBubbleColorChat !== prev.aiAssistBubbleColorChat ||
+        cur.translateBubbleColor !== prev.translateBubbleColor ||
+        !sameTaskList(cur.aiAssistBubbleHiddenTasks, prev.aiAssistBubbleHiddenTasks);
+      if (!changed) return;
+      const view = viewRef.current;
+      if (!view || view.isDestroyed) return;
+      view.dispatch(view.state.tr);
+    });
+    return unsubscribe;
+  }, []);
 
   // ─── 持续追踪 textarea 滚动百分比 ──────────────
   useEffect(() => {
@@ -546,6 +712,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const percent = computeScrollPercent(textarea.scrollHeight, textarea.clientHeight, textarea.scrollTop);
       if (percent !== null) {
         textareaScrollPercentRef.current = percent;
+        // v0.7.0 bug修复：按文件记录浏览进度（同上）
+        fileScrollProgress.set(activeFileRef.current, percent);
       }
     };
     textarea.addEventListener("scroll", handler);
@@ -575,6 +743,42 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       console.error("更新编辑器内容失败:", e);
     }
   }, [content, forceUpdateKey, isMdFile]);
+
+  // ─── v0.7.0 bug修复：文件切换保留浏览进度 ─────────
+  // 需求：切换不同打开的文件时浏览进度不重置；重新打开该文件时重置到顶部。
+  // 实现：scroll 事件已按 filePath 实时写入 fileScrollProgress；
+  // 此处文件切换（forceUpdateKey 变化，App 层所有切换路径都会 +1）时读取
+  // 新文件的进度并恢复。重新打开场景 App 层已 clear → get 返回 null → 不恢复（顶部）。
+  // 性能：Map.get 单次哈希查询；恢复仅在切换时执行一次（双 rAF 等布局稳定）。
+  useEffect(() => {
+    const percent = fileScrollProgress.get(activeFileRef.current);
+    if (percent === null) return;
+    // 标记恢复中，防打字机 effect 的 smooth 滚动覆盖（与 applyScroll 相同策略）
+    isRestoringScrollRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (isSourceMode) {
+          const textarea = sourceTextareaRef.current;
+          if (textarea) {
+            const newTop = computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight);
+            textarea.scrollTop = newTop ?? 0;
+          }
+          // 分屏模式 iframe 异步写入：记录待恢复百分比，iframe 写入 effect 末尾消费
+          if (viewMode === "split") {
+            pendingIframeScrollRef.current = percent;
+          }
+        } else {
+          const container = editorRef.current;
+          if (container) {
+            const newTop = computeRestoreScrollTop(percent, container.scrollHeight, container.clientHeight);
+            container.scrollTop = newTop ?? 0;
+          }
+        }
+        isRestoringScrollRef.current = false;
+      });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceUpdateKey]);
 
   // ─── 模式切换时同步内容 ──────────────────────
   // 核心原则：三个模式操作同一个文件，切换时内容不丢失
@@ -760,6 +964,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   // ─── 源码编辑内容变化 ──────────────────────────
   const handleSourceChange = useRef((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // v0.7.3 改进10(U3)：任何用户编辑（含自动配对/粘贴/撤销）都会使 source
+    // 续写 ghost 位置语义失效——取消任务并清除 overlay（与 PM 模式 docChanged 失效一致）
+    sourceGhostHandlersRef.current.invalidate();
     const textarea = e.target;
     let newContent = textarea.value;
     let cursorPos = textarea.selectionStart;
@@ -1101,6 +1308,24 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const handleSourceKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!isSourceMode || !isMdFile) return;
 
+    // v0.7.3 改进10(U3)：source 续写 ghost 的 Tab 采纳 / Esc 放弃
+    // （与 PM 模式 ghost 手势一致）；ghost 未活跃时不拦截，走原有自动配对/快捷键）
+    if (sourceGhostActiveRef.current) {
+      if (e.key === "Tab") {
+        e.preventDefault();
+        e.stopPropagation();
+        sourceGhostHandlersRef.current.accept();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        sourceGhostHandlersRef.current.cancel();
+        return;
+      }
+      // 其余按键：用户主动编辑 → ghost 位置语义可能失效，交给变更处理器统一判定
+    }
+
     // N1：自动配对补全（先于快捷键解析：仅单字符、无修饰键）
     // 开符号 → 插入配对（有选区则包裹并保持选中）；闭符号与下一字符相同 → 跳过（光标右移）
     if (
@@ -1157,11 +1382,38 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     anchor: BubbleAnchor;
     start?: number;
     end?: number;
+    // v0.7.3 改进1(D1)：pm 通道任务启动时的文档引用快照——回写时若文档未被编辑
+    // （doc 引用一致）则用快照 from/to 定位替换目标，防流式期间选区漂移错位回写
+    doc?: PMNode;
   } | null>(null);
+  // v0.7.3 D2：翻译任务序号守卫（与 AI 助手 aiSeqRef 同款）——
+  // 旧任务 promise 完成/失败时若序号已变则丢弃，防止旧译文写入新任务气泡
+  const translateSeqRef = useRef(0);
   // startTranslate/handleTranslateApply 的最新引用转发（createEditor 只初始化一次 + 命令监听挂载一次）
   // v0.6.2 问题3：startTranslate 支持 fallbackToFull 参数（「译」按钮无选区时回退全文翻译）
   const startTranslateRef = useRef<(fallbackToFull?: boolean) => void>(() => {});
   const handleTranslateApplyRef = useRef<(mode: "replace" | "bilingual", translated: string) => void>(() => {});
+  // v0.7.0 修复1：选区「译」浮动按钮右键菜单位置（null=关闭）
+  // 插件 contextmenu 回调经 ref 转发（createEditor 仅初始化一次，避免闭包过期）
+  const [triggerMenuPos, setTriggerMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const triggerMenuPosRef = useRef<(x: number, y: number) => void>(() => {});
+  triggerMenuPosRef.current = (x, y) => setTriggerMenuPos({ x, y });
+  // v0.7.4 功能7 / v0.7.5 功能2：任一 AI 气泡（续/润/摘/问）右键菜单位置 + 目标任务
+  // （null 位置 = 关闭；task 用于「隐藏『X』气泡」动态文案与独立隐藏）
+  const [aiMenuPos, setAiMenuPos] = useState<{
+    x: number;
+    y: number;
+    task: AiAssistTask | null;
+  } | null>(null);
+  const aiMenuPosRef = useRef<(x: number, y: number, task: AiAssistTask | null) => void>(() => {});
+  aiMenuPosRef.current = (x, y, task) => setAiMenuPos({ x, y, task });
+  /** 右键菜单动作后立即隐藏已显示的浮动按钮（设置变化不触发 PM 重渲染，需主动 dispatch） */
+  const hideTranslateTrigger = useCallback(() => {
+    const view = viewRef.current;
+    if (view && !view.isDestroyed) {
+      view.dispatch(view.state.tr.setMeta(translateTooltipKey, false));
+    }
+  }, []);
 
   // v0.6.3 P0-1/P0-2：当前活跃文档上下文（latest-ref，每次渲染刷新）。
   // - 全文翻译 shouldAbort 用「任务启动闭包快照 vs 此 ref」检测标签切换
@@ -1180,29 +1432,64 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     start?: number,
     end?: number,
   ) => {
-    // v0.6.2 问题4：无可译文字（纯符号/纯链接选区）静默返回，不发请求省 token
-    if (!hasTranslatableText(text)) return;
-    translateCtxRef.current = { text, sourceMode, anchor, start, end };
-    useTranslateStore.getState().openBubble(sourceMode, anchor);
-
+    // v0.6.2 问题4：无可译文字（纯符号/纯链接选区）静默返回不发请求省 token
+    // v0.7.3 U1：由静默改为 toast 提示，用户能感知"该选区不可翻译"
+    if (!hasTranslatableText(text)) {
+      notifyWarning(translate("translate.noTranslatable"));
+      return;
+    }
+    // v0.7.3 问题2修复：移除"隐藏翻译小气泡时一律拦截"的守卫——
+    // 隐藏的只是选中文本浮动的小气泡，翻译功能未关闭，F6 / 右键 / 命令面板仍应可用。
+    // 隐藏时：气泡模式（bubble）降级为复制到剪贴板并 toast；replace/bilingual 直接回写。
     const cfg = useSettingsStore.getState().translate;
+    const seq = ++translateSeqRef.current;
+    // v0.7.3 D2：序号守卫——旧任务 promise 完成时若已发起新任务则丢弃，防止旧译文
+    // 写入新任务气泡（与 aiSeqRef 同款，修复窄竞态窗口）
+    // v0.7.3 D1：pm 通道记录任务启动时的文档引用快照——回写时据此定位替换目标防错位
+    translateCtxRef.current = {
+      text,
+      sourceMode,
+      anchor,
+      start,
+      end,
+      doc: sourceMode === "pm" ? viewRef.current?.state.doc : undefined,
+    };
+    const bubbleHidden = cfg.translateBubbleHidden;
+    if (!bubbleHidden) {
+      useTranslateStore.getState().openBubble(sourceMode, anchor);
+    }
+
     translateService
-      .translate(text, (chunk) => useTranslateStore.getState().appendChunk(chunk))
+      .translate(text, (chunk) => {
+        if (translateSeqRef.current !== seq) return;
+        useTranslateStore.getState().appendChunk(chunk);
+      })
       .then((result) => {
-        useTranslateStore.getState().finish(result);
-        const mode = cfg.translateResultMode;
+        if (translateSeqRef.current !== seq) return;
+        if (!bubbleHidden) useTranslateStore.getState().finish(result);
+        // v0.7.0：气泡隐藏时 bubble 模式降级为 clipboard（结果有去向，不静默丢弃）
+        const mode = bubbleHidden && cfg.translateResultMode === "bubble"
+          ? "clipboard" as const
+          : cfg.translateResultMode;
         // preview 通道无回写能力，强制气泡交互；clipboard 模式对任何通道均直接复制
         if (mode === "clipboard") {
           navigator.clipboard?.writeText(result.translated).catch(() => undefined);
           useTranslateStore.getState().close();
+          // v0.7.3 U1：隐藏气泡 + 复制到剪贴板时给出反馈，避免"看似没反应"
+          if (bubbleHidden) notifySuccess(translate("translate.copiedToClipboardHidden"));
         } else if (sourceMode !== "preview" && (mode === "replace" || mode === "bilingual")) {
           handleTranslateApplyRef.current(mode, result.translated);
         }
       })
       .catch((e) => {
+        if (translateSeqRef.current !== seq) return;
         const info = e instanceof TranslateServiceError ? e.info : parseTranslateError(e);
         // CANCELLED 静默：新任务已 openBubble 重置状态，旧任务的 fail 会污染新任务
         if (info.code === "CANCELLED") return;
+        // v0.7.3 U1：隐藏气泡的翻译失败也要能感知（气泡不可见时无法看错误态）
+        if (bubbleHidden) {
+          notifyWarning(translate("translate.failedNotify"));
+        }
         useTranslateStore.getState().fail(info.code, info.detail);
       });
   }, []);
@@ -1219,11 +1506,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * 则回退到全文翻译（非 md 文件全文翻译不支持，静默返回）
    */
   const startTranslate = useCallback((fallbackToFull?: boolean) => {
-    // 总开关关闭：所有翻译入口不响应
-    if (!useSettingsStore.getState().translate.translateEnabled) return;
+    // v0.7.0 修复1：双开关——全局 AI 总开关 + 翻译子开关都开启才响应
+    // v0.7.3 U1：由静默返回改为 toast，用户能感知被禁用
+    const s = useSettingsStore.getState();
+    if (!s.aiEnabled || !s.translate.translateEnabled) {
+      notifyWarning(translate("translate.disabledNotify"));
+      return;
+    }
     // v0.6.3 P1-2：全文翻译运行中不响应选中翻译——translateService.translate 无条件取消旧任务，
     // 会导致整篇翻译被静默中止且已完成段落的译文全部作废
-    if (useFullTranslateStore.getState().status === "running") return;
+    // v0.7.3 U1：给出提示
+    if (useFullTranslateStore.getState().status === "running") {
+      notifyWarning(translate("translate.fullRunningNotify"));
+      return;
+    }
 
     // 1. PM 阅读模式（md 文件）
     if (viewMode === "preview" && isMdFile) {
@@ -1233,6 +1529,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (!extract) {
         // v0.6.2 问题3：无有效选区且来自「译」按钮 → 回退全文翻译
         if (fallbackToFull) startFullTranslateRef.current();
+        // v0.7.3 U1：非回退入口（F6/菜单）无选区时提示
+        else notifyWarning(translate("translate.noSelectionNotify"));
         return;
       }
       let anchor: BubbleAnchor;
@@ -1274,7 +1572,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         }
       }
       // v0.6.2 问题3：textarea 与 iframe 均无选区且来自「译」按钮 → 回退全文翻译
+      // v0.7.3 U1：非回退入口（F6/菜单）在源码模式无选区时提示
       if (fallbackToFull) startFullTranslateRef.current();
+      else notifyWarning(translate("translate.noSelectionNotify"));
       return;
     }
 
@@ -1307,11 +1607,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       }
       // replace 失败（结构失配/解析失败）自动降级 bilingual 引用块插入
       // v0.6.1 问题3：标记翻译回写中，onDocChange 据此抑制自动保存
+      // v0.7.3 改进1(D1)：用任务启动时的选区快照定位替换目标，防流式期间选区漂移错位回写
       applyingTranslationRef.current = true;
       let ok = false;
       try {
-        ok = applyTranslation(view, translated, mode) ||
-          (mode === "replace" && applyTranslation(view, translated, "bilingual"));
+        const snap =
+          ctx.doc &&
+          typeof ctx.start === "number" &&
+          typeof ctx.end === "number"
+            ? { from: ctx.start, to: ctx.end, doc: ctx.doc }
+            : undefined;
+        ok = applyTranslation(view, translated, mode, snap) ||
+          (mode === "replace" && applyTranslation(view, translated, "bilingual", snap));
       } finally {
         applyingTranslationRef.current = false;
       }
@@ -1378,6 +1685,839 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     runTranslate(ctx.text, ctx.sourceMode, anchor, ctx.start, ctx.end);
   }, [runTranslate]);
 
+  // ─── v0.7.0：AI 助手接线（续写 ghost / 润色 / 摘要气泡）─────────
+  /** AI 助手任务上下文（重试与应用结果用；start/end 为 source 通道选区，insertPos 为续写/摘要插入点） */
+  const aiCtxRef = useRef<{
+    task: AiTask;
+    text: string;
+    sourceMode: AiAssistSourceMode;
+    anchor: BubbleAnchor;
+    start?: number;
+    end?: number;
+    insertPos?: number;
+    /** v0.7.4 修复3：任务所属文档路径——应用/重试前校验归属，防跨文档串写内容 */
+    filePath: string | null;
+  } | null>(null);
+  /** 任务序号：新任务自动取消旧任务时，旧 promise 的 finish/fail 不得污染新任务状态 */
+  const aiSeqRef = useRef(0);
+  /** ghost 续写活跃标记（用户编辑致 ghost 失效 / 采纳 / 放弃后置 false，停止流式更新） */
+  const ghostActiveRef = useRef(false);
+
+  // v0.7.3 改进10(U3)：source 模式续写 ghost 对齐——
+  // textarea 上层叠加 ghost overlay（样式与 textarea 完全同步），续写在光标处
+  // 显示灰斜体预览，Tab 采纳 / Esc 放弃，与 PM 模式 ghost 手势一致。
+  /** source ghost overlay DOM 引用 */
+  const sourceGhostOverlayRef = useRef<HTMLDivElement>(null);
+  /** source 续写 ghost 活跃标记 */
+  const sourceGhostActiveRef = useRef(false);
+  /** v0.7.5 优化3：source ghost 是否处于"续写中…"占位态（占位不可采纳） */
+  const sourceGhostPlaceholderRef = useRef(false);
+  /** source 续写累积 ghost 文本 */
+  const sourceGhostTextRef = useRef("");
+  /** source 续写插入点（发起任务时光标位置；与 PM 的 ghost.pos 语义一致） */
+  const sourceGhostPosRef = useRef(0);
+  /** source ghost 采纳/放弃/失效回调引用（handleSourceKeyDown 仅挂载一次，经 ref 转发最新实现） */
+  const sourceGhostHandlersRef = useRef<{
+    accept: () => boolean;
+    cancel: () => boolean;
+    invalidate: () => void;
+  }>({ accept: () => false, cancel: () => false, invalidate: () => {} });
+
+  /** 执行气泡型 AI 任务（润色/摘要/源码续写）：openBubble → 流式 → finish/fail */
+  const runAiBubble = useCallback((
+    task: AiTask,
+    text: string,
+    sourceMode: AiAssistSourceMode,
+    anchor: BubbleAnchor,
+    start?: number,
+    end?: number,
+    insertPos?: number,
+  ) => {
+    // v0.7.4 修复3：上下文绑定所属文档，应用/重试前校验归属（防切文档后串写内容）
+    const ctxFilePath = activeFileRef.current ?? null;
+    aiCtxRef.current = { task, text, sourceMode, anchor, start, end, insertPos, filePath: ctxFilePath };
+    const seq = ++aiSeqRef.current;
+    // v0.7.4：气泡记录所属文档路径（摘要气泡跨文档显示时按归属过滤）
+    useAiAssistStore.getState().openBubble(task, sourceMode, anchor, ctxFilePath);
+    aiAssistService
+      .run(task, text, (chunk) => {
+        // v0.7.4 修复3：旧任务的残余 chunk 不得写入新任务气泡（取消为异步，在途消息可能到达）
+        if (aiSeqRef.current !== seq) return;
+        useAiAssistStore.getState().appendChunk(chunk);
+      })
+      .then((result) => {
+        // 旧任务结果丢弃（新任务已 openBubble 重置状态）
+        if (aiSeqRef.current !== seq) return;
+        useAiAssistStore.getState().finish(result);
+      })
+      .catch((e) => {
+        if (aiSeqRef.current !== seq) return;
+        const info = e instanceof TranslateServiceError ? e.info : parseTranslateError(e);
+        // CANCELLED 静默：新任务已接管，fail 会污染新任务状态
+        if (info.code === "CANCELLED") return;
+        useAiAssistStore.getState().fail(info.code, info.detail);
+      });
+  }, []);
+
+  /** 执行 ghost 续写（PM 阅读模式）：流式 setAiGhost，完成后保留 ghost 等待 Tab 采纳 / Esc 放弃 */
+  const runAiGhost = useCallback((head: string, pos: number) => {
+    const view = viewRef.current;
+    if (!view) return;
+    ghostActiveRef.current = true;
+    // v0.7.5 优化3：立即渲染「续写中…」占位 ghost。
+    // 首包到达前可能有数秒空白，此前用户点击后毫无反馈（体验投诉点）；
+    // 首个真实增量到达即替换为正文，占位期间不可采纳（见下方 Tab 处理）。
+    setAiGhost(view, pos, translate("ai.continuing"), true);
+    const seq = ++aiSeqRef.current;
+    // v0.7.3 改进5(P4-1)：流式 rAF 节流——每 chunk dispatch 一次事务会频繁重建
+    // ghost widget（key 含 text.length），改成累积到每帧最多刷新一次，缓解大文档掉帧
+    let accGhost = "";
+    /** v0.7.5 优化3：是否已收到首个真实增量（决定占位提示是否退场） */
+    let gotFirstChunk = false;
+    let ghostFrame: number | null = null;
+    let ghostFinalized = false;
+    const flushGhost = () => {
+      ghostFrame = null;
+      if (ghostFinalized || !ghostActiveRef.current) return;
+      const vv = viewRef.current;
+      if (!vv || vv.isDestroyed) return;
+      const cur = aiGhostKey.getState(vv.state);
+      if (!cur) return; // 已完成/清除则不刷新（防覆盖最终 unmask 文本）
+      setAiGhost(vv, cur.pos, accGhost);
+    };
+    const scheduleGhostFlush = () => {
+      if (ghostFrame !== null) return;
+      ghostFrame = requestAnimationFrame(flushGhost);
+    };
+    aiAssistService
+      .run("continue", head, (chunk) => {
+        // v0.7.4 修复3：旧任务残余 chunk 不得污染新任务的 ghost
+        if (aiSeqRef.current !== seq) return;
+        if (!ghostActiveRef.current) return;
+        const v = viewRef.current;
+        if (!v || v.isDestroyed) return;
+        const cur = aiGhostKey.getState(v.state);
+        // ghost 已被用户编辑清除：位置语义失效，取消任务停止更新
+        if (!cur) {
+          ghostActiveRef.current = false;
+          aiAssistService.cancel().catch(() => undefined);
+          return;
+        }
+        // v0.7.5 优化3：首个增量替换占位提示（占位文案不参与累积）
+        if (!gotFirstChunk) {
+          gotFirstChunk = true;
+          accGhost = chunk;
+        } else {
+          accGhost += chunk; // 累积文本
+        }
+        scheduleGhostFlush(); // 每帧至多刷新一次
+      })
+      .then((result) => {
+        // v0.7.1 修复：流式 chunk 是 {{N}} 占位符坐标（Rust 侧 mask 后发送），
+        // 完成后须用已回填（unmask）的最终文本替换 ghost——否则上文含链接/
+        // 行内代码时，Tab 采纳会把 {{N}} 字面量插入文档
+        if (aiSeqRef.current !== seq) return;
+        if (!ghostActiveRef.current) return;
+        ghostFinalized = true; // 结束后不再被 rAF 覆盖（用 unmask 最终文本）
+        const v = viewRef.current;
+        if (!v || v.isDestroyed) return;
+        const cur = aiGhostKey.getState(v.state);
+        if (cur) setAiGhost(v, cur.pos, result.translated);
+      })
+      .catch((e) => {
+        if (aiSeqRef.current !== seq) return;
+        ghostActiveRef.current = false;
+        const v = viewRef.current;
+        if (v && !v.isDestroyed) clearAiGhost(v);
+        const info = e instanceof TranslateServiceError ? e.info : parseTranslateError(e);
+        if (info.code === "CANCELLED") return;
+        // 失败时以气泡提示（ghost 已清除）
+        useAiAssistStore.getState().openBubble("continue", "pm", { x: window.innerWidth / 2, y: 120 }, activeFileRef.current);
+        useAiAssistStore.getState().fail(info.code, info.detail);
+      });
+  }, []);
+
+  // ─── v0.7.3 改进10(U3)：source 模式续写 ghost 对齐 ────────
+  // 目标：让 edit/split（textarea）模式的续写与 PM 模式统一为"光标处 ghost 预览，
+  // Tab 采纳 / Esc 放弃"，替代原来的"气泡渲染 + 点按钮插入"。
+  // 实现：在 textarea 上层叠加一个 .source-ghost-overlay div，样式与 textarea
+  // 完全同构（syncTextareaMetrics），透明复刻全文保证换行对齐，仅在插入点
+  // 显示灰斜体 ghost 片断。Tab 采纳即把 ghost 文本插入光标处。
+
+  /** 渲染 source ghost overlay（同步样式 + 写入当前累积文本） */
+  const renderSourceGhost = useCallback(() => {
+    const overlay = sourceGhostOverlayRef.current;
+    const textarea = sourceTextareaRef.current;
+    if (!overlay || !textarea) return;
+    syncTextareaMetrics(textarea, overlay);
+    const text = textarea.value;
+    const pos = Math.max(0, Math.min(sourceGhostPosRef.current, text.length));
+    // v0.7.5 优化3：占位态不显示采纳提示（此时尚不可采纳）
+    const placeholder = sourceGhostPlaceholderRef.current;
+    overlay.innerHTML = buildSourceGhostHtml(
+      text,
+      pos,
+      sourceGhostTextRef.current,
+      placeholder ? "" : translate("settings.translate.ghostHint"),
+      placeholder
+    );
+    // ghost 在光标之后追加：同步 overlay 滚动位置到 textarea，保证预览与视口对齐
+    overlay.scrollTop = textarea.scrollTop;
+  }, []);
+
+  /** 清除 source ghost overlay */
+  const clearSourceGhost = useCallback(() => {
+    const overlay = sourceGhostOverlayRef.current;
+    if (overlay) overlay.innerHTML = "";
+    sourceGhostActiveRef.current = false;
+    sourceGhostPlaceholderRef.current = false;
+    sourceGhostTextRef.current = "";
+  }, []);
+
+  /** 执行 source 模式续写 ghost：流式更新 overlay，完成后保留 ghost 等待 Tab 采纳 / Esc 放弃 */
+  const runSourceAiGhost = useCallback((head: string, pos: number) => {
+    const textarea = sourceTextareaRef.current;
+    if (!textarea) return;
+    sourceGhostActiveRef.current = true;
+    sourceGhostPosRef.current = pos;
+    // v0.7.5 优化3：立即渲染「续写中…」占位 ghost（与 PM 模式一致），
+    // 首个真实增量到达即替换；占位期间不可采纳（见 acceptSourceGhost）
+    sourceGhostPlaceholderRef.current = true;
+    sourceGhostTextRef.current = translate("ai.continuing");
+    renderSourceGhost();
+    const seq = ++aiSeqRef.current;
+    // v0.7.3 改进5(P4-1)：与 PM ghost 一致，流式 chunk 累积到 rAF 每帧至多刷新一次
+    let accGhost = "";
+    /** v0.7.5 优化3：是否已收到首个真实增量 */
+    let gotFirstChunk = false;
+    let ghostFrame: number | null = null;
+    let ghostFinalized = false;
+    const flushGhost = () => {
+      ghostFrame = null;
+      if (ghostFinalized || !sourceGhostActiveRef.current) return;
+      // 局部累加 → ref（供 Tab 采纳时取完整 ghost 文本）
+      sourceGhostTextRef.current = accGhost;
+      renderSourceGhost();
+    };
+    const scheduleGhostFlush = () => {
+      if (ghostFrame !== null) return;
+      ghostFrame = requestAnimationFrame(flushGhost);
+    };
+    aiAssistService
+      .run("continue", head, (chunk) => {
+        // v0.7.4 修复3：旧任务残余 chunk 不得污染新任务的 ghost
+        if (aiSeqRef.current !== seq) return;
+        if (!sourceGhostActiveRef.current) return;
+        // v0.7.5 优化3：首个增量替换占位提示（占位文案不参与累积）
+        if (!gotFirstChunk) {
+          gotFirstChunk = true;
+          sourceGhostPlaceholderRef.current = false;
+          accGhost = chunk;
+        } else {
+          accGhost += chunk;
+        }
+        scheduleGhostFlush();
+      })
+      .then((result) => {
+        // 完成后须用已回填（unmask）的最终文本替换 ghost——流式 chunk 是 {{N}} 占位符坐标
+        if (aiSeqRef.current !== seq) return;
+        if (!sourceGhostActiveRef.current) return;
+        ghostFinalized = true;
+        sourceGhostPlaceholderRef.current = false;
+        sourceGhostTextRef.current = result.translated;
+        renderSourceGhost();
+      })
+      .catch((e) => {
+        if (aiSeqRef.current !== seq) return;
+        sourceGhostActiveRef.current = false;
+        const info = e instanceof TranslateServiceError ? e.info : parseTranslateError(e);
+        if (info.code === "CANCELLED") return;
+        // 失败时以气泡提示（ghost 已清除）
+        useAiAssistStore.getState().openBubble("continue", "source", { x: window.innerWidth / 2, y: 120 }, activeFileRef.current);
+        useAiAssistStore.getState().fail(info.code, info.detail);
+      });
+  }, [renderSourceGhost]);
+
+  /** 采纳 source ghost（Tab）：将 ghost 文本插入光标处，清除 overlay */
+  const acceptSourceGhost = useCallback(() => {
+    if (!sourceGhostActiveRef.current) return false;
+    // v0.7.5 优化3：占位提示（续写中…）不是正文，不可采纳——消费掉本次 Tab
+    // 但不插入、也不清除 ghost（等待真实增量到达）
+    if (sourceGhostPlaceholderRef.current) return true;
+    const textarea = sourceTextareaRef.current;
+    const ghost = sourceGhostTextRef.current;
+    sourceGhostActiveRef.current = false;
+    aiAssistService.cancel().catch(() => undefined);
+    if (!textarea || !ghost) {
+      clearSourceGhost();
+      return true;
+    }
+    const pos = Math.min(sourceGhostPosRef.current, textarea.value.length);
+    const newContent = textarea.value.slice(0, pos) + ghost + textarea.value.slice(pos);
+    setSourceContent(newContent);
+    onContentChangeRef.current?.(newContent);
+    setDirtyRef.current(true);
+    // 显示层 masked，lastContentRef 存真实坐标（与续写/摘要气泡插入一致）
+    lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
+    const cursor = pos + ghost.length;
+    clearSourceGhost();
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+    });
+    return true;
+  }, [clearSourceGhost]);
+
+  /** 放弃 source ghost（Esc）：取消任务 + 清除 overlay */
+  const cancelSourceGhost = useCallback(() => {
+    if (!sourceGhostActiveRef.current) return false;
+    sourceGhostActiveRef.current = false;
+    aiAssistService.cancel().catch(() => undefined);
+    clearSourceGhost();
+    return true;
+  }, [clearSourceGhost]);
+
+  /** 用户编辑导致 source ghost 位置语义失效：取消任务 + 清除 overlay */
+  const invalidateSourceGhost = useCallback(() => {
+    if (sourceGhostActiveRef.current) {
+      sourceGhostActiveRef.current = false;
+      aiAssistService.cancel().catch(() => undefined);
+      clearSourceGhost();
+    }
+  }, [clearSourceGhost]);
+
+  // 每次渲染将最新实现转发到 ref（handleSourceKeyDown/handleSourceChange 仅挂载一次）
+  sourceGhostHandlersRef.current = {
+    accept: acceptSourceGhost,
+    cancel: cancelSourceGhost,
+    invalidate: invalidateSourceGhost,
+  };
+
+  /** AI 结果应用（气泡操作按钮）：润色=替换选中，续写/摘要=插入到任务启动时光标处 */
+  const handleAiApply = useCallback((task: AiTask, text: string) => {
+    const ctx = aiCtxRef.current;
+    if (!ctx || !text.trim()) return;
+    // v0.7.4 修复3：任务上下文必须属于当前文档——切文档后旧任务仍可能通过
+    // 气泡按钮/快捷键触发应用，旧文档的选区坐标 + 译文会写入当前文档。
+    // 归属不符时直接丢弃并关闭气泡。
+    if (ctx.filePath !== (activeFileRef.current ?? null)) {
+      useAiAssistStore.getState().close();
+      aiCtxRef.current = null;
+      return;
+    }
+
+    if (task === "polish" && ctx.sourceMode === "pm") {
+      // pm 通道：applyTranslation 结构保真替换选区（失败返回 false 保留气泡供复制）
+      const view = viewRef.current;
+      if (!view) return;
+      // v0.7.3 改进7(U4)：记录回写前全文快照（复用翻译的"取消翻译"气泡恢复机制，
+      // 让润色回写后也能一键恢复原文）
+      let original: string | null = null;
+      try {
+        original = getMarkdownFromDoc(view.state.doc);
+      } catch {
+        original = null;
+      }
+      // AI 回写不触发自动保存（与翻译回写策略一致）
+      applyingTranslationRef.current = true;
+      let ok = false;
+      try {
+        ok = applyTranslation(view, text, "replace");
+      } finally {
+        applyingTranslationRef.current = false;
+      }
+      if (ok) {
+        useAiAssistStore.getState().close();
+        aiCtxRef.current = null;
+        // v0.7.3 U4：润色恢复快照绑定文档上下文（filePath/key），防跨文件串写
+        if (original !== null) {
+          useEditorStore.getState().setTranslateUndoSnapshot({
+            content: original,
+            filePath: activeFileRef.current ?? null,
+            key: activeKeyRef.current,
+          });
+        }
+      }
+      return;
+    }
+
+    if (task === "polish" && ctx.sourceMode === "source" && ctx.start !== undefined && ctx.end !== undefined) {
+      const rewrite = buildSourceRewrite(sourceContentRef.current, ctx.start, ctx.end, text, "replace");
+      if (!rewrite) return;
+      setSourceContent(rewrite.content);
+      onContentChangeRef.current?.(rewrite.content);
+      setDirtyRef.current(true);
+      useEditorStore.getState().setSuppressAutoSave(true);
+      // 显示层 masked，lastContentRef 存真实坐标（与翻译回写一致）
+      lastContentRef.current = unmaskBase64Images(rewrite.content, base64TokensRef.current);
+      useAiAssistStore.getState().close();
+      aiCtxRef.current = null;
+      const textarea = sourceTextareaRef.current;
+      if (textarea) {
+        requestAnimationFrame(() => {
+          textarea.focus();
+          textarea.setSelectionRange(rewrite.cursor, rewrite.cursor);
+        });
+      }
+      return;
+    }
+
+    // 续写/摘要：插入到光标处（用户主动采纳，走正常保存流程）
+    if (ctx.sourceMode === "pm") {
+      const view = viewRef.current;
+      if (!view) return;
+      // pos 可能因后续编辑漂移：clamp 到文档范围
+      const pos = Math.min(ctx.insertPos ?? view.state.selection.from, view.state.doc.content.size);
+      // 优先 markdown 解析为 fragment 插入（多段落/格式正确渲染），失败降级纯文本
+      try {
+        const frag = markdownToDoc(text).content;
+        view.dispatch(view.state.tr.replace(pos, pos, new Slice(frag, 0, 0)));
+      } catch {
+        view.dispatch(view.state.tr.insertText(text, pos, pos));
+      }
+    } else {
+      const textarea = sourceTextareaRef.current;
+      const pos = ctx.insertPos ?? textarea?.selectionStart ?? sourceContentRef.current.length;
+      const content = sourceContentRef.current;
+      const newContent = content.slice(0, pos) + text + content.slice(pos);
+      setSourceContent(newContent);
+      onContentChangeRef.current?.(newContent);
+      setDirtyRef.current(true);
+      lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
+      const ta = sourceTextareaRef.current;
+      if (ta) {
+        const cursor = pos + text.length;
+        requestAnimationFrame(() => {
+          ta.focus();
+          ta.setSelectionRange(cursor, cursor);
+        });
+      }
+    }
+    useAiAssistStore.getState().close();
+    aiCtxRef.current = null;
+  }, []);
+
+  /** AI 助手触发入口（StatusBar AI 抽屉 ai.* 命令统一走这里）。
+   * 与翻译共享单任务槽：全文翻译运行中禁止 AI 任务（避免取消整篇翻译）。
+   * - continue：PM=ghost 流式；source=气泡（完成后插入光标处）
+   * - polish：选中文本（无选区静默返回）
+   * - summary：优先选区，否则全文（base64 先 mask 省 token）
+   * v0.7.0 修复1：全局 AI 总开关关闭时所有 AI 助手入口静默（与底部栏禁用态双保险） */
+  const startAiAssist = useCallback((task: AiTask) => {
+    // v0.7.3 U1：禁用/冲突状态由静默改为 toast（用户主动点 AI 抽屉里的功能，需有反馈）
+    if (!useSettingsStore.getState().aiEnabled) {
+      notifyWarning(translate("ai.disabledNotify"));
+      return;
+    }
+    if (useFullTranslateStore.getState().status === "running") {
+      notifyWarning(translate("translate.fullRunningNotify"));
+      return;
+    }
+
+    // 1. PM 阅读模式（md 文件）
+    if (viewMode === "preview" && isMdFile) {
+      const view = viewRef.current;
+      if (!view) return;
+      const pos = view.state.selection.to;
+
+      if (task === "continue") {
+        // 光标前上文（纯文本，截尾 800 字符）→ ghost 流式续写
+        const head = view.state.doc.textBetween(Math.max(0, pos - 800), pos, "\n\n");
+        if (!head.trim()) {
+          notifyWarning(translate("ai.continueEmptyNotify"));
+          return;
+        }
+        runAiGhost(head, pos);
+        return;
+      }
+
+      if (task === "polish") {
+        const extract = extractFromSelection(view);
+        if (!extract) {
+          notifyWarning(translate("ai.polishNoSelectionNotify"));
+          return;
+        }
+        let anchor: BubbleAnchor;
+        try {
+          const coords = view.coordsAtPos(view.state.selection.to);
+          anchor = { x: coords.left, y: coords.bottom };
+        } catch {
+          anchor = { x: window.innerWidth / 2, y: 100 };
+        }
+        runAiBubble("polish", extract.text, "pm", anchor, undefined, undefined, pos);
+        return;
+      }
+
+      // summary：优先选区，否则全文（mask base64 省 token；结果插入光标处不回填，标记无副作用）
+      // v0.7.0 修复5：有选区时锚点取选区末端坐标（气泡虚线连接用）；全文摘要锚点 {0,0}
+      const extract = extractFromSelection(view);
+      const text = extract
+        ? extract.text
+        : maskBase64Images(getMarkdownFromDoc(view.state.doc), base64TokensRef.current).text;
+      if (!text.trim()) return;
+      let summaryAnchor: BubbleAnchor = { x: 0, y: 0 };
+      if (extract) {
+        try {
+          const coords = view.coordsAtPos(view.state.selection.to);
+          summaryAnchor = { x: coords.left, y: coords.bottom };
+        } catch {
+          summaryAnchor = { x: window.innerWidth / 2, y: 100 };
+        }
+      }
+      runAiBubble("summary", text, "pm", summaryAnchor, undefined, undefined, pos);
+      return;
+    }
+
+    // 2. 源码模式（edit/split）：textarea
+    if (isSourceMode) {
+      const textarea = sourceTextareaRef.current;
+      if (!textarea) return;
+      const hasSel = textarea.selectionStart !== textarea.selectionEnd;
+
+      if (task === "continue") {
+        const head = textarea.value.slice(Math.max(0, textarea.selectionStart - 800), textarea.selectionStart);
+        if (!head.trim()) {
+          notifyWarning(translate("ai.continueEmptyNotify"));
+          return;
+        }
+        // v0.7.3 改进10(U3)：source 模式续写从"气泡渲染"改为"光标处 ghost 预览"
+        // （Tab 采纳 / Esc 放弃），与 PM 模式交互手势统一
+        runSourceAiGhost(head, textarea.selectionStart);
+        return;
+      }
+      if (task === "polish") {
+        if (!hasSel) {
+          notifyWarning(translate("ai.polishNoSelectionNotify"));
+          return;
+        }
+        const text = sourceContentRef.current.slice(textarea.selectionStart, textarea.selectionEnd);
+        if (!text.trim()) return;
+        runAiBubble("polish", text, "source", getTextareaSelectionAnchor(textarea), textarea.selectionStart, textarea.selectionEnd);
+        return;
+      }
+      // summary：优先选区，否则全文（sourceContent 已是 masked 显示层，base64 为短标记）
+      // v0.7.0 修复5：有选区时锚点取选区坐标（气泡虚线连接用）；全文摘要锚点 {0,0}
+      const text = hasSel
+        ? sourceContentRef.current.slice(textarea.selectionStart, textarea.selectionEnd)
+        : sourceContentRef.current;
+      if (!text.trim()) return;
+      runAiBubble(
+        "summary",
+        text,
+        "source",
+        hasSel ? getTextareaSelectionAnchor(textarea) : { x: 0, y: 0 },
+        undefined,
+        undefined,
+        textarea.selectionStart
+      );
+    }
+  }, [viewMode, isMdFile, isSourceMode, runAiBubble, runAiGhost, runSourceAiGhost]);
+  // latest-ref 转发（lightmd:command 监听只挂载一次）
+  const startAiAssistRef = useRef<(task: AiTask) => void>(() => {});
+  startAiAssistRef.current = startAiAssist;
+
+  /** 重试上次 AI 任务（复用任务上下文，锚点取当前气泡位置） */
+  const handleAiRetry = useCallback(() => {
+    const ctx = aiCtxRef.current;
+    if (!ctx) return;
+    // v0.7.4 修复3：重试同样受文档归属约束（旧文档的原文不得在新文档重新发起）
+    if (ctx.filePath !== (activeFileRef.current ?? null)) return;
+    const anchor = useAiAssistStore.getState().anchor ?? ctx.anchor;
+    runAiBubble(ctx.task, ctx.text, ctx.sourceMode, anchor, ctx.start, ctx.end, ctx.insertPos);
+  }, [runAiBubble]);
+
+  // ─── v0.7.4 修复3：无路径文档的 AI 气泡归属兜底 ──────────
+  // 尚未保存的新文件 filePath 均为 null，无法据此区分归属；文件切换
+  // （forceUpdateKey 变化）时直接作废残留气泡，防跨文档串写内容。
+  useEffect(() => {
+    const st = useAiAssistStore.getState();
+    if (st.status === "idle" || st.filePath !== null) return;
+    aiAssistService.cancel().catch(() => undefined);
+    st.close();
+    aiCtxRef.current = null;
+  }, [forceUpdateKey]);
+
+  // ─── v0.7.5 功能1：AI 对话接线（浮动窗口 / 上下文 / 动作回写）─────────
+  /** 对话任务序号：新任务/关闭窗口后旧 promise 的 chunk/finish 一律丢弃 */
+  const aiChatSeqRef = useRef(0);
+  /**
+   * 对话任务「发送时快照」（动作回写与 DOC_CHANGED 守卫用）。
+   * 落实体检报告 D1 教训：回写不得使用"当前选区"，必须用发送时快照 clamp。
+   */
+  const chatCtxRef = useRef<{
+    sourceMode: AiAssistSourceMode;
+    /** 实际生效的上下文范围（选区丢失时已降级） */
+    scope: AiChatContextScope;
+    hadSelection: boolean;
+    /** pm 通道：发送时选区位置 + 文档引用（文档被编辑则引用失配，动作降级） */
+    selFrom?: number;
+    selTo?: number;
+    selDoc?: PMNode;
+    /** source 通道：发送时选区切片位置 */
+    srcStart?: number;
+    srcEnd?: number;
+    /**
+     * v0.7.5：source 通道发送时的全文快照。
+     * textarea 没有 doc 引用可比对，只能以内容是否逐字相同判断切片坐标是否仍有效；
+     * 不一致时「替换选区」必须拒绝（否则会把回答写到别的文字上）。
+     */
+    srcSnapshot?: string;
+    /** 插入位置（pm/source 皆为发送时光标） */
+    insertPos?: number;
+    /** 发送时全文快照（「替换全文」的 DOC_CHANGED 校验基准） */
+    docSnapshot: string;
+  } | null>(null);
+  /** 对话窗打开状态（驱动选区变化时的 chip 预览刷新） */
+  const chatOpen = useAiChatStore((s) => s.open);
+
+  /**
+   * v0.7.5：提取 AI 对话上下文（预览与发送共用；始终取"当下"的编辑器状态）
+   * - PM 阅读模式（md 文件）：选区走 extractFromSelection（Markdown 保真）；
+   *   全文走 maskBase64Images(getMarkdownFromDoc)（base64 短标记省 token）
+   * - 源码模式（edit/split）：选区/全文取 textarea 切片（sourceContent 已是显示层坐标）
+   * - preview + 非 md（纯文本预览）：不支持上下文，返回空（仅发送指令本身）
+   */
+  const extractChatContext = useCallback(
+    (scope: AiChatContextScope): { raw: string; sourceMode: AiAssistSourceMode } => {
+      if (scope === "none") return { raw: "", sourceMode: "pm" };
+      if (viewMode === "preview" && isMdFile) {
+        const view = viewRef.current;
+        if (!view) return { raw: "", sourceMode: "pm" };
+        if (scope === "selection") {
+          return { raw: extractFromSelection(view)?.text ?? "", sourceMode: "pm" };
+        }
+        return {
+          raw: maskBase64Images(getMarkdownFromDoc(view.state.doc), base64TokensRef.current).text,
+          sourceMode: "pm",
+        };
+      }
+      if (isSourceMode) {
+        const content = sourceContentRef.current;
+        if (scope === "selection") {
+          const ta = sourceTextareaRef.current;
+          if (!ta || ta.selectionStart === ta.selectionEnd) return { raw: "", sourceMode: "source" };
+          return { raw: content.slice(ta.selectionStart, ta.selectionEnd), sourceMode: "source" };
+        }
+        return { raw: content, sourceMode: "source" };
+      }
+      return { raw: "", sourceMode: "pm" };
+    },
+    [viewMode, isMdFile, isSourceMode]
+  );
+
+  /**
+   * v0.7.5：刷新对话窗上下文 chip 预览（打开窗口 / 切换范围 / 选区变化时调用）
+   * - scope=selection 但选区已丢失 → 自动降级为全文，并置 degraded（chip 明示）
+   * - 超上限截断 → chip 标注「已截断」（chars 仍显示原始字数）
+   */
+  const refreshChatPreview = useCallback(
+    (scope: AiChatContextScope) => {
+      const store = useAiChatStore.getState();
+      if (!store.open) return;
+      let actualScope = scope;
+      let degraded = false;
+      let raw = extractChatContext(scope).raw;
+      if (scope === "selection" && !hasUsableContext(raw)) {
+        actualScope = "document";
+        raw = extractChatContext("document").raw;
+        degraded = true;
+      }
+      const slice = truncateChatContext(raw, actualScope);
+      store.setContextPreview({
+        scope,
+        actualScope,
+        chars: Array.from(raw).length,
+        truncated: slice.truncated,
+        degraded,
+      });
+    },
+    [extractChatContext]
+  );
+
+  /**
+   * v0.7.5 功能1：AI 对话入口（底部栏「AI对话」/ Ctrl+K / 选区「问」气泡共用）。
+   *
+   * - 未打开：新建会话，默认上下文范围 = 有可用选区 → 选区；否则全文
+   * - 已打开：**不重置会话**（避免顺手再按一次 Ctrl+K 把对话历史清空），
+   *   仅展开折叠态、按当下选区刷新 chip 预览并把焦点交回输入框
+   * - 总开关关闭 → toast 提示（修复体检报告 U1 的静默失败）
+   * - 全文翻译运行中禁止（与 startAiAssist 同源约束，避免取消整篇翻译）
+   */
+  const startAiChat = useCallback(() => {
+    if (!useSettingsStore.getState().aiEnabled) {
+      notifyWarning(translate("ai.disabledNotify"));
+      return;
+    }
+    if (useFullTranslateStore.getState().status === "running") {
+      notifyWarning(translate("translate.fullRunningNotify"));
+      return;
+    }
+    const defaultScope: AiChatContextScope = hasUsableContext(extractChatContext("selection").raw)
+      ? "selection"
+      : "document";
+
+    const store = useAiChatStore.getState();
+    if (store.open) {
+      // 复用已开会话：展开 + 刷新预览 + 聚焦输入框
+      if (store.minimized) store.toggleMinimize();
+      useAiChatStore.getState().setContextScope(defaultScope);
+      refreshChatPreview(defaultScope);
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLTextAreaElement>(".ai-chat-input")?.focus();
+      });
+      return;
+    }
+
+    // 功能6：有窗口记忆且仍落在当前视口内 → 复原；越界（显示器变更）→ 回落默认居中
+    const saved = useSettingsStore.getState().aiChatWindow;
+    const rect = isAiChatRectVisible(saved, { width: window.innerWidth, height: window.innerHeight })
+      ? saved
+      : null;
+    store.openWindow(activeFileRef.current ?? null, rect, defaultScope);
+    refreshChatPreview(defaultScope);
+  }, [extractChatContext, refreshChatPreview]);
+  const startAiChatRef = useRef<() => void>(() => {});
+  startAiChatRef.current = startAiChat;
+
+  /**
+   * v0.7.5：对话窗打开期间，编辑器选区变化时刷新上下文 chip 预览。
+   * - 发送时仍会重新提取（预览只影响展示），故此处节流 250ms 即可
+   * - 焦点在对话框内时跳过：点击输入框会让编辑器失焦、选区看似丢失，
+   *   若照常刷新会把 chip 误降级为「全文」并丢失用户的选区意图
+   */
+  useEffect(() => {
+    if (!chatOpen) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.closest?.(".ai-chat-dialog")) return;
+        refreshChatPreview(useAiChatStore.getState().contextScope);
+      }, 250);
+    };
+    document.addEventListener("selectionchange", schedule);
+    return () => {
+      document.removeEventListener("selectionchange", schedule);
+      if (timer) clearTimeout(timer);
+    };
+  }, [chatOpen, refreshChatPreview]);
+
+  // v0.7.5：编辑模式切换时上下文来源通道随之改变（PM 选区 ↔ textarea 切片），
+  // 立即刷新 chip 预览，避免显示上一模式的过期选区字数
+  useEffect(() => {
+    if (!useAiChatStore.getState().open) return;
+    refreshChatPreview(useAiChatStore.getState().contextScope);
+  }, [viewMode, isSourceMode, isMdFile, refreshChatPreview]);
+
+  // v0.7.5：切换文件时作废对话窗（无路径新文件的 filePath 均为 null，无法区分归属，
+  // 与 v0.7.4 AI 气泡同款兜底：宁可关闭也不跨文档串写内容）
+  useEffect(() => {
+    const st = useAiChatStore.getState();
+    if (!st.open) return;
+    if ((st.filePath ?? null) === (activeFileRef.current ?? null)) return;
+    aiChatService.cancel().catch(() => undefined);
+    aiChatSeqRef.current += 1;
+    chatCtxRef.current = null;
+    st.closeWindow();
+  }, [forceUpdateKey]);
+
+  // ─── v0.7.4 修复5：滚动时摘要锚点跟随选区 ──────────
+  // 摘要锚点是触发时刻的屏幕坐标，滚动后选区在视口中的位置已变化，必须按
+  // 文档位置（coordsAtPos / textarea 几何）重算。滚动事件高频 → rAF 节流，
+  // 每帧至多一次重算；setAnchor 对坐标未变化的情况跳过通知（零重渲染）。
+  useEffect(() => {
+    const targets: HTMLElement[] = [];
+    const container = editorRef.current;
+    if (container) targets.push(container);
+    const textarea = sourceTextareaRef.current;
+    if (textarea) targets.push(textarea);
+    if (targets.length === 0) return;
+    let raf = 0;
+    const sync = () => {
+      raf = 0;
+      const st = useAiAssistStore.getState();
+      // 仅摘要气泡有锚点虚线；仅当前文档的气泡需要跟随
+      if (st.status === "idle" || st.task !== "summary") return;
+      if ((st.filePath ?? null) !== (activeFileRef.current ?? null)) return;
+      const a = st.anchor;
+      if (!a || (a.x === 0 && a.y === 0)) return; // 全文摘要无锚点
+      const ctx = aiCtxRef.current;
+      if (!ctx || ctx.insertPos === undefined) return;
+      if (ctx.sourceMode === "source") {
+        const ta = sourceTextareaRef.current;
+        if (!ta) return;
+        useAiAssistStore.getState().setAnchor(getTextareaSelectionAnchor(ta));
+        return;
+      }
+      const view = viewRef.current;
+      if (!view || view.isDestroyed) return;
+      // 位置越界（文档已被替换或编辑变短）时跳过，避免 coordsAtPos 抛错
+      if (ctx.insertPos > view.state.doc.content.size) return;
+      try {
+        const c = view.coordsAtPos(ctx.insertPos);
+        useAiAssistStore.getState().setAnchor({ x: c.left, y: c.bottom });
+      } catch {
+        /* 位置失效：忽略本次同步 */
+      }
+    };
+    const handler = () => {
+      if (raf) return; // 已有待执行帧：合并本次滚动
+      raf = requestAnimationFrame(sync);
+    };
+    for (const el of targets) el.addEventListener("scroll", handler, { passive: true });
+    return () => {
+      for (const el of targets) el.removeEventListener("scroll", handler);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [viewMode, isSourceMode, forceUpdateKey]);
+
+  // ghost 存在时：Tab 采纳（markdown 解析插入，失败降级纯文本）/ Esc 放弃（取消+清除）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!ghostActiveRef.current) return;
+      const view = viewRef.current;
+      if (!view || view.isDestroyed) return;
+      const ghost = aiGhostKey.getState(view.state);
+      if (!ghost || !ghost.text) return;
+      if (e.key === "Tab") {
+        e.preventDefault();
+        e.stopPropagation();
+        // v0.7.5 优化3：占位提示（续写中…）不是正文，不可采纳——消费掉本次 Tab
+        // 但不插入，保持 ghost 存活等待真实增量（否则会把提示语写进文档）
+        if (ghost.placeholder) return;
+        ghostActiveRef.current = false;
+        try {
+          const frag = markdownToDoc(ghost.text).content;
+          clearAiGhost(view);
+          view.dispatch(view.state.tr.replace(ghost.pos, ghost.pos, new Slice(frag, 0, 0)));
+        } catch {
+          clearAiGhost(view);
+          view.dispatch(view.state.tr.insertText(ghost.text, ghost.pos, ghost.pos));
+        }
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        ghostActiveRef.current = false;
+        aiAssistService.cancel().catch(() => undefined);
+        clearAiGhost(view);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  // v0.7.3 改进10(U3)：离开源码模式 / 文件切换时清理 source ghost overlay
+  // （防止 overlay 内容残留在切换到阅读模式后的 DOM 中）
+  useEffect(() => {
+    if (!isSourceMode) {
+      sourceGhostActiveRef.current = false;
+      const overlay = sourceGhostOverlayRef.current;
+      if (overlay) overlay.innerHTML = "";
+    }
+  }, [isSourceMode, activeKeyRef.current]);
+
   // ─── v0.6.1：全文翻译 ────────────────────
   const startFullTranslateRef = useRef<() => void>(() => {});
 
@@ -1439,9 +2579,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const undoTranslation = useCallback(() => {
     const snap = useEditorStore.getState().translateUndoSnapshot;
     if (snap === null) return;
-    // v0.6.3 P0-2：快照绑定文档上下文——文件路径或外部更新计数不匹配时快照已失效，
-    // 拒绝恢复并清除（防止 A 文件的原文灌进 B 文件/覆盖版本恢复的内容）
-    if (snap.filePath !== (activeFileRef.current ?? null) || snap.key !== activeKeyRef.current) {
+    // v0.7.4 问题4：归属判定只按 filePath（见 isTranslateSnapshotForFile）。
+    // 旧实现额外要求 snap.key === activeKeyRef.current，但切标签会递增 forceUpdateKey，
+    // 导致"全文翻译 → 切走 → 切回"后 key 必然变化，按钮可见却点击无效（快照被误清）。
+    // 非当前文档的快照 → 拒绝恢复并清除，防止 A 文件原文灌进 B 文件。
+    if (!isTranslateSnapshotForFile(snap, activeFileRef.current)) {
       useEditorStore.getState().setTranslateUndoSnapshot(null);
       useEditorStore.getState().setSuppressAutoSave(false);
       return;
@@ -1460,6 +2602,276 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       useEditorStore.getState().updateTabDirty(activeTabIdx, false);
     }
   }, [applyFullTranslation]);
+
+  // ─── v0.7.5 功能1/F5：AI 对话发送与结果动作回写 ─────────────────
+  /**
+   * 发送一条对话指令（对话框输入区提交）。
+   *
+   * 上下文在**发送这一刻**重新提取（窗口可能开了很久，选区/文档已变），
+   * 同时记录「发送时快照」供动作回写与 DOC_CHANGED 校验使用（§2.4 决策）。
+   * 历史只携带最近 3 轮且为"裸指令"，文档上下文仅挂在当前这条 user 消息上
+   * （见 aiChatService 注释：避免每轮重复整篇文档导致 token 线性膨胀）。
+   */
+  const sendAiChat = useCallback(
+    (instruction: string, templateId: string | null) => {
+      const store = useAiChatStore.getState();
+      if (!store.open) return;
+      const scope = store.contextScope;
+      let actualScope: AiChatContextScope = scope;
+      let extracted = extractChatContext(scope);
+      // 选区已丢失 → 降级为全文（与 chip 预览同规则）
+      if (scope === "selection" && !hasUsableContext(extracted.raw)) {
+        actualScope = "document";
+        extracted = extractChatContext("document");
+      }
+      const context = truncateChatContext(extracted.raw, actualScope);
+      const request = buildChatRequestMessages(store.messages, instruction, context);
+
+      // ── 发送时快照（回写定位 + 全文守卫基准）──
+      const view = viewRef.current;
+      const ta = sourceTextareaRef.current;
+      const isPm = extracted.sourceMode === "pm";
+      let docSnapshot: string;
+      try {
+        docSnapshot =
+          viewMode === "preview" && isMdFile && view
+            ? getMarkdownFromDoc(view.state.doc)
+            : unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+      } catch {
+        docSnapshot = "";
+      }
+      chatCtxRef.current = {
+        sourceMode: extracted.sourceMode,
+        scope: actualScope,
+        hadSelection: actualScope === "selection",
+        selFrom: isPm && view ? view.state.selection.from : undefined,
+        selTo: isPm && view ? view.state.selection.to : undefined,
+        selDoc: isPm && view ? view.state.doc : undefined,
+        srcStart: !isPm && ta ? ta.selectionStart : undefined,
+        srcEnd: !isPm && ta ? ta.selectionEnd : undefined,
+        // source 通道：记录发送时全文，供「替换选区」校验坐标有效性
+        srcSnapshot: isPm ? undefined : sourceContentRef.current,
+        insertPos: isPm ? view?.state.selection.to : ta?.selectionEnd,
+        docSnapshot,
+      };
+
+      const meta = {
+        hadSelection: actualScope === "selection",
+        scope: actualScope,
+        templateId,
+      };
+      store.appendUser(instruction, meta);
+      // chip 预览同步为发送时的真实状态（含降级/截断）
+      store.setContextPreview({
+        scope,
+        actualScope,
+        chars: Array.from(extracted.raw).length,
+        truncated: context.truncated,
+        degraded: scope === "selection" && actualScope === "document",
+      });
+
+      const seq = ++aiChatSeqRef.current;
+      aiChatService
+        .send(request, (chunk) => {
+          // 旧任务残余 chunk 不得写入新会话（取消为异步，在途消息可能到达）
+          if (aiChatSeqRef.current !== seq) return;
+          useAiChatStore.getState().appendChunk(chunk);
+        })
+        .then((result) => {
+          if (aiChatSeqRef.current !== seq) return;
+          useAiChatStore.getState().finish(result);
+        })
+        .catch((e) => {
+          if (aiChatSeqRef.current !== seq) return;
+          const info = e instanceof TranslateServiceError ? e.info : parseTranslateError(e);
+          // CANCELLED 静默（用户已停止或新任务已接管）
+          if (info.code === "CANCELLED") return;
+          useAiChatStore.getState().fail(info.code, info.detail);
+        });
+    },
+    [extractChatContext, viewMode, isMdFile]
+  );
+
+  /** 停止对话流式任务（作废后续回调；半截回答不入历史，避免污染下一轮上下文） */
+  const stopAiChat = useCallback(() => {
+    aiChatSeqRef.current += 1;
+    aiChatService.cancel().catch(() => undefined);
+    useAiChatStore.getState().cancelStream();
+  }, []);
+
+  /** 重新生成最后一条回复（复用同一指令；上下文按当下重新提取） */
+  const regenerateAiChat = useCallback(() => {
+    const store = useAiChatStore.getState();
+    if (!store.open) return;
+    const ctx = store.regenerateContext();
+    if (!ctx) return;
+    const lastUser = store.messages[ctx.history.length];
+    // 裁到"最后一条 user 之前"：sendAiChat 会把该指令重新 appendUser 并作为
+    // 当前轮发送。若只裁掉 assistant（保留 user），历史里会重复出现同一指令。
+    store.setMessages(ctx.history);
+    sendAiChat(ctx.instruction, lastUser?.meta?.templateId ?? null);
+  }, [sendAiChat]);
+
+  /**
+   * 结果动作：插入到光标处（发送时光标快照 clamp 后插入）。
+   * PM 走 markdownToDoc 解析插入——```mermaid 围栏与 $$ 公式由此进入
+   * mermaid-block / math-block 实时渲染管线，零额外渲染代码（本功能差异点）。
+   */
+  const chatInsertAtCursor = useCallback((text: string) => {
+    if (!text.trim()) return;
+    const ctx = chatCtxRef.current;
+    if (ctx?.sourceMode === "source") {
+      const content = sourceContentRef.current;
+      const ta = sourceTextareaRef.current;
+      const pos = Math.min(ctx.insertPos ?? ta?.selectionStart ?? content.length, content.length);
+      const newContent = content.slice(0, pos) + text + content.slice(pos);
+      setSourceContent(newContent);
+      onContentChangeRef.current?.(newContent);
+      setDirtyRef.current(true);
+      lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
+      const cursor = pos + text.length;
+      requestAnimationFrame(() => {
+        const el = sourceTextareaRef.current;
+        el?.focus();
+        el?.setSelectionRange(cursor, cursor);
+      });
+      return;
+    }
+    const view = viewRef.current;
+    if (!view || view.isDestroyed) return;
+    // 位置可能因后续编辑漂移：clamp 到文档范围
+    const pos = Math.min(ctx?.insertPos ?? view.state.selection.from, view.state.doc.content.size);
+    try {
+      const frag = markdownToDoc(text).content;
+      view.dispatch(view.state.tr.replace(pos, pos, new Slice(frag, 0, 0)));
+    } catch {
+      view.dispatch(view.state.tr.insertText(text, pos, pos));
+    }
+    view.focus();
+  }, []);
+
+  /**
+   * 结果动作：替换发送时的选区（快照位置；不使用"当前选区"，防错位 —— D1 教训）。
+   * 回写前记录原文快照，支持 Esc / 「取消翻译」气泡整体恢复。
+   */
+  const chatReplaceSelection = useCallback((text: string) => {
+    if (!text.trim()) return;
+    const ctx = chatCtxRef.current;
+    if (!ctx || !ctx.hadSelection) return;
+
+    if (ctx.sourceMode === "pm") {
+      const view = viewRef.current;
+      if (!view || view.isDestroyed) return;
+      // 快照有效性：文档引用必须未变（变了则 from/to 语义已不可靠）。
+      // 此处**拒绝而非降级用"当前选区"**——对话窗可能开了很久，用户当前选区
+      // 往往在别处，退化路径会把回答写到错误的文字上（错位回写，D1 教训）。
+      if (
+        ctx.selFrom === undefined ||
+        ctx.selTo === undefined ||
+        !isPmSelectionSnapshotValid(ctx.selDoc, view.state.doc)
+      ) {
+        notifyWarning(translate("ai.chat.replaceSelectionMissing"));
+        return;
+      }
+      let original: string | null = null;
+      try {
+        original = getMarkdownFromDoc(view.state.doc);
+      } catch {
+        original = null;
+      }
+      applyingTranslationRef.current = true;
+      let ok = false;
+      try {
+        ok = applyTranslation(view, text, "replace", {
+          from: ctx.selFrom,
+          to: ctx.selTo,
+          doc: ctx.selDoc,
+        });
+      } finally {
+        applyingTranslationRef.current = false;
+      }
+      if (!ok) {
+        // 结构失配（译文无法解析到该位置）→ 明确提示，用户可改用「插入光标处」
+        notifyWarning(translate("ai.chat.replaceSelectionMissing"));
+        return;
+      }
+      if (original !== null) {
+        useEditorStore.getState().setTranslateUndoSnapshot({
+          content: original,
+          filePath: activeFileRef.current ?? null,
+          key: activeKeyRef.current,
+        });
+      }
+      return;
+    }
+
+    // source 通道：切片坐标仅在全文逐字未变时有效，否则拒绝（同上，防错位回写）
+    if (ctx.srcStart === undefined || ctx.srcEnd === undefined) return;
+    if (!isSourceSelectionSnapshotValid(ctx.srcSnapshot, sourceContentRef.current)) {
+      notifyWarning(translate("ai.chat.replaceSelectionMissing"));
+      return;
+    }
+    const rewrite = buildSourceRewrite(sourceContentRef.current, ctx.srcStart, ctx.srcEnd, text, "replace");
+    if (!rewrite) return;
+    const original = sourceContentRef.current;
+    setSourceContent(rewrite.content);
+    onContentChangeRef.current?.(rewrite.content);
+    setDirtyRef.current(true);
+    useEditorStore.getState().setSuppressAutoSave(true);
+    lastContentRef.current = unmaskBase64Images(rewrite.content, base64TokensRef.current);
+    useEditorStore.getState().setTranslateUndoSnapshot({
+      content: original,
+      filePath: activeFileRef.current ?? null,
+      key: activeKeyRef.current,
+    });
+    requestAnimationFrame(() => {
+      const el = sourceTextareaRef.current;
+      el?.focus();
+      el?.setSelectionRange(rewrite.cursor, rewrite.cursor);
+    });
+  }, []);
+
+  /**
+   * 结果动作：替换全文（复用全文翻译同款安全链）。
+   * DOC_CHANGED 守卫：当前全文必须与**发送时快照**完全一致才允许整体替换，
+   * 否则拒绝并提示（整篇替换会静默丢弃对话期间的用户编辑 —— v0.6.3 P0-3 同源）。
+   */
+  const chatReplaceDocument = useCallback(
+    (text: string) => {
+      if (!text.trim()) return;
+      const ctx = chatCtxRef.current;
+      if (!ctx) return;
+      let currentText: string | null;
+      try {
+        currentText =
+          viewMode === "preview" && isMdFile && viewRef.current
+            ? getMarkdownFromDoc(viewRef.current.state.doc)
+            : unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+      } catch {
+        currentText = null;
+      }
+      if (!canReplaceDocument(currentText, ctx.docSnapshot)) {
+        notifyWarning(translate("ai.chat.docChanged"));
+        return;
+      }
+      applyFullTranslation(text, ctx.docSnapshot);
+    },
+    [viewMode, isMdFile, applyFullTranslation]
+  );
+
+  /** 复制对话结果到剪贴板 */
+  const chatCopy = useCallback((text: string) => {
+    navigator.clipboard?.writeText(text).catch(() => undefined);
+  }, []);
+
+  /** 上下文范围切换（对话框 chip / 快捷指令模板触发） */
+  const chatScopeChange = useCallback(
+    (scope: AiChatContextScope) => {
+      useAiChatStore.getState().setContextScope(scope);
+      refreshChatPreview(scope);
+    },
+    [refreshChatPreview]
+  );
 
   // ── v0.6.4 问题1c：失败段气泡 ──────────────────────────────
   // 翻译失败的段在内容首处以气泡提示（底部栏不再显示失败），5 秒后自动消失
@@ -1530,9 +2942,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     );
 
     runFullTranslateLoop(units, {
-      // 复用选中翻译通道（Rust 单任务模型，一次一段；流式 chunk 不展示）
-      translateUnit: (text) => translateService.translate(text, () => undefined),
+      // v0.7.3 改进9(P4-2)：全文翻译并发 3 路提速。每段用 translateConcurrent
+      // 注册独立并发槽位（互不取消，避免 translate() 的内部单任务 cancel 互相打断）；
+      // task_id 含起点时间戳，跨轮次不冲突（begin_concurrent_task 同 id 会取消旧槽位）
+      translateUnit: (text, index) =>
+        translateService.translateConcurrent(
+          text, // v0.7.4 修复：第一个参数是待译文本（旧代码把 concurrent_id 当 text 传入，
+                // 导致后端实际翻译 "ft-xxx" 字符串，译文显示为 ft-xxx 占位行）
+          `ft-${Date.now()}-${index ?? 0}`,
+          () => undefined
+        ),
       onProgress: () => useFullTranslateStore.getState().tick(),
+      // v0.7.3 U6：每段开始时上报当前段，状态栏据此显示推进中的段落
+      onSegmentStart: (unit) => useFullTranslateStore.getState().setSegment(unit.text),
+      concurrency: 3,
       shouldAbort,
       errorCodeOf: (e) =>
         e instanceof TranslateServiceError ? e.info.code : parseTranslateError(e).code,
@@ -1622,6 +3045,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (useTranslateStore.getState().status !== "idle") return;
+      // v0.7.4 问题4：只处理属于当前文档的快照——否则在其它文档按 Esc 会
+      // 误清掉原文档保留的"取消翻译"状态（快照跨标签保留）
+      if (!isTranslateSnapshotForFile(
+        useEditorStore.getState().translateUndoSnapshot,
+        activeFileRef.current,
+      )) return;
       e.preventDefault();
       undoTranslation();
     };
@@ -1636,6 +3065,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (id === "edit.translate") startTranslateRef.current();
       // v0.6.1：全文翻译（Shift+F6 / 命令面板 / 悬浮按钮共用入口）
       if (id === "edit.translateDocument") startFullTranslateRef.current();
+      // v0.7.0：AI 助手（StatusBar AI 抽屉入口：续写/润色/摘要）
+      if (id === "ai.continue") startAiAssistRef.current("continue");
+      if (id === "ai.polish") startAiAssistRef.current("polish");
+      if (id === "ai.summary") startAiAssistRef.current("summary");
+      // v0.7.5 功能1：AI 对话（底部栏「AI对话」/ Ctrl+K / 命令面板共用同一入口）
+      if (id === "ai.chat") startAiChatRef.current();
     };
     window.addEventListener("lightmd:command", handler);
     return () => window.removeEventListener("lightmd:command", handler);
@@ -2033,17 +3468,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
 
     // keydown 时记录光标 Y（必须在捕获阶段，详见下方注释）
-    let savedCursorY = 0;
-    let savedScrollTop = 0;
+    // v0.7.5 修复：基线改为 ScrollKeyBaseline 对象，keyup 侧必须先确认"见过配套
+    // keydown"再使用（气泡 Esc 会 stopPropagation 吞掉编辑器 keydown，留下陈旧基线，
+    // 直接使用会把文档滚回上一次按键位置 —— 表现为"按 Esc 跳回文档开头"）
+    const scrollBaseline = createScrollKeyBaseline();
     // 记录按键前光标是否在视口外，用于决定 keyup 时是否恢复 scrollTop
     let cursorWasOutside = false;
     // keydown 必须在捕获阶段注册：ProseMirror 的 keydown 监听器在冒泡阶段执行，
     // 会先处理回车/方向键并移动光标。若在冒泡阶段记录，savedCursorY
     // 会是变化后的 Y，导致 keyup 时 Y 差值始终为 0，回车换行不触发滚动。
     const handleKeyDown = () => {
-      savedCursorY = getCursorY();
+      const cursorY = getCursorY();
       // 问题2修复：使用 scrollContainer 的 scrollTop
-      savedScrollTop = scrollContainer.scrollTop;
+      const scrollTop = scrollContainer.scrollTop;
       // 检测光标是否在视口外
       // 根因：光标在视口外时按键，浏览器原生 selection 变化会触发 scrollIntoView，
       // 把 scrollTop 改为光标位置。如果 keyup 恢复 scrollTop，用户会看到抖动
@@ -2060,6 +3497,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       } else {
         cursorWasOutside = false;
       }
+      markScrollKeyDown(scrollBaseline, cursorY, scrollTop, cursorWasOutside);
+    };
+
+    // 焦点离开编辑器时作废基线：避免"按下某键后未抬起就切窗"留下的
+    // seen=true 被后续无关 keyup 误当成有效基线
+    const handleBlur = () => {
+      scrollBaseline.seen = false;
     };
 
     // keyup 时根据光标 Y 变化决定是否滚动
@@ -2082,6 +3526,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // 修复：cursorWasOutside 时不恢复 scrollTop，让 scrollIntoView 生效；
     // 打字机模式开启时进一步 smooth 滚动到中央。
     const handleKeyUp = (e: KeyboardEvent) => {
+      // v0.7.5 修复：先消费基线（无论后续是否跳过都要复位 seen，
+      // 避免陈旧 seen 被下一个 keyup 误用）
+      const paired = consumeScrollKeyUp(scrollBaseline);
       // 模式切换恢复滚动位置期间跳过：applyScroll 正在用 instant 设置恢复滚动位置，
       // 此处若触发 smooth 滚动会覆盖 applyScroll 的设置，导致快捷键切换模式时滚动位置丢失
       // 根因：双击 Ctrl/Shift 切换模式时，keyup 事件冒泡到 ProseMirror 触发此处理器，
@@ -2090,13 +3537,21 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 修饰键（Shift/Ctrl/Alt/Meta）不移动光标，不应触发滚动
       // 作为 isRestoringScrollRef 的双重保护，应对 applyScroll effect 尚未执行的时序竞争
       if (isModifierKey(e.key)) return;
+      // v0.7.5 修复（按 Esc 跳回文档开头）：本处理器没见过配套 keydown 时基线是
+      // 上一次按键的陈旧值，据此恢复 scrollTop 会把文档滚回旧位置。气泡的 Esc 处理
+      // 在 window 捕获阶段 stopPropagation，正好造成这种"keydown 被吞、keyup 到达"。
+      if (!paired) return;
+
+      const savedCursorY = scrollBaseline.cursorY;
+      const savedScrollTop = scrollBaseline.scrollTop;
+      const wasOutside = scrollBaseline.cursorWasOutside;
 
       const cursorY = getCursorY();
       const diff = Math.abs(cursorY - savedCursorY);
 
       // 光标在视口外时按键：浏览器 scrollIntoView 已把光标滚动到可见
       // 不恢复 scrollTop，避免抖动；打字机模式进一步滚动到中央
-      if (cursorWasOutside) {
+      if (wasOutside) {
         if (typewriterModeRef.current) {
           scrollToCenter();
         }
@@ -2145,6 +3600,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
     editorDom.addEventListener("keydown", handleKeyDown, { capture: true });
     editorDom.addEventListener("keyup", handleKeyUp);
+    editorDom.addEventListener("blur", handleBlur);
     editorDom.addEventListener("click", handleClick);
 
     // 打字机模式开启时，初始居中
@@ -2155,6 +3611,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     return () => {
       editorDom.removeEventListener("keydown", handleKeyDown, { capture: true } as EventListenerOptions);
       editorDom.removeEventListener("keyup", handleKeyUp);
+      editorDom.removeEventListener("blur", handleBlur);
       editorDom.removeEventListener("click", handleClick);
     };
   }, [viewMode, forceUpdateKey]);
@@ -2189,10 +3646,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
 
     // keydown 时保存 scrollTop（自动滚动前的值），供 keyup 恢复使用
+    // v0.7.5 修复：与阅读模式同源——只在"见过配套 keydown"时才允许 keyup 用
+    // 基线恢复/滚动，避免气泡 Esc（window 捕获 stopPropagation 吞掉 keydown）
+    // 后拿陈旧 scrollTop 把文档滚回旧位置
+    const scrollBaseline = createScrollKeyBaseline();
     let savedScrollTop = 0;
     const handleKeyDown = () => {
-      if (!typewriterModeRef.current) return;
       savedScrollTop = textarea.scrollTop;
+      markScrollKeyDown(scrollBaseline, 0, savedScrollTop, false);
     };
 
     // 抑制 textarea 输入时的自动滚动（打字机模式核心修复）
@@ -2214,6 +3675,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     //      * 偏离不超过阈值（同行输入）：instant 恢复 savedScrollTop，抑制浏览器自动滚动
     //   用 savedScrollTop（scrollIntoView 前的位置）计算，避免 scrollIntoView 影响
     const handleKeyUp = (e: KeyboardEvent) => {
+      // v0.7.5 修复：先消费基线（保证 seen 一定被复位）
+      const paired = consumeScrollKeyUp(scrollBaseline);
       if (!typewriterModeRef.current) return;
       // 模式切换恢复滚动位置期间跳过：applyScroll 正在用 instant 设置恢复滚动位置，
       // 此处若触发 smooth 滚动会覆盖 applyScroll 的设置，导致快捷键切换模式时滚动位置丢失
@@ -2223,6 +3686,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 修饰键（Shift/Ctrl/Alt/Meta）不移动光标，不应触发滚动
       // 作为 isRestoringScrollRef 的双重保护，应对 applyScroll effect 尚未执行的时序竞争
       if (isModifierKey(e.key)) return;
+      // v0.7.5 修复：keydown 被吞（气泡 Esc）→ 基线陈旧，跳过（否则会把文档滚回旧位置）
+      if (!paired) return;
       if (isTypewriterTriggerKey(e.key)) {
         // 导航键：smooth 滚动到中央
         scrollCursorToCenter();
@@ -2248,10 +3713,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const handleClick = () => {
       if (typewriterModeRef.current) scrollCursorToCenter();
     };
+    // 焦点离开 textarea 时作废基线（防"按键未抬起就切窗"留下陈旧 seen）
+    const handleBlur = () => {
+      scrollBaseline.seen = false;
+    };
 
     textarea.addEventListener("keydown", handleKeyDown);
     textarea.addEventListener("keyup", handleKeyUp);
     textarea.addEventListener("click", handleClick);
+    textarea.addEventListener("blur", handleBlur);
     // 打字机模式开启时，初始居中
     // 但模式切换时跳过：applyScroll 正在恢复滚动位置，scrollCursorToCenter 的 smooth
     // 滚动会覆盖 applyScroll 的 instant 设置（smooth 是异步多帧的）
@@ -2262,6 +3732,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       textarea.removeEventListener("keydown", handleKeyDown);
       textarea.removeEventListener("keyup", handleKeyUp);
       textarea.removeEventListener("click", handleClick);
+      textarea.removeEventListener("blur", handleBlur);
     };
   }, [typewriterMode, viewMode, forceUpdateKey]);
 
@@ -2669,6 +4140,74 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           />
         )}
 
+        {/* v0.7.0 修复1：选区「译」浮动按钮右键快捷菜单（关闭 AI 翻译 / 隐藏翻译小气泡） */}
+        {triggerMenuPos && (
+          <MiniContextMenu
+            x={triggerMenuPos.x}
+            y={triggerMenuPos.y}
+            items={[
+              {
+                action: "disable-ai-translate",
+                label: t("translate.menu.disableAI"),
+                onClick: () => {
+                  // 关闭 AI 翻译子开关 + 取消进行中任务 + 立即隐藏已显示的浮动按钮
+                  useSettingsStore.getState().setTranslateConfig({ translateEnabled: false });
+                  translateService.cancel().catch(() => undefined);
+                  hideTranslateTrigger();
+                },
+              },
+              {
+                action: "hide-bubble",
+                label: t("translate.menu.hideBubble"),
+                onClick: () => {
+                  // 隐藏选中文本翻译小气泡（「译」入口子设置面板可重新打开）
+                  useSettingsStore.getState().setTranslateConfig({ translateBubbleHidden: true });
+                  translateService.cancel().catch(() => undefined);
+                  hideTranslateTrigger();
+                },
+              },
+            ]}
+            onClose={() => setTriggerMenuPos(null)}
+          />
+        )}
+
+        {/* v0.7.4 功能7 / v0.7.5 功能2：任一 AI 气泡右键快捷菜单。
+            菜单文案按被右键的按钮动态生成（隐藏「润」气泡 / 隐藏「问」气泡…），
+            只隐藏该一个任务（加入 aiAssistBubbleHiddenTasks），其余气泡照常显示；
+            与「译」按钮的隐藏机制（translateBubbleHidden）互相独立 */}
+        {aiMenuPos && (
+          <MiniContextMenu
+            x={aiMenuPos.x}
+            y={aiMenuPos.y}
+            items={[
+              {
+                action: "hide-ai-bubble",
+                label: t("settings.translate.hideBubbleTask", {
+                  glyph: AI_BUBBLE_GLYPHS[aiMenuPos.task ?? "continue"] ?? "",
+                }),
+                onClick: () => {
+                  const task = aiMenuPos.task;
+                  if (!task) return;
+                  const cur = useSettingsStore.getState().translate.aiAssistBubbleHiddenTasks;
+                  if (!cur.includes(task)) {
+                    useSettingsStore
+                      .getState()
+                      .setTranslateConfig({ aiAssistBubbleHiddenTasks: [...cur, task] });
+                  }
+                  // 设置变化不产生 PM 事务，此处直接隐藏被点的那一个按钮 DOM
+                  // （其余气泡不动——这是与 v0.7.4「一刀切隐藏」的核心差异）
+                  document
+                    .querySelectorAll<HTMLElement>(`.translate-ai-trigger[data-task="${task}"]`)
+                    .forEach((el) => {
+                      el.style.display = "none";
+                    });
+                },
+              },
+            ]}
+            onClose={() => setAiMenuPos(null)}
+          />
+        )}
+
         {/* v0.6.1 问题2：翻译回写后浮动"取消翻译"气泡，点击恢复原文 */}
         <TranslateUndoToast onUndo={undoTranslation} />
 
@@ -2742,10 +4281,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               borderRight: viewMode === "split" ? "none" : "none",
             }}
           />
-          {/* 专注模式遮罩：仅在 edit/split 模式 + focusMode 开启时显示 */}
+          {/* 专冔模式遮罩：仅在 edit/split 模式 + focusMode 开启时显示 */}
           {focusMode && isSourceMode && (
             <div ref={focusOverlayRef} className="source-focus-overlay" />
           )}
+          {/* v0.7.3 改进10(U3)：source 续写 ghost overlay（前置在 textarea 之上，
+              仅 sourceGhostActiveRef 活跃时填充内容，pointer-events:none 不拦截交互） */}
+          <div ref={sourceGhostOverlayRef} className="source-ghost-overlay" />
         </div>
 
         {/* v0.4.0：分屏分割条（仅 split 模式渲染，6px 宽，可拖拽调整左右比例） */}
@@ -2875,6 +4417,25 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         onApply={handleTranslateApply}
         onCopy={handleTranslateCopy}
         onRetry={handleTranslateRetry}
+      />
+
+      {/* v0.7.0：AI 助手结果气泡（润色/摘要/源码续写；Portal，idle 时组件内部返回 null） */}
+      <AiAssistBubble
+        onApply={handleAiApply}
+        onCopy={handleTranslateCopy}
+        onRetry={handleAiRetry}
+      />
+
+      {/* v0.7.5 功能1：AI 对话浮动窗口（Portal，关闭时组件内部返回 null） */}
+      <AiChatDialog
+        onSend={sendAiChat}
+        onStop={stopAiChat}
+        onRegenerate={regenerateAiChat}
+        onInsertAtCursor={chatInsertAtCursor}
+        onReplaceSelection={chatReplaceSelection}
+        onReplaceDocument={chatReplaceDocument}
+        onCopy={chatCopy}
+        onScopeChange={chatScopeChange}
       />
     </div>
   );

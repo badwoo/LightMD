@@ -98,14 +98,63 @@ export const translateService = {
     try {
       const result = await invoke<TranslateResultData>("translate_text", {
         text: trimmed,
+        // v0.7.2 P1：Key 按厂商独立存储（keyring 条目 translate_api_key::{provider}）
+        provider: cfg.translateProviderPreset,
         baseUrl: cfg.translateBaseUrl,
         model: cfg.translateModel,
         targetLang: cfg.translateTargetLang,
         tone: cfg.translateTone,
         customPrompt: cfg.translateCustomPrompt || null,
+        // v0.7.3：采样温度由设置透传（kimi 等厂商仅允许 1）
+        temperature: cfg.translateTemperature,
         onChunk: channel,
       });
       return result;
+    } catch (e) {
+      throw new TranslateServiceError(parseTranslateError(e));
+    }
+  },
+
+  /**
+   * v0.7.3 改进9(P4-2)：全文翻译并发调用的底层翻译。
+   *
+   * 与 translate() 的区别：不做「新任务取消旧任务」的单任务互斥（并发批量调用
+   * 会互相取消），而是通过 concurrentId 在 Rust 侧注册独立的并发任务槽位，
+   * 多个并发任务互不干扰。取消由外部 cancel_translate（全部 / 定向）完成。
+   */
+  async translateConcurrent(
+    text: string,
+    concurrentId: string,
+    onChunk: (chunk: string) => void,
+  ): Promise<TranslateResultData> {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      throw new TranslateServiceError({ code: "EMPTY", detail: "" });
+    }
+    if (trimmed.length > MAX_SELECTION_CHARS) {
+      throw new TranslateServiceError({ code: "TOO_LONG", detail: "" });
+    }
+    if (!isTauri()) {
+      throw new TranslateServiceError({ code: "NETWORK", detail: "non-tauri" });
+    }
+
+    const cfg = useSettingsStore.getState().translate;
+    const channel = new Channel<string>();
+    channel.onmessage = onChunk;
+
+    try {
+      return await invoke<TranslateResultData>("translate_text", {
+        text: trimmed,
+        provider: cfg.translateProviderPreset,
+        baseUrl: cfg.translateBaseUrl,
+        model: cfg.translateModel,
+        targetLang: cfg.translateTargetLang,
+        tone: cfg.translateTone,
+        customPrompt: cfg.translateCustomPrompt || null,
+        temperature: cfg.translateTemperature,
+        concurrentId,
+        onChunk: channel,
+      });
     } catch (e) {
       throw new TranslateServiceError(parseTranslateError(e));
     }
@@ -121,37 +170,52 @@ export const translateService = {
     }
   },
 
-  /** 测试连接：1-token 最小请求验证 Key（设置页用） */
-  async testConnection(baseUrl: string, model: string): Promise<void> {
+  /** 测试连接：1-token 最小请求验证 Key（设置页用）。v0.7.2 P1：Key 按厂商独立读取 */
+  async testConnection(provider: string, baseUrl: string, model: string): Promise<void> {
     if (!isTauri()) {
       throw new TranslateServiceError({ code: "NETWORK", detail: "non-tauri" });
     }
     try {
-      await invoke("test_translate_connection", { baseUrl, model });
+      await invoke("test_translate_connection", { provider, baseUrl, model });
     } catch (e) {
       throw new TranslateServiceError(parseTranslateError(e));
     }
   },
 
-  /** 保存 API Key 到 keyring */
-  async setKey(key: string): Promise<void> {
+  /** 保存 API Key 到 keyring（v0.7.2 P1：按 provider 写独立条目） */
+  async setKey(provider: string, key: string): Promise<void> {
     if (!isTauri()) {
       throw new TranslateServiceError({ code: "NETWORK", detail: "non-tauri" });
     }
     try {
-      await invoke("set_translate_key", { key });
+      await invoke("set_translate_key", { provider, key });
     } catch (e) {
       throw new TranslateServiceError(parseTranslateError(e));
     }
   },
 
-  /** Key 是否已配置（keyring 存在性检查，不回明文） */
-  async hasKey(): Promise<boolean> {
+  /** Key 是否已配置（v0.7.2 P1：检查当前 provider 条目；keyring 存在性检查，不回明文） */
+  async hasKey(provider: string): Promise<boolean> {
     if (!isTauri()) return false;
     try {
-      return await invoke<boolean>("has_translate_key");
+      return await invoke<boolean>("has_translate_key", { provider });
     } catch {
       return false;
+    }
+  },
+
+  /**
+   * v0.7.2 P2：拉取厂商模型列表（GET {baseUrl}/models）。
+   * 端点不支持（如 Claude 原生 API）或网络失败时抛错，由调用方回退静态预设列表。
+   */
+  async listModels(provider: string, baseUrl: string): Promise<string[]> {
+    if (!isTauri()) {
+      throw new TranslateServiceError({ code: "NETWORK", detail: "non-tauri" });
+    }
+    try {
+      return await invoke<string[]>("list_translate_models", { provider, baseUrl });
+    } catch (e) {
+      throw new TranslateServiceError(parseTranslateError(e));
     }
   },
 };

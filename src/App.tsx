@@ -19,6 +19,8 @@ import { VersionSnapshotDialog } from "./components/dialogs/VersionSnapshotDialo
 import { setImageHandler, insertImageAtCursor } from "./core/plugins/image-paste";
 import { fileService, isTauri, type FileEntry } from "./services/fileService";
 import { versionSnapshotService } from "./services/versionSnapshotService";
+// v0.7.0 bug修复：文件浏览进度（重新打开/关闭标签时清除，标签切换保留）
+import { fileScrollProgress } from "./services/fileScrollProgress";
 import { safeSetItem } from "./utils/safeStorage";
 import { setCurrentDocPath } from "./utils/imagePath";
 import { isSupportedTextFile, isMarkdownFile, ALL_SUPPORTED_EXTENSIONS, HUGE_FILE_THRESHOLD, getFileLanguage } from "./utils/constants";
@@ -224,6 +226,10 @@ function App() {
         setContent(detail.content);
         safeSetItem("lightmd-content", detail.content);
         setForceUpdateKey((k) => k + 1);
+        // v0.7.0 bug修复：重新打开文件时清除浏览进度（从文件树点击 = 重新打开，重置到顶部）
+        if (detail.path) {
+          fileScrollProgress.clear(detail.path);
+        }
 
         // 设置文件路径和清除 dirty 标记
         if (detail.path) {
@@ -315,6 +321,8 @@ function App() {
         // v0.4.5 修复：同步从 recentFiles 中移除，避免下次启动时恢复已被用户关闭的文件
         if (closedTab) {
           useFileStore.getState().removeRecentFile(closedTab.path);
+          // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
+          fileScrollProgress.clear(closedTab.path);
         }
       }
       const remainingTabs = useEditorStore.getState().openTabs;
@@ -759,6 +767,8 @@ function App() {
     closeTab(idx);
     // v0.4.5 修复：同步从 recentFiles 中移除，避免下次启动时恢复已被用户关闭的文件
     useFileStore.getState().removeRecentFile(tab.path);
+    // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
+    fileScrollProgress.clear(tab.path);
     // 同步移除左侧"打开的文件"中的临时文件
     const { tempFiles } = useFileStore.getState();
     if (tempFiles.some(f => f.path === tab.path)) {
@@ -1021,6 +1031,21 @@ function App() {
       if (e.ctrlKey && !e.shiftKey && e.key === "h") {
         e.preventDefault();
         setShowSearchReplace(true);
+      }
+      // v0.7.5 功能1：Ctrl+K（macOS 为 Cmd+K）打开 AI 对话浮动窗。
+      // 已全文确认 Mod-k / Ctrl+K 无其他绑定（链接插入走工具栏与智能粘贴，无快捷键）。
+      // 注意大小写（Caps Lock 下 key 为 "K"）与输入法组合态（isComposing 时 Enter/字母
+      // 用于选词，不能当快捷键）。
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.key === "k" || e.key === "K") &&
+        !e.isComposing
+      ) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "ai.chat" } }));
+        return;
       }
       // v0.6.0：F6 AI 翻译选中内容（统一走 lightmd:command 事件，由 EditorContainer 处理）
       if (e.key === "F6" && !e.shiftKey) {

@@ -16,7 +16,10 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useTranslateStore } from "../../stores/translateStore";
 import { translateService, type TranslateErrorCode } from "../../services/translateService";
+import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useT } from "../../i18n";
+import { MiniContextMenu } from "./MiniContextMenu";
+import { visualizePlaceholders } from "../../utils/placeholderVisual";
 import "./TranslateBubble.css";
 
 interface TranslateBubbleProps {
@@ -72,6 +75,10 @@ export function TranslateBubble({ onApply, onCopy, onRetry }: TranslateBubblePro
   const result = useTranslateStore((s) => s.result);
   const anchor = useTranslateStore((s) => s.anchor);
   const close = useTranslateStore((s) => s.close);
+  // v0.7.0：隐藏翻译小气泡（双保险：runTranslate 层已拦截不 openBubble）
+  const bubbleHidden = useSettingsStore((s) => s.translate.translateBubbleHidden);
+  // v0.7.0：右键菜单（关闭 AI 翻译 / 隐藏翻译小气泡）
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
 
   // rAF 批量刷新流式文本
   const [displayText, setDisplayText] = useState("");
@@ -156,13 +163,58 @@ export function TranslateBubble({ onApply, onCopy, onRetry }: TranslateBubblePro
   }, [anchor]);
 
   if (status === "idle" || !anchor) return null;
+  // v0.7.0：隐藏开关生效时不渲染气泡
+  if (bubbleHidden) return null;
+
+  // v0.7.0：气泡右键菜单项（功能优化1）
+  const menuItems = [
+    {
+      action: "disable-ai-translate",
+      label: t("translate.menu.disableAI"),
+      onClick: () => {
+        // 关闭 AI 翻译总开关 + 取消进行中任务 + 关闭气泡
+        useSettingsStore.getState().setTranslateConfig({ translateEnabled: false });
+        translateService.cancel().catch(() => undefined);
+        close();
+      },
+    },
+    {
+      action: "hide-bubble",
+      label: t("translate.menu.hideBubble"),
+      onClick: () => {
+        // 隐藏选中文本翻译小气泡（设置面板 / 「译」入口子设置可重新打开）
+        useSettingsStore.getState().setTranslateConfig({ translateBubbleHidden: true });
+        translateService.cancel().catch(() => undefined);
+        close();
+      },
+    },
+  ];
 
   const isPreview = sourceMode === "preview";
   const showActions = status === "done" && result;
   const showWarning = result && !result.placeholdersIntact;
 
   return createPortal(
-    <div className="translate-bubble" style={style} data-testid="translate-bubble">
+    <div
+      className="translate-bubble"
+      style={style}
+      data-testid="translate-bubble"
+      onContextMenu={(e) => {
+        // v0.7.0：气泡右键菜单（关闭 AI 翻译 / 隐藏气泡）
+        e.preventDefault();
+        e.stopPropagation();
+        setMenuPos({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      {/* v0.7.0：右键菜单 */}
+      {menuPos && (
+        <MiniContextMenu
+          x={menuPos.x}
+          y={menuPos.y}
+          items={menuItems}
+          onClose={() => setMenuPos(null)}
+        />
+      )}
       <div className="translate-bubble-header">
         <span className="translate-bubble-title">
           {t("translate.title")}
@@ -172,8 +224,11 @@ export function TranslateBubble({ onApply, onCopy, onRetry }: TranslateBubblePro
           <span className="translate-bubble-status">{t("translate.streaming")}</span>
         )}
         {showActions && result && (
-          <span className="translate-bubble-tokens">
-            {result.promptTokens + result.completionTokens} {t("translate.tokens")}
+          <span
+            className="translate-bubble-tokens"
+            title={`${t("translate.tokensIn")} ${result.promptTokens} + ${t("translate.tokensOut")} ${result.completionTokens}`}
+          >
+            ↑{result.promptTokens} ↓{result.completionTokens} {t("translate.tokens")}
           </span>
         )}
         <button
@@ -198,7 +253,7 @@ export function TranslateBubble({ onApply, onCopy, onRetry }: TranslateBubblePro
             </button>
           </div>
         ) : (
-          <div className="translate-bubble-text">{finalText}</div>
+          <div className="translate-bubble-text">{visualizePlaceholders(finalText)}</div>
         )}
       </div>
 
@@ -226,6 +281,10 @@ export function TranslateBubble({ onApply, onCopy, onRetry }: TranslateBubblePro
           )}
           <button className="translate-bubble-btn" onClick={handleCopy}>
             {copied ? t("translate.copied") : t("translate.copy")}
+          </button>
+          {/* v0.7.3 U5：done 态也提供"重试"，免去重走入口（此前仅 error 态有） */}
+          <button className="translate-bubble-btn" onClick={onRetry}>
+            {t("translate.retry")}
           </button>
         </div>
       )}

@@ -27,8 +27,10 @@ import { TaskItemView } from "./plugins/task-list";
 import { TableView, TableCellView } from "./plugins/table-editor";
 import { autoPairPlugin } from "./plugins/auto-pair";
 import { smartPastePlugin } from "./plugins/smart-paste";
-import { createTranslateTooltipPlugin } from "./plugins/translateTooltip";
+import { createTranslateTooltipPlugin, type AiAssistTask } from "./plugins/translateTooltip";
 import { createSlashCommandPlugin } from "./plugins/slash-command";
+// v0.7.0：AI 续写幽灵文本装饰（meta 驱动，无回调依赖）
+import { aiGhostPlugin } from "./plugins/ai-ghost";
 
 // ─── 搜索高亮 Plugin（问题1修复）──────────────────────
 // 使用 ProseMirror Decoration 管理搜索高亮，不依赖编辑器焦点
@@ -123,17 +125,43 @@ export interface EditorOptions {
   /** v0.6.0：AI 翻译总开关 getter（动态读取设置，返回 false 时不显示浮动按钮） */
   translateEnabledGetter?: () => boolean;
   /**
+   * v0.7.0 修复1/4：选区「译」浮动按钮扩展选项
+   * - getDelay：延迟出现毫秒数 getter（translateBubbleDelayMs，防选中即弹）
+   * - onContextMenu：按钮右键回调（入口层渲染快捷菜单：关闭 AI 翻译 / 隐藏气泡）
+   */
+  translateTooltipOptions?: {
+    getDelay?: () => number;
+    onContextMenu?: (btn: HTMLSpanElement, e: MouseEvent) => void;
+    // v0.7.3 改进8(D5)：按钮 title（i18n 注入）
+    title?: string;
+    // v0.7.4 功能7：AI 气泡（续/润/摘）接线
+    onAiAction?: (task: AiAssistTask) => void;
+    onAiContextMenu?: (btn: HTMLSpanElement, e: MouseEvent) => void;
+    /** v0.7.5 功能2：按任务判定气泡是否隐藏（取代整体布尔 isAiHidden） */
+    isBubbleHidden?: (task: AiAssistTask) => boolean;
+    /** 各 AI 按钮颜色 getter（空串 = 用主题默认色） */
+    getBubbleColor?: (task: AiAssistTask) => string | undefined;
+    /** v0.7.5 功能3：「译」按钮颜色 getter（空串 = 用主题默认色） */
+    getTranslateColor?: () => string | undefined;
+    /** 各 AI 按钮 title getter（i18n 注入） */
+    getAiTitle?: (task: AiAssistTask) => string;
+    /** v0.7.4 修复2：AI 三个气泡出现延迟毫秒数 getter（从 mouseup 起算，独立于「译」） */
+    getAiDelay?: () => number;
+  };
+  /**
    * v0.6.6 问题2：阅读模式 Slash 命令触发状态回调
    * 由 EditorContainer 注入，驱动 SlashCommandPm 菜单渲染（触发 → SlashState；失效 → null）
    */
   onSlashStateChange?: (s: import("./plugins/slash-command").SlashState | null) => void;
+  /** v0.7.3 改进8(D5)：AI 续写 ghost 的采纳提示文案（i18n 注入，硬编码中文穿帮清理） */
+  aiGhostHint?: string;
 }
 
 /**
  * 创建配置完整的 ProseMirror EditorView
  */
 export function createEditor(options: EditorOptions): EditorView | null {
-  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, onSlashStateChange } = options;
+  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, aiGhostHint } = options;
 
   if (!parent) return null;
 
@@ -165,9 +193,14 @@ export function createEditor(options: EditorOptions): EditorView | null {
       autoPairPlugin(),
       smartPastePlugin(),
       // v0.6.0：AI 翻译选区浮动按钮（未传回调时不注册；enabled getter 动态响应设置开关）
-      ...(onTranslateTrigger ? [createTranslateTooltipPlugin(onTranslateTrigger, translateEnabledGetter ?? (() => true))] : []),
+      // v0.7.0 修复1/4：options 携带延迟显示 getter 与右键菜单回调
+      ...(onTranslateTrigger
+        ? [createTranslateTooltipPlugin(onTranslateTrigger, translateEnabledGetter ?? (() => true), translateTooltipOptions ?? {})]
+        : []),
       // v0.6.6 问题2：阅读模式 Slash 命令面板（未传回调时不注册）
       ...(onSlashStateChange ? [createSlashCommandPlugin(onSlashStateChange)] : []),
+      // v0.7.0：AI 续写幽灵文本（meta 驱动，常驻注册，无任务时零开销）
+      aiGhostPlugin(aiGhostHint),
     ],
   });
 

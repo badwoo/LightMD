@@ -39,8 +39,13 @@ export const zhCN: Record<string, string> = {
   // N1：自动配对补全开关
   "settings.autoPair": "自动配对补全",
   // ─── v0.6.0：AI 翻译设置 ────────────────────
-  "settings.translate": "AI 翻译",
-  "settings.translate.enabled": "启用 AI 翻译",
+  "settings.translate": "AI",
+  "settings.translate.enabled": "启用 AI 功能",
+  "settings.translate.enabled.translate": "AI 翻译",
+  // v0.7.3 U2：AI 总开关关闭时，子开关/配置提示由总开关控制
+  "settings.translate.controlledByMaster": "由「启用 AI 功能」总开关控制",
+  // v0.7.0：API 配置全局共享说明（AI 分组升级）
+  "settings.translate.apiShared": "以下 API 配置为全局 AI 配置，翻译 / 续写 / 润色 / 摘要共用",
   "settings.translate.provider": "服务商",
   "settings.translate.provider.deepseek": "DeepSeek（默认）",
   "settings.translate.provider.zhipu": "智谱 AI",
@@ -49,6 +54,15 @@ export const zhCN: Record<string, string> = {
   "settings.translate.provider.kimi": "Kimi（月之暗面）",
   "settings.translate.provider.volcengine": "火山方舟",
   "settings.translate.provider.doubao": "豆包 Seed",
+  "settings.translate.provider.kimicode": "Kimi Code",
+  "settings.translate.provider.hunyuan": "腾讯混元",
+  "settings.translate.provider.xunfei": "讯飞星火",
+  "settings.translate.provider.stepfun": "阶跃星辰 StepFun",
+  "settings.translate.provider.baidu": "百度文心（AI Studio）",
+  "settings.translate.provider.lingyi": "零一万物",
+  "settings.translate.provider.baichuan": "百川智能",
+  "settings.translate.provider.sensenova": "商汤 SenseNova",
+  "settings.translate.provider.antling": "蚂蚁 Ling Studio",
   "settings.translate.provider.gemini": "Google Gemini",
   "settings.translate.provider.claude": "Anthropic Claude",
   "settings.translate.provider.modelscope": "ModelScope 魔搭",
@@ -63,7 +77,24 @@ export const zhCN: Record<string, string> = {
   "settings.translate.apiKeyNotConfigured": "未配置",
   "settings.translate.baseUrl": "API 地址",
   "settings.translate.baseUrlInsecure": "警告：http:// 地址会明文传输 API Key，建议使用 https://",
+  "settings.translate.triggerTitle": "AI 翻译 (F6)",
+  "settings.translate.ghostHint": "Tab ⏎ · Esc ✕",
+  // v0.7.4 功能7：AI 气泡右键菜单项
+  "settings.translate.hideAiBubble": "隐藏AI小气泡",
+  // v0.7.5 功能2：按任务动态文案（{glyph} = 续/润/摘/问）
+  "settings.translate.hideBubbleTask": "隐藏「{glyph}」气泡",
+  // v0.7.5 功能3：「译」选区浮动气泡颜色
+  "settings.translate.bubbleColor": "「译」气泡颜色",
+  "settings.translate.bubbleColorReset": "跟随主题",
+  "settings.translate.bubbleColorHint": "默认跟随主题配色",
   "settings.translate.model": "模型名称",
+  "settings.translate.fetchModels": "获取模型列表",
+  "settings.translate.fetchingModels": "获取中…",
+  "settings.translate.fetchModelsOk": "已获取 {count} 个可用模型",
+  "settings.translate.fetchModelsEmpty": "接口未返回模型",
+  "settings.translate.fetchModelsFail": "获取失败，已回退预设列表",
+  "settings.translate.modelMenuPreset": "推荐模型（可手动输入任意模型名）",
+  "settings.translate.kimiOverseaHint": "海外网络可将上方地址改为 https://api.moonshot.ai/v1（Key 通用）",
   "settings.translate.test": "测试连接",
   "settings.translate.testing": "测试中…",
   "settings.translate.testOk": "连接成功",
@@ -74,6 +105,10 @@ export const zhCN: Record<string, string> = {
   "settings.translate.tone.formal": "正式",
   "settings.translate.tone.casual": "口语",
   "settings.translate.tone.technical": "技术文档",
+  // v0.7.3：采样温度（修复 kimi 等仅允许 temperature=1 的厂商 400 报错）
+  "settings.translate.temperature": "采样温度（Temperature）",
+  "settings.translate.temperatureHint": "数值越低越稳定、越省 token；默认 0.1",
+  "settings.translate.temperatureKimiHint": "Kimi 该模型仅允许 Temperature=1，已自动设为 1；如遇 400 报错请保持此值",
   "settings.translate.resultMode": "结果模式",
   "settings.translate.resultMode.bubble": "气泡确认（默认）",
   "settings.translate.resultMode.replace": "直接替换",
@@ -368,6 +403,10 @@ export const zhCN: Record<string, string> = {
   "menu.strikethrough": "删除线",
   "menu.inlineCode": "行内代码",
   "menu.translate": "AI 翻译",
+  // v0.7.0：AI 助手（续写/润色/摘要）
+  "menu.aiContinue": "AI 续写",
+  "menu.aiPolish": "AI 润色",
+  "menu.aiSummary": "AI 摘要",
   "menu.insertLink": "插入链接",
   "menu.insertImage": "插入图片",
   "menu.insertTable": "插入表格",
@@ -425,6 +464,12 @@ export const zhCN: Record<string, string> = {
   "command.edit.translate": "AI 翻译选中内容",
   // v0.6.1：全文翻译
   "command.edit.translateDocument": "AI 全文翻译",
+  // v0.7.0：AI 助手（续写/润色/摘要）
+  "command.edit.aiContinue": "AI 续写（光标处）",
+  "command.edit.aiPolish": "AI 润色选中内容",
+  "command.edit.aiSummary": "AI 生成摘要",
+  // v0.7.5 功能1：AI 对话（Ctrl+K）
+  "command.ai.chat": "AI 对话",
   // 视图分组命令
   "command.view.preview": "阅读模式",
   "command.view.edit": "编辑模式",
@@ -506,10 +551,108 @@ export const zhCN: Record<string, string> = {
   "common.insert": "插入",
   // ─── v0.6.0 AI 翻译 ──────────────────────────────
   "translate.title": "AI 翻译",
+  // ─── v0.7.0 AI 助手（续写/润色/摘要）──────────────
+  "ai.title.continue": "AI 续写",
+  "ai.title.polish": "AI 润色",
+  "ai.title.summary": "AI 摘要",
+  "ai.title.summary.selection": "AI 摘要 · 选段",
+  "ai.title.summary.full": "AI 摘要 · 全文",
+  // v0.7.5 功能2：「问」气泡（打开 AI 对话窗，Ctrl+K 同源）
+  "ai.title.chat": "AI 对话 (Ctrl+K)",
+  "ai.insert": "插入到光标处",
+  "ai.replace": "替换选中",
+  "ai.stop": "停止",
+  "ai.error.empty": "无可用内容",
+  "ai.ghostHint": "Tab 采纳 · Esc 放弃",
+  // v0.7.5 优化3：AI 续写首包到达前的占位 ghost（消除点击后数秒无反馈）
+  "ai.continuing": "续写中...",
+  // v0.7.3 U1：AI 助手静默失败改 toast
+  "ai.disabledNotify": "AI 功能已关闭，请在设置中开启",
+  "ai.continueEmptyNotify": "光标前没有可续写的文本",
+  "ai.polishNoSelectionNotify": "请先选择要润色的文本",
+  "statusbar.ai": "AI 助手",
+  // v0.7.5 功能1：底部栏 AI 抽屉「AI对话」入口（摘要右、齿轮左）
+  "statusbar.ai.chat": "AI对话",
+  // ─── v0.7.5 功能1：AI 对话浮动窗口 ──────────────
+  "ai.chat.title": "AI 对话",
+  "ai.chat.placeholder": "输入指令…（Enter 发送 / Shift+Enter 换行）",
+  "ai.chat.send": "发送",
+  "ai.chat.stop": "停止",
+  "ai.chat.loading": "生成中…",
+  "ai.chat.empty": "输入指令开始对话，或用上方快捷指令快速填充",
+  "ai.chat.minimize": "收起",
+  "ai.chat.expand": "展开",
+  "ai.chat.close": "关闭",
+  // 上下文 chip（三档范围：选区 / 全文 / 无）
+  "ai.chat.ctx.label": "上下文",
+  "ai.chat.ctx.switchHint": "点击切换上下文范围：选区 → 全文 → 无",
+  "ai.chat.ctx.selection": "选区 {count} 字",
+  "ai.chat.ctx.document": "全文 {count} 字",
+  "ai.chat.ctx.documentTruncated": "全文 {count} 字（截断至 {max}）",
+  "ai.chat.ctx.none": "无上下文",
+  "ai.chat.ctx.degraded": "选区已丢失，改用全文 {count} 字",
+  "ai.chat.templates": "快捷指令",
+  // 动作条
+  "ai.chat.action.insert": "插入光标处",
+  "ai.chat.action.replaceSelection": "替换选区",
+  "ai.chat.action.replaceDoc": "替换全文",
+  "ai.chat.action.copy": "复制",
+  "ai.chat.action.copied": "已复制",
+  "ai.chat.action.regenerate": "重新生成",
+  // v0.7.5 优化4：对话窗内嵌 AI 翻译（对单条回答译/还原）
+  "ai.chat.action.translate": "译",
+  "ai.chat.action.translateBack": "原文",
+  // 动作失败提示
+  "ai.chat.docChanged": "文档在对话期间已被编辑，未执行「替换全文」",
+  "ai.chat.replaceSelectionMissing": "发送时的选区已失效（文档已修改），请改用「插入光标处」",
+  "ai.chat.error.tooLong": "指令或上下文过长，请缩短后重试",
+  "ai.chat.translateTooLong": "该回答超过 4000 字，无法在窗口内直接翻译",
+  // 快捷指令模板（label = chip 文案；prompt = 预填指令）
+  "ai.chat.tpl.mermaid": "生成图表",
+  "ai.chat.tpl.mermaid.prompt": "把以下内容整理成一个 Mermaid 流程图/时序图（自动选择合适类型），只输出 mermaid 代码块",
+  // v0.7.5 优化4：AI 翻译模板（有选区时对选区翻译；.promptAuto 用于"自动（中英互译）"）
+  "ai.chat.tpl.translate": "AI翻译",
+  "ai.chat.tpl.translate.prompt": "把以下内容翻译为{target}，只输出译文本身，不要任何前后缀与解释",
+  "ai.chat.tpl.translate.promptAuto": "把以下内容翻译（中文译为英文，英文译为中文），只输出译文本身，不要任何前后缀与解释",
+  "ai.chat.tpl.formula": "生成公式",
+  "ai.chat.tpl.formula.prompt": "把以下数学描述转换为 LaTeX 公式，用 $$ 包裹输出",
+  "ai.chat.tpl.summary": "生成摘要",
+  "ai.chat.tpl.summary.prompt": "为以下内容生成 150~300 字摘要",
+  "ai.chat.tpl.frontmatter": "标题与标签",
+  "ai.chat.tpl.frontmatter.prompt": "为本文档生成：1 个精炼标题 + 3~6 个标签，以 YAML frontmatter（title/tags）格式输出",
+  "ai.chat.tpl.rewrite": "改写全文",
+  "ai.chat.tpl.rewrite.prompt": "改写以下文档：保持原意与 Markdown 结构，提升表达质量",
+  "ai.chat.tpl.analyze": "分析文档",
+  "ai.chat.tpl.analyze.prompt": "分析以下文档：核心观点、结构脉络、可改进点，用表格汇总",
+  // v0.7.4 功能8：AI 设置齿轮面板
+  "statusbar.ai.settings": "AI 设置",
+  "statusbar.ai.fixed": "固定 AI 入口",
+  "statusbar.ai.bubble": "选中文本 AI 气泡",
+  "statusbar.ai.bubbleDelay": "气泡延迟",
+  "statusbar.ai.colorCont": "续写气泡颜色",
+  "statusbar.ai.colorPolish": "润色气泡颜色",
+  "statusbar.ai.colorSummary": "摘要气泡颜色",
+  // v0.7.5 功能2：按任务独立显隐 + 「问」气泡色
+  "statusbar.ai.bubbleContinue": "「续」续写气泡",
+  "statusbar.ai.bubblePolish": "「润」润色气泡",
+  "statusbar.ai.bubbleSummary": "「摘」摘要气泡",
+  "statusbar.ai.bubbleChat": "「问」AI 对话气泡",
+  "statusbar.ai.colorChat": "AI 对话气泡颜色",
+  // v0.7.0 功能优化1：翻译气泡右键菜单
+  "translate.menu.disableAI": "关闭 AI 翻译",
+  "translate.menu.hideBubble": "隐藏翻译小气泡",
+  // v0.7.0 功能优化3：「译」入口子设置
+  "translate.entry.settings": "翻译设置",
+  "translate.entry.showBubble": "选中文本翻译气泡",
+  // v0.7.0 修复4：气泡延迟出现设置（滑条）
+  "translate.entry.bubbleDelay": "气泡延迟",
+  // v0.7.5 功能3：「译」气泡颜色（与设置页同一字段）
+  "translate.entry.bubbleColor": "「译」气泡颜色",
   // v0.6.1：全文翻译
   "translate.full.title": "翻译（选中翻译，无选区时全文翻译）",
   "translate.full.runningTip": "翻译进行中，点击取消",
   "translate.full.progress": "翻译中 {done}/{total} 段",
+  "translate.full.currentSegment": "当前翻译：{text}",
   "translate.full.done": "翻译完成",
   "translate.full.cancel": "取消翻译",
   "translate.full.dismiss": "关闭提示",
@@ -529,6 +672,8 @@ export const zhCN: Record<string, string> = {
   "translate.copied": "已复制",
   "translate.warning.placeholders": "部分格式标记可能丢失，建议使用双语模式",
   "translate.tokens": "tokens",
+  "translate.tokensIn": "输入",
+  "translate.tokensOut": "输出",
   "translate.error.NETWORK": "网络错误，请检查网络连接",
   "translate.error.AUTH": "API Key 无效或未配置，请在设置中填写",
   "translate.error.RATE": "请求过于频繁，请稍后重试",
@@ -539,4 +684,11 @@ export const zhCN: Record<string, string> = {
   "translate.error.TOO_LONG": "选区超过 4000 字符上限",
   "translate.error.EMPTY": "未选中内容",
   "translate.error.DOC_CHANGED": "文档在翻译期间已修改，译文未应用",
+  // v0.7.3 U1：静默失败改 toast 的反馈文案
+  "translate.noTranslatable": "该选区无文本可翻译（纯符号/链接/图片）",
+  "translate.disabledNotify": "AI 功能已关闭，请在设置中开启",
+  "translate.fullRunningNotify": "全文翻译进行中，请先完成或取消",
+  "translate.noSelectionNotify": "请先选择要翻译的文本",
+  "translate.copiedToClipboardHidden": "已复制译文到剪贴板（翻译气泡已隐藏）",
+  "translate.failedNotify": "翻译失败，详见提示",
 };

@@ -156,7 +156,8 @@ describe("v0.6.0 TranslateBubble - 渲染状态机", () => {
     expect(screen.getByText("替换")).toBeTruthy();
     expect(screen.getByText("双语")).toBeTruthy();
     expect(screen.getByText("复制")).toBeTruthy();
-    expect(screen.getByText(/150 tokens/)).toBeTruthy();
+    // v0.7.1：token 显示改为输入/输出分开（↑prompt ↓completion）
+    expect(screen.getByText(/↑100 ↓50 tokens/)).toBeTruthy();
   });
 
   it("preview 模式只有复制按钮（无替换/双语）", () => {

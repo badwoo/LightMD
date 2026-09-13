@@ -132,3 +132,190 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ─── v0.7.0：「译」入口外层容器（含子设置图标与快捷面板） ─────────── */
+.ftb-wrap {
+  position: absolute;
+  top: 50px;
+  right: 14px;
+  z-index: 30;
+}
+
+/* ftb-wrap 接管定位后，按钮自身回归相对布局 */
+.full-translate-btn {
+  position: relative;
+  top: 0;
+  right: 0;
+}
+
+/* v0.7.0 功能优化3b：子设置图标按钮（hover 由右至左滑出于「译」按钮正下方）
+   v0.7.0 修复3：top 紧贴「译」按钮底部（34px，零间隙）——鼠标垂直下移始终处于
+   wrap 的元素层级区域内，不触发 mouseleave，设置图标保持显示可点击；
+   水平居中于「译」按钮（按钮宽 36px、图标 26px） */
+.ftb-settings-trigger {
+  position: absolute;
+  top: 34px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary, var(--text-primary));
+  cursor: pointer;
+  opacity: 0;
+  transform: translateX(12px); /* 初始在右侧外 */
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+/* 滑出态：由右至左滑入（translateX 12px → 0） */
+.ftb-settings-trigger.show {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.ftb-settings-trigger:hover,
+.ftb-settings-trigger.show {
+  border-color: var(--accent-color, #4a9eff);
+  color: var(--accent-color, #4a9eff);
+}
+
+/* v0.7.0 功能优化3b：快捷设置面板（齿轮下方弹出；top 跟随修复3 调整为 34+26+6=66px） */
+.ftb-settings-panel {
+  position: absolute;
+  top: 66px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 230px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.ftb-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ftb-settings-row label {
+  font-size: 12px;
+  color: var(--text-secondary, var(--text-primary));
+  white-space: nowrap;
+}
+
+.ftb-settings-row select {
+  max-width: 120px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* 气泡显隐小开关 */
+.ftb-toggle {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary, #e4e4e7);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  flex: none;
+}
+
+.ftb-toggle.on {
+  background: var(--accent-color, #4a9eff);
+  border-color: var(--accent-color, #4a9eff);
+}
+
+.ftb-toggle-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  transition: transform 0.15s ease;
+}
+
+.ftb-toggle.on .ftb-toggle-knob {
+  transform: translateX(14px);
+}
+
+/* v0.7.0 修复4：气泡延迟滑条（仅气泡开关开启时渲染） */
+.ftb-delay-slider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.ftb-delay-slider input[type="range"] {
+  width: 90px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent-color, #4a9eff);
+  cursor: pointer;
+}
+
+.ftb-delay-value {
+  font-size: 11px;
+  color: var(--text-secondary, var(--text-primary));
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
+  text-align: right;
+  flex: none;
+}
+
+/* v0.7.5 功能3：「译」气泡颜色行（色板 + 重置 ✕） */
+.ftb-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.ftb-color-row input[type="color"] {
+  width: 28px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.4));
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ftb-color-reset {
+  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.4));
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary, var(--text-primary));
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  cursor: pointer;
+}
+
+.ftb-color-reset:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-color, #4a9eff);
+}

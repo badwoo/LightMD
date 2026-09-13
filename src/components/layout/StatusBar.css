@@ -86,6 +86,19 @@
   color: var(--text-primary);
 }
 
+/* v0.7.3 U6：状态栏"当前翻译段"简示（弱化样式，不喧宾夺主） */
+.statusbar-ft-segment {
+  max-width: 120px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-tertiary);
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+  border-radius: 2px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
 /* 模式切换按钮：默认低调显示，激活时高亮 */
 .statusbar-toggle {
   display: inline-flex;
@@ -118,6 +131,268 @@
 .statusbar-toggle.active:hover {
   filter: brightness(1.08);
   color: #fff;
+}
+
+/* ─── v0.7.0：AI 助手入口（斜体 AI 图标 + 从左往右抽屉动画） ─── */
+
+/* v0.7.0 修复6：relative 供抽屉绝对定位锚定（抽屉悬浮不占布局，不挤压左侧按钮） */
+.ai-entry {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+
+/* AI 图标按钮 */
+.ai-entry-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.ai-entry-icon:hover,
+.ai-entry.open .ai-entry-icon {
+  background: var(--bg-hover);
+  border-color: var(--border-color);
+}
+
+/* v0.7.0 修复1：总开关关闭时禁用态（灰标 + 禁止光标 + 无 hover 反馈） */
+.ai-entry.disabled .ai-entry-icon {
+  cursor: not-allowed;
+}
+
+.ai-entry.disabled .ai-entry-icon:hover,
+.ai-entry.disabled.open .ai-entry-icon {
+  background: transparent;
+  border-color: transparent;
+}
+
+/* 斜体带艺术感的 AI 字标：倾斜 + 渐变 + 加粗紧凑 */
+.ai-entry-logo {
+  font-size: 12px;
+  font-weight: 800;
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
+  letter-spacing: -0.5px;
+  background: linear-gradient(135deg, var(--accent-color, #4a9eff), #a855f7);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: var(--accent-color, #4a9eff); /* 不支持渐变文字时的回退 */
+  line-height: 1;
+  transform: skewX(-8deg);
+  transition: opacity 0.2s ease;
+}
+
+/* v0.7.0 修复1：禁用时渐变字标置灰（覆盖渐变为单色灰） */
+.ai-entry.disabled .ai-entry-logo {
+  background: var(--text-tertiary);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: var(--text-tertiary);
+  opacity: 0.55;
+}
+
+/* 抽屉容器：绝对定位悬浮于 AI 按钮右侧（不占布局空间），
+   hover 展开（translateX + opacity 过渡实现从左往右顺滑拉出） */
+.ai-entry-drawer {
+  position: absolute;
+  left: calc(100% + 4px);
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(-50%) translateX(-10px);
+  pointer-events: none;
+  transition: opacity 0.22s ease, transform 0.26s ease;
+}
+
+.ai-entry.open .ai-entry-drawer {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+  pointer-events: auto;
+}
+
+/* 抽屉功能按钮：各带递进延迟，形成从左往右依次滑入的层次感 */
+.ai-entry-item {
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transform: translateX(-6px);
+  opacity: 0;
+  transition: transform 0.22s ease, opacity 0.22s ease,
+    background var(--transition-fast), color var(--transition-fast);
+}
+
+.ai-entry.open .ai-entry-item {
+  transform: translateX(0);
+  opacity: 1;
+}
+
+/* 依次滑入延迟（从左往右） */
+.ai-entry.open .ai-entry-item:nth-child(1) { transition-delay: 0.04s; }
+.ai-entry.open .ai-entry-item:nth-child(2) { transition-delay: 0.1s; }
+.ai-entry.open .ai-entry-item:nth-child(3) { transition-delay: 0.16s; }
+.ai-entry.open .ai-entry-item:nth-child(4) { transition-delay: 0.22s; }
+
+/* v0.7.5 优化2：hover / 按下时用该 AI 功能的配色（--ai-entry-color 由 JS 注入，
+   取自对应气泡颜色；未设置时回退主题 accent，外观与旧版一致） */
+.ai-entry-item:hover {
+  background: var(--ai-entry-color, var(--accent-color, #4a9eff));
+  border-color: var(--ai-entry-color, var(--accent-color, #4a9eff));
+  color: #fff;
+}
+
+/* 按下反馈：同色加深（用户点击「续写」按钮时也呈现黄色） */
+.ai-entry-item:active {
+  background: var(--ai-entry-color, var(--accent-color, #4a9eff));
+  border-color: var(--ai-entry-color, var(--accent-color, #4a9eff));
+  color: #fff;
+  filter: brightness(0.88);
+}
+
+/* ─── v0.7.4 功能8：AI 设置齿轮 + 设置面板 ─────────────────── */
+.ai-entry-gear {
+  display: inline-flex;
+  position: relative;
+}
+
+.ai-entry-gear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transform: translateX(-6px);
+  opacity: 0;
+  transition: transform 0.22s ease, opacity 0.22s ease,
+    background var(--transition-fast), color var(--transition-fast);
+}
+
+.ai-entry.open .ai-entry-gear-btn {
+  transform: translateX(0);
+  opacity: 1;
+  transition-delay: 0.22s;
+}
+
+.ai-entry-gear-btn:hover,
+.ai-entry-gear-btn.active {
+  background: var(--accent-color, #4a9eff);
+  border-color: var(--accent-color, #4a9eff);
+  color: #fff;
+}
+
+/* 设置面板：向上弹出（相对 .ai-entry，贴近入口上方） */
+.ai-settings-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  min-width: 220px;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  z-index: 1000;
+  font-size: 12px;
+  color: var(--text-primary);
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ai-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.ai-settings-row input[type="checkbox"] {
+  accent-color: var(--accent-color, #4a9eff);
+  width: 13px;
+  height: 13px;
+}
+
+.ai-settings-delay {
+  padding-top: 4px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* v0.7.5 功能2：按任务独立勾选的气泡子项（缩进区分层级） */
+.ai-settings-subtasks {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-color);
+  margin-left: 5px;
+}
+
+.ai-settings-subrow {
+  color: var(--text-secondary);
+}
+
+.ai-settings-value {
+  min-width: 40px;
+  text-align: right;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono, "Consolas", "Monaco", monospace);
+}
+
+.ai-settings-colorrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-settings-colorbrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-settings-colorbrand i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color);
+  background: var(--accent-color, #4a9eff); /* 未设置颜色时显示主题默认色 */
+}
+
+.ai-settings-colorrow input[type="color"] {
+  width: 26px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
 }
 
 /* ─── G11：字数详情面板 ──────────────────────────── */

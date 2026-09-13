@@ -80,13 +80,14 @@ describe("v0.6.1 问题2/3 useEditorStore 翻译回写状态", () => {
     expect(s.translateUndoSnapshot).toBeNull();
   });
 
-  it("切换文件（openFile）：重置抑制与快照", () => {
+  it("切换文件（openFile）：解除抑制，快照保留（v0.7.4：跨文档回切仍显示取消翻译）", () => {
     useEditorStore.getState().setSuppressAutoSave(true);
     useEditorStore.getState().setTranslateUndoSnapshot({ content: "原文", filePath: "a.md", key: 0 });
     useEditorStore.getState().openFile("D:\\test\\other.md");
     const s = useEditorStore.getState();
     expect(s.suppressAutoSave).toBe(false);
-    expect(s.translateUndoSnapshot).toBeNull();
+    // v0.7.4 改动：快照跨标签保留（Toast 显示时按文件归属过滤，恢复时按 filePath/key 校验）
+    expect(s.translateUndoSnapshot).not.toBeNull();
   });
 
   it("取消翻译恢复：清除快照 + 解除抑制（手动组合调用）", () => {
@@ -135,6 +136,8 @@ describe("v0.6.1 问题2 TranslateUndoToast 取消翻译气泡", () => {
   beforeEach(() => {
     cleanup();
     useEditorStore.getState().setTranslateUndoSnapshot(null);
+    // v0.7.4：Toast 按当前激活文档 filePath 过滤快照归属，默认设为匹配值
+    useEditorStore.setState({ filePath: "a.md" });
   });
 
   it("无快照时不渲染", () => {
@@ -160,6 +163,13 @@ describe("v0.6.1 问题2 TranslateUndoToast 取消翻译气泡", () => {
     act(() => {
       useEditorStore.getState().setTranslateUndoSnapshot(null);
     });
+    expect(container.querySelector(".translate-undo-toast")).toBeNull();
+  });
+
+  it("快照属于其他文档时不显示（v0.7.4 跨文件过滤）", () => {
+    useEditorStore.getState().setTranslateUndoSnapshot({ content: "# A 原文", filePath: "other.md", key: 0 });
+    const { container } = render(<TranslateUndoToast onUndo={() => {}} />);
+    // 当前激活文档是 a.md，快照属于 other.md → 不渲染
     expect(container.querySelector(".translate-undo-toast")).toBeNull();
   });
 });

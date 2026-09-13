@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.6.6**
+**Current Version: v0.7.5**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -44,6 +44,22 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 🔗 **Smart URL Paste** — pasting a URL creates `[link](URL)`, or turns selected text into a hyperlink (0.5.0)
 - 🖱 **Table Context Menu** — right-click a table in preview mode to insert/delete rows and columns (0.2.0)
 
+### ✨ AI Translation
+
+- **Selection & Full-Document Translation** — select text and translate it from the context menu or the "Translate" button; with no selection the whole document is translated (`Shift+F6`, the floating button, or the command palette)
+- **Result Modes** — "Replace in place" or "Bilingual comparison"
+- **Translation Bubble** — streaming results with cancel (`Esc`) and one-click restore of the original (0.6.1)
+- **Efficiency** — symbol-only / URL / email / image-only paragraphs are skipped; links, inline code, and images are protected as placeholders so they are never mistranslated (0.6.2/0.6.4/0.6.5); full-document translation runs 3-way concurrent (0.7.3)
+- **API Key Security** — stored in Windows Credential Manager and removed on uninstall (0.6.1); warnings for non-local URL endpoints (0.6.3); stored per provider (0.7.2)
+
+### 🤖 AI Assistant & AI Chat
+
+- **Selection AI Bubbles** — selecting text shows one floating row of [译][续][润][摘][问] bubbles (added in 0.7.4, extended in 0.7.5): continue writing (ghost preview at the caret, `Tab` to accept / `Esc` to discard), polish (replaces the selection), summarize (draggable floating window), and chat
+- **AI Chat Floating Window** (0.7.5, `Ctrl+K`) — free-form multi-turn chat with a one-click `Selection / Document / No context` scope chip, six quick templates (Diagram / Formula / Summary / Title & tags / Rewrite all / Analyze), and a draggable, resizable window that remembers its position
+- **Result Action Bar** — each answer can be inserted at the cursor, replace the selection, replace the whole document, copied, or regenerated; replacing the whole document first verifies the document was not edited, so your changes are never overwritten
+- **What You Insert Is What You See** — ```mermaid fences and `$$` formulas produced by the model render immediately as diagrams and formulas once inserted
+- **Per-Bubble Visibility & Colors** — the four AI bubbles can be hidden and restored individually and colored individually; the "译" bubble color is configurable too (0.7.5)
+
 ### 🛠 Advanced Features
 - 🎨 **Light / Dark Theme** (toggle with `Ctrl+Shift+T`)
 - 🔤 **Custom Font** and Size
@@ -77,6 +93,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 | **Edit** | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 | | `Ctrl+F` | Search |
 | | `Ctrl+H` | Find & Replace |
+| | `Ctrl+K` | Open the AI chat window (0.7.5) |
 | **Format (Source Mode)** | `Ctrl+B` | Bold `**text**` (0.2.0) |
 | | `Ctrl+I` | Italic `*text*` (0.2.0) |
 | | `` Ctrl+` `` | Inline code `` `code` `` (0.2.0) |
@@ -106,10 +123,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.6.6 installers:
+Visit the [Releases](../../releases) page to download the 0.7.5 installers:
 
-- **`LightMD_0.6.6_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.6.6_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.7.5_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.7.5_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -160,6 +177,104 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.7.5 (2026-09-13)
+
+**AI chat window and floating-bubble system** (baseline 0.7.4):
+
+**AI chat floating window (`Ctrl+K`)**
+- One window, three entry points: the "AI Chat" button in the status-bar AI drawer, `Ctrl+K` (`Cmd+K` on macOS), and the new "问" selection bubble; `ai.chat` is also registered in the command palette
+- Hand-rolled lightweight floating layer: drag by the title bar, resize from the bottom-right corner (min 360×280), `[—]` collapses to an input strip, `[×]`/`Esc` closes; closing clears the session (no chat persistence in this release)
+- Multi-turn chat: the last 3 turns are carried (older turns dropped, history always starts with a user message) and the document context is attached only to the current turn, so token cost does not grow linearly with turns
+- Context chip cycles through three scopes: `Selection 128 chars` / `Document 5,231 chars` / `No context`; a lost selection degrades to the document (shown explicitly), and documents over 20,000 chars are truncated with a marker
+- Six quick templates (Diagram / Formula / Summary / Title & tags / Rewrite all / Analyze) prefill the input box for editing before sending
+- Per-answer action bar: Insert at cursor / Replace selection (only when a selection was captured) / Replace document (rewrite template or right-click) / Copy / Regenerate
+- **What you insert is what you see**: ```mermaid fences and `$$` formulas produced by the model render immediately through the existing mermaid/math live-preview plugins — no extra rendering code
+- Safety chain: writes always use the **snapshot taken at send time** (never the live selection) to prevent misplacement; "Replace document" runs a DOC_CHANGED check and refuses when the document was edited during the chat; `Esc` restores the original text after a write
+- Window position/size memory: persisted on drag/resize end, restored on reopen, and falls back to centered when the display layout changes
+- Also fixes the silent-failure report (U1): the AI chat entry now shows a toast when `aiEnabled` is false
+
+**Per-bubble visibility + new "问" bubble**
+- The selection trigger row grew from [译][续][润][摘] to **[译][续][润][摘][问]**
+- The right-click menu no longer hides all AI bubbles at once; it hides only the one you clicked ("Hide \"润\" bubble"), and the row width is computed from the visible count so positioning never drifts
+- The status-bar AI gear panel gained four per-bubble checkboxes for individual restore, plus a master toggle that restores everything
+- Migration: `aiAssistBubbleHidden=true` now hides all four bubbles (each restorable individually); the legacy field is kept for rollback compatibility
+
+**"译" bubble color**
+- Both the settings page and the translate entry's quick-settings panel write the same field; empty means "follow theme", and clearing removes the CSS variable so the theme color returns
+- The floating-button refresh loop re-reads both translate and AI bubble colors, so changes apply instantly
+
+**Quality**: full frontend suite 2131+ tests across 110 files (serial mode), `cargo test` 74 passing, `tsc --noEmit` clean.
+
+#### v0.7.5 detail optimizations (same day)
+
+**1. Fixed the document jumping back to the top after pressing Esc**
+- Root cause: bubble Esc handling calls `stopPropagation()` in the window capture phase, so the editor DOM never sees the **capture-phase keydown** — but the keyup still reaches it. The scroll-follow logic then used the stale `savedScrollTop / savedCursorY` from the *previous* keystroke and restored `scrollTop` to an old value; when that previous keystroke happened near the top of the document, the view jumped back to the top. Whether it jumped depended on the gap between the last keystroke and the current scroll position, hence "sometimes".
+- Fix: new `ScrollKeyBaseline` (recorded on keydown, consumed on keyup) — **a keyup may only run scroll-follow when its matching keydown was seen**. The baseline is invalidated on editor blur; both ProseMirror (read mode) and textarea (source mode) typewriter scrolling are fixed.
+
+**2. Bubble colors now reach the status-bar AI buttons**
+- The four drawer buttons (continue / polish / summary / chat) inject `--ai-entry-color` from their own bubble color and highlight with it on hover and press; unset colors fall back to the theme accent, so the default look is unchanged.
+
+**3. Immediate feedback for AI continue**
+- Clicking continue now renders a grey placeholder ghost "续写中..." at the caret right away (with a breathing animation), replaced by the real text as soon as the first chunk arrives.
+- The placeholder cannot be accepted: Tab is consumed without inserting (the hint text can never be written into the document) and the "Tab to accept · Esc to discard" hint is hidden.
+- Read mode and source mode behave identically.
+
+**4. AI translation embedded in the chat window**
+- New "**AI Translate**" quick template: when the window was opened from a selection, clicking it translates that selection (target language comes from the translate settings; `auto` means zh↔en) and the result can be written back with "Replace selection".
+- Each answer gains a "译" button that translates it in place and toggles back to the original; while translated, "Insert at cursor / Replace selection / Copy" act on the translation, giving a full in-window flow: selection → 问 → AI Translate → Replace selection.
+- Answers over 4000 chars show a notice instead of failing silently; "译" is disabled during streaming so it cannot preempt the shared task slot.
+
+**5. Chat window drag limit removed**
+- Dragging is no longer constrained to the viewport — the window can be moved anywhere (off-screen, second monitor). Only size is clamped (min 360×280, max the viewport).
+- The position memory keeps a safety net: on the **next open**, a remembered rect that lies entirely outside the viewport (new monitor / smaller resolution) falls back to centered.
+
+**Quality**: full frontend suite **2159 tests across 111 files**, `tsc --noEmit` clean, `cargo test` 74 passing.
+
+### v0.7.4 (2026-09-13)
+
+**Selection AI bubbles and assistant enhancements**:
+- Three AI bubble buttons ([续][润][摘]) next to the "译" trigger, floating as one row above the selection
+- AI summary became a Word-comment-style floating window: draggable, resizable from the bottom-right, auto-growing with content (up to the status bar), with a dashed connector anchored to the selection
+- A "译" button in the summary window header translates the window content in place and toggles back to the original
+- AI bubbles are filtered by owning document, so switching tabs no longer mixes content; unsaved (path-less) files discard stale bubbles on switch
+- Status-bar AI gear panel (bubble switch / delay / three per-task colors) and "Pin AI entry"
+
+### v0.7.3 (2026-09-12)
+
+**Experience and stability fixes**:
+- Silent failures converted to toasts (disabled AI entries, full-document translation conflicts, non-translatable selections)
+- New temperature setting forwarded to the provider (fixes `400 invalid temperature` on kimi and similar)
+- Full-document translation runs 3-way concurrent with targeted cancellation and current-segment progress
+- Fixed misplaced translation write-back by using the selection snapshot taken at task start instead of the live selection
+- Fixed missing continuation ghost in source mode: a textarea overlay preview with `Tab` to accept / `Esc` to discard
+- Fixed `http://` endpoint warning logic and a dead error-classification branch
+
+### v0.7.2 (2026-09-10)
+
+**AI model configuration overhaul**:
+- **22 provider presets** — Added Kimi Code, Tencent Hunyuan, iFlytek Spark, StepFun, Baidu ERNIE, 01.AI, Baichuan, SenseTime SenseNova, and Ant Ling Studio; refreshed all model catalogs to vendors' current lineups (Sep 2026); MiniMax switched to the China endpoint `api.minimax.cn`
+- **Per-provider API key storage** — Each provider gets its own Credential Manager entry; keys no longer overwrite each other when switching providers (legacy global key auto-migrates)
+- **Dynamic model list fetching** — New "Fetch models" button pulls the vendor's live model list (`GET /models`), with automatic fallback to the static preset list on failure
+- **Model candidate panel fix** — Fixed the datalist filtering bug where only one of the fetched models was selectable: a full candidate panel now shows all fetched models for one-click selection
+
+### v0.7.1 (2026-09-08)
+
+**AI assistant experience polish**:
+- The floating selection button row grew to **[译][续][润][摘]**: continue writing (streaming grey-italic ghost preview, `Tab` to accept / `Esc` to discard), polish (one-click replace of the selection from the result bubble), and summarize (150–300 characters, with a dashed connector anchored to the selection)
+- The translation-bubble delay setting now actually applies (default 500 ms, adjustable 0–2000 ms): the bubble used to be made visible during drag-selection, which defeated the delay; visibility is now driven only by the delayed `mouseup` timer
+- AI bubble token usage changed from a single combined number to separate **↑ input / ↓ output** counters (system prompt + input text vs. model output), making the breakdown obvious
+- Hardened the streaming continuation ghost pipeline (chunks append live at the caret, with de-duplication so hint text can never linger)
+
+### v0.7.0 (2026-09-07)
+
+**The AI assistant system arrives (first 0.7.x release)**:
+- **AI continue / polish / summarize** assistant tasks, triggered from the floating selection bubbles with streaming output and cancel (`Esc`), sharing the single provider configuration, the single task slot, and the error-code protocol with AI translation
+- Floating "译" trigger plus **a row of AI bubbles**, with a right-click menu to hide/restore them; the floating buttons support a **delay before appearing**, adjustable via a slider in the "译" entry panel
+- New **AI entry drawer** in the status bar (continue / polish / summarize) with corrected expand/collapse behavior: it stays open when the pointer leaves and only closes on an outside click or when the AI task finishes
+- Global **AI master switch** (`aiEnabled`) linked to the translate sub-switch: turning the master switch off also turns translation off, while turning it back on does not force translation on
+- Fixed: switching between open files **no longer resets your reading position** (tracked per path, up to 60 entries); reopening a file still starts from the top
+- Fixed: trailing empty paragraphs at the end of a document were lost on round-trip (the serializer now keeps trailing blank lines and the parser rebuilds empty paragraphs)
 
 ### v0.6.6 (2026-09-01)
 

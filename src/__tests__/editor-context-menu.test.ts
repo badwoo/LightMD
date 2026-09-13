@@ -98,27 +98,31 @@ describe("buildMenuItems - 菜单项配置构建", () => {
   it("无选中时菜单项顺序正确", () => {
     const items = buildMenuItems(false, true, true);
     const actions = getItemActions(items);
-    // 预期顺序：undo, redo, cut, copy, paste, link, image, table, codeblock, mermaid
-    expect(actions).toEqual(["undo", "redo", "cut", "copy", "paste", "link", "image", "table", "codeblock", "mermaid"]);
+    // 预期顺序：undo, redo, cut, copy, paste, aiContinue, aiPolish, aiSummary, link, image, table, codeblock, mermaid
+    // v0.7.0：剪贴组后新增 AI 助手组（续写/摘要无选区要求，润色无选区时禁用）
+    expect(actions).toEqual(["undo", "redo", "cut", "copy", "paste", "aiContinue", "aiPolish", "aiSummary", "link", "image", "table", "codeblock", "mermaid"]);
   });
 
   it("有选中时菜单项顺序正确", () => {
     const items = buildMenuItems(true, true, true);
     const actions = getItemActions(items);
-    // 预期顺序：undo, redo, cut, copy, paste, bold, italic, strikethrough, code, translate, link, image, table, codeblock, mermaid
+    // 预期顺序：undo, redo, cut, copy, paste, bold, italic, strikethrough, code, translate, aiContinue, aiPolish, aiSummary, link, image, table, codeblock, mermaid
     // v0.6.0：md 文件且有选区时含 AI 翻译项
+    // v0.7.0：行内格式组后新增 AI 助手组
     expect(actions).toEqual([
       "undo", "redo", "cut", "copy", "paste",
       "bold", "italic", "strikethrough", "code", "translate",
+      "aiContinue", "aiPolish", "aiSummary",
       "link", "image", "table", "codeblock", "mermaid",
     ]);
   });
 
   // ─── 分隔符 ──────────────────────────────────
-  it("无选中时分隔符数量为 2（撤销组/剪贴组/插入组之间）", () => {
+  it("无选中时分隔符数量为 3（撤销组/AI组/插入组之间）", () => {
     const items = buildMenuItems(false, true, true);
-    // 无选中时分隔符在：undo-redo组后、paste-link之间
-    expect(countSeparators(items)).toBe(2);
+    // 无选中时分隔符在：undo-redo组后、AI组前后（剪贴与AI组、AI组与插入组之间）
+    // v0.7.0：AI 助手组新增 1 个分隔符，总数 2 → 3
+    expect(countSeparators(items)).toBe(3);
   });
 
   it("有选中时分隔符数量为 4（含行内格式组与翻译组分隔符）", () => {

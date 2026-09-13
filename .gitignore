@@ -7,6 +7,9 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+# v0.7.5：发版安装包（体积大，不入库；仅保留发布说明与校验值）
+release/**/*.msi
+release/**/*.exe
 
 # 日志
 *.log

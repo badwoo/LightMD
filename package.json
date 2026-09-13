@@ -1,6 +1,6 @@
 {
   "name": "lightmd",
-  "version": "0.6.6",
+  "version": "0.7.5",
   "private": true,
   "description": "LightMD - 轻量级 Markdown 编辑器",
   "type": "module",

@@ -56,6 +56,8 @@ export interface EditorContextMenuProps {
  * 根据上下文状态（是否有选中文本、是否可撤销/恢复、是否 md 文件）决定菜单项的显示和禁用状态。
  * 无选中文本时隐藏"加粗"等行内格式项及其分隔符。
  * v0.6.0：md 文件 + 翻译开关开启 + 有选区时显示"AI 翻译"项（快捷键 F6）。
+ * v0.7.0：md 文件 + AI 开关开启时显示"AI 助手"分区（续写/摘要无选区要求，
+ * 润色需选区，无选区时禁用置灰）。
  */
 export function buildMenuItems(
   hasSelection: boolean,
@@ -87,10 +89,20 @@ export function buildMenuItems(
     // v0.6.0：AI 翻译（md 文件 + 总开关开启；快捷键 F6）
     if (isMdFile && translateEnabled) {
       items.push(
-        { type: "separator" },
         { type: "item", action: "translate", label: "AI 翻译", shortcut: "F6" },
       );
     }
+  }
+
+  // ─── v0.7.0：AI 助手（md 文件 + AI 总开关开启）───
+  // 续写/摘要无选区要求；润色需选中文本（无选区时禁用置灰）
+  if (isMdFile && translateEnabled) {
+    items.push(
+      { type: "separator" },
+      { type: "item", action: "aiContinue", label: "AI 续写" },
+      { type: "item", action: "aiPolish", label: "AI 润色", disabled: !hasSelection },
+      { type: "item", action: "aiSummary", label: "AI 摘要" },
+    );
   }
 
   // ─── 插入操作 ───

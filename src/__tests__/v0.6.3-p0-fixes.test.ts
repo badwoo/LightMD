@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import { createContextAbortChecker } from "../services/fullTranslate";
-import { useEditorStore } from "../stores/useEditorStore";
+import { useEditorStore, isTranslateSnapshotForFile } from "../stores/useEditorStore";
 
 // ─── P0-1：createContextAbortChecker ─────────────────────
 
@@ -94,13 +94,14 @@ describe("v0.6.3 P0-2 useEditorStore 标签切换/关闭清理快照", () => {
     });
   });
 
-  it("setActiveTab 切换标签：清除快照并解除自动保存抑制", () => {
+  it("setActiveTab 切换标签：解除抑制，快照保留（v0.7.4 跨标签回切仍显示取消翻译）", () => {
     useEditorStore.getState().setSuppressAutoSave(true);
     useEditorStore.getState().setTranslateUndoSnapshot({ content: "A 原文", filePath: "D:\\docs\\a.md", key: 0 });
     useEditorStore.getState().setActiveTab(1);
     const s = useEditorStore.getState();
     expect(s.activeTabIdx).toBe(1);
-    expect(s.translateUndoSnapshot).toBeNull();
+    // v0.7.4 改动：快照跨标签保留（恢复时按 filePath/key 校验，Toast 显示按文件归属过滤）
+    expect(s.translateUndoSnapshot).not.toBeNull();
     expect(s.suppressAutoSave).toBe(false);
   });
 
@@ -133,5 +134,44 @@ describe("v0.6.3 P0-2 useEditorStore 标签切换/关闭清理快照", () => {
     useEditorStore.getState().setTranslateUndoSnapshot({ content: "原文", filePath: "D:\\docs\\a.md", key: 7 });
     const snap = useEditorStore.getState().translateUndoSnapshot;
     expect(snap).toEqual({ content: "原文", filePath: "D:\\docs\\a.md", key: 7 });
+  });
+});
+
+// ─── v0.7.4 问题4：取消翻译快照归属判定 ────────────────────
+
+describe("v0.7.4 问题4 isTranslateSnapshotForFile 归属判定（只认 filePath）", () => {
+  const snap = (filePath: string | null, key = 1) => ({
+    content: "原文",
+    filePath,
+    key,
+  });
+
+  it("同一文件但 key 变化（切标签回切递增 forceUpdateKey）→ 仍归属一致（回归用例）", () => {
+    // 旧实现额外校验 snap.key === activeKeyRef.current，此场景恒失败 →
+    // 按钮可见但点击无效。修复后只按 filePath 判定，key 无论取何值都应归属一致。
+    expect(isTranslateSnapshotForFile(snap("D:\\docs\\a.md", 1), "D:\\docs\\a.md")).toBe(true);
+    expect(isTranslateSnapshotForFile(snap("D:\\docs\\a.md", 9), "D:\\docs\\a.md")).toBe(true);
+    expect(isTranslateSnapshotForFile(snap("D:\\docs\\a.md", 100), "D:\\docs\\a.md")).toBe(true);
+  });
+
+  it("不同文件 → 不归属（防止 A 原文灌进 B）", () => {
+    expect(isTranslateSnapshotForFile(snap("D:\\docs\\a.md"), "D:\\docs\\b.md")).toBe(false);
+  });
+
+  it("快照为空 → 不归属", () => {
+    expect(isTranslateSnapshotForFile(null, "D:\\docs\\a.md")).toBe(false);
+  });
+
+  it("无路径文档：快照与当前均为 null → 归属一致", () => {
+    expect(isTranslateSnapshotForFile(snap(null), null)).toBe(true);
+    expect(isTranslateSnapshotForFile(snap(null), undefined)).toBe(true);
+  });
+
+  it("无路径文档的快照切到已保存文件 → 不归属", () => {
+    expect(isTranslateSnapshotForFile(snap(null), "D:\\docs\\a.md")).toBe(false);
+  });
+
+  it("已保存文件的快照切到无路径文档 → 不归属", () => {
+    expect(isTranslateSnapshotForFile(snap("D:\\docs\\a.md"), null)).toBe(false);
   });
 });

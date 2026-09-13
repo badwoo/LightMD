@@ -58,7 +58,7 @@ function mathBlock(state: any, startLine: number, endLine: number, silent: boole
 
   // 检查同一行是否有结束 $$
   let nextLine = startLine;
-  let content = "";
+  let content: string | null = "";
   let foundEnd = false;
 
   // 先检查同行结束
@@ -72,7 +72,9 @@ function mathBlock(state: any, startLine: number, endLine: number, silent: boole
 
   if (!foundEnd) {
     // 多行模式
-    content = inlineContent.trim();
+    // v0.7.0 修复1b：null 表示"尚未收集内容行"。首行 $$ 后为空时不再追加
+    // 前导 \n（"$$\nx" 内容应为 "x"，原逻辑得 "\nx" 导致序列化往返多出空行）
+    content = inlineContent.trim() || null;
     for (nextLine = startLine + 1; nextLine <= endLine; nextLine++) {
       const linePos = state.bMarks[nextLine] + state.tShift[nextLine];
       const lineMax = state.eMarks[nextLine];
@@ -83,11 +85,11 @@ function mathBlock(state: any, startLine: number, endLine: number, silent: boole
         break;
       }
       if (lineText.endsWith("$$")) {
-        content += "\n" + lineText.slice(0, -2).trim();
+        content = (content ?? "") + "\n" + lineText.slice(0, -2).trim();
         foundEnd = true;
         break;
       }
-      content += "\n" + lineText;
+      content = content === null ? lineText : content + "\n" + lineText;
     }
   }
 
@@ -96,7 +98,7 @@ function mathBlock(state: any, startLine: number, endLine: number, silent: boole
   if (silent) return true;
 
   const token = state.push("math_block", "div", 0);
-  token.content = content;
+  token.content = content ?? "";
   token.markup = "$$";
   token.block = true;
   token.map = [startLine, nextLine + 1];

@@ -325,3 +325,78 @@ export function measureTextareaCursorY(
   const paddingTop = parseFloat(getComputedStyle(textarea).paddingTop) || 0;
   return markerRect.top - mirrorRect.top - paddingTop;
 }
+
+/**
+ * 将一个与 textarea 同构的普通可见元素（如 source ghost overlay）的对齐样式
+ * 与 textarea 保持一致：字体、行高、padding、border、white-space 等。
+ *
+ * v0.7.3 改进10（source 模式续写 ghost 对齐）：
+ * overlay 覆在 textarea 之上（absolute inset），通过复制相同的排版样式，
+ * 使 overlay 内"透明全文 + 光标处灰斜体 ghost"的字符换行与 textarea 完全一一对应，
+ * 从而实现续写 ghost 与 PM 模式一致的光标处流式预览体验。
+ */
+export function syncTextareaMetrics(textarea: HTMLTextAreaElement, el: HTMLElement): void {
+  const cs = getComputedStyle(textarea);
+  el.style.boxSizing = "border-box";
+  el.style.fontFamily = cs.fontFamily;
+  el.style.fontSize = cs.fontSize;
+  el.style.fontWeight = cs.fontWeight;
+  el.style.lineHeight = cs.lineHeight;
+  el.style.letterSpacing = cs.letterSpacing;
+  el.style.tabSize = cs.tabSize;
+  el.style.paddingTop = cs.paddingTop;
+  el.style.paddingRight = cs.paddingRight;
+  el.style.paddingBottom = cs.paddingBottom;
+  el.style.paddingLeft = cs.paddingLeft;
+  el.style.borderTopWidth = cs.borderTopWidth;
+  el.style.borderRightWidth = cs.borderRightWidth;
+  el.style.borderBottomWidth = cs.borderBottomWidth;
+  el.style.borderLeftWidth = cs.borderLeftWidth;
+  el.style.borderStyle = "solid";
+  el.style.whiteSpace = "pre-wrap";
+  el.style.wordBreak = "break-word";
+  el.style.overflow = "hidden";
+}
+
+/** HTML 转义（防注入；source ghost overlay 用 innerHTML 构建需转义原文） */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * 构建 source 续写 ghost overlay 的 HTML：
+ * 透明复刻 textarea 全文（保证换行与 textarea 完全一致），
+ * 在光标 pos 处插入灰斜体 ghost 预览。
+ *
+ * 使用说明：将返回值赋给覆盖 textarea 的 overlay 的 innerHTML，
+ * overlay 样式需经 syncTextareaMetrics 与 textarea 对齐
+ * （透明 via CSS color: transparent；ghost 部分覆盖为灰斜体 -> 见 AI ghost 样式）
+ *
+ * @param text textarea 当前全文（raw，内部会转义）
+ * @param pos 续写插入点（发起任务时的光标位置）
+ * @param ghostText 流式累积的续写文本
+ * @param hintText 采纳提示文案（i18n）
+ * @param isPlaceholder v0.7.5：是否为"续写中…"占位态（加占位样式类，与正文 ghost 区分）
+ */
+export function buildSourceGhostHtml(
+  text: string,
+  pos: number,
+  ghostText: string,
+  hintText: string,
+  isPlaceholder = false
+): string {
+  const p = Math.max(0, Math.min(pos, text.length));
+  const before = text.substring(0, p);
+  const after = text.substring(p);
+  return (
+    `<span style="color:transparent">${escapeHtml(before)}</span>` +
+    `<span class="ai-ghost-text${isPlaceholder ? " ai-ghost-placeholder" : ""}">${escapeHtml(ghostText)}</span>` +
+    `<span class="ai-ghost-hint">${escapeHtml(hintText)}</span>` +
+    `<span style="color:transparent">${escapeHtml(after)}</span>`
+  );
+}

@@ -49,9 +49,11 @@ describe("v0.6.6 问题1：空段落 md→doc→md 往返一致", () => {
     expect(docToMarkdown(markdownToDoc(md))).toBe("\n\n\n");
   });
 
-  it("文档末尾 2 个空行 → 2 个空段落，序列化保留尾部空行（原 trimEnd 会全部剪掉）", () => {
-    const md = "hello\n\n\n\n"; // hello + 2 空行 + 尾换行
-    expect(emptyParaCount(md)).toBe(2);
+  it("文档末尾 3 个空行 → 3 个空段落，序列化保留尾部空行（原 trimEnd 会全部剪掉）", () => {
+    const md = "hello\n\n\n\n"; // hello + 3 空行
+    // v0.7.0 修复5 语义升级：末尾空行数 = 空段落数（旧映射 n 空行 → n-1 空段落
+    // 在 1~2 个回车时全部丢失，是"末尾回车切换标签后消失"的根因）
+    expect(emptyParaCount(md)).toBe(3);
     expect(docToMarkdown(markdownToDoc(md))).toBe("hello\n\n\n\n");
   });
 

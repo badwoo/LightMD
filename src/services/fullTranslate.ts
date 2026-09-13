@@ -402,19 +402,28 @@ const SYSTEMATIC_FINISH_REASONS = new Set(["content_filter", "tool_calls"]);
 export async function runFullTranslateLoop(
   units: TranslateUnit[],
   opts: {
-    /** 翻译单段（调用方接线 translateService.translate 并做结果校验） */
-    translateUnit: (text: string) => Promise<UnitTranslateResult>;
+    /** 翻译单段（调用方接线 translateService 并做结果校验）；index 透传段下标（并发池据此构造槽位 id） */
+    translateUnit: (text: string, index?: number) => Promise<UnitTranslateResult>;
     /** 每完成一段回调（含失败段） */
     onProgress: (done: number) => void;
+    /** v0.7.3 U6：每段开始翻译前回调（指示当前段），用于状态栏"当前段"提示 */
+    onSegmentStart?: (unit: TranslateUnit) => void;
     /** 中止判断（用户取消/外部状态变化） */
     shouldAbort: () => boolean;
     /** 段级错误的错误码提取（TranslateServiceError → code） */
     errorCodeOf: (e: unknown) => string;
+    /** v0.7.3 改进9(P4-2)：并发度。缺省/1 = 串行（保持既有行为与性能）；>1 走并发池 */
+    concurrency?: number;
     /** v0.6.3 P1-4：退避等待（依赖注入便于测试，默认 setTimeout） */
     sleep?: (ms: number) => Promise<void>;
   }
 ): Promise<FullTranslateOutcome> {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // v0.7.3 改进9(P4-2)：并发度 >1 时走并发池（全文翻译提速）；缺省/1 保持串行
+  const concurrency = Math.max(1, opts.concurrency ?? 1);
+  if (concurrency > 1) {
+    return runFullTranslatePool(units, { ...opts, concurrency, sleep });
+  }
   const translations: (string | null)[] = new Array(units.length).fill(null);
   let failedCount = 0;
   let cancelled = false;
@@ -429,6 +438,8 @@ export async function runFullTranslateLoop(
       cancelled = true;
       break;
     }
+    // v0.7.3 U6：每段开始前上报当前段（供状态栏提示任务在推进）
+    opts.onSegmentStart?.(units[k]);
 
     // v0.6.3 P1-4：RATE 指数退避重试（1s/2s，单段最多 3 次尝试），仅 RATE 重试
     let result: UnitTranslateResult | null = null;
@@ -497,4 +508,114 @@ export async function runFullTranslateLoop(
   }
 
   return { translations, cancelled, failedCount, errorCode: null, lastErrorCode };
+}
+
+/**
+ * v0.7.3 改进9(P4-2)：全文翻译并发池。
+ *
+ * 与串行 runFullTranslateLoop 语义/失败策略完全对齐（AUTH/NO_KEY 系统性中止、
+ * RATE 指数退避重试 + 连续熔断、content_filter 等 finish_reason 中止、CANCELLED
+ * 取消、段级失败保留原文），仅将「一次段」的执行方式由串行 for 改为
+ * 固定 concurrency 路 worker 拉取索引队列。onProgress/onSegmentStart 按完成/开始
+ * 顺序上报，总数一致；结果数组与 units 下标一一对应。
+ */
+async function runFullTranslatePool(
+  units: TranslateUnit[],
+  opts: {
+    translateUnit: (text: string, index?: number) => Promise<UnitTranslateResult>;
+    onProgress: (done: number) => void;
+    onSegmentStart?: (unit: TranslateUnit) => void;
+    shouldAbort: () => boolean;
+    errorCodeOf: (e: unknown) => string;
+    concurrency: number;
+    sleep: (ms: number) => Promise<void>;
+  }
+): Promise<FullTranslateOutcome> {
+  const n = units.length;
+  const translations: (string | null)[] = new Array(n).fill(null);
+  let failedCount = 0;
+  let cancelled = false;
+  let done = 0;
+  let lastErrorCode: string | null = null;
+  let errorCode: string | null = null;
+  let consecutiveRate = 0;
+  let aborted = false; // 系统性中止（AUTH/NO_KEY/全段限流/content_filter）
+  let next = 0; // 待处理段下标（worker 共享拉取）
+
+  async function worker() {
+    while (!aborted && !opts.shouldAbort()) {
+      const k = next++;
+      if (k >= n) break;
+      opts.onSegmentStart?.(units[k]);
+
+      // RATE 指数退避重试（与串行一致：单段最多 3 次，仅 RATE 重试）
+      let result: UnitTranslateResult | null = null;
+      let errCode: string | null = null;
+      let abortedDuringBackoff = false;
+      for (let attempt = 0; attempt < RATE_MAX_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          await opts.sleep(RATE_BACKOFF_BASE_MS * 2 ** (attempt - 1));
+          if (opts.shouldAbort()) {
+            abortedDuringBackoff = true;
+            break;
+          }
+        }
+        try {
+          result = await opts.translateUnit(units[k].text, k);
+          errCode = null;
+          break;
+        } catch (e) {
+          errCode = opts.errorCodeOf(e);
+          if (errCode !== "RATE") break;
+        }
+      }
+      if (abortedDuringBackoff) {
+        cancelled = true;
+        break;
+      }
+
+      if (errCode !== null) {
+        if (errCode === "CANCELLED") {
+          cancelled = true;
+          break;
+        }
+        if (errCode === "AUTH" || errCode === "NO_KEY") {
+          errorCode = errCode;
+          aborted = true;
+          break;
+        }
+        lastErrorCode = errCode;
+        failedCount++;
+        if (errCode === "RATE") {
+          consecutiveRate++;
+          if (consecutiveRate >= RATE_CONSECUTIVE_ABORT) {
+            errorCode = "RATE";
+            aborted = true;
+            break;
+          }
+        } else {
+          consecutiveRate = 0;
+        }
+      } else if (result) {
+        consecutiveRate = 0;
+        if (result.placeholdersIntact && result.finishReason === "stop" && result.translated.trim()) {
+          translations[k] = result.translated;
+        } else if (SYSTEMATIC_FINISH_REASONS.has(result.finishReason)) {
+          const code = result.finishReason === "content_filter" ? "PROVIDER" : "STREAM";
+          errorCode = code;
+          aborted = true;
+          break;
+        } else {
+          failedCount++;
+        }
+      }
+      done++;
+      opts.onProgress(done);
+    }
+  }
+
+  const workerCount = Math.min(opts.concurrency, n);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return { translations, cancelled, failedCount, errorCode, lastErrorCode };
 }

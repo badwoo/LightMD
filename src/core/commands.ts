@@ -138,6 +138,16 @@ export const commands: Command[] = [
     keywords: ["全文翻译", "整篇翻译", "translate", "document", "ai"],
     action: () => dispatchCommand("edit.translateDocument"),
   },
+  // v0.7.5 功能1：AI 对话浮动窗口（快捷键 Ctrl+K，与底部栏按钮 /「问」气泡同一入口）
+  // 保持「所有 AI 入口命令面板可达」的现有惯例
+  {
+    id: "ai.chat",
+    titleKey: "command.ai.chat",
+    shortcut: "Ctrl+K",
+    group: "edit",
+    keywords: ["AI对话", "对话", "问答", "chat", "ask", "ai"],
+    action: () => dispatchCommand("ai.chat"),
+  },
   // ─── 视图分组 ──────────────────────────────
   {
     id: "view.preview",

@@ -22,11 +22,15 @@ interface FullTranslateState {
   failedCount: number;
   /** 用户取消请求标志（执行循环每次迭代前检查） */
   cancelRequested: boolean;
+  /** v0.7.3 U6：正在翻译的段落文本（状态栏 tooltip 显示"当前段"，指示任务在推进） */
+  currentSegmentText: string | null;
 
   /** 开始全文翻译任务 */
   start: (total: number) => void;
   /** 完成一段 */
   tick: () => void;
+  /** v0.7.3 U6：更新"当前正在翻译的段落"显示文本 */
+  setSegment: (text: string | null) => void;
   /** 任务正常结束（成功或含段级失败收尾）→ done 态（底部栏"翻译完成 ✓"） */
   finish: (failedCount: number) => void;
   /** 系统性失败 */
@@ -44,15 +48,19 @@ const IDLE = {
   errorCode: null,
   failedCount: 0,
   cancelRequested: false,
+  currentSegmentText: null,
 };
 
 export const useFullTranslateStore = create<FullTranslateState>((set) => ({
   ...IDLE,
 
   start: (total) =>
-    set({ status: "running", doneCount: 0, totalCount: total, errorCode: null, failedCount: 0, cancelRequested: false }),
+    set({ status: "running", doneCount: 0, totalCount: total, errorCode: null, failedCount: 0, cancelRequested: false, currentSegmentText: null }),
 
   tick: () => set((s) => ({ doneCount: s.doneCount + 1 })),
+
+  // v0.7.3 U6：每段开始前由循环回调设置，状态栏据此显示推进中的段落
+  setSegment: (text) => set({ currentSegmentText: text }),
 
   // v0.6.4：段级失败不再置 error（底部栏不显示失败）；failedCount 供编辑器气泡提示
   finish: (failedCount) =>
