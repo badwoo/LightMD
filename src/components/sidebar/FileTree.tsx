@@ -1,8 +1,8 @@
 /**
  * FileTree ── 侧边栏文件树（带工具栏和最近文件）
  */
-import { useState, useCallback, useMemo, useRef, useEffect } from "react";
-import { open as dialogOpen, save } from "@tauri-apps/plugin-dialog";
+import { useState, useCallback, useMemo, useRef, useEffect, Fragment } from "react";
+import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { useFileStore } from "../../stores/useFileStore";
 import { useEditorStore } from "../../stores/useEditorStore";
 import { fileService, isTauri, type FileEntry } from "../../services/fileService";
@@ -11,7 +11,18 @@ import { RecentFiles } from "./RecentFiles";
 import { Favorites } from "./Favorites";
 import { useT } from "../../i18n";
 import { isSupportedTextFile } from "../../utils/constants";
-import { useResizable } from "../../hooks/useResizable";
+import { useSettingsStore } from "../../stores/useSettingsStore";
+import { useSectionSplit, SectionSizeContext, beginSectionDrag, computeMaxSelfHeight, computeExtendableMaxHeight, MIN_SECTION_HEIGHT } from "../../hooks/useSectionSplit";
+import { SidebarScrollArrows } from "./SidebarScrollArrows";
+// v0.8.0 WP2 需求6：打开所在文件夹工作区（纯逻辑，UI 注入 deps）
+import { openContainingWorkspace } from "../../utils/workspace";
+// v0.8.0 WP2 需求4(2)：新建文件夹弹框
+import { NewFolderDialog } from "../dialogs/NewFolderDialog";
+// v0.8.0 WP2 需求1：文件复制/粘贴（内存剪贴板 + 重名自动副本）
+import { setClipboard, getClipboard, hasClipboard, clearClipboard, clipboardTransferMode, resolveTransferName, resolvePasteTargetDir } from "../../utils/fileClipboard";
+// v0.8.0 修复 P3：自制鼠标拖拽（HTML5 DnD 被 Tauri 原生拖放拦截）
+import { beginFileDrag, DROP_DIR_ATTR } from "../../utils/fileDragMouse";
+import { syncOpenTabsAfterRename } from "../../services/renameService";
 import "./FileTree.css";
 
 /** 将 Rust 返回的 FileEntry (snake_case) 转为 store 的 FileNode (camelCase) */
@@ -87,10 +98,21 @@ export function FileTree() {
   const addFavorite = useFileStore((s) => s.addFavorite);
   const removeFavorite = useFileStore((s) => s.removeFavorite);
   const favorites = useFileStore((s) => s.favorites);
+  // v0.8.0 修复 P12-4：布局列表需要知道"最近打开"栏是否会真正渲染（空列表时该栏返回 null）
+  const recentFiles = useFileStore((s) => s.recentFiles);
   const renameFileEntry = useFileStore((s) => s.renameFileEntry);
   const t = useT();
   // 同步全局 filePath，确保关闭文件时能正确判断当前活跃文件
   const globalFilePath = useEditorStore((s) => s.filePath);
+  // v0.8.0 WP1：临时（未落盘）标签需一并显示在"打开的文件"面板中
+  const editorOpenTabs = useEditorStore((s) => s.openTabs);
+  const editorActiveTabIdx = useEditorStore((s) => s.activeTabIdx);
+  const untitledTabs = useMemo(
+    () => editorOpenTabs
+      .map((tab, idx) => ({ tab, idx }))
+      .filter((item) => item.tab.isUntitled),
+    [editorOpenTabs],
+  );
 
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const expandedPathsRef = useRef<Set<string>>(new Set());
@@ -103,9 +125,38 @@ export function FileTree() {
     // activePath 现在直接从 store 派生，setActivePath 仅在需要即时更新时调用
     // 实际更新通过 openFile/store 完成
   };
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  
+  // v0.8.0 修复 P1-2：文件粘贴的目标文件夹。
+  // 旧实现只用"当前活跃文件所在目录 / 第一个打开文件夹"，与用户点选的文件夹无关，
+  // 导致"在某个打开的文件夹里 Ctrl+V 却不生效（文件跑到别处）"。
+  // 现在点击任一文件夹区域（标题栏、空白处、文件项）即把该文件夹设为粘贴目标。
+  const [pasteTargetDir, setPasteTargetDir] = useState<string | null>(null);
+
+  // v0.8.0 修复 P12-1：文件夹空白区右键菜单（粘贴）
+  // canPaste 在打开菜单的瞬间从内存剪贴板读取 —— 剪贴板是模块级变量，
+  // 不进 React 状态，因此这里快照一次用于决定菜单项是否置灰。
+  const [folderCtxMenu, setFolderCtxMenu] = useState<
+    { x: number; y: number; dir: string; canPaste: boolean } | null
+  >(null);
+
+  // v0.8.0 修复 P11-8：侧栏文件操作的浮动提示（显示在侧栏右侧，不占布局、不抖动）
+  const rootRef = useRef<HTMLDivElement>(null);
+  const toastSeq = useRef(0);
+  const [toasts, setToasts] = useState<{ id: number; msg: string; error: boolean }[]>([]);
+  const [toastLeft, setToastLeft] = useState(272);
+
+  // v0.8.0 WP2 需求4(2)：新建文件夹弹框状态（preselected = 从具体文件夹入口进入时的预选）
+  const [showNewFolderDialog, setShowNewFolderDialog] = useState(false);
+  const [newFolderPreselected, setNewFolderPreselected] = useState<string | null>(null);
   // 缓存已加载的子目录
   const [childrenMap, setChildrenMap] = useState<Map<string, FileNodeData[]>>(new Map());
+
+  // v0.8.0 修复 P1-2：粘贴目标必须仍是"已打开的文件夹"，关闭该文件夹后自动失效
+  useEffect(() => {
+    if (pasteTargetDir && !openFolders.some((f) => f.path === pasteTargetDir)) {
+      setPasteTargetDir(null);
+    }
+  }, [openFolders, pasteTargetDir]);
 
   // v0.4.1：收藏/最近区域显示开关（标题栏 toggle 按钮控制）
   // Issue 2 修复：收藏栏默认改为关闭状态
@@ -117,10 +168,162 @@ export function FileTree() {
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // v0.4.1：各功能栏垂直拖拽调整高度（独立 useResizable 实例，钳制 [80,400]）
-  const tempResize = useResizable({ direction: "vertical", initialHeight: 200, minHeight: 80, maxHeight: 400 });
-  const favResize = useResizable({ direction: "vertical", initialHeight: 200, minHeight: 80, maxHeight: 400 });
-  const recentResize = useResizable({ direction: "vertical", initialHeight: 200, minHeight: 80, maxHeight: 400 });
+  // v0.8.0 WP4 修复1：相邻配对分配的分栏拖拽（替代旧 useResizable 垂直分支）
+  // 各 section 高度集中管理；拖拽时本区+delta、下区-delta，总和守恒，双向钳制 80px。
+  const settingsSectionSizes = useSettingsStore((s) => s.sidebarSectionSizes);
+  const setSidebarSectionSizes = useSettingsStore((s) => s.setSidebarSectionSizes);
+  const [sectionSizes, setSectionSizes] = useState<Record<string, number>>(
+    () => ({ ...settingsSectionSizes }),
+  );
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const sizeOf = useCallback(
+    (key: string) => sectionSizes[key] ?? (key.startsWith("folder:") ? 250 : 200),
+    [sectionSizes],
+  );
+  const setPair = useCallback(
+    (topKey: string, bottomKey: string, top: number, bottom: number) => {
+      setSectionSizes((prev) => ({ ...prev, [topKey]: top, [bottomKey]: bottom }));
+    },
+    [],
+  );
+  // 拖拽过程中去抖持久化，避免每帧写 localStorage
+  const persistTimer = useRef<number | null>(null);
+  useEffect(() => {
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    persistTimer.current = window.setTimeout(() => {
+      setSidebarSectionSizes(sectionSizes);
+    }, 250);
+    return () => {
+      if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    };
+  }, [sectionSizes, setSidebarSectionSizes]);
+
+  // 可见 section 的顺序（决定相邻配对与分隔条位置）
+  const tempVisible = tempFiles.length > 0 || untitledTabs.length > 0;
+  const ordered: string[] = [];
+  if (openFolders.length > 0) {
+    openFolders.forEach((f) => ordered.push(`folder:${f.path}`));
+  } else if (tempVisible) {
+    ordered.push("temp");
+  }
+  if (openFolders.length > 0 && tempVisible) ordered.push("temp");
+  if (showFavorites) ordered.push("favorites");
+  // v0.8.0 修复 P12-4：最近文件为空时该栏不渲染（RecentFiles 返回 null），
+  // 布局列表需与"实际渲染的栏"一致，否则分隔条/拖拽配对与自动填充会指向不存在的栏。
+  if (showRecent && recentFiles.length > 0) ordered.push("recent");
+  const indexOfKey = (k: string) => ordered.indexOf(k);
+  const prevOf = (k: string) => {
+    const i = indexOfKey(k);
+    return i > 0 ? ordered[i - 1] : undefined;
+  };
+  // v0.8.0 修复 P11-4：分隔条高度（用于计算末区可扩展空间）
+  const RESIZER_HEIGHT = 4;
+  /**
+   * v0.8.0 修复 P12-4/5：拖拽时"下方区域"的高度上限，仅**最后一个可见区域**给出。
+   *
+   * 上限取"守恒上限"与"容器上限"的较大值（见 computeExtendableMaxHeight）：
+   * - 容器已溢出（多区域叠加超出可视区）时仍可通过压缩上区放大本区
+   *   → 修复"收藏 + 最近打开同时打开时最近打开拖不动"、
+   *     "只有一个文件夹 + 打开的文件时打开的文件栏拖不动"；
+   * - 容器还有空白时可一直放大到填满底部。
+   */
+  const maxBottomFor = (topKey: string | undefined, bottomKey: string): number | undefined => {
+    if (!topKey) return undefined;
+    if (ordered.length === 0 || ordered[ordered.length - 1] !== bottomKey) return undefined;
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    const others = ordered
+      .filter((k) => k !== topKey && k !== bottomKey)
+      .map((k) => sizeOf(k));
+    return computeExtendableMaxHeight(
+      el.clientHeight,
+      sizeOf(topKey),
+      sizeOf(bottomKey),
+      others,
+      RESIZER_HEIGHT,
+      Math.max(0, ordered.length - 1),
+      MIN_SECTION_HEIGHT,
+    );
+  };
+  const resizerDrag = (topKey: string, bottomKey: string) => (e: React.MouseEvent) => {
+    const maxBottom = maxBottomFor(topKey, bottomKey);
+    beginSectionDrag(
+      topKey,
+      bottomKey,
+      () => ({ top: sizeOf(topKey), bottom: sizeOf(bottomKey) }),
+      setPair,
+      MIN_SECTION_HEIGHT,
+      e,
+      undefined,
+      undefined,
+      maxBottom !== undefined ? { maxBottom } : undefined,
+    );
+  };
+
+  // v0.8.0 修复 P12-4 / P13-2：可见区域集合变化后的高度自适应。
+  // ① 关闭末栏 → 上一栏自动撑满到底部；
+  // ② 之后再打开一个栏 → 先把之前被撑满的栏**还原为原高度**，
+  //    让新开的栏紧跟在上一栏内容之后出现（否则上一栏占满整屏，新栏被挤到可视区外，
+  //    用户只能看到"栏没出现"或需要滚动）。
+  // 仅响应"区域集合变化"（不含首次挂载，避免改变既有默认布局）。
+  const orderedKey = ordered.join("|");
+  const skipAutoFillRef = useRef(true);
+  /** 记录上一次由自适应撑满的栏及其原高度，便于下次集合变化时还原 */
+  const autoFillRef = useRef<{ key: string; prevHeight: number; filledHeight: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (skipAutoFillRef.current) {
+      skipAutoFillRef.current = false;
+      return;
+    }
+    const el = scrollRef.current;
+    if (!el || ordered.length === 0) return;
+    const raf = requestAnimationFrame(() => {
+      const container = el.clientHeight;
+      if (container <= 0) return;
+      const resizerCount = Math.max(0, ordered.length - 1);
+      const lastKey = ordered[ordered.length - 1];
+      setSectionSizes((prev) => {
+        const next = { ...prev };
+        const heightOf = (k: string) => next[k] ?? sizeOf(k);
+
+        // ① 之前被撑满的栏不再是末栏 → 还原它的原高度
+        const filled = autoFillRef.current;
+        if (filled && filled.key !== lastKey) {
+          // 用户已手动拖拽过则尊重用户设置（当前值 ≠ 撑满值时不还原）
+          if (heightOf(filled.key) === filled.filledHeight) next[filled.key] = filled.prevHeight;
+          autoFillRef.current = null;
+        }
+
+        // ② 末栏总高不足容器时撑满到底部（已溢出则保持现状，交给滚动条）
+        const total =
+          ordered.reduce((sum, k) => sum + heightOf(k), 0) + RESIZER_HEIGHT * resizerCount;
+        if (total < container) {
+          const others = ordered.filter((k) => k !== lastKey).map(heightOf);
+          const target = computeMaxSelfHeight(
+            container,
+            others,
+            RESIZER_HEIGHT,
+            resizerCount,
+            MIN_SECTION_HEIGHT,
+          );
+          const current = heightOf(lastKey);
+          if (target > current) {
+            autoFillRef.current = { key: lastKey, prevHeight: current, filledHeight: target };
+            next[lastKey] = target;
+          }
+        }
+        return next;
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderedKey]);
+  // v0.8.0 修复 P9-1：context 额外提供 sizeOf（含默认高度），
+  // 保证标题栏拖拽以"渲染中的实际高度"为起点，不会从 0 起算而跳变
+  const sectionSplitCtx = { sizes: sectionSizes, sizeOf, setPair, minHeight: MIN_SECTION_HEIGHT };
 
   // v0.4.0：按文件夹分别计算 treeData（每个文件夹独立合并已加载的子目录）
   const treeDataByFolder = useMemo(() => {
@@ -204,7 +407,7 @@ export function FileTree() {
       });
       setExpandedPaths(new Set());
     } catch (err) {
-      showMessage(t("filetree.openFolderFailed"));
+      showError(t("filetree.openFolderFailed"));
       console.error(err);
     }
   }, [addOpenFolder, updateFolderTree, t]);
@@ -217,7 +420,7 @@ export function FileTree() {
           await openFolderAt(selected);
         }
       } catch (err) {
-        showMessage(t("filetree.openFolderFailed"));
+        showError(t("filetree.openFolderFailed"));
         console.error(err);
       }
     } else {
@@ -271,13 +474,59 @@ export function FileTree() {
     return () => window.removeEventListener("lightmd:openFolder", handler);
   }, [openFolderAt]);
 
+  // ─── v0.8.0 WP2 需求6：打开所在文件夹工作区 ──────────────────────────
+  // 已在侧栏挂载 → 仅展开定位；未挂载 → 挂载该文件夹为工作区并定位
+  const handleOpenWorkspace = useCallback(
+    (filePath: string) => {
+      if (!filePath) return;
+      const store = useFileStore.getState();
+      const expandAncestors = (target: string) => {
+        setExpandedPaths((prev) => {
+          const next = new Set(prev);
+          let cur = target;
+          // 逐级向上展开（加步数上限防路径异常时死循环）
+          for (let i = 0; i < 64 && cur; i++) {
+            next.add(cur);
+            const parent = getParentDir(cur);
+            if (!parent || parent === cur) break;
+            cur = parent;
+          }
+          return next;
+        });
+      };
+      const result = openContainingWorkspace(filePath, {
+        openFolders: store.openFolders,
+        isPathInOpenFolders: store.isPathInOpenFolders,
+        expandTo: expandAncestors,
+        openFolder: (p) =>
+          window.dispatchEvent(new CustomEvent("lightmd:openFolder", { detail: { path: p } })),
+        setActive: (p) => setActivePath(p),
+      });
+      const name = result.parentDir.split(/[\\/]/).pop() || result.parentDir;
+      showMessage(t("filetree.workspaceOpened", { name }));
+    },
+    [t],
+  );
+
+  // v0.8.0 WP2 需求6：标签栏等外部入口通过命令总线复用同一套"打开所在文件夹工作区"逻辑
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.id === "workspace.open" && typeof detail.path === "string") {
+        handleOpenWorkspace(detail.path);
+      }
+    };
+    window.addEventListener("lightmd:command", handler);
+    return () => window.removeEventListener("lightmd:command", handler);
+  }, [handleOpenWorkspace]);
+
   // ─── 打开文件 ────────────────────────────────
 
   const handleSelectFile = useCallback(
     async (node: FileNodeData) => {
       if (node.isDir) return;
       if (!isSupportedTextFile(node.name)) {
-        showMessage(t("filetree.unsupportedFileType"));
+        showError(t("filetree.unsupportedFileType"));
         return;
       }
 
@@ -309,7 +558,7 @@ export function FileTree() {
           addTempFile({ name: node.name, path: node.path, isDir: false, size: 0 });
         }
       } catch (err) {
-        showMessage(t("filetree.openFileFailed"));
+        showError(t("filetree.openFileFailed"));
         console.error(err);
       }
     },
@@ -473,7 +722,7 @@ export function FileTree() {
         showMessage(t("filetree.renamed", { name: newName }));
         await refreshTree();
       } catch (err) {
-        showMessage(t("filetree.renameFailed"));
+        showError(t("filetree.renameFailed"));
         console.error(err);
       }
     },
@@ -486,37 +735,10 @@ export function FileTree() {
 
   // ─── 新建文件/文件夹 ──────────────────────────
 
+  // v0.8.0 修复 P4-1：调用点只剩"具体文件夹行内的 + 按钮"（工具栏已改为新建临时文件），
+  // 因此这里恒有 parentPath，落盘语义（先命名 → 落盘 → 打开）保持不变。
   const handleNewFile = useCallback(
     async (parentPath: string) => {
-      // 没有父目录时，弹出另存为对话框选择位置
-      if (!parentPath) {
-        if (isTauri()) {
-          try {
-            const selected = await save({
-              defaultPath: t("filetree.newDocName"),
-              filters: [{ name: t("app.markdownFilter"), extensions: ["md"] }],
-            });
-            if (selected) {
-              const defaultContent = t("filetree.newDocContent");
-              await fileService.writeFile(selected, defaultContent);
-              window.dispatchEvent(
-                new CustomEvent("lightmd:openFile", {
-                  detail: { path: selected, content: defaultContent },
-                })
-              );
-              addRecentFile({ path: selected, name: selected.split(/[\\/]/).pop() || t("filetree.newDocName") });
-              showMessage(t("filetree.created", { name: selected.split(/[\\/]/).pop() || "" }));
-            }
-          } catch (err) {
-            showMessage(t("filetree.createFileFailed"));
-            console.error(err);
-          }
-        } else {
-          showMessage(t("filetree.pleaseOpenFolder"));
-        }
-        return;
-      }
-
       const name = prompt(t("filetree.inputFileName"), t("filetree.newDocName"));
       if (!name) return;
 
@@ -538,47 +760,57 @@ export function FileTree() {
         await refreshTree();
         // 选中新创建的文件
         setActivePath(filePath);
+        // v0.8.0 WP2 需求7：在具体文件夹下新建的文件直接打开（落盘语义，
+        // 与工具栏"新建临时文件"区分：用户已在目标文件夹上操作，意图明确）
+        window.dispatchEvent(
+          new CustomEvent("lightmd:openFile", { detail: { path: filePath, content: "" } }),
+        );
       } catch (err) {
-        showMessage(t("filetree.createFileFailed"));
-        console.error(err);
-      }
-    },
-    [refreshTree, addRecentFile, t]
-  );
-
-  const handleNewFolder = useCallback(
-    async (parentPath: string) => {
-      // 没有父目录时，弹出选择文件夹对话框
-      if (!parentPath) {
-        showMessage(t("filetree.pleaseOpenFolderFirst"));
-        return;
-      }
-
-      const name = prompt(t("filetree.inputFolderName"), t("filetree.newFolderDefault"));
-      if (!name) return;
-
-      try {
-        const dirPath = joinPath(parentPath, name);
-
-        if (isTauri()) {
-          await fileService.createDir(dirPath);
-        }
-
-        showMessage(t("filetree.createdFolder", { name }));
-        // 确保父目录展开
-        setExpandedPaths((prev) => {
-          const next = new Set(prev);
-          next.add(parentPath);
-          return next;
-        });
-        // 刷新目录树
-        await refreshTree();
-      } catch (err) {
-        showMessage(t("filetree.createFolderFailed"));
+        showError(t("filetree.createFileFailed"));
         console.error(err);
       }
     },
     [refreshTree, t]
+  );
+
+  // v0.8.0 WP2 需求4(2)：改为自定义弹框（支持多选目标文件夹 + 自定义路径），
+  // 不再用原生 prompt()（原生无法选择落点，且无文件夹打开时直接失败）
+  const handleNewFolder = useCallback(
+    (_parentPath: string) => {
+      setNewFolderPreselected(_parentPath || null);
+      setShowNewFolderDialog(true);
+    },
+    []
+  );
+
+  // 弹框确认：对每个目标目录创建同名文件夹，部分失败给出明细
+  const handleCreateFolder = useCallback(
+    async (targets: string[], folderName: string) => {
+      const failed: string[] = [];
+      for (const dir of targets) {
+        try {
+          if (isTauri()) {
+            await fileService.createDir(joinPath(dir, folderName));
+          }
+        } catch (err) {
+          failed.push(`${dir}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      setShowNewFolderDialog(false);
+      if (failed.length === 0) {
+        showMessage(t("newFolder.created", { name: folderName }));
+      } else {
+        showError(t("newFolder.partialFailed", { detail: failed.join("; ") }));
+      }
+      // 展开目标目录并刷新文件树
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        targets.forEach((d) => next.add(d));
+        return next;
+      });
+      await refreshTree();
+    },
+    [refreshTree, t],
   );
 
   // ─── 删除文件 ────────────────────────────────
@@ -595,29 +827,44 @@ export function FileTree() {
 
         showMessage(t("filetree.deleted", { name: node.name }));
         await refreshTree();
+        // v0.8.0 WP2 修复2：通知 App 关闭该文件（或该文件夹下所有文件）已打开的标签，
+        // 否则被删除的文件仍停留在编辑器里形成"幽灵标签"
+        window.dispatchEvent(
+          new CustomEvent("lightmd:command", { detail: { id: "file.deleted", path: node.path } }),
+        );
       } catch (err) {
-        showMessage(t("filetree.deleteFailed"));
+        showError(t("filetree.deleteFailed"));
         console.error(err);
       }
     },
     [refreshTree, t]
   );
 
-  // ─── 拖拽（图片等） ──────────────────────────
-
-  const handleDragStart = useCallback(
-    (node: FileNodeData, e: React.DragEvent) => {
-      e.dataTransfer.setData("text/uri-list", `file://${node.path}`);
-      e.dataTransfer.setData("text/plain", node.path);
-    },
-    []
-  );
+  // ── 拖拽（图片等） ──────────────────────────
+  // 说明：v0.8.0 修复 P3 起，绘制拖拽统一走自制鼠标拖拽（见下方 handleFileDragStart），
+  // 原 HTML5 onDragStart 在 Tauri 下不会触发，已移除。
 
   // ─── 状态消息 ────────────────────────────────
 
+  // v0.8.0 修复 P11-8：侧栏所有文件操作的提示统一显示在"侧栏旁边"
+  // （fixed 定位于侧栏右侧、不占布局 → 既不抖动，也不会跑到软件右下角）。
+  function pushToast(msg: string, error = false) {
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (rect?.right) setToastLeft(rect.right + 12);
+    const id = ++toastSeq.current;
+    setToasts((prev) => [...prev, { id, msg, error }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((x) => x.id !== id));
+    }, 3000);
+  }
+
   function showMessage(msg: string) {
-    setStatusMessage(msg);
-    setTimeout(() => setStatusMessage(null), 3000);
+    pushToast(msg, false);
+  }
+
+  /** 失败/警告类提示（错误色） */
+  function showError(msg: string) {
+    pushToast(msg, true);
   }
 
   function formatFileSize(bytes: number): string {
@@ -727,7 +974,7 @@ export function FileTree() {
       if (activePath === file.path) setActivePath(newPath);
       showMessage(t("filetree.renamed", { name: newName }));
     } catch (err) {
-      showMessage(t("filetree.renameFailed"));
+      showError(t("filetree.renameFailed"));
       console.error(err);
     }
   }, [tempRenameValue, removeTempFile, addTempFile, activePath, renameFileEntry, t]);
@@ -753,6 +1000,18 @@ export function FileTree() {
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
   }, [tempContextMenu]);
+
+  // v0.8.0 修复 P12-1：关闭文件夹空白区右键菜单
+  useEffect(() => {
+    if (!folderCtxMenu) return;
+    const close = () => setFolderCtxMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+    };
+  }, [folderCtxMenu]);
 
   // 选中的临时文件索引（用于快捷键）
   const [selectedTempIdx, setSelectedTempIdx] = useState<number>(-1);
@@ -785,6 +1044,142 @@ export function FileTree() {
     return () => window.removeEventListener("keydown", handler);
   }, [selectedTempIdx, tempFiles, closeTempFile]);
 
+  // ─── v0.8.0 WP2 需求1：复制 / 移动（粘粘贴与拖拽共用）──────────────────
+  // 重名时自动生成" - 副本"后缀，避免覆盖目标目录已有文件。
+  const transferTo = useCallback(
+    async (
+      srcPath: string,
+      targetDir: string,
+      mode: "copy" | "move",
+      opts?: { isClipboardPaste?: boolean },
+    ) => {
+      if (!srcPath || !targetDir) return;
+      if (!isTauri()) return;
+      // 不允许把文件放回它自己所在的目录（移动语义下是 no-op，复制语义下会生成副本）
+      const name = srcPath.split(/[\\/]/).pop() || "";
+      try {
+        let existing = new Set<string>();
+        try {
+          const entries = await fileService.listDir(targetDir);
+          existing = new Set(entries.map((en) => en.name));
+        } catch {
+          // 目标目录读取失败时不阻断，直接尝试原始名字
+        }
+        // v0.8.0 修复 P1-7：移动到自身所在目录 → resolveTransferName 返回 null（no-op）
+        const unique = resolveTransferName(srcPath, targetDir, mode, existing);
+        if (!unique) return;
+        const dst = joinPath(targetDir, unique);
+        if (mode === "move") {
+          await fileService.renameFile(srcPath, dst);
+          // v0.8.0 修复 P11-1：移动后打开的文件自动变成"新路径下的文件"——
+          // 同步标签 path/name、全局 filePath（编辑器跟随）以及侧栏"打开的文件"条目
+          syncOpenTabsAfterRename(srcPath, dst, unique);
+          useFileStore.getState().renameFileEntry(srcPath, dst, unique);
+          // 移动后内存剪贴板里的路径失效（把剪贴板更新为新路径）
+          const clip = getClipboard();
+          if (clip?.path === srcPath) setClipboard({ path: dst, name: unique, mode: clip.mode });
+          // 移动语义使用专用提示（此前误用"已粘贴到"）
+          showMessage(t("filetree.moved", { name: targetDir }));
+        } else {
+          await fileService.copyFile(srcPath, dst);
+          showMessage(t("filetree.pasted", { name: targetDir }));
+        }
+        // v0.8.0 修复 P13-1：来自剪贴板的"剪切"粘贴成功后清空剪贴板
+        // （与系统资源管理器的"剪切→粘贴后就清空"行为一致）
+        if (opts?.isClipboardPaste && mode === "move") clearClipboard();
+        await refreshTree();
+      } catch (err) {
+        showError(
+          t("filetree.copyFailed", { error: err instanceof Error ? err.message : String(err) }),
+        );
+        console.error(err);
+      }
+    },
+    [refreshTree, t],
+  );
+
+  // v0.8.0 修复 P3：拖拽源启动（自制鼠标拖拽）——默认复制，按住 Shift 移动
+  const handleFileDragStart = useCallback(
+    (node: FileNodeData, e: React.MouseEvent) => {
+      beginFileDrag({ path: node.path, name: node.name }, e, {
+        onDrop: (payload, targetDir, mode) => void transferTo(payload.path, targetDir, mode),
+      });
+    },
+    [transferTo],
+  );
+
+  // v0.8.0 修复 P3：接收标签栏拖拽的落点（跨组件用事件解耦，避免把 transferTo 提升到 App）
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      if (!d?.srcPath || !d?.targetDir) return;
+      void transferTo(d.srcPath, d.targetDir, d.mode === "move" ? "move" : "copy");
+    };
+    window.addEventListener("lightmd:fileDrop", handler);
+    return () => window.removeEventListener("lightmd:fileDrop", handler);
+  }, [transferTo]);
+
+  // Ctrl+C 复制选中项；Ctrl+V 粘贴到点选的文件夹
+  // （目标解析见 utils/fileClipboard.resolvePasteTargetDir，优先级：点选 > 当前文件所在目录 > 首个文件夹）
+  const currentPasteTarget = useCallback(
+    (): string =>
+      resolvePasteTargetDir(pasteTargetDir, activePath, openFolders.map((f) => f.path)),
+    [pasteTargetDir, activePath, openFolders],
+  );
+
+  // v0.8.0 修复 P1-6：文件复制/粘贴快捷键的作用域门控（仅悬停侧栏时生效）
+  const sidebarHoverRef = useRef(false);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // 焦点在编辑器/输入框时不拦截（与 Delete 快捷键同一守卫）
+      if (isFocusInEditable(document.activeElement)) return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      // v0.8.0 修复 P1-5：Ctrl+Alt+V 是版本快照快捷键，不能触发文件粘贴
+      if (e.altKey) return;
+      // v0.8.0 修复 P1-6：仅鼠标悬停在侧栏内时才接管文件级 Ctrl+C/V，
+      // 避免全局劫持文本复制、避免在不知情时向文件夹复制文件
+      if (!sidebarHoverRef.current) return;
+      const key = e.key.toLowerCase();
+
+      if (key === "c") {
+        const selected = selectedTempIdx >= 0 ? tempFiles[selectedTempIdx] : undefined;
+        const src = selected?.path || activePath || "";
+        if (!src) return;
+        e.preventDefault();
+        const name = src.split(/[\\/]/).pop() || src;
+        setClipboard({ path: src, name });
+        showMessage(t("filetree.copied", { name }));
+        return;
+      }
+
+      if (key === "v") {
+        const clip = getClipboard();
+        if (!clip) return;
+        const targetDir = currentPasteTarget();
+        if (!targetDir) return;
+        e.preventDefault();
+        // v0.8.0 修复 P13-1：剪贴板为"剪切"时粘贴 = 移动
+        void transferTo(clip.path, targetDir, clipboardTransferMode(clip), {
+          isClipboardPaste: true,
+        });
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedTempIdx, tempFiles, activePath, currentPasteTarget, transferTo, t]);
+
+  // v0.8.0 WP2 任务2.5：标签栏重命名文件后刷新侧栏文件树（否则树中仍是旧名）
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail?.newPath) return;
+      void refreshTree();
+    };
+    window.addEventListener("lightmd:fileRenamed", handler);
+    return () => window.removeEventListener("lightmd:fileRenamed", handler);
+  }, [refreshTree]);
+
   // ─── Ctrl+R 刷新文件树 ────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -804,13 +1199,36 @@ export function FileTree() {
   // - 不打开文件夹：渲染在顶部（FolderSection 之前）
   // - 打开文件夹：渲染在 FolderSection 之后
   const renderTempFilesSection = (): React.ReactNode => {
-    if (tempFiles.length === 0) return null;
+    // v0.8.0 WP1：面板同时承载"临时标签（未落盘）"与"未挂载到打开文件夹的真实文件"
+    if (tempFiles.length === 0 && untitledTabs.length === 0) return null;
+    // v0.8.0 修复 P9-1：temp 区标题栏拖动改变「上方邻区 + temp」的高度分配
+    const tempPrevKey = prevOf("temp");
     return (
       <>
-        <div className="filetree-v-resizer" onMouseDown={tempResize.onMouseDown} />
-        <div className="filetree-temp-section" style={{ height: tempResize.height }}>
-          {/* Issue 2：标题栏绑定 tempResize.onMouseDown 实现上下拖拽 */}
-          <div className="filetree-temp-header" onMouseDown={tempResize.onMouseDown}>
+        <div
+          className="filetree-temp-section"
+          style={{ height: sizeOf("temp") }}
+        >
+          {/* 标题栏绑定相邻配对拖拽：上方邻区 +delta、本区 -delta（自然方向，标题栏随之上/下移动） */}
+          <div
+            className="filetree-temp-header"
+            onMouseDown={(e) => {
+              if (!tempPrevKey) return;
+              // v0.8.0 修复 P11-4 / P12-4/5：temp 是最后一个可见区域时可一直拖到底部
+              const maxBottom = maxBottomFor(tempPrevKey, "temp");
+              beginSectionDrag(
+                tempPrevKey,
+                "temp",
+                () => ({ top: sizeOf(tempPrevKey), bottom: sizeOf("temp") }),
+                setPair,
+                MIN_SECTION_HEIGHT,
+                e,
+                undefined,
+                undefined,
+                maxBottom !== undefined ? { maxBottom } : undefined,
+              );
+            }}
+          >
             <span className="filetree-title">{t("filetree.openedFiles")}</span>
             {/* Issue 5：查看版本快照按钮入口（临时文件也支持快照功能） */}
             <button
@@ -834,6 +1252,41 @@ export function FileTree() {
           </div>
           {/* v0.4.1：临时文件列表独立滚动容器 */}
           <div className="filetree-temp-content">
+            {/* v0.8.0 WP1：临时（未落盘）标签 —— 无磁盘路径，点击切换、× 关闭 */}
+            {untitledTabs.map(({ tab, idx }) => {
+              const isActive = idx === editorActiveTabIdx && !globalFilePath;
+              return (
+                <div
+                  key={tab.id ?? `untitled-${idx}`}
+                  className={`filetree-node filetree-temp-node filetree-untitled-node ${isActive ? "active" : ""}`}
+                  style={{ paddingLeft: "8px" }}
+                  onClick={() => {
+                    window.dispatchEvent(
+                      new CustomEvent("lightmd:command", { detail: { id: "tab.activate", index: idx } }),
+                    );
+                  }}
+                  title={t("filetree.untitledHint")}
+                >
+                  <span className="filetree-icon">
+                    <svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 1.1l3.4 3.5.1.4v10l-.5.5h-9l-.5-.5v-13l.5-.5h6.7l.3.1zM9 2v3h2.9L9 2z" fill="#e0a458"/></svg>
+                  </span>
+                  <span className="filetree-name">{tab.name}</span>
+                  {tab.isDirty ? <span className="filetree-untitled-dirty">●</span> : null}
+                  <button
+                    className="filetree-temp-close"
+                    title={t("filetree.closeTitle")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.dispatchEvent(
+                        new CustomEvent("lightmd:command", { detail: { id: "tab.close", index: idx } }),
+                      );
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
             {tempFiles.map((file, idx) => {
               const isActive = activePath === file.path;
               const isSelected = selectedTempIdx === idx;
@@ -845,6 +1298,13 @@ export function FileTree() {
                   style={{ paddingLeft: "8px" }}
                   onClick={() => { handleSelectFile({ ...file, children: [] }); setSelectedTempIdx(idx); }}
                   onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setTempContextMenu({ x: e.clientX, y: e.clientY, file }); }}
+                  // v0.8.0 修复 P3：自制鼠标拖拽（默认复制 / 按住 Shift 移动）
+                  onMouseDown={(e) => {
+                    beginFileDrag({ path: file.path, name: file.name }, e, {
+                      onDrop: (payload, targetDir, mode) =>
+                        void transferTo(payload.path, targetDir, mode),
+                    });
+                  }}
                   title={file.path}
                 >
                   <span className="filetree-icon">
@@ -884,12 +1344,28 @@ export function FileTree() {
   };
 
   return (
-    <div className="filetree">
+    <div
+      ref={rootRef}
+      className="filetree"
+      // v0.8.0 修复 P1-6：Ctrl+C/V 文件复制粘贴仅在鼠标悬停侧栏时接管，
+      // 不再全局劫持（配合下方 keydown 里的 sidebarHoverRef 门控）
+      onMouseEnter={() => { sidebarHoverRef.current = true; }}
+      onMouseLeave={() => { sidebarHoverRef.current = false; }}
+    >
       {/* 头部工具栏 */}
       <div className="filetree-header">
         <span className="filetree-title">{t("filetree.title")}</span>
         <div className="filetree-actions">
-          <button className="filetree-btn" title={t("filetree.newFileTitle")} onClick={() => handleNewFile(rootPath || "")}>
+          {/* v0.8.0 修复 P4-1：工具栏"新增文件"改为立即新建临时（未落盘）文件，
+              不再固定落到第一个打开的文件夹；保存时才由用户选择路径与命名。
+              复用 App 的 file.new 命令（与 Ctrl+N 同一路径，保证编辑器上下文同步） */}
+          <button
+            className="filetree-btn"
+            title={t("filetree.newFileTitle")}
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "file.new" } }));
+            }}
+          >
             <svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 1.1l3.4 3.5.1.4v4h-1V6H8V2H3v12h5v1H2.5l-.5-.5v-13l.5-.5h6.7l.3.1zM9 2v3h2.9L9 2z" fill="#5c9dff"/><path d="M14 8v2h2v1h-2v2h-1v-2h-2v-1h2V8h1z" fill="#4caf50"/></svg>
           </button>
           {/* v0.4.1：新建文件夹图标重设计——蓝色文件夹 + 绿色加号（右下角叠加） */}
@@ -977,55 +1453,98 @@ export function FileTree() {
         </div>
       )}
 
-      {/* 状态消息 */}
-      {statusMessage && (
-        <div className="filetree-status">{statusMessage}</div>
-      )}
+      
 
-      {/* v0.4.5 修复：左侧栏「打开的文件」和「文档」栏显示位置逻辑
-          - 不打开文件夹但有 tempFiles：tempFiles 栏渲染在顶部（FolderSection 之前），不显示 placeholder
-          - 打开文件夹：FolderSection（文档栏）在前，tempFiles 栏在后
-          - 不打开文件夹且无 tempFiles：仅显示 placeholder 提示用户打开文件夹
-          - 不打开文件夹也不打开文件：不显示文档栏和打开的文件栏（仅 placeholder） */}
-      {openFolders.length === 0 && tempFiles.length > 0 && renderTempFilesSection()}
+      {/* v0.8.0 WP2 需求4(2)：新建文件夹弹框（多选目标文件夹 / 自定义路径） */}
+      <NewFolderDialog
+        open={showNewFolderDialog}
+        openFolders={openFolders.map((f) => ({ path: f.path, name: f.name }))}
+        preselected={newFolderPreselected}
+        onBrowse={async () => {
+          try {
+            const picked = await dialogOpen({ directory: true, multiple: false });
+            return typeof picked === "string" ? picked : null;
+          } catch {
+            return null;
+          }
+        }}
+        onClose={() => setShowNewFolderDialog(false)}
+        onConfirm={handleCreateFolder}
+      />
 
-      {/* Issue 1 修复：每个文件夹独立浏览区域，含放大缩小按钮，支持上下拖拽调整高度 */}
-      {openFolders.length > 0 ? (
-        treeDataByFolder.map(({ folder, nodes }) => (
-          <FolderSection
-            key={folder.path}
-            folder={folder}
-            nodes={nodes}
-            activePath={activePath}
-            renamingPath={renamingPath}
-            expandedPaths={expandedPaths}
-            onSelect={handleSelectFile}
-            onToggleExpand={toggleExpand}
-            onRenameStart={handleRenameStart}
-            onRenameConfirm={handleRenameConfirm}
-            onRenameCancel={handleRenameCancel}
-            onDelete={handleDelete}
-            onNewFile={handleNewFile}
-            onNewFolder={handleNewFolder}
-            onDragStart={handleDragStart}
-            onRefresh={refreshTree}
-            onClose={closeFolder}
-          />
-        ))
-      ) : (
-        /* v0.4.5 修复：不打文件夹且无 tempFiles 时才显示 placeholder（提示用户打开文件夹） */
-        tempFiles.length === 0 ? (
-          <div className="filetree-list">
-            <div className="filetree-placeholder">
-              <p>{t("filetree.clickToOpen")}</p>
-              <p className="filetree-hint">{t("filetree.dragHint")}</p>
-            </div>
-          </div>
-        ) : null
-      )}
+      <SectionSizeContext.Provider value={sectionSplitCtx}>
+        <div className="filetree-scroll" ref={scrollRef}>
+          {/* v0.4.5 修复：左侧栏「打开的文件」和「文档」栏显示位置逻辑（见 WP4 施工图） */}
+          {openFolders.length === 0 && tempVisible && (
+            <>
+              {prevOf("temp") && (
+                <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("temp")!, "temp")} />
+              )}
+              {renderTempFilesSection()}
+            </>
+          )}
 
-      {/* v0.4.5 修复：打开文件夹后，tempFiles 栏渲染在 FolderSection 之后 */}
-      {openFolders.length > 0 && tempFiles.length > 0 && renderTempFilesSection()}
+          {/* Issue 1 修复：每个文件夹独立浏览区域，含放大缩小按钮，支持上下拖拽调整高度 */}
+          {openFolders.length > 0 ? (
+            treeDataByFolder.map(({ folder, nodes }) => {
+              const fkey = `folder:${folder.path}`;
+              return (
+                <Fragment key={folder.path}>
+                  {prevOf(fkey) && (
+                    <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf(fkey)!, fkey)} />
+                  )}
+                  <FolderSection
+                    folder={folder}
+                    nodes={nodes}
+                    activePath={activePath}
+                    renamingPath={renamingPath}
+                    expandedPaths={expandedPaths}
+                    onSelect={handleSelectFile}
+                    onToggleExpand={toggleExpand}
+                    onRenameStart={handleRenameStart}
+                    onRenameConfirm={handleRenameConfirm}
+                    onRenameCancel={handleRenameCancel}
+                    onDelete={handleDelete}
+                    onNewFile={handleNewFile}
+                    onNewFolder={handleNewFolder}
+                    onFileDragStart={handleFileDragStart}
+                    onRefresh={refreshTree}
+                    onClose={closeFolder}
+                    onOpenWorkspace={handleOpenWorkspace}
+                    onActivateFolder={setPasteTargetDir}
+                    onFolderContextMenu={(dir, x, y) => {
+                      setPasteTargetDir(dir);
+                      setFolderCtxMenu({ x, y, dir, canPaste: hasClipboard() });
+                    }}
+                    height={sizeOf(fkey)}
+                    sectionKey={fkey}
+                    prevSectionKey={prevOf(fkey)}
+                    maxHeight={maxBottomFor(prevOf(fkey), fkey)}
+                  />
+                </Fragment>
+              );
+            })
+          ) : (
+            /* v0.4.5 修复：不打文件夹且无 temp/未落盘标签时才显示 placeholder（提示用户打开文件夹） */
+            tempFiles.length === 0 && untitledTabs.length === 0 ? (
+              <div className="filetree-list">
+                <div className="filetree-placeholder">
+                  <p>{t("filetree.clickToOpen")}</p>
+                  <p className="filetree-hint">{t("filetree.dragHint")}</p>
+                </div>
+              </div>
+            ) : null
+          )}
+
+          {/* v0.4.5 修复：打开文件夹后，tempFiles 栏渲染在 FolderSection 之后 */}
+          {openFolders.length > 0 && tempVisible && (
+            <>
+              {prevOf("temp") && (
+                <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("temp")!, "temp")} />
+              )}
+              {renderTempFilesSection()}
+            </>
+          )}
 
       {/* 临时文件右键菜单（fixed 定位，放在 filetree 容器中不影响布局） */}
       {tempContextMenu && (
@@ -1079,6 +1598,32 @@ export function FileTree() {
           >
             {t("filetree.rename")}
           </button>
+          {/* v0.8.0 WP2 需求1：复制（配合 Ctrl+V 粘贴到任一打开的文件夹） */}
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              setClipboard({ path: tempContextMenu.file.path, name: tempContextMenu.file.name });
+              showMessage(t("filetree.copied", { name: tempContextMenu.file.name }));
+              setTempContextMenu(null);
+            }}
+          >
+            {t("filetree.copy")}
+          </button>
+          {/* v0.8.0 修复 P13-1：剪切（粘贴时移动原文件，成功后清空剪贴板） */}
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              setClipboard({
+                path: tempContextMenu.file.path,
+                name: tempContextMenu.file.name,
+                mode: "cut",
+              });
+              showMessage(t("filetree.cutted", { name: tempContextMenu.file.name }));
+              setTempContextMenu(null);
+            }}
+          >
+            {t("filetree.cut")}
+          </button>
           {/* v0.4.1：查看版本快照（修复临时文件缺少入口的问题5） */}
           <button
             className="context-menu-item"
@@ -1088,6 +1633,16 @@ export function FileTree() {
             }}
           >
             {t("snapshot.viewSnapshots")}
+          </button>
+          {/* v0.8.0 WP2 需求6：在左侧栏打开该文件所在的文件夹工作区 */}
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              handleOpenWorkspace(tempContextMenu.file.path);
+              setTempContextMenu(null);
+            }}
+          >
+            {t("filetree.openWorkspace")}
           </button>
           {/* N5：在资源管理器中显示并选中该文件 */}
           <button
@@ -1114,10 +1669,15 @@ export function FileTree() {
       {/* v0.4.1：收藏区段（toggle 按钮控制显示，分隔条拖拽调整高度） */}
       {showFavorites && (
         <>
-          <div className="filetree-v-resizer" onMouseDown={favResize.onMouseDown} />
+          {prevOf("favorites") && (
+            <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("favorites")!, "favorites")} />
+          )}
           <Favorites
             onOpen={handleSelectFile}
-            height={favResize.height}
+            height={sizeOf("favorites")}
+            sectionKey="favorites"
+            prevSectionKey={prevOf("favorites")}
+            maxHeight={maxBottomFor(prevOf("favorites"), "favorites")}
             onClose={() => setShowFavorites(false)}
           />
         </>
@@ -1126,20 +1686,69 @@ export function FileTree() {
       {/* v0.4.1：最近文件（toggle 按钮控制显示，分隔条拖拽调整高度） */}
       {showRecent && (
         <>
-          <div className="filetree-v-resizer" onMouseDown={recentResize.onMouseDown} />
+          {prevOf("recent") && (
+            <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("recent")!, "recent")} />
+          )}
           <RecentFiles
             onOpen={handleSelectFile}
-            height={recentResize.height}
+            height={sizeOf("recent")}
+            sectionKey="recent"
+            prevSectionKey={prevOf("recent")}
+            maxHeight={maxBottomFor(prevOf("recent"), "recent")}
             onClose={() => setShowRecent(false)}
           />
         </>
+      )}
+        </div>
+        <SidebarScrollArrows scrollRef={scrollRef} />
+      </SectionSizeContext.Provider>
+
+      {/* v0.8.0 修复 P12-1：文件夹空白区右键菜单（粘贴；剪贴板为空时置灰） */}
+      {folderCtxMenu && (
+        <div
+          className="filetree-context-menu"
+          style={{ left: folderCtxMenu.x, top: folderCtxMenu.y, position: "fixed" }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="context-menu-item"
+            disabled={!folderCtxMenu.canPaste}
+            title={folderCtxMenu.canPaste ? t("filetree.paste") : t("filetree.pasteEmpty")}
+            onClick={() => {
+              const clip = getClipboard();
+              // v0.8.0 修复 P13-1：剪贴板为"剪切"时粘贴 = 移动（cut → move），成功后清空剪贴板
+              if (clip) {
+                void transferTo(clip.path, folderCtxMenu.dir, clipboardTransferMode(clip), {
+                  isClipboardPaste: true,
+                });
+              }
+              setFolderCtxMenu(null);
+            }}
+          >
+            {t("filetree.paste")}
+          </button>
+        </div>
+      )}
+
+      {/* v0.8.0 修复 P11-8：侧栏文件操作的浮动提示（贴侧栏右侧显示，fixed 不占布局） */}
+      {toasts.length > 0 && (
+        <div className="filetree-toast-stack" style={{ left: toastLeft }}>
+          {toasts.map((item) => (
+            <div
+              key={item.id}
+              className={`filetree-toast ${item.error ? "error" : ""}`}
+            >
+              {item.msg}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
 // ─── Issue 1 修复：每个文件夹独立浏览区域子组件 ──────────
-// useResizable 是 hook，不能在 map 中调用，故提取为子组件
+// useSectionSplit 是 hook，不能在 map 中调用，故提取为子组件
 interface FolderSectionProps {
   folder: { path: string; name: string };
   nodes: FileNodeData[];
@@ -1154,34 +1763,80 @@ interface FolderSectionProps {
   onDelete: (node: FileNodeData) => void;
   onNewFile: (parentPath: string) => void;
   onNewFolder: (parentPath: string) => void;
-  onDragStart?: (node: FileNodeData, e: React.DragEvent) => void;
+  /** v0.8.0 修复 P3：文件节点按下鼠标 → 启动自制拖拽 */
+  onFileDragStart?: (node: FileNodeData, e: React.MouseEvent) => void;
   onRefresh: (folderPath: string) => void;
   onClose: (folderPath: string) => void;
+  /** 当前高度（px），由父组件按 sectionSizes 注入 */
+  height?: number;
+  /** 本区 key（用于相邻配对拖拽） */
+  sectionKey?: string;
+  /** 上方相邻可见区 key（为空说明本区是最上面一个区域 → 标题栏不可拖拽） */
+  prevSectionKey?: string;
+  /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
+  maxHeight?: number;
+  /** v0.8.0 WP2 需求6：在左侧栏打开文件所在文件夹工作区 */
+  onOpenWorkspace?: (filePath: string) => void;
+  /** v0.8.0 修复 P1-2：点击本区域（含空白处）即把本文件夹设为粘贴目标 */
+  onActivateFolder?: (dir: string) => void;
+  /** v0.8.0 修复 P12-1：在文件夹空白区右键 → 打开"粘贴"菜单 */
+  onFolderContextMenu?: (dir: string, x: number, y: number) => void;
 }
 
 function FolderSection(props: FolderSectionProps) {
   const { folder, nodes, activePath, renamingPath, expandedPaths, onSelect,
     onToggleExpand, onRenameStart, onRenameConfirm, onRenameCancel,
-    onDelete, onNewFile, onNewFolder, onDragStart, onRefresh, onClose } = props;
+    onDelete, onNewFile, onNewFolder, onFileDragStart, onRefresh, onClose,
+    height, sectionKey, prevSectionKey, maxHeight, onOpenWorkspace, onActivateFolder,
+    onFolderContextMenu } = props;
   const t = useT();
   const [collapsed, setCollapsed] = useState(false);
   const [maximized, setMaximized] = useState(false);
-  const folderResize = useResizable({ direction: "vertical", initialHeight: 250, minHeight: 80, maxHeight: 500 });
+  // v0.8.0 修复 P9-1：标题栏在本区顶部，拖动它移动的是本区上边界，
+  // 因此配对为「上方邻区 + 本区」；第一个区域无上方邻区 → 不可拖
+  const { onMouseDown } = useSectionSplit({
+    selfKey: sectionKey ?? `folder:${folder.path}`,
+    prevKey: prevSectionKey,
+    maxHeight,
+  });
 
   const sectionStyle: React.CSSProperties = {};
   if (maximized) {
     sectionStyle.height = 500;
-  } else if (folderResize.height !== undefined && !collapsed) {
-    sectionStyle.height = folderResize.height;
+  } else if (height !== undefined && !collapsed) {
+    sectionStyle.height = height;
   }
 
   return (
-    <div className={`filetree-folder-section ${collapsed ? "collapsed" : ""} ${maximized ? "maximized" : ""}`} style={sectionStyle}>
-      <div className="filetree-root-path" title={folder.path} onMouseDown={folderResize.onMouseDown}>
+    <div
+      className={`filetree-folder-section ${collapsed ? "collapsed" : ""} ${maximized ? "maximized" : ""}`}
+      style={sectionStyle}
+      // v0.8.0 修复 P1-2：capture 阶段记录"当前点选的文件夹"作为 Ctrl+V 粘贴目标
+      // （capture 先于标题栏拖拽的 stopPropagation，点标题栏/空白处/文件项都能生效）
+      onMouseDownCapture={() => onActivateFolder?.(folder.path)}
+      // v0.8.0 修复 P3：本区整体作为自制拖拽的落点（拖到标题栏/空白处也算）
+      {...{ [DROP_DIR_ATTR]: folder.path }}
+    >
+      <div className="filetree-root-path" title={folder.path} onMouseDown={onMouseDown}>
         <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style={{verticalAlign:"middle",marginRight:"4px"}}><path d="M8 1.5l.354.353 6 6-.708.708L13 7.707V13.5l-.5.5h-9l-.5-.5V7.707l-.646.354-.708-.708 6-6L8 1.5zM4 7v6h3V9.5l.5-.5h1l.5.5V13h3V7L8 2.707 4 7z"/></svg>
         <span className="filetree-root-name">{folder.name}</span>
         {/* Issue 1：放大缩小按钮 + 刷新 + 关闭，统一放在 section-controls 中 */}
+        {/* v0.8.0 WP2 需求7：增加"新建文件/新建文件夹"入口（针对本文件夹，直接落盘） */}
         <div className="section-controls">
+          <button
+            className="section-btn section-new-file"
+            title={t("filetree.newFileTitle")}
+            onClick={(e) => { e.stopPropagation(); onNewFile(folder.path); }}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16"><path d="M7.5 2h1v5.5H14v1H8.5V14h-1V8.5H2v-1h5.5V2z" fill="currentColor"/></svg>
+          </button>
+          <button
+            className="section-btn section-new-folder"
+            title={t("filetree.newFolderTitle")}
+            onClick={(e) => { e.stopPropagation(); onNewFolder(folder.path); }}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16"><path d="M1.5 3h4.6l1.4 1.6h6.9l.6.5v8l-.5.5h-13l-.5-.5v-9.6l.5-.5zm.5 1v8.6h12V5.6H7.1L5.7 4H2z" fill="currentColor"/><path d="M7.5 7h1v1.5H10v1H8.5V11h-1V9.5H6v-1h1.5V7z" fill="currentColor"/></svg>
+          </button>
           <button
             className="section-btn section-refresh"
             title={t("filetree.refreshTitle")}
@@ -1213,7 +1868,16 @@ function FolderSection(props: FolderSectionProps) {
         </div>
       </div>
       {!collapsed && (
-        <div className="filetree-folder-content">
+        <div
+          className="filetree-folder-content"
+          // 拖拽落点由根节点的 data-drop-dir 统一承载（v0.8.0 修复 P3 自制拖拽）
+          // v0.8.0 修复 P12-1：空白区右键 → "粘贴"菜单（文件项自身的右键会 stopPropagation）
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onFolderContextMenu?.(folder.path, e.clientX, e.clientY);
+          }}
+        >
           {nodes.length > 0 ? (
             nodes.map((node) => (
               <FileEntryNode
@@ -1231,8 +1895,9 @@ function FolderSection(props: FolderSectionProps) {
                 onDelete={onDelete}
                 onNewFile={onNewFile}
                 onNewFolder={onNewFolder}
-                onDragStart={onDragStart}
+                onFileDragStart={onFileDragStart}
                 onRefresh={() => onRefresh(folder.path)}
+                onOpenWorkspace={onOpenWorkspace}
               />
             ))
           ) : (

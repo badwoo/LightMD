@@ -51,3 +51,45 @@ html, body, #root {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
+
+/* v0.8.0 WP3 需求8：打印样式——隐藏所有非正文 UI，仅输出编辑区正文 */
+@media print {
+  .titlebar,
+  .tab-bar,
+  .app-sidebar,
+  .app-outline,
+  .statusbar,
+  .notification-toast-container,
+  .app-resizer,
+  .sidebar-toggle-btn {
+    display: none !important;
+  }
+
+  html, body, #root {
+    height: auto;
+    overflow: visible;
+  }
+
+  .app,
+  .app-shell,
+  .app-main,
+  .editor-container,
+  .source-editor-wrapper,
+  .ProseMirror {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  .ProseMirror {
+    color: #000;
+    background: #fff;
+    padding: 0;
+  }
+}

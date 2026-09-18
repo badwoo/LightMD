@@ -4,6 +4,43 @@
   flex-direction: column;
   height: 100%;
   user-select: none;
+  /* v0.8.0 WP4 需求9：浮动滚动箭头相对本容器绝对定位 */
+  position: relative;
+}
+
+/* v0.8.0 WP4 需求9：统一滚动容器（各 section 自然堆叠，超栏即整体滚动） */
+.filetree-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* v0.8.0 修复 P12-6：侧栏滚动条更细、更无感（默认近乎透明，悬停才显形） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.filetree-scroll:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* v0.8.0 修复 P13-3：宽度收窄到上一版的 30%（4px → 1.2px），几乎不可见 */
+.filetree-scroll::-webkit-scrollbar {
+  width: 1.2px;
+}
+
+.filetree-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.filetree-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 1px;
+}
+
+.filetree-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
 }
 
 .filetree-header {
@@ -427,6 +464,17 @@
   background: var(--bg-hover);
 }
 
+/* v0.8.0 修复 P12-1：不可用菜单项（如剪贴板为空时的"粘贴"）置灰 */
+.context-menu-item:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.context-menu-item:disabled:hover {
+  background: none;
+}
+
 .context-menu-item.danger {
   color: #d32f2f;
 }
@@ -647,6 +695,102 @@
   transform: translateY(-50%) scale(1.2);
 }
 
+/* ─── v0.8.0 WP1：临时（未落盘）标签在"打开的文件"面板中的样式 ──── */
+.filetree-untitled-dirty {
+  color: var(--accent-color, #5c9dff);
+  font-size: 10px;
+  line-height: 1;
+  margin-left: 4px;
+  margin-right: 20px; /* 给右侧 × 按钮留出空间，避免文字被遮挡 */
+  flex-shrink: 0;
+}
+
+.filetree-untitled-node .filetree-name {
+  font-style: italic;
+}
+
+/* ── v0.8.0 修复 P11-8：侧栏文件操作的浮动提示 ────
+   固定在侧栏右侧（left 由组件按侧栏实际宽度注入），不占侧栏布局 → 无抖动；
+   fixed 定位可避开 .app-sidebar 的 overflow:hidden 裁剪。 */
+.filetree-toast-stack {
+  position: fixed;
+  bottom: 44px;
+  z-index: 9500;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  max-width: 320px;
+  pointer-events: none;
+}
+
+.filetree-toast {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent-color, #5c9dff);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  animation: filetreeToastIn 0.18s ease-out;
+}
+
+.filetree-toast.error {
+  border-left-color: #e5534b;
+  color: #e5534b;
+}
+
+@keyframes filetreeToastIn {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* v0.8.0 修复 P3：自制鼠标拖拽落点高亮 ────
+   （class 由 utils/fileDragMouse.ts 直接加到命中的 data-drop-dir 元素上） */
+.filetree-node.filetree-drop-active {
+  background: var(--bg-hover);
+  outline: 1px dashed var(--accent-color, #5c9dff);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
+.filetree-folder-section.filetree-drop-active {
+  outline: 1px dashed var(--accent-color, #5c9dff);
+  outline-offset: -2px;
+}
+
+/* 拖拽中的跟随浮层 */
+.file-drag-ghost {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  padding: 3px 10px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  border-radius: 4px;
+  color: #fff;
+  background: var(--accent-color, #5c9dff);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+  opacity: 0.92;
+}
+
+/* 拖拽期间禁止文本选中，避免鼠标划过时选中侧栏文字 */
+body.file-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+
 /* ─── v0.4.1：垂直分隔条（功能栏之间，支持拖拽调整高度） ──── */
 .filetree-v-resizer {
   height: 4px;
@@ -733,6 +877,61 @@
     0 3px 6px rgba(0, 0, 0, 0.4),
     0 1px 2px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+/* ─── v0.8.0 WP4 需求9：溢出时的浮动上下滚动箭头 ─────── */
+.sidebar-scroll-arrow {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 30px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  z-index: 6;
+  /* 默认隐藏：仅侧栏 hover 且可滚动时由呼吸动画显示（隐约闪动） */
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.sidebar-scroll-arrow-up {
+  top: 4px;
+}
+
+.sidebar-scroll-arrow-down {
+  bottom: 4px;
+}
+
+/* 仅当鼠标悬停侧栏且内容可滚动时，箭头隐约呼吸闪动 */
+.filetree:hover .sidebar-scroll-arrow {
+  animation: sidebar-breath 2.4s ease-in-out infinite;
+}
+
+.sidebar-scroll-arrow:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  /* 悬停时停止呼吸，常显 */
+  animation: none;
+  opacity: 1;
+}
+
+@keyframes sidebar-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 [data-theme="dark"] .section-btn.section-close:hover {

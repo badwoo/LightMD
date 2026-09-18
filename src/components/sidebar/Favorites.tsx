@@ -10,6 +10,7 @@
 import { useState, useEffect } from "react";
 import { useFileStore, type FileNode } from "../../stores/useFileStore";
 import { useT } from "../../i18n";
+import { useSectionSplit } from "../../hooks/useSectionSplit";
 import "./FileTree.css";
 
 interface FavoritesProps {
@@ -18,9 +19,15 @@ interface FavoritesProps {
   height?: number;
   /** 关闭回调（点击 × 按钮触发，父组件隐藏整个区域） */
   onClose?: () => void;
+  /** 本区 key（相邻配对拖拽用） */
+  sectionKey?: string;
+  /** 上方相邻可见区 key（为空 = 本区最靠上，标题栏不可拖） */
+  prevSectionKey?: string;
+  /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
+  maxHeight?: number;
 }
 
-export function Favorites({ onOpen, height, onClose }: FavoritesProps) {
+export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey, maxHeight }: FavoritesProps) {
   const favorites = useFileStore((s) => s.favorites);
   const removeFavorite = useFileStore((s) => s.removeFavorite);
   const t = useT();
@@ -47,12 +54,19 @@ export function Favorites({ onOpen, height, onClose }: FavoritesProps) {
     sectionStyle.height = height;
   }
 
+  // v0.8.0 修复 P9-1：标题栏拖拽移动本区上边界 → 配对「上方邻区 + 本区」
+  const { onMouseDown } = useSectionSplit({
+    selfKey: sectionKey ?? "favorites",
+    prevKey: prevSectionKey,
+    maxHeight,
+  });
+
   return (
     <div
       className={`favorites-section ${collapsed ? "collapsed" : ""} ${maximized ? "maximized" : ""}`}
       style={sectionStyle}
     >
-      <div className="favorites-header">
+      <div className="favorites-header" onMouseDown={onMouseDown}>
         <span className="filetree-title">
           {favorites.length > 0
             ? t("sidebar.favoritesCount", { count: favorites.length })

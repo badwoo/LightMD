@@ -7,6 +7,7 @@ import { useState, useEffect } from "react";
 import { useFileStore, type FileNode } from "../../stores/useFileStore";
 import { useT } from "../../i18n";
 import { fileService } from "../../services/fileService";
+import { useSectionSplit } from "../../hooks/useSectionSplit";
 import "./FileTree.css";
 
 interface RecentFilesProps {
@@ -15,9 +16,15 @@ interface RecentFilesProps {
   height?: number;
   /** 关闭回调（点击 × 按钮触发，父组件隐藏整个区域） */
   onClose?: () => void;
+  /** 本区 key（相邻配对拖拽用） */
+  sectionKey?: string;
+  /** 上方相邻可见区 key（为空 = 本区最靠上，标题栏不可拖） */
+  prevSectionKey?: string;
+  /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
+  maxHeight?: number;
 }
 
-export function RecentFiles({ onOpen, height, onClose }: RecentFilesProps) {
+export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKey, maxHeight }: RecentFilesProps) {
   const recentFiles = useFileStore((s) => s.recentFiles);
   const t = useT();
 
@@ -35,6 +42,15 @@ export function RecentFiles({ onOpen, height, onClose }: RecentFilesProps) {
     return () => window.removeEventListener("click", close);
   }, [contextMenu]);
 
+  // v0.8.0 修复 P12-4：标题栏拖拽 hook 必须**先于**空状态 return 调用。
+  // 旧实现把 `if (recentFiles.length === 0) return null` 放在 hook 之前，
+  // 最近文件从"有"变"无"时两次渲染的 hook 数量不同，React 会直接抛错。
+  const { onMouseDown } = useSectionSplit({
+    selfKey: sectionKey ?? "recent",
+    prevKey: prevSectionKey,
+    maxHeight,
+  });
+
   // 空状态返回 null（保持现有行为，由父组件 toggle 按钮控制显示）
   if (recentFiles.length === 0) return null;
 
@@ -51,7 +67,7 @@ export function RecentFiles({ onOpen, height, onClose }: RecentFilesProps) {
       className={`recent-files ${collapsed ? "collapsed" : ""} ${maximized ? "maximized" : ""}`}
       style={sectionStyle}
     >
-      <div className="recent-files-header">
+      <div className="recent-files-header" onMouseDown={onMouseDown}>
         <span className="filetree-title">{t("recent.title")}</span>
         {/* v0.4.1：标题栏控制按钮（hover 浮现） */}
         <div className="section-controls">

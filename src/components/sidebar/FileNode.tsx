@@ -4,6 +4,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useT } from "../../i18n";
 import { fileService } from "../../services/fileService";
+// v0.8.0 修复 P3：自制鼠标拖拽（HTML5 DnD 被 Tauri 原生拖放拦截，改用鼠标事件）
+import { DROP_DIR_ATTR } from "../../utils/fileDragMouse";
 import "./FileTree.css";
 
 export interface FileNodeData {
@@ -28,8 +30,11 @@ interface FileNodeProps {
   onDelete: (node: FileNodeData) => void;
   onNewFile: (parentPath: string) => void;
   onNewFolder: (parentPath: string) => void;
-  onDragStart?: (node: FileNodeData, e: React.DragEvent) => void;
+  /** v0.8.0 修复 P3：在文件节点上按下鼠标 → 启动自制拖拽（文件夹不可拖） */
+  onFileDragStart?: (node: FileNodeData, e: React.MouseEvent) => void;
   onRefresh?: () => void;
+  /** v0.8.0 WP2 需求6：在左侧栏打开该文件所在文件夹工作区 */
+  onOpenWorkspace?: (filePath: string) => void;
 }
 
 export function FileEntryNode({
@@ -46,8 +51,9 @@ export function FileEntryNode({
   onDelete,
   onNewFile,
   onNewFolder,
-  onDragStart,
+  onFileDragStart,
   onRefresh,
+  onOpenWorkspace,
 }: FileNodeProps) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(node.name);
@@ -145,8 +151,12 @@ export function FileEntryNode({
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
-        draggable={!node.isDir}
-        onDragStart={(e) => onDragStart?.(node, e)}
+        // v0.8.0 修复 P3：按下鼠标启动自制拖拽（仅文件可拖；文件夹只作落点）
+        onMouseDown={(e) => {
+          if (!node.isDir) onFileDragStart?.(node, e);
+        }}
+        // 文件夹节点可作为拖拽落点（嵌套时内层优先，closest 取最近者）
+        {...(node.isDir ? { [DROP_DIR_ATTR]: node.path } : {})}
         title={node.path}
       >
         {/* 展开/折叠箭头（仅文件夹） */}
@@ -205,8 +215,9 @@ export function FileEntryNode({
               onDelete={onDelete}
               onNewFile={onNewFile}
               onNewFolder={onNewFolder}
-              onDragStart={onDragStart}
+              onFileDragStart={onFileDragStart}
               onRefresh={onRefresh}
+              onOpenWorkspace={onOpenWorkspace}
             />
           ))}
           {node.children.length === 0 && (
@@ -277,6 +288,18 @@ export function FileEntryNode({
               }}
             >
               {t("snapshot.viewSnapshots")}
+            </button>
+          )}
+          {/* v0.8.0 WP2 需求6：在左侧栏打开该文件所在的文件夹工作区（仅文件） */}
+          {!node.isDir && onOpenWorkspace && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                onOpenWorkspace(node.path);
+                setContextMenu(null);
+              }}
+            >
+              {t("filetree.openWorkspace")}
             </button>
           )}
           {/* N5：在资源管理器中显示并选中该文件（仅文件） */}

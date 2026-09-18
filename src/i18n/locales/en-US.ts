@@ -182,6 +182,8 @@ export const enUS: Record<string, string> = {
   "filetree.clickToOpen": "Click the button above to open a folder",
   "filetree.dragHint": "Or drag a .md file into the editor",
   "filetree.openedFiles": "Opened Files",
+  // v0.8.0 WP1: hint for temporary (unsaved) tabs in the Opened Files panel
+  "filetree.untitledHint": "Temporary file (not saved to disk)",
   "filetree.closeFile": "Close File",
   "filetree.rename": "Rename",
   "filetree.viewProperties": "Properties",
@@ -207,6 +209,35 @@ export const enUS: Record<string, string> = {
   "filetree.folderType": "Folder",
   "filetree.deleted": "Deleted: {name}",
   "filetree.deleteFailed": "Delete failed",
+  // v0.8.0 WP2: copy/paste/drag into open folders, open containing folder as workspace, new folder dialog
+  "filetree.copy": "Copy",
+  "filetree.paste": "Paste",
+  // v0.8.0 fix P12-1: hint shown when the clipboard is empty
+  "filetree.pasteEmpty": "Clipboard is empty, copy a file first",
+  "filetree.copied": "Copied: {name}",
+  // v0.8.0 fix P13-1: cut (paste moves the original file)
+  "filetree.cut": "Cut",
+  "filetree.cutted": "Cut: {name}",
+  "filetree.pasted": "Pasted to: {name}",
+  // v0.8.0 fix P11-1: dedicated message for Shift-drag (move)
+  "filetree.moved": "Moved to: {name}",
+  "filetree.copyFailed": "Copy failed: {error}",
+  "filetree.openWorkspace": "Open Containing Folder as Workspace",
+  "filetree.workspaceOpened": "Opened in sidebar: {name}",
+  "newFolder.title": "New Folder",
+  "newFolder.nameLabel": "Folder name",
+  "newFolder.targetLabel": "Target folders (multi-select)",
+  "newFolder.noOpenFolder": "No folder is currently open",
+  "newFolder.customPathLabel": "Custom save path",
+  "newFolder.customPathHint": "Takes precedence over the selections above",
+  "newFolder.browse": "Browse…",
+  "newFolder.nameRequired": "Please enter a folder name",
+  "newFolder.invalidName": "Folder name cannot contain \\ / : * ? \" < > |",
+  "newFolder.needTarget": "Select at least one target folder or a custom path",
+  "newFolder.created": "Folder created: {name}",
+  "newFolder.partialFailed": "Failed at some locations: {detail}",
+  "newFolder.create": "Create",
+  "newFolder.cancel": "Cancel",
   "filetree.propFileName": "File name: {name}",
   "filetree.propFilePath": "Path: {path}",
   "filetree.propFileDir": "Directory: {dir}",
@@ -247,6 +278,24 @@ export const enUS: Record<string, string> = {
   "appshell.dragToResize": "Drag to resize",
   // ─── Tab bar ───────────────────────────────────
   "tabbar.close": "Close",
+  // v0.8.0 WP3: tab context menu, overflow scrolling, double-click blank area
+  "tabbar.newTab": "New Temporary File (double-click blank area)",
+  "tabbar.scrollLeft": "Scroll tabs left",
+  "tabbar.scrollRight": "Scroll tabs right",
+  "tabbar.rename": "Rename",
+  "tabbar.pin": "Pin Tab",
+  "tabbar.unpin": "Unpin Tab",
+  "tabbar.print": "Print",
+  "tabbar.saveAs": "Save As",
+  "tabbar.closeOthers": "Close Other Tabs",
+  "tabbar.closeOthersKeepPinned": "Close All Except Pinned",
+  "tabbar.closeLeft": "Close Tabs to the Left",
+  "tabbar.closeRight": "Close Tabs to the Right",
+  "tabbar.closeUnmodified": "Close All Unmodified",
+  "tabbar.confirmCloseMany": "{count} files have unsaved changes. Close anyway?",
+  // ─── Sidebar (v0.8.0 WP4: overflow scroll arrows) ───
+  "sidebar.scrollUp": "Scroll up",
+  "sidebar.scrollDown": "Scroll down",
   // N5：右键菜单"打开文件所在目录"（标签页/文件树/最近打开共用）
   "common.revealInFolder": "Reveal in Folder",
   // ─── Editor ───────────────────────────────────
@@ -255,6 +304,8 @@ export const enUS: Record<string, string> = {
   "editor.preview": "Preview",
   // ─── App.tsx application layer ───────────────────────────────────
   "app.untitled": "Untitled.md",
+  // v0.8.0 WP1：临时文件命名（Untitled 1, Untitled 2 …）
+  "app.untitledN": "Untitled {n}",
   "app.unnamed": "Unnamed.md",
   "app.unnamedDoc": "# Unnamed Document\n\nStart typing...\n",
   "app.confirmNewWithUnsaved": "The current file has unsaved changes. Continue creating a new one?",
@@ -287,6 +338,15 @@ export const enUS: Record<string, string> = {
   "export.image.exportFailed": "Image export failed: {error}",
   "export.word.exported": "Word exported: {name}",
   "export.word.exportFailed": "Word export failed: {error}",
+  // WP6: ePub / LaTeX export
+  "export.epub": "E-book (EPUB)",
+  "export.latex": "LaTeX (.tex)",
+  "export.epubInfo": "Export the document as an ePub e-book, split into chapters by headings, preserving images and code highlighting.",
+  "export.latexInfo": "Export as a LaTeX source file (.tex) compilable with XeLaTeX (ctexart document class, Chinese supported).",
+  "export.epub.exported": "EPUB exported: {name}",
+  "export.epub.exportFailed": "EPUB export failed: {error}",
+  "export.latex.exported": "LaTeX exported: {name}",
+  "export.latex.exportFailed": "LaTeX export failed: {error}",
   // G5: PDF layout options
   "export.pdf.title": "PDF Export Options",
   "export.pdf.header": "Header",

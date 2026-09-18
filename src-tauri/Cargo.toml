@@ -1,6 +1,6 @@
 [package]
 name = "lightmd"
-version = "0.7.5"
+version = "0.8.0"
 description = "LightMD - 轻量级 Markdown 编辑器"
 authors = ["LightMD"]
 edition = "2021"

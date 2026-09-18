@@ -1,6 +1,6 @@
 {
   "name": "lightmd",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "private": true,
   "description": "LightMD - 轻量级 Markdown 编辑器",
   "type": "module",
@@ -20,6 +20,7 @@
     "@tauri-apps/plugin-sql": "^2.0.0",
     "docx": "^9.7.1",
     "html-to-image": "^1.11.13",
+    "jszip": "^3.10.2",
     "katex": "^0.17.0",
     "markdown-it": "^14.1.0",
     "markdown-it-deflist": "^3.0.1",

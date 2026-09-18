@@ -25,7 +25,7 @@ import { useT, t } from "../../i18n";
 import { PdfExportDialog } from "./PdfExportDialog";
 import "./ExportDialog.css";
 
-type ExportFormat = "html" | "pdf" | "image" | "word";
+type ExportFormat = "html" | "pdf" | "image" | "word" | "epub" | "latex";
 
 interface ExportDialogProps {
   onClose: () => void;
@@ -60,6 +60,14 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
       } else if (format === "word") {
         const baseName = title.replace(/\.md$/i, "");
         await markdownToDocx(markdown, baseName, filePath);
+      } else if (format === "epub") {
+        const baseName = title.replace(/\.md$/i, "");
+        const { exportEpub } = await import("../../utils/exportEpub");
+        await exportEpub(markdown, baseName, filePath);
+      } else if (format === "latex") {
+        const baseName = title.replace(/\.md$/i, "");
+        const { exportLatex } = await import("../../utils/exportLatex");
+        await exportLatex(markdown, baseName, filePath);
       }
     } catch (err) {
       console.error("导出失败:", err);
@@ -135,6 +143,18 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
                 >
                   {tt("export.word")}
                 </button>
+                <button
+                  className={`export-format-btn ${format === "epub" ? "active" : ""}`}
+                  onClick={() => setFormat("epub")}
+                >
+                  {tt("export.epub")}
+                </button>
+                <button
+                  className={`export-format-btn ${format === "latex" ? "active" : ""}`}
+                  onClick={() => setFormat("latex")}
+                >
+                  {tt("export.latex")}
+                </button>
               </div>
             </div>
 
@@ -162,6 +182,16 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
             {format === "word" && (
               <div className="export-info">
                 {tt("export.wordInfo")}
+              </div>
+            )}
+            {format === "epub" && (
+              <div className="export-info">
+                {tt("export.epubInfo")}
+              </div>
+            )}
+            {format === "latex" && (
+              <div className="export-info">
+                {tt("export.latexInfo")}
               </div>
             )}
           </div>
@@ -204,6 +234,8 @@ function formatLabel(format: ExportFormat, tt: (key: string, params?: Record<str
     case "pdf": return "PDF";
     case "image": return tt("export.image");
     case "word": return tt("export.word");
+    case "epub": return tt("export.epub");
+    case "latex": return tt("export.latex");
   }
 }
 
@@ -259,7 +291,7 @@ li.task-item { display: flex; align-items: flex-start; gap: 6px; margin: 0.3em 0
 .task-item .task-checked { text-decoration: line-through; color: #999; }
 `;
 
-async function renderMarkdownToHTML(md: string): Promise<string> {
+export async function renderMarkdownToHTML(md: string): Promise<string> {
   // 复用主解析器的配置（html:false, breaks:true, linkify:true, typographer:true）
   // 确保导出结果与阅读/分屏模式一致
   const MarkdownIt = (await import("markdown-it")).default;
@@ -626,7 +658,7 @@ function bytesToBase64(bytes: Uint8Array): string {
  * 用于 PDF 导出：Edge headless 打开临时 HTML 文件时，
  * 相对路径/本地路径的图片无法正确加载，需预先转为 data URL 嵌入 HTML
  */
-async function convertImagesToDataUrlInHtml(html: string, docPath: string | null | undefined): Promise<string> {
+export async function convertImagesToDataUrlInHtml(html: string, docPath: string | null | undefined): Promise<string> {
   // 匹配 <img ... src="..." ...> 中的 src
   const imgRegex = /<img\s[^>]*src="([^"]*)"[^>]*>/gi;
   const matches: { src: string; fullMatch: string }[] = [];

@@ -183,6 +183,8 @@ export const zhCN: Record<string, string> = {
   "filetree.clickToOpen": "点击上方按钮打开文件夹",
   "filetree.dragHint": "或拖拽 .md 文件到编辑器",
   "filetree.openedFiles": "打开的文件",
+  // v0.8.0 WP1：临时（未落盘）标签在"打开的文件"面板中的提示
+  "filetree.untitledHint": "临时文件（未保存到磁盘）",
   "filetree.closeFile": "关闭文件",
   "filetree.rename": "重命名",
   "filetree.viewProperties": "查看属性",
@@ -208,6 +210,35 @@ export const zhCN: Record<string, string> = {
   "filetree.folderType": "文件夹",
   "filetree.deleted": "已删除: {name}",
   "filetree.deleteFailed": "删除失败",
+  // v0.8.0 WP2：复制/粘贴/拖拽到打开文件夹、打开所在文件夹工作区、新建文件夹弹框
+  "filetree.copy": "复制",
+  "filetree.paste": "粘贴",
+  // v0.8.0 修复 P12-1：剪贴板为空时"粘贴"置灰的提示
+  "filetree.pasteEmpty": "剪贴板为空，请先复制文件",
+  "filetree.copied": "已复制: {name}",
+  // v0.8.0 修复 P13-1：剪切（粘贴时移动原文件）
+  "filetree.cut": "剪切",
+  "filetree.cutted": "已剪切: {name}",
+  "filetree.pasted": "已粘贴到: {name}",
+  // v0.8.0 修复 P11-1：Shift 拖拽（移动）语义的专用提示
+  "filetree.moved": "已移动到: {name}",
+  "filetree.copyFailed": "复制失败: {error}",
+  "filetree.openWorkspace": "打开所在文件夹工作区",
+  "filetree.workspaceOpened": "已在左侧打开: {name}",
+  "newFolder.title": "新建文件夹",
+  "newFolder.nameLabel": "文件夹名",
+  "newFolder.targetLabel": "目标文件夹（可多选）",
+  "newFolder.noOpenFolder": "当前没有打开的文件夹",
+  "newFolder.customPathLabel": "自定义保存路径",
+  "newFolder.customPathHint": "填写后优先生效，上方勾选将被忽略",
+  "newFolder.browse": "浏览…",
+  "newFolder.nameRequired": "请输入文件夹名",
+  "newFolder.invalidName": "文件夹名不能包含 \\ / : * ? \" < > | 字符",
+  "newFolder.needTarget": "请至少选择一个目标文件夹或自定义路径",
+  "newFolder.created": "已创建文件夹: {name}",
+  "newFolder.partialFailed": "部分位置创建失败: {detail}",
+  "newFolder.create": "创建",
+  "newFolder.cancel": "取消",
   "filetree.propFileName": "文件名: {name}",
   "filetree.propFilePath": "路径: {path}",
   "filetree.propFileDir": "目录: {dir}",
@@ -248,6 +279,24 @@ export const zhCN: Record<string, string> = {
   "appshell.dragToResize": "拖拽调整宽度",
   // ─── 标签栏 ────────────────────────────────────
   "tabbar.close": "关闭",
+  // v0.8.0 WP3：标签栏右键菜单、溢出滚动、空白双击新建临时文件
+  "tabbar.newTab": "新建临时文件（双击空白处）",
+  "tabbar.scrollLeft": "向左滚动标签",
+  "tabbar.scrollRight": "向右滚动标签",
+  "tabbar.rename": "重命名",
+  "tabbar.pin": "固定标签页",
+  "tabbar.unpin": "取消固定",
+  "tabbar.print": "打印",
+  "tabbar.saveAs": "另存为",
+  "tabbar.closeOthers": "关闭其他所有",
+  "tabbar.closeOthersKeepPinned": "关闭固定标签页以外所有",
+  "tabbar.closeLeft": "关闭左侧所有",
+  "tabbar.closeRight": "关闭右侧所有",
+  "tabbar.closeUnmodified": "关闭所有未修改",
+  "tabbar.confirmCloseMany": "有 {count} 个未保存的文件，仍要关闭吗？",
+  // ─── 侧栏（v0.8.0 WP4：溢出滚动箭头）────────────
+  "sidebar.scrollUp": "向上滚动",
+  "sidebar.scrollDown": "向下滚动",
   // N5：右键菜单"打开文件所在目录"（标签页/文件树/最近打开共用）
   "common.revealInFolder": "打开文件所在目录",
   // ─── 编辑器 ────────────────────────────────────
@@ -256,6 +305,8 @@ export const zhCN: Record<string, string> = {
   "editor.preview": "预览",
   // ─── App.tsx 应用层 ────────────────────────────
   "app.untitled": "无标题.md",
+  // v0.8.0 WP1：临时文件命名（新建文件1、新建文件2…）
+  "app.untitledN": "新文件{n}",
   "app.unnamed": "未命名.md",
   "app.unnamedDoc": "# 未命名文档\n\n开始输入内容...\n",
   "app.confirmNewWithUnsaved": "当前文件有未保存的更改，是否继续新建？",
@@ -288,6 +339,15 @@ export const zhCN: Record<string, string> = {
   "export.image.exportFailed": "图片导出失败：{error}",
   "export.word.exported": "已导出 Word：{name}",
   "export.word.exportFailed": "Word 导出失败：{error}",
+  // WP6：ePub / LaTeX 导出
+  "export.epub": "电子书 (EPUB)",
+  "export.latex": "LaTeX (.tex)",
+  "export.epubInfo": "将文档导出为 ePub 电子书，按标题拆分章节，保留图片与代码高亮。",
+  "export.latexInfo": "导出为 LaTeX 源文件（.tex），可用 XeLaTeX 编译（ctexart 文档类，支持中文）。",
+  "export.epub.exported": "已导出 EPUB：{name}",
+  "export.epub.exportFailed": "EPUB 导出失败：{error}",
+  "export.latex.exported": "已导出 LaTeX：{name}",
+  "export.latex.exportFailed": "LaTeX 导出失败：{error}",
   // G5：PDF 导出排版选项
   "export.pdf.title": "PDF 导出选项",
   "export.pdf.header": "页眉",

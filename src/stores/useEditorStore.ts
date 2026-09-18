@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import type { WordCountResult } from "../utils/wordCount";
+// 直接从 i18n/state 引入（不经过 i18n/index，避免 index → useSettingsStore 的依赖回环）
+import { t } from "../i18n/state";
 
 export type ViewMode = "preview" | "edit" | "split";
 
@@ -8,6 +10,24 @@ export interface TabInfo {
   name: string;
   content?: string;
   isDirty?: boolean;
+  /**
+   * v0.8.0 WP1：临时（未落盘）文件标识。
+   * 为 true 时 path 恒为空串（""）——空串是 falsy，自动保存
+   * （useAutoSave 的 !filePath 守卫）、版本快照、recentFiles 等
+   * 既有按路径判断的逻辑天然跳过，无需把 path 改成可空类型。
+   * 用户另存为获得真实路径后置回 false（见 promoteTab）。
+   */
+  isUntitled?: boolean;
+  /** v0.8.0 WP1：临时文件稳定标识（untitled-N），用于持久化恢复与去重 */
+  id?: string;
+  /** v0.8.0 WP3 需求8：固定标签页。固定标签排到最前、不显示关闭按钮、关闭其他/左/右时豁免 */
+  pinned?: boolean;
+  /**
+   * v0.8.0 修复 P2：临时标签记录"新建它之前所在的标签"（id ?? path）。
+   * 需求2 问题2：双击新建临时文件后若反悔关闭它，应回到原来的文件（阅读位置不变），
+   * 而不是按"优先右侧否则左侧"跳到相邻标签。
+   */
+  returnToId?: string;
 }
 
 /**
@@ -111,6 +131,26 @@ interface EditorState {
   updateTabContent: (idx: number, content: string) => void;
   updateTabDirty: (idx: number, isDirty: boolean) => void;
   getTabByPath: (path: string) => number;
+  /**
+   * v0.8.0 WP1：新建临时（未落盘）标签并激活。
+   * 命名"新文件N"，N 取现存临时标签最大序号 +1（不复用被关闭的序号）。
+   */
+  createUntitledTab: () => void;
+  /**
+   * v0.8.0 WP1：把临时标签晋升为正式文件（另存为成功后调用）。
+   * 写入真实路径与文件名、清除 isUntitled/id。
+   */
+  promoteTab: (idx: number, path: string, name: string) => void;
+  /** v0.8.0 WP1：按 id 查找临时标签下标（持久化恢复去重用） */
+  getTabById: (id: string) => number;
+  /**
+   * v0.8.0 WP3 需求8：固定/取消固定标签。
+   * 固定后标签排到最前（"固定区在前"），用稳定排序保持各组内相对顺序；
+   * activeTabIdx 重映射回切换前的活跃标签，避免固定操作改变当前编辑位置。
+   */
+  togglePin: (idx: number) => void;
+  /** v0.8.0 WP3 需求8：重命名未落盘（untitled）标签，仅改 name 不落盘 */
+  renameUntitledTab: (idx: number, name: string) => void;
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -168,6 +208,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   // 手动保存完成：同时解除翻译回写的自动保存抑制与取消快照（v0.6.1 问题2/3）
   markSaved: () => set({ isDirty: false, suppressAutoSave: false, translateUndoSnapshot: null }),
   addTab: (tab) => set((s) => {
+    // v0.8.0 WP1：临时标签的 path 恒为空串，不能参与 path 去重（否则第二个临时
+    // 文件会被当成第一个而被吞掉）。按 id 去重，保证同 id 恢复不重复开标签。
+    if (tab.isUntitled) {
+      const existIdx = tab.id ? s.openTabs.findIndex((t) => t.id === tab.id) : -1;
+      if (existIdx !== -1) return { activeTabIdx: existIdx };
+      return { openTabs: [...s.openTabs, tab], activeTabIdx: s.openTabs.length };
+    }
     // 如果标签已存在（path 相同），切换到该标签并同步更新 name/content
     // 修复：通过文件夹打开文件时，旧逻辑仅切换不更新 name，导致标签显示目录名
     const existIdx = s.openTabs.findIndex((t) => t.path === tab.path);
@@ -222,6 +269,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       } else if (idx === s.activeTabIdx) {
         // 关闭当前标签，优先激活右侧，否则激活左侧
         newActiveIdx = Math.min(idx, Math.max(0, newTabs.length - 1));
+        // v0.8.0 修复 P2：临时标签回到"新建它之前所在的标签"（需求2 问题2：
+        // 双击新建临时文件后反悔关闭，应跳回原文件且阅读位置不变）
+        const returnToId = closedTab?.returnToId;
+        if (returnToId) {
+          const target = newTabs.findIndex((t) => (t.id || t.path) === returnToId);
+          if (target !== -1) newActiveIdx = target;
+        }
       }
       if (newActiveIdx >= newTabs.length) {
         newActiveIdx = Math.max(0, newTabs.length - 1);
@@ -243,4 +297,63 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   getTabByPath: (path) => {
     return get().openTabs.findIndex((t) => t.path === path);
   },
+  // v0.8.0 WP1：新建临时标签。序号取现存临时标签（按 id 的 untitled-N）最大 N + 1，
+  // 不复用已关闭的序号，避免用户在同一会话里看到重名标签。
+  createUntitledTab: () => set((s) => {
+    let maxN = 0;
+    for (const tab of s.openTabs) {
+      const m = tab.id?.match(/^untitled-(\d+)$/);
+      if (m) maxN = Math.max(maxN, Number(m[1]));
+    }
+    const n = maxN + 1;
+    // v0.8.0 修复 P2：记录新建前的活跃标签，关闭本临时标签时回到它（需求2 问题2）
+    const prevActive = s.openTabs[s.activeTabIdx];
+    const returnToId = prevActive ? (prevActive.id || prevActive.path || undefined) : undefined;
+    const tab: TabInfo = {
+      id: `untitled-${n}`,
+      path: "",
+      name: t("app.untitledN", { n }),
+      content: "",
+      isDirty: false,
+      isUntitled: true,
+      returnToId,
+    };
+    return { openTabs: [...s.openTabs, tab], activeTabIdx: s.openTabs.length };
+  }),
+  promoteTab: (idx, path, name) => set((s) => ({
+    openTabs: s.openTabs.map((tab, i) =>
+      i === idx
+        ? { ...tab, path, name, isUntitled: false, id: undefined, isDirty: false }
+        : tab
+    ),
+  })),
+  getTabById: (id) => get().openTabs.findIndex((t) => t.id === id),
+  togglePin: (idx) =>
+    set((s) => {
+      const tab = s.openTabs[idx];
+      if (!tab) return {};
+      const updated = s.openTabs.map((t, i) =>
+        i === idx ? { ...t, pinned: !t.pinned } : t
+      );
+      // 固定区在前的稳定排序：pinned 排到前面，组内保持原有相对顺序
+      const reordered = [...updated].sort(
+        (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)
+      );
+      // 重新映射 activeTabIdx 到切换前的活跃标签（用 id/path 作为稳定标识）
+      const activeTab = s.openTabs[s.activeTabIdx];
+      const activeId = activeTab ? (activeTab.id ?? activeTab.path) : undefined;
+      let newActive = s.activeTabIdx;
+      if (activeId !== undefined) {
+        const found = reordered.findIndex((t) => (t.id ?? t.path) === activeId);
+        if (found !== -1) newActive = found;
+      }
+      return { openTabs: reordered, activeTabIdx: newActive };
+    }),
+  renameUntitledTab: (idx, name) =>
+    set((s) => {
+      if (!name) return {};
+      return {
+        openTabs: s.openTabs.map((t, i) => (i === idx ? { ...t, name } : t)),
+      };
+    }),
 }));

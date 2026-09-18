@@ -229,6 +229,9 @@ function parseBlockToken(tokens: Token[], index: number, end: number, headings?:
     case "task_list_open": return parseTaskList(tokens, index);
     case "blockquote_open": return parseBlockquote(tokens, index, headings);
     case "fence": return parseFence(tokens, index);
+    // v0.8.0 修复 P11-6：缩进代码块（markdown-it 的 code_block token，无语言标识）。
+    // 此前该 token 类型没有对应解析分支，顶层与列表项内的缩进代码块内容会**直接丢失**。
+    case "code_block": return parseCodeBlock(tokens, index);
     case "math_block": return parseMathBlock(tokens, index);
     case "hr":
       return { node: schema.nodes.horizontal_rule.create(), nextIndex: index + 1 };
@@ -303,33 +306,61 @@ function parseParagraph(tokens: Token[], index: number): ParseResult {
 // ─── 列表 ────────────────────────────────────────────────
 
 function parseList(tokens: Token[], index: number, listType: "bullet_list" | "ordered_list"): ParseResult {
-  const openType = listType === "bullet_list" ? "bullet_list_open" : "ordered_list_open";
   const closeType = listType === "bullet_list" ? "bullet_list_close" : "ordered_list_close";
   const listNodeType = listType === "bullet_list" ? schema.nodes.bullet_list : schema.nodes.ordered_list;
 
-  let depth = 0;
   const items: Node[] = [];
-  let currentContent: string[] = [];
-  let i = index;
+  let i = index + 1; // 跳过 list_open
 
-  for (; i < tokens.length; i++) {
+  while (i < tokens.length) {
     const t = tokens[i];
-    if (t.type === openType) { depth++; continue; }
     if (t.type === closeType) {
-      depth--;
-      if (depth === 0) break;
+      i++;
+      break;
+    }
+    if (t.type !== "list_item_open") {
+      i++;
       continue;
     }
-    if (depth === 1) {
-      if (t.type === "list_item_open") {
-        currentContent = [];
-      } else if (t.type === "list_item_close") {
-        const para = schema.nodes.paragraph.create(null, parseInline(currentContent.join("")));
-        items.push(schema.nodes.list_item.create(null, [para]));
-      } else if (t.type === "inline") {
-        currentContent.push(t.content);
+
+    // v0.8.0 修复 P11-6：list_item 的内容是一串**块级子节点**
+    // （段落 / 嵌套列表 / 代码块 / 引用块…）。旧实现把项内所有 inline token
+    // 累积进同一个 paragraph，导致：
+    //   ① 项内多段落被粘连成一段（"第一行第二行"，模式切换后换行彻底消失）；
+    //   ② 嵌套列表、项内代码块被完全忽略 → 内容丢失。
+    // 这里改为复用通用块解析（parseBlockToken），按真实结构构建块序列。
+    const blocks: Node[] = [];
+    i++; // 进入 list_item
+    while (i < tokens.length && tokens[i].type !== "list_item_close") {
+      const consumed = parseBlockToken(tokens, i, tokens.length);
+      if (consumed && consumed.nextIndex > i) {
+        blocks.push(consumed.node, ...(consumed.extraNodes || []));
+        i = consumed.nextIndex;
+      } else {
+        // 兜底：裸 inline token（无 paragraph 包裹）按段落内容处理
+        const raw = tokens[i];
+        if (raw.type === "inline") {
+          const kids = raw.children ? parseInlineTokens(raw.children) : parseInline(raw.content);
+          blocks.push(
+            schema.nodes.paragraph.create(
+              null,
+              kids.filter((n) => !n.isText || (n.text && n.text.length > 0)),
+            ),
+          );
+        }
+        i++;
       }
     }
+    if (i < tokens.length && tokens[i].type === "list_item_close") i++;
+
+    // list_item 的 content 为 "paragraph block*"：首个子节点必须是段落
+    if (blocks.length === 0) {
+      blocks.push(schema.nodes.paragraph.create());
+    } else if (blocks[0].type.name !== "paragraph") {
+      blocks.unshift(schema.nodes.paragraph.create());
+    }
+
+    items.push(schema.nodes.list_item.create(null, blocks));
   }
 
   const attrs = listType === "ordered_list" ? { order: 1 } : {};
@@ -427,6 +458,19 @@ function parseFence(tokens: Token[], index: number): ParseResult {
       { language },
       [schema.text(textContent)]
     ),
+    nextIndex: index + 1,
+  };
+}
+
+/**
+ * v0.8.0 修复 P11-6：缩进代码块（4 空格缩进，markdown-it 输出 code_block token）。
+ * 与 fence 的区别是没有任何语言标识。
+ */
+function parseCodeBlock(tokens: Token[], index: number): ParseResult {
+  const token = tokens[index];
+  const textContent = (token.content || "").replace(/\n$/, "") || "\u200B";
+  return {
+    node: schema.nodes.code_block.create({ language: "" }, [schema.text(textContent)]),
     nextIndex: index + 1,
   };
 }
@@ -531,8 +575,19 @@ function buildTableRow(cells: Token[][], aligns: string[], isHeader: boolean): N
     const cellTokens = cells[idx];
     if (!cellTokens) continue;
     const align = aligns[idx] || "left";
-    const text = cellTokens.map((t) => t.content).join("");
-    const inlineNodes = parseInline(text);
+    // v0.8.0 WP5 修复6：改用 children 解析累积节点流（与 inline 一致），
+    // 避免 .content join 丢失表格单元格内的段内换行（softbreak）。
+    let inlineNodes: Node[] = [];
+    for (const t of cellTokens) {
+      if (t.type === "inline") {
+        const kids = t.children
+          ? parseInlineTokens(t.children, true)
+          : parseInline(t.content, true);
+        for (const n of kids) {
+          if (!n.isText || (n.text && n.text.length > 0)) inlineNodes.push(n);
+        }
+      }
+    }
     const cellType = isHeader ? schema.nodes.table_header : schema.nodes.table_cell;
     cellNodes.push(cellType.create({ align }, inlineNodes));
   }
@@ -636,7 +691,7 @@ function parseDefinitionList(tokens: Token[], index: number): ParseResult {
 
 // ─── Inline 解析 ─────────────────────────────────────────
 
-function parseInline(text: string): Node[] {
+function parseInline(text: string, inTableCell = false): Node[] {
   if (!text) return [];
   const rawTokens = md.parseInline(text, {});
   const allTokens = rawTokens as unknown as Token[];
@@ -645,17 +700,17 @@ function parseInline(text: string): Node[] {
   // Extract actual tokens from children
   const inlineToken = allTokens.find((t) => t.type === "inline");
   if (inlineToken?.children) {
-    return parseInlineTokens(inlineToken.children).filter(n => {
+    return parseInlineTokens(inlineToken.children, inTableCell).filter(n => {
       // 过滤掉空文本节点
       return !n.isText || (n.text && n.text.length > 0);
     });
   }
-  return parseInlineTokens(allTokens).filter(n => {
+  return parseInlineTokens(allTokens, inTableCell).filter(n => {
     return !n.isText || (n.text && n.text.length > 0);
   });
 }
 
-function parseInlineTokens(tokens: Token[]): Node[] {
+function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
   const nodes: Node[] = [];
   let i = 0;
 
@@ -664,7 +719,20 @@ function parseInlineTokens(tokens: Token[]): Node[] {
 
     if (t.type === "text") {
       // 跳过空文本节点（ProseMirror 不允许空文本节点）
-      if (t.content) nodes.push(schema.text(t.content));
+      if (t.content) {
+        // v0.8.0 修复 P0-1：表格单元格内的换行由 serializer 写成 <br>（真实换行
+        // "  \n" 会截断 GFM 表格行）。md 配置 html:false，<br> 落在 text token 里，
+        // 此处仅在表格单元格上下文把它还原为 hard_break，保证表格内换行往返保真。
+        if (inTableCell && /<br\s*\/?>/i.test(t.content)) {
+          const segs = t.content.split(/<br\s*\/?>/gi);
+          segs.forEach((seg, sIdx) => {
+            if (sIdx > 0) nodes.push(schema.nodes.hard_break.create());
+            if (seg) nodes.push(schema.text(seg));
+          });
+        } else {
+          nodes.push(schema.text(t.content));
+        }
+      }
       i++; continue;
     }
     if (t.type === "emoji") {
@@ -673,7 +741,10 @@ function parseInlineTokens(tokens: Token[]): Node[] {
       i++; continue;
     }
     if (t.type === "hardbreak") { nodes.push(schema.nodes.hard_break.create()); i++; continue; }
-    if (t.type === "softbreak") { nodes.push(schema.text(" ")); i++; continue; }
+    // v0.8.0 WP5 修复6：段内单换行（softbreak）原本被解析成 schema.text(" ")，
+    // 导致 md→doc→md 往返丢换行（"a\nb" 变 "a b"）。改为 hard_break 节点，
+    // 与 serializer 的 "  \n"（CommonMark 两空格硬换行）互逆，保真往返。
+    if (t.type === "softbreak") { nodes.push(schema.nodes.hard_break.create()); i++; continue; }
     if (t.type === "code_inline") {
       // code_inline 内容可能为空，用零宽空格占位
       nodes.push(schema.text(t.content || "\u200B", [schema.mark("code")]));

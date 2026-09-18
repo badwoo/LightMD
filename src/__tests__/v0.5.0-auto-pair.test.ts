@@ -159,6 +159,88 @@ describe("v0.5.0 N1：自动配对补全", () => {
     expect(handler(v, pos, pos, "ab", () => v.state.tr)).toBe(false);
   });
 
+  it("PAIR_MAP 覆盖中文标点（引号/括号/书名号/直角引号），闭符号集合与映射一致", () => {
+    expect(PAIR_MAP["“"]).toBe("”");
+    expect(PAIR_MAP["‘"]).toBe("’");
+    expect(PAIR_MAP["（"]).toBe("）");
+    expect(PAIR_MAP["【"]).toBe("】");
+    expect(PAIR_MAP["《"]).toBe("》");
+    expect(PAIR_MAP["「"]).toBe("」");
+    // 不与英文引号/括号冲突（中文闭符号不作为开符号）
+    expect(PAIR_MAP["”"]).toBeUndefined();
+    expect(PAIR_MAP["）"]).toBeUndefined();
+    expect(PAIR_MAP["】"]).toBeUndefined();
+    expect(PAIR_MAP["》"]).toBeUndefined();
+    expect(PAIR_MAP["」"]).toBeUndefined();
+    // 全部开符号的闭符号均在 PAIR_CLOSERS 中
+    for (const open of Object.keys(PAIR_MAP)) {
+      expect(PAIR_CLOSERS.has(PAIR_MAP[open])).toBe(true);
+    }
+  });
+
+  it("PM：输入中文开符号「（」补全成对且光标居中", () => {
+    const v = mk({ parent, initialContent: "ab" });
+    view = v;
+    const pos = posInParagraph(v, 1); // a|b
+    const handler = autoPairPlugin().props.handleTextInput as (
+      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
+    ) => boolean;
+    const handled = handler(v, pos, pos, "（", () => v.state.tr);
+    expect(handled).toBe(true);
+    expect(v.state.doc.textContent).toBe("a（）b");
+    expect(v.state.selection.from).toBe(pos + 1);
+  });
+
+  it("PM：输入中文闭符号「）」且下一字符相同 → 跳过（光标右移）", () => {
+    const v = mk({ parent, initialContent: "（）" });
+    view = v;
+    const pos = posInParagraph(v, 1); // （|）
+    const handler = autoPairPlugin().props.handleTextInput as (
+      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
+    ) => boolean;
+    const handled = handler(v, pos, pos, "）", () => v.state.tr);
+    expect(handled).toBe(true);
+    expect(v.state.doc.textContent).toBe("（）");
+    expect(v.state.selection.from).toBe(pos + 1);
+  });
+
+  it("PM：空配对 Backspace 删一对", () => {
+    const v = mk({ parent, initialContent: "ab" });
+    view = v;
+    const pos = posInParagraph(v, 1);
+    const inHandler = autoPairPlugin().props.handleTextInput as (
+      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
+    ) => boolean;
+    inHandler(v, pos, pos, "（", () => v.state.tr); // a（）b，光标居中
+    const keyHandler = autoPairPlugin().props.handleKeyDown as (
+      view: EditorView, ev: KeyboardEvent
+    ) => boolean;
+    const handled = keyHandler(v, { key: "Backspace" } as KeyboardEvent);
+    expect(handled).toBe(true);
+    expect(v.state.doc.textContent).toBe("ab");
+  });
+
+  it("PM：配对内有内容时 Backspace 只删内容不吞闭符号（不拦截）", () => {
+    const v = mk({ parent, initialContent: "ab" });
+    view = v;
+    const pos = posInParagraph(v, 1);
+    const inHandler = autoPairPlugin().props.handleTextInput as (
+      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
+    ) => boolean;
+    inHandler(v, pos, pos, "（", () => v.state.tr); // a（）b
+    const cur = v.state.selection.from;
+    // 配对内填入普通内容 x（handleTextInput 对非配对字符返回 false，由 PM 默认插入）
+    v.dispatch(v.state.tr.insertText("x", cur)); // a（x）b
+    expect(v.state.doc.textContent).toBe("a（x）b");
+    const keyHandler = autoPairPlugin().props.handleKeyDown as (
+      view: EditorView, ev: KeyboardEvent
+    ) => boolean;
+    const handled = keyHandler(v, { key: "Backspace" } as KeyboardEvent);
+    // 不拦截：默认 Backspace 仅删光标前单字符（x），闭符号「）」保留
+    expect(handled).toBe(false);
+    expect(v.state.doc.textContent).toBe("a（x）b");
+  });
+
   it("设置 store：autoPairEnabled 默认开启，setter 生效并持久化字段存在", () => {
     const src = readSrc("src/stores/useSettingsStore.ts");
     expect(src).toMatch(/autoPairEnabled: true/);
@@ -175,6 +257,13 @@ describe("v0.5.0 N1：自动配对补全", () => {
     expect(src).toMatch(/PAIR_CLOSERS\.has\(key\)/);
     // 包裹选区：单次插入 开符号+选中文本+闭符号（一次 undo）
     expect(src).toMatch(/insertText", false, key \+ selected \+ close/);
+  });
+
+  it("textarea 端：EditorContainer 接入 Backspace 空配对成对删除", () => {
+    const src = readSrc("src/components/editor/EditorContainer.tsx");
+    expect(src).toMatch(/e\.key === "Backspace"/);
+    expect(src).toMatch(/PAIR_MAP\[chBefore\]/);
+    expect(src).toMatch(/chAfter === close/);
   });
 
   it("SettingsDialog 提供开关项 + i18n 文案（zh/en）", () => {

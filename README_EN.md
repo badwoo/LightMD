@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.7.5**
+**Current Version: v0.8.0**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -44,6 +44,20 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 🔗 **Smart URL Paste** — pasting a URL creates `[link](URL)`, or turns selected text into a hyperlink (0.5.0)
 - 🖱 **Table Context Menu** — right-click a table in preview mode to insert/delete rows and columns (0.2.0)
 
+### 🗂 Tabs & File Management (strengthened in 0.8.0)
+- 🆕 **Untitled scratch tabs** — create with `Ctrl+N` or by double-clicking the empty tab-bar area; nothing is written to disk until the first save, and unsaved scratch tabs are restored on restart
+- 📌 **Tab bar upgrades** — left/right scroll buttons plus smooth wheel scrolling when tabs overflow; pin a tab (pin icon shown); 9-item context menu (Rename / Pin / Print / Save As / Close Others / Close Others Except Pinned / Close to the Left / Close to the Right / Close Unmodified)
+- 📋 **File tree copy / cut / paste / drag** — copy or cut from the context menu or with `Ctrl+C` / `Ctrl+V`; drag onto a folder to copy, hold `Shift` to move (tab paths follow automatically); name clashes get a " - Copy" suffix
+- 🗑 **Delete closes its tabs** — removing a file or folder also closes the matching open tabs
+- 🧭 **Open containing folder as workspace** — from the tab/file/recent-item context menu
+- 🖱 **Redesigned sidebar layout** — drag a section header to resize (neighbouring sections trade height, and the last one can be dragged all the way down); floating scroll arrows and a slimmer, subtler scrollbar
+
+### ✍️ Editing Experience (strengthened in 0.8.0)
+- ↩️ **Line-break fidelity** — `Shift+Enter` inside table cells, multi-paragraph list items, nested lists and indented code blocks survive saving intact
+- 🔤 **CJK punctuation pairing** — `「」『』《》【】（）` and friends auto-close, `Backspace` deletes in pairs, and typing a closing mark next to an existing one just moves the caret (no more quadruple quotes)
+- 🎯 **Typewriter mode centers immediately** when switched on
+- 🧭 **Mode-switch anchor** — switching between preview/source/split keeps you at the same editing position instead of jumping
+
 ### ✨ AI Translation
 
 - **Selection & Full-Document Translation** — select text and translate it from the context menu or the "Translate" button; with no selection the whole document is translated (`Shift+F6`, the floating button, or the command palette)
@@ -61,10 +75,12 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - **Per-Bubble Visibility & Colors** — the four AI bubbles can be hidden and restored individually and colored individually; the "译" bubble color is configurable too (0.7.5)
 
 ### 🛠 Advanced Features
-- 🎨 **Light / Dark Theme** (toggle with `Ctrl+Shift+T`)
+- 🎨 **6 Themes** — light / dark / GitHub / newsprint / night / solarized (cycle with `Ctrl+Shift+T`)
 - 🔤 **Custom Font** and Size
 - 🖼 **Image Paste** — paste image and choose insertion method via dialog, with option to save to `assets/` folder
 - 📤 **Export HTML** (preserves Mermaid / KaTeX rendering)
+- 📤 **Export ePub** — chapters split by heading, bundled images, code-block styling (0.8.0)
+- 📤 **Export LaTeX** — generates a `.tex` source (ctexart + XeLaTeX, Chinese-ready) (0.8.0)
 - 🎯 **Focus Mode** (toggle with `F8`, dims inactive paragraphs)
 - ⌨️ **Typewriter Mode** (toggle with `F9`, cursor always centered)
 - 🔗 **Link Insert Dialog** — text/URL/title inputs with live preview (0.2.0)
@@ -85,11 +101,11 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 | Category | Shortcut | Action |
 |----------|----------|--------|
-| **File** | `Ctrl+N` | New file |
+| **File** | `Ctrl+N` | New scratch (untitled) tab — writes to disk only on first save |
 | | `Ctrl+O` | Open file |
 | | `Ctrl+S` | Save |
 | | `Ctrl+Shift+S` | Save as (strikethrough inside editor, see below) |
-| | `Ctrl+Shift+E` | Export HTML |
+| | `Ctrl+Shift+E` | Open the export dialog |
 | **Edit** | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 | | `Ctrl+F` | Search |
 | | `Ctrl+H` | Find & Replace |
@@ -111,6 +127,8 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 | **Tabs** | `Ctrl+W` | Close current tab |
 | | `Ctrl+Tab` | Switch to next tab |
 | | `Ctrl+Shift+Tab` | Switch to previous tab |
+| | `Ctrl+Alt+V` | Open the version snapshot window (0.8.0, was `Ctrl+Shift+V`) |
+| **Sidebar file tree** | `Ctrl+C` / `Ctrl+V` | Copy / paste (or move after cut) the selected file, when focus is in the sidebar |
 | **View** | `Ctrl+Shift+T` | Toggle theme |
 | | `Ctrl+Shift+O` | Toggle outline / syntax helper |
 | | `F8` | Focus mode |
@@ -123,10 +141,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.7.5 installers:
+Visit the [Releases](../../releases) page to download the 0.8.0 installers:
 
-- **`LightMD_0.7.5_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.7.5_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.8.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.8.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -177,6 +195,32 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.8.0 (2026-09-18)
+
+**Deep interaction & editing-experience polish** (baseline 0.7.5; 16 requested items/fixes, plus pre-release review fixes and three rounds of follow-up feedback fixes)
+
+**New features**
+
+- **Untitled scratch tabs** — `Ctrl+N` or double-click the empty tab-bar area; nothing hits the disk until the first save, and unsaved scratch tabs survive a restart
+- **Tab bar upgrades** — overflow scroll buttons + smooth wheel scrolling, tab pinning with a pin icon, and a 9-item context menu (Rename / Pin / Print / Save As / Close Others / Close Others Except Pinned / Close to the Left / Close to the Right / Close Unmodified)
+- **File tree copy / cut / paste / drag** — via the context menu or `Ctrl+C` / `Ctrl+V`; drag onto a folder copies, `Shift`+drag moves and updates tab paths; clashing names get " - Copy"
+- **New folder dialog** — multiple target folders plus a custom path (takes priority), with a per-item failure report
+- **Open containing folder as workspace** — from the tab/file/recent-item context menu
+- **Redesigned sidebar layout** — section headers resize with conserved neighbouring heights and can be dragged to the bottom; floating scroll arrows; slimmer scrollbar
+- **Export ePub / LaTeX** — ePub splits chapters by heading and bundles images; LaTeX emits a compilable ctexart + XeLaTeX source
+
+**Fixes**
+
+- **Line-break fidelity (data correctness)** — multi-paragraph list items, nested lists and indented code blocks no longer merge or vanish across mode switches and saves; `Shift+Enter` inside table cells now serializes as `<br>` and no longer corrupts the table
+- **CJK punctuation pairing + paired deletion** — new `「」『』《》【】（）` pairs, `Backspace` deletes both halves and skips inline code / math, and typing a closer next to an existing one only moves the caret
+- **Typewriter mode centers immediately**; **mode-switch anchor** keeps the same editing position across preview/source/split
+- **Deleting a file closes its tabs** (recursive for parent folders); **tab hover close-button jitter** fixed
+- **Startup race** — scratch tabs no longer steal activation from the last opened file
+- **Shortcut scope fixes** — `Ctrl+C` / `Ctrl+V` only act inside the sidebar tree and no longer hijack text copying; version snapshot moved to `Ctrl+Alt+V` (the old `Ctrl+Shift+V` clashed with paste); `Shift`+dragging a file into its own folder no longer renames it
+- **Printing** — switches to preview mode and waits for render, so it no longer prints the previous tab or a truncated source view
+- **ePub** chapter XHTML is normalized (`<br>` / `<img>` / `<hr>` / `<input>` self-close correctly, so strict readers can open it)
+- Plus assorted polish: cut in the "Open Files" list, unsaved content preserved when switching files, sidebar toasts anchored next to the sidebar, and more
 
 ### v0.7.5 (2026-09-13)
 

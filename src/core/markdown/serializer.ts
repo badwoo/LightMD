@@ -187,6 +187,10 @@ function listToMarkdown(
         isFirstChild = false;
       } else {
         // 后续内容：4空格缩进（标准 Markdown 续行）
+        // v0.8.0 修复 P11-6：后续**段落**前必须先插入空行，否则 markdown-it 会把
+        // 缩进续行当作同一段落的软换行 → 多段落降级成"单段落 + hard_break"
+        // （模式切换回来后段落结构丢失）。嵌套列表等块级节点不需要空行。
+        if (child.type.name === "paragraph") lines.push("");
         const indent = "    ";
         const trimmed = childMd.trimEnd();
         trimmed.split("\n").forEach((line) => {
@@ -257,7 +261,7 @@ function tableToMarkdown(node: Node): string {
     section.forEach((row) => {
       const cells: string[] = [];
       row.forEach((cell, _offset, colIdx) => {
-        cells.push(inlineToMarkdown(cell).trim());
+        cells.push(inlineToMarkdown(cell, "table").trim());
         // 从第一个thead行提取对齐
         if (aligns.length <= colIdx && section.type.name === "table_head") {
           aligns[colIdx] = cell.attrs.align || "left";
@@ -301,7 +305,7 @@ function tableToMarkdown(node: Node): string {
 
 // ─── Inline 序列化 ───────────────────────────────────────
 
-function inlineToMarkdown(node: Node): string {
+function inlineToMarkdown(node: Node, context?: "table"): string {
   const parts: string[] = [];
 
   node.forEach((child) => {
@@ -321,7 +325,11 @@ function inlineToMarkdown(node: Node): string {
       const titlePart = title ? ` "${title}"` : "";
       parts.push(`![${alt || ""}](${src}${titlePart})`);
     } else if (child.type.name === "hard_break") {
-      parts.push("\n");
+      // v0.8.0 WP5 修复6：硬换行序列化为 CommonMark 两空格硬换行（"  \n"），
+      // 与 parser 的 softbreak→hard_break 互逆，保证 md→doc→md 段内换行保真。
+      // v0.8.0 修复 P0-1：表格单元格内不能写 "  \n"（真实换行会截断 GFM 表格行），
+      // 改用 <br>，parser 端在表格上下文会把它还原为 hard_break。
+      parts.push(context === "table" ? "<br>" : "  \n");
     } else if (child.type.name === "math_inline") {
       // 行内数学公式
       const latex = child.textContent || child.attrs.latex || "";

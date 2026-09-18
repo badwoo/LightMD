@@ -23,6 +23,13 @@ export const PAIR_MAP: Record<string, string> = {
   '"': '"',
   "'": "'",
   "`": "`",
+  // v0.8.0 修复5：中文标点补全（IME 提交单字符触发 handleTextInput，text.length===1 可通过）
+  "“": "”", // 中文双引号
+  "‘": "’", // 中文单引号
+  "（": "）", // 中文圆括号
+  "【": "】", // 中文方括号
+  "《": "》", // 书名号
+  "「": "」", // 中文直角引号（『』 不加）
 };
 
 /** 闭符号集合（用于跳过逻辑） */
@@ -53,8 +60,14 @@ export function autoPairPlugin(): Plugin {
         const { state } = view;
         const close = PAIR_MAP[text];
 
-        // 输入闭符号：若下一字符已是该闭符号，跳过输入（光标右移一位）
-        if (!close && PAIR_CLOSERS.has(text)) {
+        // v0.8.0 修复 P11-5：输入闭符号时"跳过已有右符号"（overtype）。
+        //
+        // 该判断必须在补全逻辑之前，且要对**自配对字符**（" ' ` 及中文引号）同样生效。
+        // 旧实现的条件是 `!close`，即只处理 )]} 这类"非开符号"；而 " 在 PAIR_MAP 中
+        // value 就是它自己（close 恒为真），永远走不到跳过分支 → 在文字中间输入第二个 "
+        // 会被当成开符号再插入一对，出现 4 个引号。主流实现（VS Code closeBrackets /
+        // CodeMirror closeBrackets）同样是"紧邻右侧已有相同字符则仅移动光标"。
+        if (from === to && PAIR_CLOSERS.has(text)) {
           const next = state.doc.textBetween(to, to + 1);
           if (next === text) {
             const tr = state.tr;
@@ -62,7 +75,8 @@ export function autoPairPlugin(): Plugin {
             view.dispatch(tr);
             return true;
           }
-          return false;
+          // 非自配对闭符号（) ] } 等）且右侧不是同类字符 → 交给默认输入
+          if (!close) return false;
         }
         if (!close) return false;
 
@@ -80,6 +94,31 @@ export function autoPairPlugin(): Plugin {
         view.dispatch(tr);
         return true;
       },
+
+    // v0.8.0 修复5：Backspace 空配对成对删除
+    // 光标前为开符号、光标后为对应闭符号（即空配对 "()"、"“”" 等）→ 一次删掉一对。
+    // 有内容时（"（x）"）不拦截：默认 Backspace 仅删光标前单字符，不吞闭符号。
+    // Delete 键删右侧单字符、之后 Backspace 删左侧单字符为浏览器/PM 默认行为，无需实现。
+    handleKeyDown(view, event) {
+      if (!useSettingsStore.getState().autoPairEnabled) return false;
+      if (event.key !== "Backspace") return false;
+      if (inDisabledNode(view)) return false;
+
+      const { state } = view;
+      const { from, to } = state.selection;
+      // 仅处理光标无选区（collapsed）场景
+      if (from !== to) return false;
+
+      const before = state.doc.textBetween(from - 1, from);
+      const after = state.doc.textBetween(to, to + 1);
+      const close = PAIR_MAP[before];
+      if (close && after === close) {
+        const tr = state.tr.delete(from - 1, to + 1);
+        view.dispatch(tr);
+        return true;
+      }
+      return false;
     },
+  },
   });
 }

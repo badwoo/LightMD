@@ -22,6 +22,10 @@ import { versionSnapshotService } from "./services/versionSnapshotService";
 // v0.7.0 bug修复：文件浏览进度（重新打开/关闭标签时清除，标签切换保留）
 import { fileScrollProgress } from "./services/fileScrollProgress";
 import { safeSetItem } from "./utils/safeStorage";
+// v0.8.0 WP1：临时（未落盘）标签的持久化与启动恢复
+import { loadUntitledTabs, saveUntitledTabs, clearUntitledTabs, isUntitledRestoreEnabled } from "./utils/untitledTabs";
+// v0.8.0 WP2 修复2：删除文件后按路径关闭匹配标签
+import { collectTabsToClose } from "./utils/tabCleanup";
 import { setCurrentDocPath } from "./utils/imagePath";
 import { isSupportedTextFile, isMarkdownFile, ALL_SUPPORTED_EXTENSIONS, HUGE_FILE_THRESHOLD, getFileLanguage } from "./utils/constants";
 import { evalDoublePress } from "./utils/modeSwitch";
@@ -215,6 +219,21 @@ function App() {
     const handler = async (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail?.content !== undefined) {
+        // v0.8.0 修复 P11-7：切走之前先把当前编辑器内容写回当前标签。
+        // 旧实现直接 setContent(新文件)，当前文件刚编辑的内容没进标签就被覆盖 →
+        // "编辑 A → 点开 B → 切回 A"时 A 的编辑丢失。
+        const st0 = useEditorStore.getState();
+        if (st0.openTabs[st0.activeTabIdx]) {
+          st0.updateTabContent(st0.activeTabIdx, contentRef.current);
+        }
+        // v0.8.0 修复 P11-7：目标文件若已打开（已有标签），切回该标签并沿用标签内内容
+        // （含未保存编辑），不再用磁盘内容覆盖；只有首次打开才采用磁盘内容。
+        const existingIdx = detail.path ? st0.getTabByPath(detail.path) : -1;
+        const alreadyOpen = existingIdx !== -1;
+        const targetContent: string = alreadyOpen
+          ? (st0.openTabs[existingIdx].content ?? detail.content)
+          : detail.content;
+
         // 问题8修复：先同步设置文档路径，确保 ProseMirror 渲染图片时能正确解析相对路径
         // React useEffect 执行顺序是子组件先于父组件，若依赖 useEffect 设置 currentDocPath，
         // EditorContainer 的 useEffect（更新 ProseMirror）会先执行，导致图片用旧路径渲染失败
@@ -223,11 +242,12 @@ function App() {
         }
         // 只通过 React 状态更新编辑器内容，避免双重 dispatch
         // EditorContainer 的 useEffect([content, forceUpdateKey]) 会统一处理 ProseMirror 更新
-        setContent(detail.content);
-        safeSetItem("lightmd-content", detail.content);
+        setContent(targetContent);
+        safeSetItem("lightmd-content", targetContent);
         setForceUpdateKey((k) => k + 1);
         // v0.7.0 bug修复：重新打开文件时清除浏览进度（从文件树点击 = 重新打开，重置到顶部）
-        if (detail.path) {
+        // v0.8.0 修复 P11-7：已打开的文件属于"切回标签"，浏览进度应保留
+        if (detail.path && !alreadyOpen) {
           fileScrollProgress.clear(detail.path);
         }
 
@@ -244,11 +264,14 @@ function App() {
           safeSetItem("lightmd-last-file", detail.path);
           // 文件名优先使用 detail.name（来自 FileTree 的 node.name），避免路径解析得到目录名
           const fileName = detail.name || getFileName(detail.path);
-          // 添加到标签页（若已存在则切换到该标签，但不更新 content）
-          addTab({ path: detail.path, name: fileName, content: detail.content, isDirty: false });
-          // 显式更新标签页 content，确保已存在标签页也能加载最新内容
+          // 已打开：沿用标签的 dirty 状态；首次打开：新标签且非脏
+          const wasDirty = alreadyOpen ? !!st0.openTabs[existingIdx].isDirty : false;
+          addTab({ path: detail.path, name: fileName, content: targetContent, isDirty: wasDirty });
+          // 显式更新标签页 content（使用标签内内容，避免覆盖未保存编辑）
           const { activeTabIdx: newIdx } = useEditorStore.getState();
-          updateTabContent(newIdx, detail.content);
+          updateTabContent(newIdx, targetContent);
+          // 切换回已修改的文件时标题栏/标签保持脏标记
+          setDirty(wasDirty);
           addRecentFile({
             path: detail.path,
             name: fileName,
@@ -334,7 +357,8 @@ function App() {
           safeSetItem("lightmd-content", tab.content || "");
           openFile(tab.path);
           // v0.4.0：切换到剩余标签时，根据其路径重新设置语言标识
-          const lang = isMarkdownFile(tab.path) ? "markdown" : getFileLanguage(tab.path);
+          // v0.8.0 修复 P11-2：临时文档（path 为空）按 markdown 处理
+          const lang = !tab.path || isMarkdownFile(tab.path) ? "markdown" : getFileLanguage(tab.path);
           setCurrentLanguage(lang);
           setForceUpdateKey((k) => k + 1);
         }
@@ -464,6 +488,74 @@ function App() {
     };
   }, []);
 
+  // ─── v0.8.0 WP1：临时标签内容持久化 ──────────────────────────
+  // 需求：临时文件只有用户自行保存才落盘，但其编辑内容需在下次启动时恢复。
+  // 做法：openTabs 变化后防抖写入 localStorage；窗口关闭前再强制冲刷一次，
+  // 避免"最后一次输入后立刻退出"丢失内容。
+  const untitledSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (untitledSaveTimerRef.current) clearTimeout(untitledSaveTimerRef.current);
+    untitledSaveTimerRef.current = setTimeout(() => {
+      // v0.8.0 修复 P2-1：与启动恢复共用开关——关闭时既不写入，也清掉历史残留，
+      // 避免"设置里关了恢复，内容却一直留在 localStorage"
+      if (!isUntitledRestoreEnabled()) {
+        clearUntitledTabs();
+        return;
+      }
+      saveUntitledTabs(useEditorStore.getState().openTabs);
+    }, 400);
+    return () => {
+      if (untitledSaveTimerRef.current) clearTimeout(untitledSaveTimerRef.current);
+    };
+  }, [openTabs]);
+
+  useEffect(() => {
+    const flush = () => {
+      if (!isUntitledRestoreEnabled()) {
+        clearUntitledTabs();
+        return;
+      }
+      saveUntitledTabs(useEditorStore.getState().openTabs);
+    };
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
+  }, []);
+
+  // ─── v0.8.0 WP1：启动恢复临时标签 ──────────────────────────
+  // 与 restoreRecentFiles 同一开关（loadLastFileOnStartup）；直接读 localStorage
+  // 判定开关，避免 zustand persist hydration 时机问题。恢复的标签排在正式文件之前。
+  const startupUntitledRestoreRef = useRef(false);
+  useEffect(() => {
+    if (startupUntitledRestoreRef.current) return;
+    startupUntitledRestoreRef.current = true;
+    // v0.8.0 修复 P2-1：与写盘共用同一开关判定（直接读 localStorage，避免 hydration 时机问题）
+    if (!isUntitledRestoreEnabled()) return;
+    const stored = loadUntitledTabs();
+    if (stored.length === 0) return;
+    const { addTab } = useEditorStore.getState();
+    for (const item of stored) {
+      addTab({
+        id: item.id,
+        path: "",
+        name: item.name,
+        content: item.content,
+        isUntitled: true,
+        // 内容未落盘 → 视为未保存，关闭时需确认
+        isDirty: item.content.length > 0,
+      });
+    }
+    // 激活首个临时标签，并同步编辑器内容
+    const { openTabs: tabs, setActiveTab, openFile } = useEditorStore.getState();
+    if (tabs.length > 0) {
+      setActiveTab(0);
+      setContent(tabs[0].content || "");
+      safeSetItem("lightmd-content", tabs[0].content || "");
+      openFile(null);
+      setCurrentDocPath("");
+      setForceUpdateKey((k) => k + 1);
+    }
+  }, []);
+
   // ─── 启动载入上次打开的文件（F2：支持多文件恢复） ──────────────────────────
   // 仅在 Tauri 环境、开关开启、且非双击文件启动时载入上次文件
   // 双击文件启动时 lightmd:openFileArgv 事件会处理，此处通过 startupRef 避免重复
@@ -492,16 +584,20 @@ function App() {
         // restoreRecentFiles 串行打开，最后打开的成为活跃标签，但用户期望最后打开的文件为活跃文件
         if (result.restored > 0 && !cancelled) {
           const { openTabs, setActiveTab, openFile, setCurrentLanguage } = useEditorStore.getState();
-          if (openTabs.length > 0) {
-            const firstTab = openTabs[0];
-            setActiveTab(0);
+          // v0.8.0 修复 P1-4：临时（untitled）标签先于正式文件恢复，占用了 openTabs 前部。
+          // 激活目标应是"第一个恢复成功的真实文件"，不能写死 openTabs[0]——
+          // 否则临时标签会抢占活跃位，并把 currentDocPath 清空。
+          const firstIdx = openTabs.findIndex((tb) => !tb.isUntitled && tb.path);
+          if (firstIdx !== -1) {
+            const firstTab = openTabs[firstIdx];
+            setActiveTab(firstIdx);
             // 同步 content 和 filePath，并同步设置 currentDocPath 确保图片渲染正确
             setCurrentDocPath(firstTab.path);
             setContent(firstTab.content || "");
             safeSetItem("lightmd-content", firstTab.content || "");
             openFile(firstTab.path);
-            // v0.4.0：启动恢复时同步语言标识
-            const lang = isMarkdownFile(firstTab.path) ? "markdown" : getFileLanguage(firstTab.path);
+            // v0.4.0：启动恢复时同步语言标识（v0.8.0 修复 P11-2：临时文档按 markdown 处理）
+            const lang = !firstTab.path || isMarkdownFile(firstTab.path) ? "markdown" : getFileLanguage(firstTab.path);
             setCurrentLanguage(lang);
             setForceUpdateKey((k) => k + 1);
           }
@@ -602,20 +698,38 @@ function App() {
   }, [t]);
 
   // ─── 另存为（Ctrl+Shift+S）── 定义在 handleSaveFile 之前 ──
-  const handleSaveAsFile = useCallback(async () => {
+  // v0.8.0 WP3 需求8：支持可选 targetTab（默认当前活跃标签）。
+  // 右键菜单"另存为"会先 setActiveTab 到目标标签再调用，保证上下文一致；
+  // 指定 targetTab 时直接使用其 content，避免依赖尚未同步的编辑区内容。
+  const handleSaveAsFile = useCallback(async (targetTab?: TabInfo) => {
     const view = editorViewRef.current;
     if (!view) return;
 
-    // 根据当前模式选择数据源（与 handleSaveFile 一致）
-    const { getMarkdownFromDoc } = await import("./core/editor");
-    const currentMode = useEditorStore.getState().viewMode;
-    const isSourceMode = currentMode === "edit" || currentMode === "split";
-    const markdown = isSourceMode ? contentRef.current : getMarkdownFromDoc(view.state.doc);
+    const { openTabs, activeTabIdx, getTabById, getTabByPath } = useEditorStore.getState();
+    const isTargeted = !!targetTab;
+    const tab = targetTab ?? openTabs[activeTabIdx];
+    if (!tab) return;
+
+    let markdown: string;
+    if (isTargeted) {
+      // 指定标签：直接取其已同步的 content（最可靠，不依赖当前编辑区）
+      markdown = tab.content ?? "";
+    } else {
+      // 默认：按当前模式从编辑区取内容（与 handleSaveFile 一致）
+      const { getMarkdownFromDoc } = await import("./core/editor");
+      const currentMode = useEditorStore.getState().viewMode;
+      const isSourceMode = currentMode === "edit" || currentMode === "split";
+      markdown = isSourceMode ? contentRef.current : getMarkdownFromDoc(view.state.doc);
+    }
+
+    // 计算目标标签在 openTabs 中的下标（用于清除脏标记 / 晋升）
+    const resolveIdx = (t: TabInfo): number =>
+      t.isUntitled && t.id ? getTabById(t.id) : getTabByPath(t.path);
 
     if (isTauri()) {
       try {
         const selected = await save({
-          defaultPath: getFileName(filePath || t("app.unnamed")),
+          defaultPath: getFileName(tab.path || t("app.unnamed")),
           filters: [{ name: t("app.markdownFilter"), extensions: ["md"] }],
         });
         if (selected) {
@@ -623,8 +737,13 @@ function App() {
           openFile(selected);
           setDirty(false);
           // 清除当前标签页的脏标记（修复：另存为后小蓝点未消失）
-          const { activeTabIdx } = useEditorStore.getState();
-          updateTabDirty(activeTabIdx, false);
+          const idx = isTargeted ? resolveIdx(tab) : activeTabIdx;
+          if (idx !== -1) updateTabDirty(idx, false);
+          // v0.8.0 WP1：临时标签保存成功后晋升为正式文件（写真实路径、清 isUntitled/id），
+          // 此后自动保存与版本快照对该标签恢复正常生效
+          if (idx !== -1) {
+            useEditorStore.getState().promoteTab(idx, selected, getFileName(selected));
+          }
           addRecentFile({ path: selected, name: getFileName(selected) });
           // v0.4.0 功能4：对新路径记录初始版本快照
           versionSnapshotService.recordSnapshot(selected, markdown, true).catch(() => {});
@@ -637,16 +756,16 @@ function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = getFileName(filePath || t("app.unnamed"));
+      a.download = getFileName(tab.path || t("app.unnamed"));
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       // 清除当前标签页的脏标记（修复：浏览器环境保存后小蓝点未消失）
-      const { activeTabIdx: browserIdx } = useEditorStore.getState();
-      updateTabDirty(browserIdx, false);
+      const idx = isTargeted ? resolveIdx(tab) : activeTabIdx;
+      if (idx !== -1) updateTabDirty(idx, false);
     }
-  }, [filePath, openFile, setDirty, addRecentFile, updateTabDirty, t]);
+  }, [openFile, setDirty, addRecentFile, updateTabDirty, t]);
 
   // ─── 保存文件（Ctrl+S）── 依赖 handleSaveAsFile ──
   const handleSaveFile = useCallback(async () => {
@@ -694,45 +813,48 @@ function App() {
     }
   }, [filePath, setDirty, handleSaveAsFile, updateTabDirty]);
 
-  // ─── 新建文件（Ctrl+N）──────────────────────
+  // ─── 新建临时文件（Ctrl+N / 标签栏空白双击 / 侧栏"新增文件"）──
+  // v0.8.0 WP1：不再直接落盘/弹另存为对话框，改为创建临时（未落盘）标签。
+  // 临时标签 path 为空串 → 自动保存与版本快照天然跳过；用户 Ctrl+S 时走
+  // handleSaveAsFile 选择路径，保存成功后再晋升为正式文件（promoteTab）。
+  //
+  // v0.8.0 修复 P2：把"创建 + 同步编辑器上下文"抽成 createUntitledTabAndSync。
+  // 旧实现里标签栏双击只调了 store.createUntitledTab()，没有同步 content /
+  // filePath / forceUpdateKey，导致新建后既不跳转也无法编辑。
+  const createUntitledTabAndSync = useCallback(() => {
+    useEditorStore.getState().createUntitledTab();
+    const { openTabs: tabs, activeTabIdx: idx } = useEditorStore.getState();
+    const newTab = tabs[idx];
+    setContent(newTab?.content ?? "");
+    safeSetItem("lightmd-content", newTab?.content ?? "");
+    // 无路径：自动保存/快照/最近文件等按路径生效的逻辑全部跳过
+    openFile(null);
+    setDirty(false);
+    setCurrentDocPath("");
+    setForceUpdateKey((k) => k + 1);
+    // v0.8.0 修复 P2：立即持久化临时标签，保证"启动恢复上次打开文件"能拿到最新内容
+    saveUntitledTabs(useEditorStore.getState().openTabs);
+    // v0.8.0 修复 P11-2：新建后聚焦编辑器，用户可直接输入（无需先点一下编辑区）。
+    // 双 rAF 等 ProseMirror 完成内容替换后再聚焦，避免焦点被随后的渲染抢走。
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => editorViewRef.current?.focus());
+    });
+  }, [openFile, setDirty]);
+
   const handleNewFile = useCallback(async () => {
     if (isDirty && filePath) {
       if (!window.confirm(t("app.confirmNewWithUnsaved"))) {
         return;
       }
     }
+    createUntitledTabAndSync();
+  }, [filePath, isDirty, createUntitledTabAndSync, t]);
 
-    if (isTauri()) {
-      // Tauri 环境：弹出另存为对话框，让用户选择新文件的位置
-      try {
-        const selected = await save({
-          defaultPath: t("app.unnamed"),
-          filters: [{ name: t("app.markdownFilter"), extensions: ["md"] }],
-        });
-        if (selected) {
-          // 创建空文件
-          const defaultContent = t("app.unnamedDoc");
-          await fileService.writeFile(selected, defaultContent);
-          // 打开新创建的文件
-          window.dispatchEvent(
-            new CustomEvent("lightmd:openFile", {
-              detail: { path: selected, content: defaultContent },
-            })
-          );
-          addRecentFile({ path: selected, name: getFileName(selected) });
-        }
-      } catch (err) {
-        console.error("新建文件失败:", err);
-      }
-    } else {
-      // 浏览器环境：直接重置编辑器内容
-      setContent(DEMO_MARKDOWN);
-      safeSetItem("lightmd-content", DEMO_MARKDOWN);
-      setForceUpdateKey((k) => k + 1);
-      openFile(null);
-      setDirty(false);
-    }
-  }, [filePath, isDirty, openFile, setDirty, addRecentFile, t]);
+  // v0.8.0 修复 P2：无需确认的新建入口（标签栏空白处双击）——
+  // 切换标签时当前内容已存入原标签，不会丢内容，故不打断操作流程
+  const handleNewUntitled = useCallback(() => {
+    createUntitledTabAndSync();
+  }, [createUntitledTabAndSync]);
 
   // ─── 新建文件夹 ──────────────────────────────
   const handleNewFolder = useCallback(async () => {
@@ -765,14 +887,17 @@ function App() {
     }
     // 关闭标签
     closeTab(idx);
-    // v0.4.5 修复：同步从 recentFiles 中移除，避免下次启动时恢复已被用户关闭的文件
-    useFileStore.getState().removeRecentFile(tab.path);
-    // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
-    fileScrollProgress.clear(tab.path);
-    // 同步移除左侧"打开的文件"中的临时文件
-    const { tempFiles } = useFileStore.getState();
-    if (tempFiles.some(f => f.path === tab.path)) {
-      useFileStore.getState().removeTempFile(tab.path);
+    // v0.8.0 WP1：临时标签（path 为空）不参与 recentFiles / 滚动进度 / 左侧临时文件列表
+    if (tab.path) {
+      // v0.4.5 修复：同步从 recentFiles 中移除，避免下次启动时恢复已被用户关闭的文件
+      useFileStore.getState().removeRecentFile(tab.path);
+      // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
+      fileScrollProgress.clear(tab.path);
+      // 同步移除左侧"打开的文件"中的临时文件
+      const { tempFiles } = useFileStore.getState();
+      if (tempFiles.some(f => f.path === tab.path)) {
+        useFileStore.getState().removeTempFile(tab.path);
+      }
     }
     const remainingTabs = useEditorStore.getState().openTabs;
     const newActiveIdx = useEditorStore.getState().activeTabIdx;
@@ -790,6 +915,45 @@ function App() {
     }
     setForceUpdateKey((k) => k + 1);
   }, [closeTab, openFile, setDirty, t]);
+
+  // ─── v0.8.0 WP3 需求8：批量关闭标签 ──
+  // 接收待关闭下标数组（已排除固定标签/目标标签、已确认过未保存项），
+  // 复用 handleTabClose 的清理逻辑（recentFiles / 滚动进度 / 临时文件列表），
+  // 最后统一同步编辑器内容到新的活跃标签，保持与关闭单个标签一致的行为。
+  const handleCloseMany = useCallback((indices: number[]) => {
+    const sorted = [...indices].sort((a, b) => b - a); // 从后往前关，避免索引漂移
+    for (const i of sorted) {
+      const tab = useEditorStore.getState().openTabs[i];
+      if (!tab) continue;
+      if (tab.path) {
+        // v0.4.5 修复：同步从 recentFiles 中移除
+        useFileStore.getState().removeRecentFile(tab.path);
+        // v0.7.0 bug修复：关闭标签清除浏览进度
+        fileScrollProgress.clear(tab.path);
+        // 同步移除左侧"打开的文件"中的临时文件
+        const { tempFiles } = useFileStore.getState();
+        if (tempFiles.some((f) => f.path === tab.path)) {
+          useFileStore.getState().removeTempFile(tab.path);
+        }
+      }
+      closeTab(i);
+    }
+    // 同步编辑器内容到新的活跃标签
+    const st = useEditorStore.getState();
+    const active = st.openTabs[st.activeTabIdx];
+    if (active) {
+      setContent(active.content || "");
+      safeSetItem("lightmd-content", active.content || "");
+      openFile(active.path);
+      setDirty(active.isDirty || false);
+    } else {
+      setContent("");
+      safeSetItem("lightmd-content", "");
+      openFile(null);
+      setDirty(false);
+    }
+    setForceUpdateKey((k) => k + 1);
+  }, [closeTab, openFile, setDirty]);
 
   // ─── G8：命令面板事件路由 ──────────────────────────
   // 监听 'lightmd:command' 事件，根据 id 执行对应操作
@@ -983,12 +1147,15 @@ function App() {
         e.preventDefault();
         setShowCommandPalette(true);
       }
-      // v0.4.0 功能4：Ctrl+Shift+V 打开版本快照窗口
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "v") {
+      // v0.4.0 功能4：打开版本快照窗口
+      // v0.8.0 WP2 需求1：快捷键由 Ctrl+Shift+V 改为 Ctrl+Alt+V
+      // （Ctrl+Shift+V 与"粘贴"的语义冲突，且 v0.8.0 引入文件复制/粘贴后更易误触）
+      if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "v") {
         e.preventDefault();
         const { openTabs, activeTabIdx } = useEditorStore.getState();
         const activeTab = openTabs[activeTabIdx];
-        if (activeTab) {
+        // v0.8.0 WP1：临时（未落盘）文件没有版本快照，直接忽略
+        if (activeTab && activeTab.path) {
           setSnapshotFilePath(activeTab.path);
           setShowSnapshotDialog(true);
         }
@@ -1138,13 +1305,15 @@ function App() {
   // ─── 标签页切换回调 ──────────────────────────
   const handleTabSwitch = useCallback((tab: TabInfo) => {
     // 切换到目标标签：先保存当前内容，再加载目标标签内容
-    const { openTabs, activeTabIdx, getTabByPath } = useEditorStore.getState();
+    const { openTabs, activeTabIdx, getTabByPath, getTabById } = useEditorStore.getState();
     // 保存当前标签的内容（activeTabIdx 此时仍是旧标签的索引）
     if (openTabs[activeTabIdx]) {
       updateTabContent(activeTabIdx, contentRef.current);
     }
     // 切换到目标标签
-    const targetIdx = getTabByPath(tab.path);
+    // v0.8.0 WP1：临时标签的 path 恒为空串，按 path 查找会永远命中第一个临时标签，
+    // 故临时标签按 id 定位
+    const targetIdx = tab.isUntitled && tab.id ? getTabById(tab.id) : getTabByPath(tab.path);
     if (targetIdx !== -1) {
       setActiveTab(targetIdx);
     }
@@ -1153,11 +1322,71 @@ function App() {
     safeSetItem("lightmd-content", tab.content || "");
     openFile(tab.path);
     // v0.4.0：切换标签时同步语言标识，确保代码文件正确高亮
-    const lang = isMarkdownFile(tab.path) ? "markdown" : getFileLanguage(tab.path);
+    // v0.8.0 修复 P11-2：临时文档（path 为空）按 markdown 处理
+          const lang = !tab.path || isMarkdownFile(tab.path) ? "markdown" : getFileLanguage(tab.path);
     setCurrentLanguage(lang);
     setDirty(tab.isDirty || false);
     setForceUpdateKey((k) => k + 1);
   }, [openFile, setDirty, updateTabContent, setActiveTab, setCurrentLanguage]);
+
+  // ─── v0.8.0 WP2 修复2：文件被删除后联动关闭对应标签 ──────────
+  // 旧逻辑：侧栏删除文件只 refreshTree，已打开的标签仍停留在编辑器里（幽灵标签）。
+  // 此处按路径（含被删文件夹下的所有文件）关闭匹配标签，不做脏确认——文件已不存在，
+  // 失去确认的意义，用户删除时已经确认过一次。
+  const closeTabsByPath = useCallback((deletedPath: string) => {
+    if (!deletedPath) return;
+    const { openTabs, closeTab } = useEditorStore.getState();
+    // 先算出全部待关标签下标，再从后往前关闭（避免关闭过程中索引漂移）
+    const toClose = collectTabsToClose(openTabs.map((tb) => tb.path), deletedPath);
+    for (let k = toClose.length - 1; k >= 0; k--) {
+      const i = toClose[k];
+      const p = openTabs[i]?.path;
+      closeTab(i);
+      if (p) {
+        useFileStore.getState().removeRecentFile(p);
+        fileScrollProgress.clear(p);
+        const { tempFiles } = useFileStore.getState();
+        if (tempFiles.some((f) => f.path === p)) useFileStore.getState().removeTempFile(p);
+      }
+    }
+    // 同步编辑器内容到新的活跃标签
+    const st = useEditorStore.getState();
+    const active = st.openTabs[st.activeTabIdx];
+    if (active) {
+      setContent(active.content || "");
+      safeSetItem("lightmd-content", active.content || "");
+      openFile(active.path);
+      setDirty(active.isDirty || false);
+    } else {
+      setContent("");
+      safeSetItem("lightmd-content", "");
+      openFile(null);
+      setDirty(false);
+    }
+    setForceUpdateKey((k) => k + 1);
+  }, [openFile, setDirty]);
+
+  // ─── v0.8.0 WP1：侧栏"打开的文件"中的临时标签点击/关闭 ──────────
+  // 临时标签没有磁盘路径，无法复用 handleSelectFile（按路径打开），
+  // 故由侧栏派发 tab.activate / tab.close 命令，走与标签栏一致的切换/关闭逻辑。
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const { openTabs } = useEditorStore.getState();
+      if (detail?.id === "tab.activate") {
+        const tab = openTabs[detail.index];
+        if (tab) handleTabSwitch(tab);
+      } else if (detail?.id === "tab.close") {
+        const tab = openTabs[detail.index];
+        if (tab) handleTabClose(tab, detail.index);
+      } else if (detail?.id === "file.deleted" && typeof detail.path === "string") {
+        // v0.8.0 WP2 修复2：文件/文件夹被删除 → 关闭对应标签
+        closeTabsByPath(detail.path);
+      }
+    };
+    window.addEventListener("lightmd:command", handler);
+    return () => window.removeEventListener("lightmd:command", handler);
+  }, [handleTabSwitch, handleTabClose, closeTabsByPath]);
 
   return (
     <div className="app" data-theme={theme}>
@@ -1175,13 +1404,16 @@ function App() {
       <TabBar
         onTabSwitch={handleTabSwitch}
         onTabClose={handleTabClose}
+        onSaveAs={handleSaveAsFile}
+        onCloseMany={handleCloseMany}
+        onNewUntitled={handleNewUntitled}
       />
       <AppShell
         sidebar={<FileTree />}
         outline={
           // v0.4.5 修复：仅 md 文件才显示大纲，切换至非 md 文件时自动关闭大纲栏
-          // 旧逻辑仅用 filePath 判断，非 md 文件也会显示 Outline，导致切换文件时大纲栏未关闭
-          showOutline && filePath && isMarkdownFile(filePath || "")
+          // v0.8.0 修复 P11-2：临时文档（filePath 为空）按 markdown 处理，同样显示大纲
+          showOutline && (!filePath || isMarkdownFile(filePath))
             ? (isSourceMode
                 ? <SyntaxHelper onInsert={sourceInsertHandler || undefined} />
                 : <Outline editorView={editorView} />)
@@ -1221,7 +1453,7 @@ function App() {
       {showCommandPalette && (
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}
-      {/* v0.4.0 功能4：版本快照窗口（Ctrl+Shift+V） */}
+      {/* v0.4.0 功能4：版本快照窗口（v0.8.0 起快捷键为 Ctrl+Alt+V） */}
       {showSnapshotDialog && snapshotFilePath && (
         <VersionSnapshotDialog
           filePath={snapshotFilePath}

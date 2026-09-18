@@ -91,16 +91,18 @@ describe("Issue 2: 打开的文件栏独立成栏并支持上下拖拽", () => {
     expect(fileTreeSource).toContain("filetree-temp-section");
   });
 
-  it("tempFiles 区域绑定 tempResize.onMouseDown（标题栏拖拽）", () => {
-    expect(fileTreeSource).toContain("tempResize.onMouseDown");
+  it("tempFiles 标题栏走相邻配对拖拽（useSectionSplit / beginSectionDrag）", () => {
+    // v0.8.0 WP4 修复1：标题栏不再改自身高度，而是与下一区配对分配（自然方向，不取反）
+    expect(fileTreeSource).toContain("useSectionSplit");
+    expect(fileTreeSource).toContain("beginSectionDrag");
+    // 标题栏仍绑定 onMouseDown（filetree-temp-header）
+    expect(fileTreeSource).toContain('className="filetree-temp-header"');
   });
 
-  it("tempFiles 区域有垂直分隔条 filetree-v-resizer", () => {
-    // 验证 tempFiles 之前有 resizer
-    const tempSectionIdx = fileTreeSource.indexOf("filetree-temp-section");
-    expect(tempSectionIdx).toBeGreaterThan(-1);
-    const beforeTemp = fileTreeSource.substring(0, tempSectionIdx);
-    expect(beforeTemp).toContain("filetree-v-resizer");
+  it("tempFiles 区域保留垂直分隔条 filetree-v-resizer 且走相邻配对拖拽", () => {
+    // 分隔条保留，但拖拽逻辑改用 resizerDrag（基于 useSectionSplit 的 beginSectionDrag）
+    expect(fileTreeSource).toContain("filetree-v-resizer");
+    expect(fileTreeSource).toContain("resizerDrag");
   });
 
   it("CSS 中 .filetree-temp-section 有 flex 布局和 overflow: hidden", () => {
@@ -158,15 +160,16 @@ describe("Issue 3: 最近打开标题栏上下拖拽调整高度", () => {
     expect(recentEl.style.height).toBe("500px");
   });
 
-  it("FileTree.tsx 中 RecentFiles 接收 recentResize.height prop", () => {
-    expect(fileTreeSource).toContain("height={recentResize.height}");
+  it("FileTree.tsx 中 RecentFiles 接收 sizeOf 计算的高度 prop", () => {
+    // v0.8.0 WP4 修复1：高度由 sectionSizes（持久化）驱动，而非旧的 recentResize.height
+    expect(fileTreeSource).toContain('height={sizeOf("recent")}');
   });
 
-  it("FileTree.tsx 中 RecentFiles 之前有垂直 resizer 绑定", () => {
+  it("FileTree.tsx 中 RecentFiles 之前有垂直 resizer 绑定（相邻配对拖拽）", () => {
     const recentIdx = fileTreeSource.indexOf("<RecentFiles");
     expect(recentIdx).toBeGreaterThan(-1);
     const beforeRecent = fileTreeSource.substring(0, recentIdx);
-    expect(beforeRecent).toContain("recentResize.onMouseDown");
+    expect(beforeRecent).toContain("resizerDrag");
   });
 
   it("CSS 中 .recent-files 有 flex-shrink: 0（inline height 不被压缩）", () => {
@@ -218,21 +221,22 @@ describe("Issue 5: 打开的文件标题栏加查看版本快照按钮入口", (
     // 定位 temp-header 区域内的快照按钮
     const tempHeaderIdx = fileTreeSource.indexOf("filetree-temp-header");
     expect(tempHeaderIdx).toBeGreaterThan(-1);
-    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 800);
+    // 窗口需覆盖整个标题栏块（后续版本在 onMouseDown 中追加了拖拽参数，块变长）
+    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 1800);
     expect(tempHeaderBlock).toContain("snapshot.viewSnapshots");
     expect(tempHeaderBlock).toContain("filetree-temp-snapshot-btn");
   });
 
   it("快照按钮触发 lightmd:showSnapshotDialog 事件", () => {
     const tempHeaderIdx = fileTreeSource.indexOf("filetree-temp-header");
-    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 1000);
+    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 1800);
     expect(tempHeaderBlock).toContain("lightmd:showSnapshotDialog");
     expect(tempHeaderBlock).toContain("filePath");
   });
 
   it("快照按钮优先使用当前活跃文件路径", () => {
     const tempHeaderIdx = fileTreeSource.indexOf("filetree-temp-header");
-    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 1000);
+    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 1800);
     // 验证使用 activePath 作为优先路径
     expect(tempHeaderBlock).toContain("activePath");
     expect(tempHeaderBlock).toContain("tempFiles[0]?.path");

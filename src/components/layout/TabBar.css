@@ -5,15 +5,66 @@
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   height: 36px;
+  /* 需求5：外层 .tab-bar 不再 overflow，滚动交给内层 .tab-bar-scroll */
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* 需求5：滚动容器持有标签，横向溢出滚动、隐藏滚动条 */
+.tab-bar-scroll {
+  display: flex;
+  align-items: flex-end;
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
   -ms-overflow-style: none;
-  flex-shrink: 0;
 }
 
-.tab-bar::-webkit-scrollbar {
+.tab-bar-scroll::-webkit-scrollbar {
   display: none;
+}
+
+/* 需求5 问题1：溢出时成对出现在标签区最右侧的 < > 按钮容器 */
+.tab-scroll-btns {
+  display: flex;
+  align-items: flex-end;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border-color);
+}
+
+/* 左右滚动按钮 */
+.tab-scroll-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 32px;
+  border: none;
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+/* 两按钮之间的分隔线 */
+.tab-scroll-btn + .tab-scroll-btn {
+  border-left: 1px solid var(--border-color);
+}
+
+.tab-scroll-btn:not(:disabled):hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 已到边界：禁用态（按钮仍占位，避免两端切换时布局跳动） */
+.tab-scroll-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .tab-item {
@@ -43,6 +94,37 @@
   color: var(--text-primary);
 }
 
+/* 需求8：固定标签页排到最前、左侧高亮标识；关闭按钮由组件条件渲染（固定时不渲染） */
+.tab-item.tab-pinned {
+  border-left: 2px solid var(--accent-color, #5c9dff);
+  font-weight: 600;
+}
+
+/* v0.8.0 修复 P8-1 / P11-9：固定标签右上角的小图钉按钮，点击可取消固定 */
+.tab-pin {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-color, #5c9dff);
+  cursor: pointer;
+  border-radius: 3px;
+  line-height: 1;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.tab-pin:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
 .tab-item.tab-active {
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -65,7 +147,13 @@
 }
 
 .tab-close {
-  display: none;
+  /* v0.8.0 WP3 需求3：关闭按钮常驻占位，只用 opacity 控制显隐。
+     旧实现用 display:none → hover 时 display:flex，按钮出现即新增
+     16px 宽 + 4px gap，flex 布局重排导致标签"拉长抖动"。
+     改为固定尺寸 + 透明度切换后，hover 前后标签宽度完全不变。 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 16px;
   height: 16px;
   border: none;
@@ -77,16 +165,62 @@
   padding: 0;
   line-height: 1;
   flex-shrink: 0;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 }
 
 .tab-item:hover .tab-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .tab-close:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+/* TabBar 右键菜单（从 VersionSnapshotDialog.css 迁回，避免样式误置） */
+.tabbar-context-menu {
+  z-index: 1000;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: var(--shadow-md);
+  padding: 4px 0;
+  min-width: 160px;
+  position: fixed;
+  animation: fadeIn 0.1s ease;
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 14px;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.context-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.context-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-color);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }

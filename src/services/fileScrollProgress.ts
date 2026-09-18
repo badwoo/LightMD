@@ -18,7 +18,8 @@ const MAX_ENTRIES = 60;
 export const fileScrollProgress = {
   /** 读取文件浏览进度（0-1）；无记录返回 null（不恢复，保持顶部） */
   get(path: string | null | undefined): number | null {
-    return path ? progressMap.get(path) ?? null : null;
+    const v = path ? progressMap.get(path) : null;
+    return v ?? null;
   },
 
   /** 记录文件浏览进度（scroll 事件实时调用） */
@@ -31,6 +32,9 @@ export const fileScrollProgress = {
       if (oldest !== undefined && oldest !== path) progressMap.delete(oldest);
     }
   },
+
+  // v0.8.0 修复 P1-2：移除 setAnchorLine/getAnchorLine——模式切换的编辑锚点改为
+  // "切换瞬间从当前光标现算"，不再需要按文件持久化锚点（旧 API 写入后无人读取）
 
   /** 清除文件进度（重新打开 / 关闭标签时调用） */
   clear(path: string | null | undefined): void {

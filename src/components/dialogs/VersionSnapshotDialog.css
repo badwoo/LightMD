@@ -359,25 +359,3 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
-
-/* TabBar 右键菜单（复用 filetree 样式） */
-.tabbar-context-menu {
-  z-index: 1000;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  box-shadow: var(--shadow-md);
-  padding: 4px 0;
-  min-width: 160px;
-  position: fixed;
-  animation: fadeIn 0.1s ease;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}

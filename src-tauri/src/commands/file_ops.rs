@@ -119,11 +119,20 @@ pub async fn create_file(path: String) -> Result<(), String> {
     std::fs::write(&path, "").map_err(|e| format!("创建文件失败 \"{}\": {}", path.display(), e))
 }
 
+/// 创建目录。
+/// v0.8.0 修复 P2-5：改用 `create_dir` 而非 `create_dir_all`——旧实现对**已存在**
+/// 的目录静默成功，前端"新建文件夹"会提示"已创建"而其实什么都没发生。
+/// 现在目录已存在会返回明确错误，由前端按"部分失败"提示用户。
 #[tauri::command]
 pub async fn create_dir(path: String) -> Result<(), String> {
     let path = resolve_path(&path)?;
-    std::fs::create_dir_all(&path)
-        .map_err(|e| format!("创建目录失败 \"{}\": {}", path.display(), e))
+    std::fs::create_dir(&path).map_err(|e| {
+        if path.exists() {
+            format!("目录已存在 \"{}\"", path.display())
+        } else {
+            format!("创建目录失败 \"{}\": {}", path.display(), e)
+        }
+    })
 }
 
 #[tauri::command]
@@ -163,6 +172,65 @@ pub async fn rename_file(old_path: String, new_path: String) -> Result<(), Strin
             e
         )
     })
+}
+
+/// v0.8.0 WP2 需求1：复制文件或目录。
+/// - 文件：标准 copy。
+/// - 目录：递归复制。
+/// - 目标已存在则报错（防静默覆盖，重名处理交给前端生成不冲突的名字）。
+#[tauri::command]
+pub async fn copy_file(src: String, dst: String) -> Result<(), String> {
+    let src = resolve_path(&src)?;
+    let dst = resolve_path(&dst)?;
+    if !src.exists() {
+        return Err(format!("源路径不存在: {}", src.display()));
+    }
+    if dst.exists() {
+        return Err(format!("目标已存在: {}", dst.display()));
+    }
+    if src.is_dir() {
+        copy_dir_recursive(&src, &dst)
+    } else {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("无法创建目标父目录 \"{}\": {}", parent.display(), e))?;
+        }
+        std::fs::copy(&src, &dst).map_err(|e| {
+            format!(
+                "复制文件失败 \"{}\" -> \"{}\": {}",
+                src.display(),
+                dst.display(),
+                e
+            )
+        })?;
+        Ok(())
+    }
+}
+
+/// 递归复制目录（含子目录与文件）。目标已存在由调用方（copy_file）先行检查。
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst)
+        .map_err(|e| format!("无法创建目录 \"{}\": {}", dst.display(), e))?;
+    let dir = std::fs::read_dir(src)
+        .map_err(|e| format!("读取目录失败 \"{}\": {}", src.display(), e))?;
+    for entry in dir {
+        let entry = entry.map_err(|e| format!("读取目录条目失败: {}", e))?;
+        let entry_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if entry_path.is_dir() {
+            copy_dir_recursive(&entry_path, &dst_path)?;
+        } else {
+            std::fs::copy(&entry_path, &dst_path).map_err(|e| {
+                format!(
+                    "复制文件失败 \"{}\" -> \"{}\": {}",
+                    entry_path.display(),
+                    dst_path.display(),
+                    e
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

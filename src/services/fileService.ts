@@ -106,6 +106,17 @@ export const fileService = {
     }
   },
 
+  /** v0.8.0 WP2 需求1：复制文件/目录（目标已存在则 Rust 端报错） */
+  async copyFile(src: string, dst: string): Promise<void> {
+    try {
+      await invoke("copy_file", { src, dst });
+    } catch (err) {
+      const msg = wrapError("复制失败", err);
+      notifyError(msg);
+      throw new Error(msg);
+    }
+  },
+
   async exists(path: string): Promise<boolean> {
     try {
       return await invoke<boolean>("exists", { path });

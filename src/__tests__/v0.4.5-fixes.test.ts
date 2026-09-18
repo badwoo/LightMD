@@ -46,7 +46,8 @@ describe("问题1：切换至非 md 文件时关闭大纲栏", () => {
     const outlineSection = src.match(/outline=\{[\s\S]*?\}\s*\}/);
     expect(outlineSection).not.toBeNull();
     // isMarkdownFile 应作为外层条件，控制 SyntaxHelper 和 Outline 都只在 md 文件下显示
-    expect(outlineSection![0]).toMatch(/isMarkdownFile\(filePath\s*\|\|\s*["']["']\)/);
+    // v0.8.0 修复 P11-2：临时（未命名）文档 filePath 为空，同样按 markdown 处理并显示大纲
+    expect(outlineSection![0]).toMatch(/!filePath \|\| isMarkdownFile\(filePath\)/);
   });
 });
 
@@ -74,12 +75,14 @@ describe("问题2：左侧栏「打开的文件」和「文档」栏显示位置
 
   it("不打开文件夹但有临时文件时，临时文件栏渲染在顶部（FolderSection 之前）", () => {
     const src = readSrc("../components/sidebar/FileTree.tsx");
-    // v0.4.5 修复：tempFiles 栏提取为 renderTempFilesSection 函数，避免重复 JSX
-    // 验证存在 openFolders.length === 0 时渲染 tempFiles 栏的逻辑（顶部位置）
-    // 兼容两种写法：内联条件渲染 或 提取函数调用
-    const hasNoFolderTempLogic = /openFolders\.length\s*===\s*0\s*&&\s*tempFiles\.length\s*>\s*0\s*&&\s*renderTempFilesSection/.test(src) ||
-      /openFolders\.length\s*===\s*0[\s\S]*?tempFiles\.length\s*>\s*0[\s\S]*?filetree-temp-section/.test(src);
-    expect(hasNoFolderTempLogic).toBe(true);
+    // v0.8.0 WP4 重构后：顶部渲染分支由 openFolders.length === 0 守卫，
+    // 其内调用 renderTempFilesSection（产出 filetree-temp-section）。
+    // 旧断言依赖内联 `openFolders.length===0 && tempFiles.length>0 && renderTempFilesSection`，
+    // 重构后改为 `openFolders.length===0 && tempVisible`（tempVisible 含 untitledTabs，WP1 一并显示），
+    // 故改为校验顶部分支在 openFolders.length===0 守卫内调用 renderTempFilesSection 且产出 filetree-temp-section。
+    const topBlockCallsRender =
+      /openFolders\.length\s*===\s*0[\s\S]{0,600}?renderTempFilesSection/.test(src);
+    expect(topBlockCallsRender).toBe(true);
     // 验证 renderTempFilesSection 函数存在且包含 filetree-temp-section
     expect(src).toMatch(/renderTempFilesSection/);
     expect(src).toMatch(/filetree-temp-section/);

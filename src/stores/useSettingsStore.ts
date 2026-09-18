@@ -197,6 +197,8 @@ interface SettingsState {
   outlineWidth: number;
   /** v0.4.0: 分屏左右比例（默认 0.5，范围 0.3~0.7） */
   splitRatio: number;
+  /** v0.8.0 WP4 修复1：侧栏各 section（文件夹/打开的文件/收藏/最近）持久化高度，重启保留 */
+  sidebarSectionSizes: Record<string, number>;
   /** v0.6.0: AI 翻译配置（API Key 走 keyring，不在此处） */
   translate: TranslateSettings;
   /** v0.7.0 修复1/2：全局 AI 总开关（翻译/续写/润色/摘要共用；关闭后所有 AI 入口静默）
@@ -234,6 +236,8 @@ interface SettingsState {
   setOutlineWidth: (w: number) => void;
   /** v0.4.0：设置分屏比例（钳制 0.3~0.7） */
   setSplitRatio: (r: number) => void;
+  /** v0.8.0 WP4 修复1：设置侧栏各 section 高度（直接写入整张映射表） */
+  setSidebarSectionSizes: (sizes: Record<string, number>) => void;
   /** v0.6.0：合并更新 AI 翻译配置 */
   setTranslateConfig: (cfg: Partial<TranslateSettings>) => void;
   /**
@@ -301,6 +305,8 @@ export const useSettingsStore = create<SettingsState>()(
       outlineWidth: 240,
       // v0.4.0：分屏默认比例 0.5（左右各半）
       splitRatio: 0.5,
+      // v0.8.0 WP4 修复1：侧栏各 section 高度默认空（运行时按 key 取默认值）
+      sidebarSectionSizes: {},
       // v0.6.0：AI 翻译默认配置（旧 localStorage 缺字段时自动回退默认值）
       translate: { ...DEFAULT_TRANSLATE_SETTINGS },
       // v0.7.0：全局 AI 总开关默认关闭（迁移逻辑见 merge：老用户 translateEnabled=true 继承）
@@ -344,6 +350,8 @@ export const useSettingsStore = create<SettingsState>()(
       setOutlineWidth: (w) => set({ outlineWidth: clamp(Math.round(w), 180, 480) }),
       // v0.4.0：钳制到 0.3~0.7
       setSplitRatio: (r) => set({ splitRatio: clamp(r, 0.3, 0.7) }),
+      // v0.8.0 WP4 修复1：整表写入各 section 高度（调用方负责钳制）
+      setSidebarSectionSizes: (sizes) => set({ sidebarSectionSizes: sizes }),
       // v0.6.0：合并更新 AI 翻译配置（浅合并，未知字段忽略）
       setTranslateConfig: (cfg) =>
         set((s) => ({ translate: { ...s.translate, ...cfg } })),

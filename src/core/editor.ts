@@ -182,9 +182,12 @@ export function createEditor(options: EditorOptions): EditorView | null {
     doc,
     plugins: [
       history(),
+      // v0.8.0 修复 P11-6：自定义键位必须**先于** baseKeymap 注册。
+      // 否则列表项/任务项内按 Enter 会命中 baseKeymap 的 splitBlock（在同一项内新建段落），
+      // 序列化时项内多段落被合并成一行 → 切模式后换行丢失。
+      buildKeymap(),
       keymap(baseKeymap),
       buildInputRules(),
-      buildKeymap(),
       wysiwygPlugin,
       imagePastePlugin,
       focusModePlugin,

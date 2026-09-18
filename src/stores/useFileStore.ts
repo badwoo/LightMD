@@ -244,6 +244,11 @@ export const useFileStore = create<FileState>()(
           recentFiles: state.recentFiles.map((f) =>
             f.path === oldPath ? { ...f, path: newPath, name: newName } : f
           ),
+          // v0.8.0 修复 P11-1：侧栏"打开的文件"面板同步骤更新，
+          // 否则重命名/移动后该条目仍指向旧路径（旧文件已不存在 → 幽灵条目）
+          tempFiles: state.tempFiles.map((f) =>
+            f.path === oldPath ? { ...f, path: newPath, name: newName } : f
+          ),
         })),
       addTempFile: (file) =>
         set((state) => {

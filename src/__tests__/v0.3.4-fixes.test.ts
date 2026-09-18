@@ -305,20 +305,24 @@ describe("问题8：启动载入逻辑和图片渲染", () => {
     expect(handlerSection).not.toBeNull();
     const code = handlerSection![0];
     // setCurrentDocPath 应在 setContent 之前调用
+    // v0.8.0 修复 P11-7：写入编辑器的内容变量改为 targetContent
+    // （已打开的文件用标签内内容，首次打开才用磁盘内容）
     const idxSetCurrentDocPath = code.indexOf("setCurrentDocPath(detail.path)");
-    const idxSetContent = code.indexOf("setContent(detail.content)");
+    const idxSetContent = code.indexOf("setContent(targetContent)");
     expect(idxSetCurrentDocPath).toBeGreaterThan(-1);
     expect(idxSetContent).toBeGreaterThan(-1);
     expect(idxSetCurrentDocPath).toBeLessThan(idxSetContent);
   });
 
-  it("App.tsx 启动恢复完成后切换到 openTabs[0]（最新的文件）", () => {
+  it("App.tsx 启动恢复完成后切换到『第一个恢复成功的真实文件』", () => {
     const src = readSrc("../App.tsx");
-    // 验证启动恢复 useEffect 中有切换到 openTabs[0] 的逻辑
+    // 验证启动恢复 useEffect 中有切换到恢复文件的逻辑
     const restoreSection = src.match(/const result = await restoreRecentFiles[\s\S]*?\}\s*\}\s*catch/);
     expect(restoreSection).not.toBeNull();
-    expect(restoreSection![0]).toMatch(/setActiveTab\(0\)/);
-    expect(restoreSection![0]).toMatch(/openTabs\[0\]/);
+    // v0.8.0 修复 P1-4：临时（untitled）标签会先于正式文件恢复并占用 openTabs 前部，
+    // 因此激活目标改为按 isUntitled 过滤后的首个正式文件，不再写死索引 0
+    expect(restoreSection![0]).toMatch(/openTabs\.findIndex\(\(tb\) => !tb\.isUntitled && tb\.path\)/);
+    expect(restoreSection![0]).toMatch(/setActiveTab\(firstIdx\)/);
     expect(restoreSection![0]).toMatch(/setCurrentDocPath\(firstTab\.path\)/);
   });
 
