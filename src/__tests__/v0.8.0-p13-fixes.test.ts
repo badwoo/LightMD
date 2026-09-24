@@ -52,7 +52,10 @@ describe("P13-2 关闭末栏撑满 / 重开新栏紧跟上一栏", () => {
     expect(fileTreeSrc).toContain("autoFillRef");
     expect(fileTreeSrc).toMatch(/autoFillRef\.current = \{ key: lastKey, prevHeight: current, filledHeight: target \}/);
     expect(fileTreeSrc).toMatch(/if \(filled && filled\.key !== lastKey\)/);
-    expect(fileTreeSrc).toMatch(/next\[filled\.key\] = filled\.prevHeight/);
+    // v0.8.2 功能5：还原时收缩到 min(prevHeight, 内容自然高度)，让新栏紧接上一栏末尾内容
+    expect(fileTreeSrc).toMatch(
+      /next\[filled\.key\] =\s*\n\s*contentH !== null\s*\n\s*\? Math\.max\(MIN_SECTION_HEIGHT, Math\.min\(filled\.prevHeight, contentH\)\)\s*\n\s*: filled\.prevHeight;/,
+    );
   });
 
   it("用户手动拖拽过则不还原（尊重用户设置）", () => {
@@ -61,7 +64,8 @@ describe("P13-2 关闭末栏撑满 / 重开新栏紧跟上一栏", () => {
 
   it("还原后重新计算末栏是否撑满（新栏紧跟上一栏）", () => {
     // 还原发生在撑满判定之前，因此新栏的高度基于"还原后的上一栏"计算
-    const revertIdx = fileTreeSrc.indexOf("next[filled.key] = filled.prevHeight");
+    // v0.8.2 功能5：还原表达式改为多行三元（收缩到内容高度），此处定位还原块的结束行
+    const revertIdx = fileTreeSrc.indexOf(": filled.prevHeight;");
     const fillIdx = fileTreeSrc.indexOf("if (total < container)");
     expect(revertIdx).toBeGreaterThan(-1);
     expect(fillIdx).toBeGreaterThan(revertIdx);
@@ -88,9 +92,18 @@ describe("P13-2 关闭末栏撑满 / 重开新栏紧跟上一栏", () => {
 
 // ─── P13-3 滚动条宽度 ────────────────────────────────────
 describe("P13-3 侧栏滚动条宽度为上一版的 30%", () => {
-  it("4px 的 30% → 1.2px", () => {
+  it("v0.8.1 需求1：滚动条样式统一到 global.css 的侧栏/大纲栏作用域（2px）", () => {
+    const globalCss = read("../styles/global.css");
+    // 左右两栏在同一组选择器里统一 2px（v0.8.1：右侧大纲栏一并收细）
+    expect(globalCss).toMatch(
+      /\.app-sidebar ::-webkit-scrollbar,[^{]*\.app-outline ::-webkit-scrollbar\s*\{[^}]*width:\s*2px/,
+    );
+    // 悬停该栏显形
+    expect(globalCss).toMatch(
+      /\.app-sidebar:hover ::-webkit-scrollbar-thumb,[^{]*\.app-outline:hover ::-webkit-scrollbar-thumb\s*\{/,
+    );
+    // 旧的 1.2px 独立实现已移除，避免两套宽度并存
     const css = read("../components/sidebar/FileTree.css");
-    expect(css).toMatch(/\.filetree-scroll::-webkit-scrollbar\s*\{[^}]*width:\s*1\.2px/);
-    expect(css).toMatch(/\.filetree-scroll::-webkit-scrollbar-thumb\s*\{[^}]*border-radius:\s*1px/);
+    expect(css).not.toMatch(/\.filetree-scroll::-webkit-scrollbar\s*\{/);
   });
 });

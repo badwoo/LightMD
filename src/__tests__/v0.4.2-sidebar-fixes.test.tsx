@@ -70,8 +70,9 @@ describe("Issue 1: 启动时载入上次文件夹 bug 修复", () => {
     store.addOpenFolder("/test/folder-2");
 
     expect(useFileStore.getState().openFolders).toHaveLength(2);
-    expect(useFileStore.getState().openFolders[0].path).toBe("/test/folder-1");
-    expect(useFileStore.getState().openFolders[1].path).toBe("/test/folder-2");
+    // v0.8.2：新打开的文件夹置顶（头插语义）
+    expect(useFileStore.getState().openFolders[0].path).toBe("/test/folder-2");
+    expect(useFileStore.getState().openFolders[1].path).toBe("/test/folder-1");
   });
 });
 
@@ -200,8 +201,9 @@ describe("Issue 4: 左侧栏标题栏 3D 效果重新设计", () => {
     for (const selector of headers) {
       const cssBlock = fileTreeCss.substring(
         fileTreeCss.indexOf(selector),
-        fileTreeCss.indexOf(selector) + 500
+        fileTreeCss.indexOf(selector) + 900
       );
+      // v0.8.2 功能1：.filetree-temp-header 块内新增 flex 布局属性与注释，窗口扩到 900 字符
       expect(cssBlock).toContain("box-shadow");
     }
   });
@@ -217,28 +219,32 @@ describe("Issue 4: 左侧栏标题栏 3D 效果重新设计", () => {
 
 // ─── Issue 5: tempFiles 标题栏有查看版本快照按钮 ────────
 describe("Issue 5: 打开的文件标题栏加查看版本快照按钮入口", () => {
+  // v0.8.2 功能1/2：标题栏追加了拖拽 nextKey 逻辑与双击处理器（开标签变长），
+  // 固定长度窗口不再可靠，改为以"标题栏块结束"（filetree-temp-content 出现处）为锚点截取
+  function tempHeaderBlock(): string {
+    const start = fileTreeSource.indexOf("filetree-temp-header");
+    expect(start).toBeGreaterThan(-1);
+    const end = fileTreeSource.indexOf("filetree-temp-content", start);
+    expect(end).toBeGreaterThan(start);
+    return fileTreeSource.substring(start, end);
+  }
+
   it("FileTree.tsx 中 tempFiles 标题栏有快照按钮", () => {
-    // 定位 temp-header 区域内的快照按钮
-    const tempHeaderIdx = fileTreeSource.indexOf("filetree-temp-header");
-    expect(tempHeaderIdx).toBeGreaterThan(-1);
-    // 窗口需覆盖整个标题栏块（后续版本在 onMouseDown 中追加了拖拽参数，块变长）
-    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 1800);
-    expect(tempHeaderBlock).toContain("snapshot.viewSnapshots");
-    expect(tempHeaderBlock).toContain("filetree-temp-snapshot-btn");
+    const block = tempHeaderBlock();
+    expect(block).toContain("snapshot.viewSnapshots");
+    expect(block).toContain("filetree-temp-snapshot-btn");
   });
 
   it("快照按钮触发 lightmd:showSnapshotDialog 事件", () => {
-    const tempHeaderIdx = fileTreeSource.indexOf("filetree-temp-header");
-    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 1800);
-    expect(tempHeaderBlock).toContain("lightmd:showSnapshotDialog");
-    expect(tempHeaderBlock).toContain("filePath");
+    const block = tempHeaderBlock();
+    expect(block).toContain("lightmd:showSnapshotDialog");
+    expect(block).toContain("filePath");
   });
 
   it("快照按钮优先使用当前活跃文件路径", () => {
-    const tempHeaderIdx = fileTreeSource.indexOf("filetree-temp-header");
-    const tempHeaderBlock = fileTreeSource.substring(tempHeaderIdx, tempHeaderIdx + 1800);
+    const block = tempHeaderBlock();
     // 验证使用 activePath 作为优先路径
-    expect(tempHeaderBlock).toContain("activePath");
-    expect(tempHeaderBlock).toContain("tempFiles[0]?.path");
+    expect(block).toContain("activePath");
+    expect(block).toContain("tempFiles[0]?.path");
   });
 });

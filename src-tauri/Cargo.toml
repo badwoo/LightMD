@@ -1,6 +1,6 @@
 [package]
 name = "lightmd"
-version = "0.8.0"
+version = "0.8.4"
 description = "LightMD - 轻量级 Markdown 编辑器"
 authors = ["LightMD"]
 edition = "2021"
@@ -21,6 +21,10 @@ tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+# ─── v0.8.3 需求4：窗口状态记忆 ───
+# 官方插件：首次启动（无保存状态）按 tauri.conf 的窗口配置创建（新装默认最大化），
+# 之后在窗口移动/缩放/关闭时保存状态，下次启动恢复上次的大小/位置/最大化标志。
+tauri-plugin-window-state = "2"
 # 单实例插件：双击 .md 文件时复用已有窗口，以标签方式打开，而非启动新实例
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
@@ -32,3 +36,6 @@ ico = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 # API Key 安全存储（Windows 凭据管理器）
 keyring = { version = "3", features = ["windows-native"] }
+# ─── v0.8.4 需求10：目录实时刷新 ───
+# 跨平台文件系统事件监听（Windows ReadDirectoryChangesW / inotify / FSEvents）
+notify = "6"

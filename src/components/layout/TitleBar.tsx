@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEditorStore, type ViewMode } from "../../stores/useEditorStore";
 import { useT } from "../../i18n";
+// v0.8.1 需求6：无边框窗口下自绘的最小化/最大化/关闭三键
+import { WindowControls } from "./WindowControls";
 import "./TitleBar.css";
 
 interface TitleBarProps {
@@ -44,7 +46,9 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
   return (
     <div className="titlebar" data-tauri-drag-region>
       <div className="titlebar-left">
-        <span className="titlebar-brand">LightMD</span>
+        {/* v0.8.1 需求6：无边框窗口靠 data-tauri-drag-region 拖动，
+            直接命中的元素需自带该属性（子元素不会继承），故逐个补齐 */}
+        <span className="titlebar-brand" data-tauri-drag-region>LightMD</span>
         {/* 模式切换按钮组：阅读 / 编辑 / 分屏 */}
         <div className="titlebar-mode-switch">
           <button
@@ -70,8 +74,19 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
           </button>
         </div>
         <div className="titlebar-menu">
-          <div className="titlebar-new-menu" ref={newMenuRef}>
-            <button className="titlebar-menu-btn" title={t("titlebar.newTitle")} onClick={() => setShowNewMenu(!showNewMenu)}>
+          <div
+            className="titlebar-new-menu"
+            ref={newMenuRef}
+            // v0.8.2 需求6：鼠标移出"新建+子菜单"整体区域后自动收起
+            onMouseLeave={() => setShowNewMenu(false)}
+          >
+            {/* v0.8.2 需求6：鼠标移入"新建"自动展开子菜单；点击保持展开（收起走移出/点外部/选中项） */}
+            <button
+              className="titlebar-menu-btn"
+              title={t("titlebar.newTitle")}
+              onMouseEnter={() => setShowNewMenu(true)}
+              onClick={() => setShowNewMenu(true)}
+            >
               {t("titlebar.new")}
             </button>
             {showNewMenu && (
@@ -98,7 +113,7 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
       </div>
 
       <div className="titlebar-center" data-tauri-drag-region>
-        <span className="titlebar-title">{fileName || "LightMD"}</span>
+        <span className="titlebar-title" data-tauri-drag-region>{fileName || "LightMD"}</span>
       </div>
 
       <div className="titlebar-right">
@@ -125,6 +140,9 @@ export function TitleBar({ fileName, onNew, onNewFile, onNewFolder, onOpen, onSa
         >
           ⚙️
         </button>
+
+        {/* v0.8.1 需求6：窗口三键（macOS 交通灯配色）紧随设置按钮右侧 */}
+        <WindowControls />
       </div>
     </div>
   );

@@ -98,7 +98,7 @@ describe("useSectionSplit hook（方向正确性：不取反）", () => {
     expect(result.current.isDragging).toBe(true);
 
     act(() => {
-      document.dispatchEvent(new MouseEvent("mousemove", { clientY: 150 })); // delta = +50
+      document.dispatchEvent(new MouseEvent("mousemove", { clientY: 150, buttons: 1 })); // delta = +50
     });
 
     expect(setPair).toHaveBeenCalledWith("a", "b", 250, 150);
@@ -116,7 +116,7 @@ describe("useSectionSplit hook（方向正确性：不取反）", () => {
       result.current.onMouseDown(makeMouseEvent(100));
     });
     act(() => {
-      document.dispatchEvent(new MouseEvent("mousemove", { clientY: 50 })); // delta = -50
+      document.dispatchEvent(new MouseEvent("mousemove", { clientY: 50, buttons: 1 })); // delta = -50
     });
 
     expect(setPair).toHaveBeenCalledWith("a", "b", 150, 250);
@@ -134,7 +134,7 @@ describe("useSectionSplit hook（方向正确性：不取反）", () => {
     });
     // 没有 mousemove 监听器附加，setPair 不应被调用
     act(() => {
-      document.dispatchEvent(new MouseEvent("mousemove", { clientY: 200 }));
+      document.dispatchEvent(new MouseEvent("mousemove", { clientY: 200, buttons: 1 }));
     });
     expect(setPair).not.toHaveBeenCalled();
   });
@@ -153,7 +153,7 @@ describe("useSectionSplit hook（方向正确性：不取反）", () => {
     });
 
     act(() => result.current.onMouseDown(makeMouseEvent(100)));
-    act(() => document.dispatchEvent(new MouseEvent("mousemove", { clientY: 130 }))); // delta=+30
+    act(() => document.dispatchEvent(new MouseEvent("mousemove", { clientY: 130, buttons: 1 }))); // delta=+30
 
     expect(setPair).toHaveBeenCalledWith("a", "b", 230, 220);
     act(() => document.dispatchEvent(new MouseEvent("mouseup")));
@@ -168,11 +168,14 @@ describe("v0.8.0 修复 P9-1 标题栏拖拽语义（源码接线）", () => {
   );
 
   it("文件夹/收藏/最近/temp 的标题栏都改为按 prevOf 配对（拖动自身改变上方区与本区）", () => {
-    expect(fileTreeSrc).toContain("prevSectionKey={prevOf(fkey)}");
+    // v0.8.2 功能3 起 FolderSection 渲染收拢进 renderFolderSection（closing 快照传 undefined）
+    expect(fileTreeSrc).toContain("prevSectionKey={opts?.closing ? undefined : prevOf(fkey)}");
     expect(fileTreeSrc).toContain('prevSectionKey={prevOf("favorites")}');
     expect(fileTreeSrc).toContain('prevSectionKey={prevOf("recent")}');
-    expect(fileTreeSrc).not.toContain("nextSectionKey");
-    expect(fileTreeSrc).not.toContain("nextOf");
+    // v0.8.2 功能4 起：新增 nextOf/nextSectionKey（第一个可见区域改拖「本区+下区」），
+    // 原"不得出现 nextSectionKey"的断言随该能力引入而失效，改为正向断言两者共存
+    expect(fileTreeSrc).toContain("nextOf");
+    expect(fileTreeSrc).toContain("nextSectionKey");
   });
 
   it("temp 区标题栏拖动的是「上方邻区 + temp」", () => {

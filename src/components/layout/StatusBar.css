@@ -22,9 +22,25 @@
   font-weight: bold;
 }
 
+/* ─── v0.8.3 需求3：光标行列 + 选中字数 ───────────── */
+.statusbar-cursor {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 等宽数字：行列跳动时不引起底栏左右抖动 */
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.statusbar-selected {
+  color: var(--accent-color);
+}
+
 /* 中间区域：专注/打字机模式按钮 */
 .statusbar-center {
   gap: 6px;
+  /* v0.8.1 需求5：固定 AI 抽屉占位变宽时允许收缩，防小窗口横向撑破底栏 */
+  min-width: 0;
 }
 
 /* ─── v0.6.1：全文翻译进度/错误提示 ─────────────── */
@@ -220,6 +236,50 @@
   opacity: 1;
   transform: translateY(-50%) translateX(0);
   pointer-events: auto;
+}
+
+/* ─── v0.8.1 需求5：固定模式下抽屉参与布局 → 底栏整组按钮顺滑重新居中 ───
+   1) .ai-entry-fixed-wrap 用 grid 0fr→1fr 做宽度过渡（WebView2/Chromium 支持），
+      纯 CSS 实现"抽屉占位"的平滑重排，无需测量像素；
+   2) .inline 表示抽屉脱离绝对定位进入文档流（关闭固定时由 JS 延迟 0.3s 移除，
+      先让宽度收回再脱离，避免按钮组瞬移）。
+   注意：wrap 刻意不使用 overflow 裁剪 —— 齿轮设置面板是抽屉后代的绝对定位元素，
+   会被 wrap 的 overflow 一起裁掉；收缩期间不可见改由 opacity/visibility 控制。 */
+.ai-entry-fixed-wrap {
+  display: grid;
+  grid-template-columns: 0fr;
+  min-width: 0;
+  transition: grid-template-columns 0.3s ease;
+}
+
+.ai-entry.fixed .ai-entry-fixed-wrap {
+  grid-template-columns: 1fr;
+}
+
+/* 允许网格单元收缩（0fr 时不被内容撑开） */
+.ai-entry-fixed-wrap > .ai-entry-drawer {
+  min-width: 0;
+}
+
+.ai-entry.inline .ai-entry-drawer {
+  position: static;
+  transform: none;
+  pointer-events: auto;
+  /* 补偿原绝对定位的 left: calc(100% + 4px) 间距 */
+  margin-left: 4px;
+}
+
+/* 退出固定后、宽度仍在收回的过渡期内：抽屉已脱离 open 态，直接隐藏内容避免悬空显示 */
+.ai-entry.inline:not(.open) .ai-entry-drawer {
+  visibility: hidden;
+}
+
+/* 固定态抽屉常显：禁用逐项滑入动画与延迟，避免与重排动画打架 */
+.ai-entry.fixed .ai-entry-item,
+.ai-entry.fixed .ai-entry-gear-btn {
+  transform: none;
+  opacity: 1;
+  transition-delay: 0s;
 }
 
 /* 抽屉功能按钮：各带递进延迟，形成从左往右依次滑入的层次感 */

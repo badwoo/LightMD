@@ -10,8 +10,10 @@
 :root {
   --font-sans: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --font-mono: "Cascadia Code", "Fira Code", "Consolas", "Courier New", monospace;
-  --sidebar-width: 260px;
-  --outline-width: 240px;
+  /* v0.8.1 需求4：默认宽度 +0.5cm（≈19px），与 useSettingsStore 默认值保持一致，
+     避免 store 注入前的首帧闪变；运行时仍以 store 值覆盖 */
+  --sidebar-width: 279px;
+  --outline-width: 259px;
   --titlebar-height: 40px;
   --statusbar-height: 28px;
   --transition-fast: 150ms ease;
@@ -49,6 +51,43 @@ html, body, #root {
 }
 
 ::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ── v0.8.1 需求1：侧栏（左）/ 大纲栏（右）滚动条统一 2px 细线、浅色、悬停该栏才显形 ──
+   作用域用 .app-sidebar / .app-outline 后代选择器：两栏内所有滚动容器
+   （文件夹列表/打开的文件/搜索结果/收藏/最近/临时文件/大纲列表/整体滚动）自动继承，
+   新增容器无需再枚举。 */
+.app-sidebar ::-webkit-scrollbar,
+.app-outline ::-webkit-scrollbar {
+  width: 2px;
+  height: 2px;
+}
+
+.app-sidebar ::-webkit-scrollbar-track,
+.app-outline ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 默认近乎隐形 */
+.app-sidebar ::-webkit-scrollbar-thumb,
+.app-outline ::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 1px;
+}
+
+/* 悬停该栏时显形：混入透明做"浅"（6 套主题的 --scrollbar-thumb 自动适配）。
+   注：不声明标准属性 scrollbar-width/scrollbar-color —— Chromium 121+ 一旦检测到
+   这两个属性为非 auto，会整体忽略 ::-webkit-scrollbar 系列样式，2px 将失效
+   （WebView2 基于 Chromium，这是本需求能否真正落地的关键点）。 */
+.app-sidebar:hover ::-webkit-scrollbar-thumb,
+.app-outline:hover ::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb); /* 不支持 color-mix 时的回退 */
+  background: color-mix(in srgb, var(--scrollbar-thumb) 55%, transparent);
+}
+
+.app-sidebar:hover ::-webkit-scrollbar-thumb:hover,
+.app-outline:hover ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
 

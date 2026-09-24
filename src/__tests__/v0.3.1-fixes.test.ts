@@ -314,7 +314,9 @@ describe("问题6：字数统计面板行数/段落数/阅读时长错误", () =
     // 验证选区变化时直接调用 onSelectionChange（不通过节流判断）
     expect(src).toMatch(/if\s*\(\s*tr\.selectionSet\s*&&\s*onSelectionChange\s*\)/);
     // 验证直接调用，无节流条件包裹
-    expect(src).toMatch(/onSelectionChange\(lineCount,\s*allText\)/);
+    // v0.8.3 需求3：签名扩展为 (line, column, selectedChars, getText)——
+    // 全文文本改为惰性 getter，不再每次选区变化都序列化
+    expect(src).toMatch(/onSelectionChange\(lineCount,\s*column,\s*selectedChars,/);
   });
 
   it("calculateWordCount 行数计算正确", () => {

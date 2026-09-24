@@ -134,6 +134,9 @@ export const enUS: Record<string, string> = {
   "statusbar.focusModeTitle": "Focus Mode (F8) — highlights the current paragraph being edited while dimming others; works across read/edit/split modes",
   "statusbar.typewriterTitle": "Typewriter Mode (F9) — keeps the cursor centered in the viewport; works across read/edit/split modes",
   "statusbar.line": "Line {line}",
+  // v0.8.3 feature 3: cursor line/column + selected characters
+  "statusbar.lineColumn": "Line {line} Col {column}",
+  "statusbar.selected": "{count} selected",
   "statusbar.untitled": "Untitled",
   // ─── Sidebar ───────────────────────────────────
   "sidebar.favorites": "Favorites",
@@ -189,6 +192,10 @@ export const enUS: Record<string, string> = {
   "filetree.viewProperties": "Properties",
   "filetree.emptySubfolder": "Empty Folder",
   "filetree.openFolderFailed": "Failed to open folder",
+  // v0.8.4 req10: fallback hint when watcher registration fails (network drives / permissions, etc.)
+  "filetree.watchUnavailable": "Live refresh unavailable; use right-click refresh or toolbar refresh",
+  // v0.8.4 req10 (P4): opened folder root removed externally → keep the section + toast, do not auto-close
+  "filetree.folderRemovedExternally": "The folder has been deleted or moved externally",
   "filetree.unsupportedFileType": "Unsupported file type",
   "filetree.openFileFailed": "Failed to open file",
   "filetree.renamed": "Renamed: {name}",
@@ -221,6 +228,19 @@ export const enUS: Record<string, string> = {
   "filetree.pasted": "Pasted to: {name}",
   // v0.8.0 fix P11-1: dedicated message for Shift-drag (move)
   "filetree.moved": "Moved to: {name}",
+  // v0.8.4 requirement 1: rejection when dragging/pasting into the folder itself (copy is rejected too)
+  "filetree.cannotMoveIntoSelf": "Cannot move/copy into itself",
+  // v0.8.4 requirement 3: dragging within a sorted folder switches back to manual order
+  "filetree.switchedToManual": "Switched to manual order",
+  // v0.8.4 requirement 7: file tree sort button / dropdown (badges: U=modified, C=created)
+  "filetree.sort": "Sort",
+  "filetree.sortNameAsc": "Name (A-Z)",
+  "filetree.sortNameDesc": "Name (Z-A)",
+  "filetree.sortModifiedDesc": "Modified (newest first)",
+  "filetree.sortModifiedAsc": "Modified (oldest first)",
+  "filetree.sortCreatedDesc": "Created (newest first)",
+  "filetree.sortCreatedAsc": "Created (oldest first)",
+  "filetree.sortCancelled": "Sorting cancelled",
   "filetree.copyFailed": "Copy failed: {error}",
   "filetree.openWorkspace": "Open Containing Folder as Workspace",
   "filetree.workspaceOpened": "Opened in sidebar: {name}",
@@ -238,12 +258,33 @@ export const enUS: Record<string, string> = {
   "newFolder.partialFailed": "Failed at some locations: {detail}",
   "newFolder.create": "Create",
   "newFolder.cancel": "Cancel",
+  // v0.8.4 需求5+9（WP5）：新建文件弹框
+  "newFile.title": "New File",
+  "newFile.nameLabel": "File name",
+  "newFile.nameRequired": "File name is required",
+  "newFile.invalidName": "File name cannot contain \\ / : * ? \" < > |",
+  "newFile.exists": "File already exists",
+  "newFile.target": "Will be created in",
+  "newFile.confirm": "Create",
   "filetree.propFileName": "File name: {name}",
   "filetree.propFilePath": "Path: {path}",
   "filetree.propFileDir": "Directory: {dir}",
   "filetree.propFileType": "Type: .{ext} file",
   "filetree.propUnknownType": "Unknown",
   "filetree.propFileSize": "Size: {size}",
+  // ─── v0.8.1 Feature 3: File properties dialog (replaces native alert) ──
+  "fileprops.title": "File Properties",
+  "fileprops.name": "Name",
+  "fileprops.path": "Path",
+  "fileprops.dir": "Folder",
+  "fileprops.type": "Type",
+  "fileprops.size": "Size",
+  "fileprops.close": "Close",
+  // ─── v0.8.1 Feature 6: frameless window controls ──
+  "window.minimize": "Minimize",
+  "window.maximize": "Maximize",
+  "window.restore": "Restore",
+  "window.close": "Close",
   // ─── Version Snapshots (v0.4.0 Feature 4) ────────────────
   "snapshot.title": "Version Snapshots",
   "snapshot.empty": "No snapshots yet",
@@ -266,11 +307,17 @@ export const enUS: Record<string, string> = {
   "outline.emptyHeading": "(Empty heading)",
   "outline.more": "{count} more headings...",
   "outline.dragHint": "Drag to reorder",
+  "outline.searchPlaceholder": "Search outline…",
+  "outline.searchEmpty": "No matching headings",
   // ─── Recent files ───────────────────────────────────
   "recent.title": "Recent",
   "recent.justNow": "Just now",
   "recent.minutesAgo": "{count} minutes ago",
   "recent.hoursAgo": "{count} hours ago",
+  // v0.8.3 feature 1: absolute last-opened time in the hover tooltip
+  "recent.lastOpenedAt": "Last opened: {time}",
+  // v0.8.4 requirement 1b: stale-entry hint appended to the tooltip (old path moved/deleted)
+  "recent.staleHint": "This file may have been moved or deleted",
   // ─── AppShell sidebar ───────────────────────────────────
   "appshell.expandSidebar": "Expand Sidebar",
   "appshell.collapseSidebar": "Collapse Sidebar",

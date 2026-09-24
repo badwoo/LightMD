@@ -110,7 +110,8 @@ describe("P11-4 侧栏末区可拖到底部", () => {
   it("FileTree 只为最后一个可见区域给出 maxHeight（P12-4/5 后改用 maxBottomFor）", () => {
     const src = read("../components/sidebar/FileTree.tsx");
     expect(src).toContain("ordered[ordered.length - 1] !== bottomKey");
-    expect(src).toContain("maxHeight={maxBottomFor(prevOf(fkey), fkey)}");
+    // v0.8.2 功能3 起 FolderSection 渲染收拢进 renderFolderSection（closing 快照传 undefined）
+    expect(src).toContain("maxHeight={opts?.closing ? undefined : maxBottomFor(prevOf(fkey), fkey)}");
     expect(src).toContain('maxHeight={maxBottomFor(prevOf("recent"), "recent")}');
   });
 });
@@ -137,7 +138,10 @@ describe("P11-1 移动语义与路径联动", () => {
 
   it("移动后同步标签路径 / 全局 filePath（打开的文件变成新路径下的文件）", () => {
     const src = read("../components/sidebar/FileTree.tsx");
-    const moveBlock = src.slice(src.indexOf('if (mode === "move")'), src.indexOf('if (mode === "move")') + 600);
+    // v0.8.4 适配：move 块内新增了 moveFile（跨盘降级）与 stale 双条目联动的
+    // 说明注释，600 字符窗口不再覆盖到 renameFileEntry 调用，故扩大到 1200。
+    // 断言强度不变：仍要求两个联动调用存在于 move 分支内。
+    const moveBlock = src.slice(src.indexOf('if (mode === "move")'), src.indexOf('if (mode === "move")') + 1200);
     expect(moveBlock).toContain("syncOpenTabsAfterRename(srcPath, dst, unique)");
     expect(moveBlock).toContain("renameFileEntry(srcPath, dst, unique)");
   });
@@ -162,7 +166,9 @@ describe("P11-2 临时文件按 Markdown 处理", () => {
   it("App 在临时标签下也把语言设为 markdown（含启动恢复路径）", () => {
     const src = read("../App.tsx");
     expect(src).toContain('!tab.path || isMarkdownFile(tab.path) ? "markdown"');
-    expect(src).toContain('!firstTab.path || isMarkdownFile(firstTab.path) ? "markdown"');
+    // v0.8.3 WP4 需求5：启动恢复的激活目标由 firstTab 泛化为 targetTab
+    // （可能是上次活跃的临时标签或任意真实文件），"临时文档按 markdown 处理"语义不变
+    expect(src).toContain('!targetTab.path || isMarkdownFile(targetTab.path) ? "markdown"');
   });
 
   it("临时文档同样显示大纲栏", () => {
@@ -182,7 +188,9 @@ describe("P11-7 切换文件保留未保存内容", () => {
   it("切回已打开文件时保留脏标记，且不清除浏览进度", () => {
     const src = read("../App.tsx");
     expect(src).toContain("const wasDirty = alreadyOpen ? !!st0.openTabs[existingIdx].isDirty : false");
-    expect(src).toContain("if (detail.path && !alreadyOpen)");
+    // v0.8.3 WP4 需求6：追加"会话恢复期"守卫（恢复期间跳过 clear，
+    // 否则刚注入的跨会话阅读位置会被当场清掉）；「已打开文件不清进度」语义不变
+    expect(src).toContain("if (detail.path && !alreadyOpen && !sessionRestoringRef.current)");
   });
 });
 

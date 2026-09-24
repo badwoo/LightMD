@@ -87,7 +87,7 @@ describe("v0.4.0: useFileStore 多文件夹操作", () => {
       expect(state.fileTree).toEqual([]);
     });
 
-    it("追加多个文件夹（按顺序）", () => {
+    it("多次打开文件夹：最新打开的排在最前（v0.8.2 头插语义）", () => {
       const store = useFileStore.getState();
       store.addOpenFolder("/test/folder-1");
       store.addOpenFolder("/test/folder-2");
@@ -95,16 +95,17 @@ describe("v0.4.0: useFileStore 多文件夹操作", () => {
 
       const state = useFileStore.getState();
       expect(state.openFolders).toHaveLength(3);
+      // v0.8.2：新打开的文件夹置顶（侧栏该栏渲染在最上方）
       expect(state.openFolders.map((f) => f.path)).toEqual([
-        "/test/folder-1",
-        "/test/folder-2",
         "/test/folder-3",
+        "/test/folder-2",
+        "/test/folder-1",
       ]);
-      // rootPath 始终指向第一个
-      expect(state.rootPath).toBe("/test/folder-1");
+      // rootPath 始终指向第一个（= 最新打开的那个）
+      expect(state.rootPath).toBe("/test/folder-3");
     });
 
-    it("去重：重复添加同一路径不重复添加", () => {
+    it("去重：重复添加同一路径不重复添加（也不改变已有位置）", () => {
       const store = useFileStore.getState();
       store.addOpenFolder("/test/folder-1");
       store.addOpenFolder("/test/folder-2");
@@ -112,19 +113,26 @@ describe("v0.4.0: useFileStore 多文件夹操作", () => {
 
       const state = useFileStore.getState();
       expect(state.openFolders).toHaveLength(2);
-      expect(state.openFolders[0].path).toBe("/test/folder-1");
-      expect(state.openFolders[1].path).toBe("/test/folder-2");
+      // v0.8.2：重复打开只更新 recentFolders，不重排已打开列表
+      expect(state.openFolders[0].path).toBe("/test/folder-2");
+      expect(state.openFolders[1].path).toBe("/test/folder-1");
     });
 
-    it("超过 MAX_OPEN_FOLDERS(5) 时截断到 5 个", () => {
+    it("超过 MAX_OPEN_FOLDERS(5) 时截断到 5 个（保留最近打开的 5 个）", () => {
       const store = useFileStore.getState();
       for (let i = 1; i <= 7; i++) {
         store.addOpenFolder(`/test/folder-${i}`);
       }
       const state = useFileStore.getState();
       expect(state.openFolders).toHaveLength(5);
-      // 保留前 5 个（1-5），folder-6/7 被截断
-      expect(state.openFolders[4].path).toBe("/test/folder-5");
+      // v0.8.2：头插 + 截断末位 → 保留最近打开的 7~3，最久未打开的 1/2 被挤出
+      expect(state.openFolders.map((f) => f.path)).toEqual([
+        "/test/folder-7",
+        "/test/folder-6",
+        "/test/folder-5",
+        "/test/folder-4",
+        "/test/folder-3",
+      ]);
     });
 
     it("同步更新 recentFolders（去重 + 头插）", () => {
@@ -156,13 +164,14 @@ describe("v0.4.0: useFileStore 多文件夹操作", () => {
       store.addOpenFolder("/test/folder-1");
       store.addOpenFolder("/test/folder-2");
       store.addOpenFolder("/test/folder-3");
+      // v0.8.2：头插语义下列表为 [folder-3, folder-2, folder-1]
       store.removeOpenFolder("/test/folder-2");
 
       const state = useFileStore.getState();
       expect(state.openFolders).toHaveLength(2);
-      expect(state.openFolders[0].path).toBe("/test/folder-1");
-      expect(state.openFolders[1].path).toBe("/test/folder-3");
-      expect(state.rootPath).toBe("/test/folder-1");
+      expect(state.openFolders[0].path).toBe("/test/folder-3");
+      expect(state.openFolders[1].path).toBe("/test/folder-1");
+      expect(state.rootPath).toBe("/test/folder-3");
     });
 
     it("移除最后一个后 rootPath 为 null，fileTree 为空", () => {
@@ -191,6 +200,7 @@ describe("v0.4.0: useFileStore 多文件夹操作", () => {
       const store = useFileStore.getState();
       store.addOpenFolder("/test/folder-1");
       store.addOpenFolder("/test/folder-2");
+      // v0.8.2：头插语义下列表为 [folder-2, folder-1]
 
       const tree1 = [
         { name: "a.md", path: "/test/folder-1/a.md", isDir: false, size: 10 },
@@ -198,17 +208,20 @@ describe("v0.4.0: useFileStore 多文件夹操作", () => {
       store.updateFolderTree("/test/folder-1", tree1);
 
       const state = useFileStore.getState();
-      expect(state.openFolders[0].fileTree).toEqual(tree1);
-      // 第一个文件夹更新时同步 fileTree 兼容字段
-      expect(state.fileTree).toEqual(tree1);
-      // 第二个文件夹不受影响
-      expect(state.openFolders[1].fileTree).toEqual([]);
+      const idx1 = state.openFolders.findIndex((f) => f.path === "/test/folder-1");
+      const idx2 = state.openFolders.findIndex((f) => f.path === "/test/folder-2");
+      expect(state.openFolders[idx1].fileTree).toEqual(tree1);
+      // 非第一个文件夹更新时不同步 fileTree 兼容字段
+      expect(state.fileTree).toEqual([]);
+      // 另一个文件夹不受影响
+      expect(state.openFolders[idx2].fileTree).toEqual([]);
     });
 
-    it("更新非第一个文件夹不影响 fileTree 兼容字段", () => {
+    it("更新第一个（最新打开）文件夹时同步 fileTree 兼容字段", () => {
       const store = useFileStore.getState();
       store.addOpenFolder("/test/folder-1");
       store.addOpenFolder("/test/folder-2");
+      // 头插语义：folder-2 是第一个（rootPath 指向它）
 
       const tree2 = [
         { name: "b.md", path: "/test/folder-2/b.md", isDir: false, size: 20 },
@@ -216,7 +229,28 @@ describe("v0.4.0: useFileStore 多文件夹操作", () => {
       store.updateFolderTree("/test/folder-2", tree2);
 
       const state = useFileStore.getState();
-      expect(state.openFolders[1].fileTree).toEqual(tree2);
+      expect(state.openFolders[0].path).toBe("/test/folder-2");
+      expect(state.openFolders[0].fileTree).toEqual(tree2);
+      // 兼容字段指向第一个文件夹（已更新）
+      expect(state.fileTree).toEqual(tree2);
+    });
+
+    it("更新非第一个文件夹不影响 fileTree 兼容字段", () => {
+      const store = useFileStore.getState();
+      store.addOpenFolder("/test/folder-1");
+      store.addOpenFolder("/test/folder-2");
+
+      const tree1 = [
+        { name: "a.md", path: "/test/folder-1/a.md", isDir: false, size: 10 },
+      ];
+      store.updateFolderTree("/test/folder-1", tree1);
+
+      const state = useFileStore.getState();
+      expect(state.openFolders[0].path).toBe("/test/folder-2");
+      expect(state.openFolders[0].fileTree).toEqual([]);
+      expect(
+        state.openFolders.find((f) => f.path === "/test/folder-1")!.fileTree,
+      ).toEqual(tree1);
       // 兼容字段仍指向第一个文件夹（空）
       expect(state.fileTree).toEqual([]);
     });

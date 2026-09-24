@@ -199,6 +199,8 @@ export async function restoreRecentFiles(opts: {
  * @param opts.count v0.4.0：显式指定恢复数量（覆盖 settings.loadLastFolderCount）
  * @param opts.addOpenFolder v0.4.0：添加打开的文件夹（store action，传入则启用多文件夹模式）
  * @param opts.updateFolderTree v0.4.0：更新指定文件夹的 fileTree（接收 listDir 原始结果）
+ * @param opts.watchFolder v0.8.4 需求10：恢复成功后注册文件夹 watcher（可选注入；
+ *   启动恢复不走 openFolderAt，需在此补 watch 才能实时刷新；失败静默，不阻断恢复）
  */
 export async function restoreRecentFolders(opts: {
   storage?: StorageLike;
@@ -214,6 +216,8 @@ export async function restoreRecentFolders(opts: {
   addOpenFolder?: (path: string) => void;
   /** v0.4.0：更新指定文件夹的 fileTree（接收 listDir 原始结果） */
   updateFolderTree?: (path: string, entries: unknown[]) => void;
+  /** v0.8.4 需求10：恢复成功后注册文件夹 watcher */
+  watchFolder?: (path: string) => Promise<void>;
 }): Promise<RestoreResult> {
   const storage = opts.storage ?? (typeof localStorage !== "undefined" ? localStorage : { getItem: () => null });
   const fileServiceImpl = opts.fileServiceImpl ?? defaultFileService;
@@ -258,6 +262,13 @@ export async function restoreRecentFolders(opts: {
         }
         opts.addOpenFolder(folder.path);
         opts.updateFolderTree?.(folder.path, entries);
+        // v0.8.4 需求10：多文件夹恢复模式不走 openFolderAt，在此补注册 watcher
+        // （fire-and-forget：失败静默，与"恢复失败静默跳过"的整体风格一致，不阻断恢复）
+        try {
+          await opts.watchFolder?.(folder.path);
+        } catch {
+          // watch 注册失败忽略（可用工具栏刷新/右键刷新兜底）
+        }
         restored++;
       } catch {
         skipped++;

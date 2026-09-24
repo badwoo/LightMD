@@ -1,0 +1,82 @@
+/* ─── v0.8.1 需求6：窗口控制按钮（macOS 交通灯配色） ───────────
+   无边框窗口下替代原生标题栏的系统按钮，置于 TitleBar 设置按钮右侧。
+   配色：黄（最小化） / 绿（窗口化） / 红（关闭）；悬停整组时圆点内浮现符号。 */
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+}
+
+.wc-btn {
+  position: relative;
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 50%;
+  cursor: pointer;
+  line-height: 1;
+  transition: filter var(--transition-fast, 150ms ease);
+}
+
+.wc-min {
+  background: #febc2e;
+}
+
+.wc-max {
+  background: #28c840;
+}
+
+.wc-close {
+  background: #ff5f57;
+}
+
+/* 悬停时整组变亮，并显示圆点内的操作符号（macOS 行为） */
+.window-controls:hover .wc-btn {
+  filter: brightness(0.92);
+}
+
+.wc-btn::before {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity var(--transition-fast, 150ms ease);
+}
+
+.wc-min::before {
+  content: "–";
+}
+
+.wc-max::before {
+  content: "＋";
+}
+
+.wc-close::before {
+  content: "✕";
+}
+
+.window-controls:hover .wc-btn::before {
+  opacity: 1;
+}
+
+.wc-btn:active {
+  filter: brightness(0.82);
+}
+
+/* 深色主题下描边加深，避免圆点在深底上发飘 */
+[data-theme="dark"] .wc-btn,
+[data-theme="night"] .wc-btn {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+[data-theme="dark"] .wc-btn::before,
+[data-theme="night"] .wc-btn::before {
+  color: rgba(0, 0, 0, 0.62);
+}

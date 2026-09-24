@@ -79,6 +79,9 @@ export function StatusBar() {
   const t = useT();
   const isDirty = useEditorStore((s) => s.isDirty);
   const cursorLine = useEditorStore((s) => s.cursorLine);
+  // v0.8.3 需求3：光标列号 + 选中字符数
+  const cursorColumn = useEditorStore((s) => s.cursorColumn);
+  const selectedChars = useEditorStore((s) => s.selectedChars);
   const wordCount = useEditorStore((s) => s.wordCount);
   const filePath = useEditorStore((s) => s.filePath);
   const focusMode = useEditorStore((s) => s.focusMode);
@@ -122,6 +125,21 @@ export function StatusBar() {
   useEffect(() => {
     if (aiSettings.aiEntryFixed && aiEnabled) setAiOpen(true);
   }, [aiSettings.aiEntryFixed, aiEnabled]);
+
+  // ─── v0.8.1 需求5：固定模式下抽屉参与布局，底栏整组按钮顺滑重新居中 ───
+  // aiFixed：宽度动画开关（0fr → 1fr）
+  // aiInline：抽屉脱离绝对定位、进入文档流的开关；关闭固定时延迟 0.3s（宽度动画时长）
+  //           再切回悬浮，避免按钮组"瞬移"回原位
+  const aiFixed = aiSettings.aiEntryFixed && aiEnabled;
+  const [aiInline, setAiInline] = useState(aiFixed);
+  useEffect(() => {
+    if (aiFixed) {
+      setAiInline(true);
+      return;
+    }
+    const timer = setTimeout(() => setAiInline(false), 300);
+    return () => clearTimeout(timer);
+  }, [aiFixed]);
 
   // v0.6.4：翻译完成态 2 秒后自动消失（取消/切换文档走 reset，同样离开 done 态）
   useEffect(() => {
@@ -280,7 +298,7 @@ export function StatusBar() {
             v0.7.0 修复1：总开关关闭时置灰禁用、抽屉不展开；修复6：抽屉绝对定位不挤压左侧按钮
             v0.7.0 修复3：移出不再收回——点击外部区域（非任务中）或 AI 任务结束才收回 */}
         <div
-          className={`ai-entry${aiOpen ? " open" : ""}${aiEnabled ? "" : " disabled"}`}
+          className={`ai-entry${aiOpen ? " open" : ""}${aiEnabled ? "" : " disabled"}${aiFixed ? " fixed" : ""}${aiInline ? " inline" : ""}`}
           ref={aiWrapRef}
           onMouseEnter={() => aiEnabled && setAiOpen(true)}
           data-testid="ai-entry"
@@ -294,6 +312,8 @@ export function StatusBar() {
           >
             <span className="ai-entry-logo" aria-hidden="true">AI</span>
           </button>
+          {/* v0.8.1 需求5：外层容器承担 0fr→1fr 宽度过渡，实现抽屉占位时的顺滑重排 */}
+          <span className="ai-entry-fixed-wrap">
           <div className="ai-entry-drawer">
             {/* v0.7.5 优化2：四个 AI 入口按钮按任务注入 --ai-entry-color（取自各气泡颜色），
                 hover / 按下时以该色高亮，与选区气泡保持同一套配色。
@@ -435,6 +455,7 @@ export function StatusBar() {
               )}
             </div>
           </div>
+          </span>
         </div>
       </span>
       <span className="statusbar-item">
@@ -478,7 +499,17 @@ export function StatusBar() {
             )}
           </div>
         )}
-        {cursorLine > 0 && <span>{t("statusbar.line", { line: cursorLine })}</span>}
+        {/* v0.8.3 需求3：实时显示光标所在行/列，选中文本时追加选中字数 */}
+        {cursorLine > 0 && (
+          <span className="statusbar-cursor" data-testid="statusbar-cursor">
+            {t("statusbar.lineColumn", { line: cursorLine, column: cursorColumn })}
+            {selectedChars > 0 && (
+              <span className="statusbar-selected" data-testid="statusbar-selected">
+                {t("statusbar.selected", { count: selectedChars })}
+              </span>
+            )}
+          </span>
+        )}
       </span>
     </div>
   );

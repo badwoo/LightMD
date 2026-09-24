@@ -54,9 +54,9 @@ function createMockElementWithParent(containerWidth: number): HTMLElement {
   return { parentElement: parent } as unknown as HTMLElement;
 }
 
-/** 派发原生 mousemove 事件 */
+/** 派发原生 mousemove 事件（buttons:1 = 左键按住，模拟真实拖拽） */
 function dispatchMouseMove(clientX: number) {
-  document.dispatchEvent(new MouseEvent("mousemove", { clientX }));
+  document.dispatchEvent(new MouseEvent("mousemove", { clientX, buttons: 1 }));
 }
 
 /** 派发原生 mouseup 事件 */
@@ -343,18 +343,21 @@ describe("useResizable split 方向", () => {
 
 describe("useSettingsStore v0.4.0 新增配置项", () => {
   beforeEach(() => {
-    // 重置为默认值
+    // 重置为默认值（v0.8.1 需求4：默认宽度 +0.5cm → 279/259）
     useSettingsStore.setState({
-      sidebarWidth: 260,
-      outlineWidth: 240,
+      sidebarWidth: 279,
+      outlineWidth: 259,
       splitRatio: 0.5,
     });
   });
 
-  it("默认值：sidebarWidth=260, outlineWidth=240, splitRatio=0.5", () => {
-    expect(useSettingsStore.getState().sidebarWidth).toBe(260);
-    expect(useSettingsStore.getState().outlineWidth).toBe(240);
-    expect(useSettingsStore.getState().splitRatio).toBe(0.5);
+  it("默认值：sidebarWidth=279, outlineWidth=259, splitRatio=0.5", () => {
+    // v0.8.1：改用 getInitialState() 断言真正的初始默认值
+    // （setState 之后读取到的是被重置的值，不是 store 的默认值）
+    const initial = useSettingsStore.getInitialState();
+    expect(initial.sidebarWidth).toBe(279);
+    expect(initial.outlineWidth).toBe(259);
+    expect(initial.splitRatio).toBe(0.5);
   });
 
   it("setter 存在", () => {

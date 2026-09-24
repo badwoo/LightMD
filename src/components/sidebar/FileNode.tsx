@@ -13,6 +13,10 @@ export interface FileNodeData {
   path: string;
   isDir: boolean;
   size: number;
+  /** v0.8.4 需求7：修改时间（UNIX 毫秒）。可选——存量测试 mock 无需补字段；0/缺失 = 未知，排序时排最后 */
+  modifiedMs?: number;
+  /** v0.8.4 需求7：创建时间（UNIX 毫秒）。可选——同上，0/缺失 = 未知 */
+  createdMs?: number;
   children?: FileNodeData[];
 }
 
@@ -22,6 +26,13 @@ interface FileNodeProps {
   activePath: string | null;
   renamingPath: string | null;
   expandedPaths: Set<string>;
+  /**
+   * v0.8.2 动画优化：以"父文件夹路径"为键的子目录缓存。
+   * 与 data flow 解耦——文件夹收起时 children 数据仍在（缓存不随展开状态清空），
+   * 因此收起动画可以继续渲染子节点快照，播完才由 TreeChildrenWrap 卸载。
+   * 缺省（未提供）时回退为直接用 node.children。
+   */
+  childrenByPath?: Map<string, FileNodeData[]>;
   onSelect: (node: FileNodeData) => void;
   onToggleExpand: (path: string) => void;
   onRenameStart: (path: string) => void;
@@ -30,11 +41,29 @@ interface FileNodeProps {
   onDelete: (node: FileNodeData) => void;
   onNewFile: (parentPath: string) => void;
   onNewFolder: (parentPath: string) => void;
-  /** v0.8.0 修复 P3：在文件节点上按下鼠标 → 启动自制拖拽（文件夹不可拖） */
+  /** v0.8.0 修复 P3：节点上按下鼠标 → 启动自制拖拽（v0.8.4 需求1：文件夹同样可拖） */
   onFileDragStart?: (node: FileNodeData, e: React.MouseEvent) => void;
-  onRefresh?: () => void;
+  /**
+   * v0.8.4 需求10 S7 修复：文件夹右键"刷新"以 node.path（右键目标自身）调用——
+   * 刷谁的子树就传谁的路径；folderPath 缺省 = 刷全部打开文件夹（refreshTree 语义）。
+   */
+  onRefresh?: (folderPath?: string) => void;
   /** v0.8.0 WP2 需求6：在左侧栏打开该文件所在文件夹工作区 */
   onOpenWorkspace?: (filePath: string) => void;
+  /**
+   * v0.8.4 需求2：树内节点右键"复制"（文件/文件夹通用）。
+   * FileNode 自身无 toast 通道，由 FileTree 注入：内部写剪贴板 + showMessage 反馈。
+   */
+  onCopyNode?: (node: FileNodeData) => void;
+  /** v0.8.4 需求2：树内节点右键"剪切"（文件/文件夹通用），注入方式同上 */
+  onCutNode?: (node: FileNodeData) => void;
+  /**
+   * v0.8.2 动画优化：由 FileTree 注入的文件树子节点动画容器
+   * （展开滑入 + 高度展开 / 收起滑出 + 高度收起）。
+   * 参数为 (父文件夹路径, 是否可见, 子节点内容)；通过注入而非直接 import，
+   * 便于单测独立渲染本组件。
+   */
+  childrenWrap?: (path: string, visible: boolean, children: React.ReactNode) => React.ReactNode;
 }
 
 export function FileEntryNode({
@@ -43,6 +72,7 @@ export function FileEntryNode({
   activePath,
   renamingPath,
   expandedPaths,
+  childrenByPath,
   onSelect,
   onToggleExpand,
   onRenameStart,
@@ -54,6 +84,9 @@ export function FileEntryNode({
   onFileDragStart,
   onRefresh,
   onOpenWorkspace,
+  onCopyNode,
+  onCutNode,
+  childrenWrap,
 }: FileNodeProps) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(node.name);
@@ -151,10 +184,11 @@ export function FileEntryNode({
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
-        // v0.8.0 修复 P3：按下鼠标启动自制拖拽（仅文件可拖；文件夹只作落点）
-        onMouseDown={(e) => {
-          if (!node.isDir) onFileDragStart?.(node, e);
-        }}
+        // v0.8.0 修复 P3：按下鼠标启动自制拖拽。
+        // v0.8.4 需求1：去掉 !node.isDir 限制，文件夹节点同样可拖（拖到其他
+        // 文件夹 = 复制/Shift 移动）。4px 拖拽阈值天然区分"点击展开/拖拽"：
+        // 普通点击不达阈值仍走 onClick 展开；拖拽结束后 click 被抑制不会误展开。
+        onMouseDown={(e) => onFileDragStart?.(node, e)}
         // 文件夹节点可作为拖拽落点（嵌套时内层优先，closest 取最近者）
         {...(node.isDir ? { [DROP_DIR_ATTR]: node.path } : {})}
         title={node.path}
@@ -196,40 +230,54 @@ export function FileEntryNode({
         )}
       </div>
 
-      {/* 展开的子节点 */}
-      {node.isDir && isExpanded && node.children && (
-        <div className="filetree-children">
-          {node.children.map((child) => (
-            <FileEntryNode
-              key={child.path}
-              node={child}
-              depth={depth + 1}
-              activePath={activePath}
-              renamingPath={renamingPath}
-              expandedPaths={expandedPaths}
-              onSelect={onSelect}
-              onToggleExpand={onToggleExpand}
-              onRenameStart={onRenameStart}
-              onRenameConfirm={onRenameConfirm}
-              onRenameCancel={onRenameCancel}
-              onDelete={onDelete}
-              onNewFile={onNewFile}
-              onNewFolder={onNewFolder}
-              onFileDragStart={onFileDragStart}
-              onRefresh={onRefresh}
-              onOpenWorkspace={onOpenWorkspace}
-            />
-          ))}
-          {node.children.length === 0 && (
-            <div
-              className="filetree-empty"
-              style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
-            >
-              {t("filetree.emptySubfolder")}
-            </div>
-          )}
-        </div>
-      )}
+      {/* 展开的子节点（v0.8.2 动画优化：展开滑入 + 高度展开 / 收起滑出 + 高度收起） */}
+      {node.isDir && (() => {
+        const children = childrenByPath?.get(node.path) ?? node.children ?? [];
+        const childNodes = children.map((child) => (
+          <FileEntryNode
+            key={child.path}
+            node={child}
+            depth={depth + 1}
+            activePath={activePath}
+            renamingPath={renamingPath}
+            expandedPaths={expandedPaths}
+            childrenByPath={childrenByPath}
+            onSelect={onSelect}
+            onToggleExpand={onToggleExpand}
+            onRenameStart={onRenameStart}
+            onRenameConfirm={onRenameConfirm}
+            onRenameCancel={onRenameCancel}
+            onDelete={onDelete}
+            onNewFile={onNewFile}
+            onNewFolder={onNewFolder}
+            onFileDragStart={onFileDragStart}
+            onRefresh={onRefresh}
+            onOpenWorkspace={onOpenWorkspace}
+            onCopyNode={onCopyNode}
+            onCutNode={onCutNode}
+            childrenWrap={childrenWrap}
+          />
+        ));
+        const body = (
+          <div className="filetree-children">
+            {childNodes}
+            {children.length === 0 && (
+              <div
+                className="filetree-empty"
+                style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
+              >
+                {t("filetree.emptySubfolder")}
+              </div>
+            )}
+          </div>
+        );
+        // v0.8.2：树节点动画容器由 FileTree 注入；未注入时退化为直接渲染（单测场景）
+        return childrenWrap
+          ? childrenWrap(node.path, isExpanded, body)
+          : isExpanded
+            ? body
+            : null;
+      })()}
 
       {/* 右键菜单 */}
       {contextMenu && (
@@ -265,7 +313,9 @@ export function FileEntryNode({
               <button
                 className="context-menu-item"
                 onClick={() => {
-                  onRefresh?.();
+                  // v0.8.4 需求10 S7 修复：传 node.path —— 右键深层子文件夹仅刷其自身子树，
+                  // 不再误刷整个 section 根（旧实现 onRefresh 无参闭包固定为根）
+                  onRefresh?.(node.path);
                   setContextMenu(null);
                 }}
               >
@@ -312,6 +362,29 @@ export function FileEntryNode({
               }}
             >
               {t("common.revealInFolder")}
+            </button>
+          )}
+          {/* v0.8.4 需求2：复制/剪切（文件与文件夹通用，写剪贴板 + toast 反馈由 FileTree 注入） */}
+          {onCopyNode && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                onCopyNode(node);
+                setContextMenu(null);
+              }}
+            >
+              {t("filetree.copy")}
+            </button>
+          )}
+          {onCutNode && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                onCutNode(node);
+                setContextMenu(null);
+              }}
+            >
+              {t("filetree.cut")}
             </button>
           )}
           <button

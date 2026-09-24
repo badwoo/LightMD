@@ -1,0 +1,2 @@
+4d704e230cdffe3ef6d871f2a4fb1bf72b898a25c1285288f3e23efee1ba6b55  LightMD_0.8.2_x64_en-US.msi
+0107189acbfe3bcb858c02f190041962fb0929095d7de1b93cc6833c0d42b534  LightMD_0.8.2_x64-setup.exe

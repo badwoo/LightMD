@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.8.0**
+**Current Version: v0.8.4**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -51,6 +51,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 🗑 **Delete closes its tabs** — removing a file or folder also closes the matching open tabs
 - 🧭 **Open containing folder as workspace** — from the tab/file/recent-item context menu
 - 🖱 **Redesigned sidebar layout** — drag a section header to resize (neighbouring sections trade height, and the last one can be dragged all the way down); floating scroll arrows and a slimmer, subtler scrollbar
+- 🖱 **File tree drag & ordering upgrades (0.8.4)** — drag a file/folder onto a folder to copy, hold `Shift` to move (cross-drive supported); drag within the same folder to reorder (manual order survives restart); copy/cut in the node context menu, and new file / new folder / refresh / paste on the empty-area menu; per-folder sort button in the folder header (name / modified / created × ascending / descending, remembered per folder); external changes sync into the tree automatically (`Ctrl+R` as a fallback refresh)
 
 ### ✍️ Editing Experience (strengthened in 0.8.0)
 - ↩️ **Line-break fidelity** — `Shift+Enter` inside table cells, multi-paragraph list items, nested lists and indented code blocks survive saving intact
@@ -129,6 +130,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 | | `Ctrl+Shift+Tab` | Switch to previous tab |
 | | `Ctrl+Alt+V` | Open the version snapshot window (0.8.0, was `Ctrl+Shift+V`) |
 | **Sidebar file tree** | `Ctrl+C` / `Ctrl+V` | Copy / paste (or move after cut) the selected file, when focus is in the sidebar |
+| | `Ctrl+R` | Refresh the file tree (fallback when external changes are not synced, added in 0.8.4) |
 | **View** | `Ctrl+Shift+T` | Toggle theme |
 | | `Ctrl+Shift+O` | Toggle outline / syntax helper |
 | | `F8` | Focus mode |
@@ -141,10 +143,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.8.0 installers:
+Visit the [Releases](../../releases) page to download the 0.8.4 installers:
 
-- **`LightMD_0.8.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.8.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.8.4_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.8.4_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -195,6 +197,101 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.8.4 (2026-09-24)
+
+**Sidebar file tree milestone: drag system / manual ordering / live refresh** (baseline 0.8.3; 11 requirements)
+
+**New Features**
+
+- **File / folder drag-to-copy and move** — dragging onto a folder **copies**; hold `Shift` to **move** (tab paths follow automatically); works for folders too; moving **across drives** is supported (automatically performed as "copy to target + delete source"); dropping into its own subfolder is rejected with a notice
+- **Same-folder drag reordering** — drag items up/down within the same folder to set a manual display order that survives restart; "Opened Files" panel entries land in the source file's folder and participate in the same reordering
+- **Copy / cut in the node context menu** — new "Copy / Cut" items in the file tree context menu, working with the existing paste for cross-folder copy & move
+- **Empty-area context menu** — right-clicking the tree's empty area offers: New File / New Folder / Refresh / Paste
+- **Centered New File dialog** — type a name to create: name clashes are avoided automatically (numbered suffix), a missing extension gets `.md` appended; the parent folder expands and the new file opens right away
+- **6 sort modes in the folder header** — each folder header gains a sort button: name / modified time / created time × ascending / descending (6 modes), **remembered per folder** across restarts; switching to manual order shows a notice
+
+**Changes**
+
+- **Live file tree refresh** — external additions / deletions / renames / modifications (e.g. from Explorer) sync into the tree automatically (notify watcher); the header refresh button is removed, with right-click "Refresh" / toolbar button / `Ctrl+R` as fallbacks; explicit notices when the watcher is unavailable or a folder was deleted externally; right-clicking "Refresh" on a deep subfolder refreshes only its own subtree
+- **Verticalized expand/collapse animation** — child items now enter/exit top-down (vertical height animation) instead of sliding horizontally, matching the expansion direction
+- **Outline hover search** — hovering the outline panel reveals a search box for quick filtering and jumping to headings
+- **Stale hint in Recent** — when an open file is moved, its old-path entry in "Recent" shows a light-yellow ⚠ marker; favorites update their path in place and are unaffected
+
+**Legacy Fixes (S1 / S2 / S7)**
+
+- **S1 deep-file location lost folders** — opening a deeply nested file expanded ancestors by only writing the expanded set without loading intermediate levels, leaving them empty; now levels are loaded step by step
+- **S2 lagging expanded-paths ref** — expansion was synced to the ref only via `useEffect`, so an immediately following refresh missed the newly expanded folders; state and ref are now written in sync (also fixes new-folder / new-file / paste flows)
+- **S7 wrong refresh scope** — right-clicking "Refresh" on a deep subfolder refreshed the root; it now targets the clicked folder's own path and refreshes only its subtree
+
+**Other**
+
+- Version bumped in all four places: `package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock`
+
+### v0.8.3 (2026-09-22)
+
+**Interaction polish, bug fixes & small features** (baseline 0.8.2; 7 requirements)
+
+**New features**
+
+- **Live cursor line/column in the status bar** — shows `Line N Col M`; when text is selected it appends `N selected` (and disappears again on deselect). Works in both reading mode (ProseMirror) and source mode (textarea)
+- **Window size memory** — a fresh install still starts maximized; after that, closing the app in a smaller window reopens it at the same size and position (multi-monitor positions included). Uses the official `tauri-plugin-window-state`, with the state flags narrowed to size / position / maximized only, so an accidental fullscreen never sticks
+- **Reading position remembered across sessions** — scroll to the middle of a document, close the app, reopen: the restored document is back at the same position. Other restored documents and unsaved (untitled) tabs are remembered too. Positions are keyed per tab and flushed on a 5-second heartbeat plus window close, adding zero cost to the scroll path
+
+**Changes**
+
+- **"Recent" list expanded to 66 entries + shows the opened date** — the UI used to show only the first 10; it now renders the full list with in-panel scrolling, newest on top, and drops the oldest once past 66. Hovering an entry shows the full path plus `Last opened: YYYY/MM/DD HH:mm`
+- **Startup restore activates the tab you actually left active** — the restore flow used to hardcode "activate the first real file", so leaving an **untitled** document active forced a switch to a real file on restart (users saw this as "restore doesn't work for untitled files"). It now resolves the last active tab (untitled by id, real files by path) and falls back to the old logic when no record exists
+
+**Fixes**
+
+- **Double highlight in the "Open Files" panel** — after clicking entry A in the panel and switching to B from the tab bar, A's leftover keyboard-selection background and B's active background both lit up (they shared the same colour). The keyboard selection now expires when the active entry changes (the "clicked it myself" case is preserved so `Delete`/`Ctrl+2` still targets A), and the keyboard indicator changed from a same-colour background to a **2px accent bar on the left** — no state combination can produce two highlighted rows again
+- **Status bar line number was always 1** — the old formula `doc.textBetween(0, pos).split("\n").length` never gets block separators from `textBetween`, so ordinary Markdown documents always reported line 1. Line numbers are now computed structurally (one line per block, one per hard break inside a block, one per table row) and no longer concatenate the text before the cursor
+
+**Performance**
+
+- **No more full-document serialization on every selection change** — each cursor move/keystroke used to run `doc.textContent`; it is now lazy and runs once inside the 300ms word-count debounce. Measured on an 18k-line (660k character) document: **0.778ms → 0.072ms** per selection change (~1/11)
+- **Lazy image loading** — image nodes emit `loading="lazy"` + `decoding="async"`, so large decodes no longer block compositor frames
+- **All scroll listeners are `passive`**
+- **Scroll performance evaluation (requirement 7)** — measured with real Chromium on an 18k-line / 9000 top-level-block document: the baseline scrolls at avg **16.67ms (60fps, zero long tasks)**, so the bottleneck is neither the Tauri/WebView2 layer nor "the whole DOM". The planned `content-visibility: auto` approach actually **slowed scrolling to avg 70.4ms (14fps, one ~70ms long task per frame)** — thousands of top-level blocks keep being lazily laid out while scrolling, and estimated intrinsic sizes diverging from real heights (scrollHeight inflated by 36%) triggers wide reflow. **The approach was rejected**; the data and reasoning live in the CSS comments so nobody re-adds it blindly
+
+### v0.8.2 (2026-09-21)
+
+**Sidebar open/close animations, ordering & follow-up fixes** (baseline 0.8.1; 3 animation requirements + 2 ordering changes + 9 fixes)
+
+**Animation**
+
+- **Opening slides in smoothly from left to right** — opening a folder panel, expanding a directory inside the tree, or opening a file entry now all slide in from the left while their height expands, gently pushing the content below downwards
+- **Closing is now strictly sequential** — slide out horizontally first, **pause a beat**, then collapse the height so the items/panels below glide upwards to fill the gap. This fixes the flaw where the slide-out and the fill-up appeared to happen at the same time (root cause: the closing snapshot was unmounted after only 360 ms while the full sequence needs 960 ms)
+- **Closing a middle item keeps it in place** — when a middle folder panel or file entry closes, its slide-out block stays at its original position and the content below moves up to fill the gap, instead of jumping to the end of the list
+- **New expand/collapse animation for tree nodes** — expanding a directory slides its children in from the left and expands the height; collapsing slides them out first and then collapses the height. The animation container is keyed by folder path, so parent re-renders cannot interrupt it
+
+**Ordering**
+
+- **Newest opened folder panel goes first** — a newly opened folder is inserted at the top (when the 5-folder limit is exceeded, the least recently opened one is dropped)
+- **"Open files" entries move to the top only when newly opened** — a newly opened file goes first; clicking to switch between already-open files no longer re-orders the list (only the active highlight changes)
+
+**Fixes**
+
+- **Clicking a subfolder froze the app** — root cause: the tree-node animation container called `setState` **during render**, so expanding a folder that contains subdirectories triggered a "render → setState → render" infinite loop; React then threw `Too many re-renders` and the whole sidebar was unmounted. State updates now happen inside effects. **This crash was also the root cause of "the sidebar sometimes cannot be dragged" and "images do not render for files opened through a folder"** (an unmounted sidebar cannot be dragged and its tree no longer responds)
+- **"New > New Folder" in the menu did nothing** — the old implementation used a native `prompt()` plus a save dialog: not an in-app dialog, and it could not choose a target path. It now opens the in-app **New Folder dialog** (centered; enter a name and either tick an open folder or type a custom path)
+- **Sidebar occasionally not draggable** — resolved by the crash fix above; the drag fallbacks (clearing listeners and the `section-dragging` flag when buttons are released or the window loses focus) remain in place
+- Fixed collapsed directories losing their cached children when a folder was reopened, which left the collapse animation with nothing to render
+- Fixed the "Open files" panel getting out of sync with the open tabs (count and active highlight)
+- Fixed the "Open files" panel header structure not matching the new styling
+- Fixed the closing folder snapshot being unmounted too early (360 ms → the full 960 ms sequence)
+- Version bumped in all three places: `package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`
+
+### v0.8.1 (2026-09-19)
+
+**Detail & interaction polish** (baseline 0.8.0; 6 improvements)
+
+- **Native title bar removed** — the window is now frameless; minimize / maximize / close moved next to the Settings button at the top right, styled as macOS traffic lights (yellow / green / red) with symbols appearing on hover
+- **Starts maximized** — opens maximized (taskbar kept); restore size is 1200×800
+- **Thinner sidebar scrollbars** — both side panels (file tree / outline) now use a uniform **2px** scrollbar: transparent when idle, softly visible on panel hover
+- **Default panel widths +0.5 cm** — sidebar 260 → 279px, outline 240 → 259px (custom widths are preserved)
+- **File properties use an in-app dialog** — no more native system popups, eliminating the alert sound; values such as paths are selectable
+- **Smooth re-centering when the AI entry is pinned** — with "Fixed" enabled the AI drawer takes up layout space, so the status bar buttons glide into a re-centered position without covering the word count
 
 ### v0.8.0 (2026-09-18)
 

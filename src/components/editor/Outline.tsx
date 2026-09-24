@@ -15,6 +15,12 @@
  * - 拖拽手柄仅 hover 时显示，不干扰点击跳转
  * - 限制垂直方向拖拽
  * - 跨层级拖拽时智能调整标题级别（保持相对层级）
+ *
+ * 搜索（v0.8.4 需求11）：
+ * - 容器 hover / 搜索框聚焦 / 有关键字 任一成立 → 展开搜索条，否则收起
+ * - 防误关：输入中鼠标移出但焦点仍在 → 不收起；blur 且鼠标不在 → 收起
+ * - 过滤为大小写不敏感的包含匹配，先过滤再做 MAX_OUTLINE_ITEMS 截断
+ * - 过滤态下禁用拖拽（dnd-kit items 索引随过滤变化，禁用最稳）
  */
 import { useEffect, useState, useCallback, useRef, useMemo, type CSSProperties } from "react";
 import type { EditorView } from "prosemirror-view";
@@ -111,6 +117,10 @@ function SortableHeadingItem({
 export function Outline({ editorView }: OutlineProps) {
   const [headings, setHeadings] = useState<HeadingItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // v0.8.4 需求11：搜索条三状态——容器悬停 / 关键字 / 搜索框聚焦
+  const [hovered, setHovered] = useState(false);
+  const [query, setQuery] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
   // 缓存上一次的标题列表，避免内容未变时重复更新
   const lastHeadingsRef = useRef<string>("");
@@ -119,6 +129,16 @@ export function Outline({ editorView }: OutlineProps) {
   // 所有模式启用拖拽（v0.3.0 修复：阅读模式下也支持大纲拖拽排序）
   // editorView.dispatch 不依赖于 contenteditable，可直接修改文档 state
   const dragEnabled = true;
+
+  // v0.8.4 需求11 显隐规则：hover / 聚焦 / 有关键字 任一成立即展开；
+  // 防误关由派生逻辑天然保证——输入中鼠标移出但焦点仍在（searchFocused 兜底）不收起；
+  // blur 且鼠标不在容器内（三者皆否）自动收起
+  const hasQuery = query.trim() !== "";
+  const searchVisible = hovered || searchFocused || hasQuery;
+
+  // v0.8.4 需求11：过滤态下禁用拖拽——dnd-kit 的 items 索引随过滤结果变化，
+  // 拖拽语义错乱，直接禁用最稳（恢复无关键字后拖拽自动可用）
+  const dragActive = dragEnabled && !hasQuery;
 
   // PointerSensor 要求移动超过 5px 才触发拖拽，避免误触点击跳转
   const sensors = useSensors(
@@ -287,11 +307,16 @@ export function Outline({ editorView }: OutlineProps) {
     [editorView]
   );
 
-  // 限制渲染数量
-  const displayHeadings = headings.length > MAX_OUTLINE_ITEMS
-    ? headings.slice(0, MAX_OUTLINE_ITEMS)
+  // v0.8.4 需求11：先按关键字过滤（大小写不敏感、包含匹配），再做 MAX_OUTLINE_ITEMS 截断
+  // 顺序很重要——若先截断后过滤，位于前 100 条之外但命中的标题会丢失
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredHeadings = normalizedQuery
+    ? headings.filter((h) => h.text.toLowerCase().includes(normalizedQuery))
     : headings;
-  const hasMore = headings.length > MAX_OUTLINE_ITEMS;
+  const displayHeadings = filteredHeadings.length > MAX_OUTLINE_ITEMS
+    ? filteredHeadings.slice(0, MAX_OUTLINE_ITEMS)
+    : filteredHeadings;
+  const hasMore = filteredHeadings.length > MAX_OUTLINE_ITEMS;
 
   // sortable items id 数组（用 pos 作为 id）
   const sortableItems = useMemo(
@@ -311,6 +336,7 @@ export function Outline({ editorView }: OutlineProps) {
   }
 
   // 所有模式均用 DndContext + SortableContext 包装（支持拖拽排序）
+  // v0.8.4：过滤态（dragActive=false）不渲染 DndContext，手柄不渲染，仅保留点击跳转
   const listContent = (
     <>
       {displayHeadings.map((h) => (
@@ -318,24 +344,51 @@ export function Outline({ editorView }: OutlineProps) {
           key={h.id}
           heading={h}
           activeId={activeId}
-          draggable={dragEnabled}
+          draggable={dragActive}
           onClick={handleClick}
         />
       ))}
       {hasMore && (
-        <div className="outline-more">{t("outline.more", { count: headings.length - MAX_OUTLINE_ITEMS })}</div>
+        <div className="outline-more">{t("outline.more", { count: filteredHeadings.length - MAX_OUTLINE_ITEMS })}</div>
+      )}
+      {/* v0.8.4 需求11：过滤后无匹配标题的空态提示 */}
+      {hasQuery && filteredHeadings.length === 0 && (
+        <div className="outline-search-empty">{t("outline.searchEmpty")}</div>
       )}
     </>
   );
 
   return (
-    <div className="outline">
+    <div
+      className="outline"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <div className="outline-header">
         <span className="outline-title">{t("outline.title")}</span>
+        {/* v0.8.4 需求11：计数保持文档标题总数，不随过滤变化（总数反映文档结构） */}
         <span className="outline-count">{headings.length}</span>
       </div>
+      {/* v0.8.4 需求11：搜索条（header 与 list 之间），显隐由 CSS max-height/opacity 过渡 */}
+      <div className={`outline-search${searchVisible ? " visible" : ""}`}>
+        <input
+          type="text"
+          value={query}
+          placeholder={t("outline.searchPlaceholder")}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setSearchFocused(true)}
+          onBlur={() => setSearchFocused(false)}
+          onKeyDown={(e) => {
+            // ESC：清空关键字并失焦（失焦后若无 hover 随之收起）
+            if (e.key === "Escape") {
+              setQuery("");
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+        />
+      </div>
       <nav className="outline-list">
-        {dragEnabled ? (
+        {dragActive ? (
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
@@ -350,7 +403,7 @@ export function Outline({ editorView }: OutlineProps) {
           listContent
         )}
       </nav>
-      {dragEnabled && (
+      {dragActive && (
         <div className="outline-drag-hint">{t("outline.dragHint")}</div>
       )}
     </div>

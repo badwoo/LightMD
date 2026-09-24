@@ -5,21 +5,37 @@ use tauri::Manager;
 /// 限制读取文件的最大大小 (50MB)
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
 
+/// 去掉 Windows 扩展长度路径前缀（`\\?\` 及其正斜杠形式 `//?/`）。
+///
+/// `canonicalize()` 在 Windows 上返回 `\\?\D:\dir\file`，前缀一旦泄漏到前端：
+/// 1. 侧栏文件树显示成 `//?/D:/...`，路径可读性差；
+/// 2. 相对路径图片解析会把它当作普通路径段，转成 asset URL 时被百分号编码为
+///    `%3F%2F`（`//?/D:/a/x.png` → `.../%3F%2FD%3A%2Fa/x.png`），
+///    Tauri 资源协议随之找不到文件 —— 表现为"通过文件夹打开的 md 图片不渲染"。
+/// 因此所有返回给前端的路径都先剥掉该前缀。
+fn strip_extended_prefix(path: &str) -> String {
+    path.strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+        .unwrap_or(path)
+        .to_string()
+}
+
 /// 将路径规范化为绝对路径
-fn resolve_path(path: &str) -> Result<PathBuf, String> {
+/// v0.8.4：改为 pub(crate)，供 watcher 模块复用，保证各命令的路径解析口径一致
+pub(crate) fn resolve_path(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
-    if p.exists() {
+    let resolved = if p.exists() {
         p.canonicalize()
-            .map_err(|e| format!("无法解析路径 \"{}\": {}", path, e))
+            .map_err(|e| format!("无法解析路径 \"{}\": {}", path, e))?
+    } else if p.is_absolute() {
+        p
     } else {
-        if p.is_absolute() {
-            Ok(p)
-        } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(&p))
-                .map_err(|e| format!("无法获取当前目录: {}", e))
-        }
-    }
+        std::env::current_dir()
+            .map_err(|e| format!("无法获取当前目录: {}", e))?
+            .join(&p)
+    };
+    // v0.8.2 修复：剥掉 `\\?\` 扩展长度前缀再交给调用方
+    Ok(PathBuf::from(strip_extended_prefix(&resolved.to_string_lossy())))
 }
 
 #[tauri::command]
@@ -75,7 +91,21 @@ pub async fn get_file_size(path: String) -> Result<u64, String> {
 
 #[tauri::command]
 pub async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
-    let path = resolve_path(&path)?;
+    // v0.8.4 需求7.1：拆出同步核心 list_dir_entries 便于单元测试
+    list_dir_entries(&resolve_path(&path)?)
+}
+
+/// SystemTime → UNIX 纪元毫秒时间戳。
+/// 读取失败（平台不支持）或早于 UNIX_EPOCH 时统一置 0。
+fn system_time_to_ms(time: Option<std::time::SystemTime>) -> u64 {
+    time.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 读取目录内容（同步核心，供 list_dir 命令与单测共用）。
+/// 返回条目按"目录在前 + 名称升序"排序；隐藏文件（`.` 开头）被过滤。
+fn list_dir_entries(path: &std::path::Path) -> Result<Vec<FileEntry>, String> {
     if !path.exists() {
         return Err(format!("目录不存在: {}", path.display()));
     }
@@ -83,7 +113,7 @@ pub async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
         return Err(format!("路径不是目录: {}", path.display()));
     }
     let mut entries = Vec::new();
-    let dir = std::fs::read_dir(&path)
+    let dir = std::fs::read_dir(path)
         .map_err(|e| format!("读取目录失败 \"{}\": {}", path.display(), e))?;
     for entry in dir {
         let entry =
@@ -100,6 +130,9 @@ pub async fn list_dir(path: String) -> Result<Vec<FileEntry>, String> {
             path: entry.path().to_string_lossy().to_string().replace('\\', "/"),
             is_dir: metadata.is_dir(),
             size: metadata.len(),
+            // v0.8.4 需求7.1：修改/创建时间（毫秒），供前端排序
+            modified_ms: system_time_to_ms(metadata.modified().ok()),
+            created_ms: system_time_to_ms(metadata.created().ok()),
         });
     }
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
@@ -233,6 +266,54 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
+/// v0.8.4 需求1：移动文件或目录（拖拽 Shift 移动）。
+/// 同盘直接 rename（快）；失败（典型为跨卷）降级为"递归复制 + 删除源"。
+/// 目标已存在则报错（防静默覆盖）。
+#[tauri::command]
+pub async fn move_file(src: String, dst: String) -> Result<(), String> {
+    move_path(&resolve_path(&src)?, &resolve_path(&dst)?)
+}
+
+/// move_file 的同步核心（供单测复用）。
+/// - 检查 src 存在、dst 不存在；
+/// - dst 父目录不存在时先 create_dir_all；
+/// - rename 失败时按 src 类型降级：目录 copy_dir_recursive + remove_dir_all，
+///   文件 fs::copy + remove_file。
+fn move_path(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    if !src.exists() {
+        return Err(format!("源路径不存在: {}", src.display()));
+    }
+    if dst.exists() {
+        return Err(format!("目标已存在: {}", dst.display()));
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("无法创建目标目录 \"{}\": {}", parent.display(), e))?;
+    }
+    // 同盘 rename 极快且原子；跨卷（如 D: → C:）rename 会失败，走降级路径
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            if src.is_dir() {
+                copy_dir_recursive(src, dst)?;
+                std::fs::remove_dir_all(src)
+                    .map_err(|e| format!("删除源目录失败 \"{}\": {}", src.display(), e))
+            } else {
+                std::fs::copy(src, dst).map_err(|e| {
+                    format!(
+                        "移动文件失败 \"{}\" -> \"{}\": {}",
+                        src.display(),
+                        dst.display(),
+                        e
+                    )
+                })?;
+                std::fs::remove_file(src)
+                    .map_err(|e| format!("删除源文件失败 \"{}\": {}", src.display(), e))
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn ping() -> String {
     "pong".to_string()
@@ -288,10 +369,191 @@ pub async fn reveal_in_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 目录条目（v0.8.4 需求7.1：新增修改/创建时间毫秒字段，供前端标题栏排序）
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct FileEntry {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+    /// 修改时间（UNIX 纪元毫秒）；metadata.modified() 失败或早于纪元时为 0
+    pub modified_ms: u64,
+    /// 创建时间（UNIX 纪元毫秒）；平台不支持 metadata.created() 时为 0
+    pub created_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v0.8.2 修复：Windows 扩展长度前缀必须被剥掉，
+    /// 否则前端相对路径图片会被编码成 `%3F%2F...` 导致渲染失败。
+    #[test]
+    fn strip_extended_prefix_removes_backslash_form() {
+        assert_eq!(
+            strip_extended_prefix(r"\\?\D:\docs\a.md"),
+            r"D:\docs\a.md"
+        );
+    }
+
+    #[test]
+    fn strip_extended_prefix_removes_forward_slash_form() {
+        assert_eq!(strip_extended_prefix("//?/D:/docs/a.md"), "D:/docs/a.md");
+    }
+
+    #[test]
+    fn strip_extended_prefix_keeps_unc_path() {
+        // UNC 路径 `\\server\share` 没有 `?` 段，不能被改动
+        assert_eq!(
+            strip_extended_prefix(r"\\server\share\a.md"),
+            r"\\server\share\a.md"
+        );
+    }
+
+    #[test]
+    fn strip_extended_prefix_keeps_plain_path() {
+        assert_eq!(strip_extended_prefix("D:/docs/a.md"), "D:/docs/a.md");
+        assert_eq!(strip_extended_prefix("/home/u/a.md"), "/home/u/a.md");
+    }
+
+    /// list_dir 返回的路径不得再带扩展长度前缀
+    #[test]
+    fn list_dir_paths_have_no_extended_prefix() {
+        let dir = std::env::temp_dir().join("lightmd_ext_prefix_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("probe.md"), "x").unwrap();
+        let resolved = resolve_path(&dir.to_string_lossy()).unwrap();
+        assert!(
+            !resolved.to_string_lossy().starts_with(r"\\?\"),
+            "resolve_path 不应保留 \\\\?\\ 前缀: {}",
+            resolved.display()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.4 需求7.1：list_dir 必须填充修改时间毫秒字段（> 0，供前端时间排序）；
+    /// created 平台不支持时允许为 0（仅断言修改时间）。
+    #[test]
+    fn list_dir_fills_time_fields() {
+        let dir = std::env::temp_dir().join("lightmd_time_fields_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("t.md"), "x").unwrap();
+        let entries = list_dir_entries(&dir).unwrap();
+        let entry = entries
+            .iter()
+            .find(|e| e.name == "t.md")
+            .expect("目录条目 t.md 应存在");
+        assert!(entry.modified_ms > 0, "modified_ms 应为有效毫秒时间戳");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.4 需求7.1：时间转换兜底——None（平台不支持）与早于纪元的时间均置 0
+    #[test]
+    fn system_time_to_ms_falls_back_to_zero() {
+        assert_eq!(system_time_to_ms(None), 0);
+        assert_eq!(
+            system_time_to_ms(Some(std::time::SystemTime::UNIX_EPOCH)),
+            0
+        );
+        // 早于 UNIX_EPOCH 的时间（duration_since 失败）也应为 0
+        let before_epoch = std::time::SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1);
+        assert_eq!(system_time_to_ms(Some(before_epoch)), 0);
+    }
+
+    /// v0.8.4 需求1：同盘移动文件（rename 成功路径）
+    #[test]
+    fn move_path_renames_file_same_volume() {
+        let dir = std::env::temp_dir().join("lightmd_move_file_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.md");
+        let dst = dir.join("b.md");
+        std::fs::write(&src, "hello").unwrap();
+        move_path(&src, &dst).unwrap();
+        assert!(dst.exists(), "目标文件应存在");
+        assert!(!src.exists(), "源文件应已移除");
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.4 需求1：移动整个目录（含嵌套子树）
+    #[test]
+    fn move_path_moves_directory_tree() {
+        let dir = std::env::temp_dir().join("lightmd_move_dir_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src_dir");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub").join("x.md"), "content").unwrap();
+        let dst = dir.join("dst_dir");
+        move_path(&src, &dst).unwrap();
+        assert!(
+            dst.join("sub").join("x.md").exists(),
+            "嵌套子文件应随目录整体移动"
+        );
+        assert!(!src.exists(), "源目录应已移除");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.4 需求1：目标父目录不存在时应自动创建
+    #[test]
+    fn move_path_creates_missing_dst_parent() {
+        let dir = std::env::temp_dir().join("lightmd_move_parent_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.md");
+        std::fs::write(&src, "x").unwrap();
+        let dst = dir.join("new_parent").join("a.md");
+        move_path(&src, &dst).unwrap();
+        assert!(dst.exists(), "目标父目录缺失时应自动创建并完成移动");
+        assert!(!src.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.4 需求1：目标已存在必须报错（防静默覆盖）
+    #[test]
+    fn move_path_errors_when_dst_exists() {
+        let dir = std::env::temp_dir().join("lightmd_move_dst_exists_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.md");
+        let dst = dir.join("b.md");
+        std::fs::write(&src, "x").unwrap();
+        std::fs::write(&dst, "y").unwrap();
+        let err = move_path(&src, &dst).unwrap_err();
+        assert!(err.contains("目标已存在"), "错误信息应包含'目标已存在': {}", err);
+        // 失败时双方均不得被破坏
+        assert!(src.exists() && dst.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.4 需求1：源不存在必须报错
+    #[test]
+    fn move_path_errors_when_src_missing() {
+        let dir = std::env::temp_dir().join("lightmd_move_src_missing_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("ghost.md");
+        let dst = dir.join("b.md");
+        let err = move_path(&src, &dst).unwrap_err();
+        assert!(err.contains("源路径不存在"), "错误信息应包含'源路径不存在': {}", err);
+        assert!(!dst.exists(), "报错后不应产生目标文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.4 需求1：跨盘降级路径——目录 copy_dir_recursive + remove_dir_all 的
+    /// 组合行为（rename 在单卷测试环境难以强制失败，此处直接验证降级组合的正确性）
+    #[test]
+    fn move_fallback_combo_copies_then_removes_dir() {
+        let dir = std::env::temp_dir().join("lightmd_move_fallback_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src_dir");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub").join("x.md"), "c").unwrap();
+        let dst = dir.join("dst_dir");
+        copy_dir_recursive(&src, &dst).unwrap();
+        std::fs::remove_dir_all(&src).unwrap();
+        assert!(dst.join("sub").join("x.md").exists());
+        assert!(!src.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -30,3 +30,6 @@ export function collectTabsToClose(
   });
   return result;
 }
+
+// v0.8.2 调整：collectTempTabIndices 已随「打开的文件」栏标题栏关闭按钮移除而删除
+// （该栏改为随文件数据自动出现/消失，无需批量关闭入口）

@@ -91,8 +91,19 @@ export function useResizable(options: UseResizableOptions): UseResizableResult {
   onChangeRef.current = onChange;
   onSplitChangeRef.current = onSplitChange;
 
+  // v0.8.2：mouseup 结束器经 ref 供 handleMouseMove 兜底调用
+  // （两者互相引用，用 ref 打破 useCallback 依赖环）
+  const endDragRef = useRef<() => void>(() => {});
+
   const handleMouseMove = useCallback(
     (e: MouseEvent) => {
+      // v0.8.2 修复：拖拽中窗口失焦（Alt+Tab/系统通知/Win 键）时 mouseup 丢失，
+      // mousemove 监听器永久残留 → 残留监听器用旧起点持续改写宽度 → "分割条拖不动"。
+      // 检测到按键已全部松开（buttons === 0）立即结束拖拽。
+      if (e.buttons === 0) {
+        endDragRef.current();
+        return;
+      }
       const ds = dragStateRef.current;
 
       if (direction === "vertical") {
@@ -130,11 +141,13 @@ export function useResizable(options: UseResizableOptions): UseResizableResult {
   const handleMouseUp = useCallback(() => {
     document.removeEventListener("mousemove", handleMouseMove);
     document.removeEventListener("mouseup", handleMouseUp);
+    window.removeEventListener("blur", handleMouseUp);
     // 恢复 body 样式
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
     setIsDragging(false);
   }, [handleMouseMove]);
+  endDragRef.current = handleMouseUp;
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -162,6 +175,8 @@ export function useResizable(options: UseResizableOptions): UseResizableResult {
 
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
+      // v0.8.2：窗口失焦兜底——失焦瞬间结束拖拽（mouseup 可能丢失）
+      window.addEventListener("blur", handleMouseUp);
     },
     [direction, width, height, ratio, handleMouseMove, handleMouseUp]
   );

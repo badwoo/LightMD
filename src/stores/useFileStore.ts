@@ -6,6 +6,10 @@ interface FileNode {
   path: string;
   isDir: boolean;
   size: number;
+  /** v0.8.4 需求7：修改时间（UNIX 毫秒）。可选——0/缺失 = 未知，排序时排最后 */
+  modifiedMs?: number;
+  /** v0.8.4 需求7：创建时间（UNIX 毫秒）。可选——0/缺失 = 未知，排序时排最后 */
+  createdMs?: number;
 }
 
 /** v0.4.0：同时打开的文件夹条目 */
@@ -18,6 +22,26 @@ export interface OpenFolder {
 /** v0.4.0：同时打开文件夹数量上限（与 settings 的 loadLastFolderCount 上限一致） */
 const MAX_OPEN_FOLDERS = 5;
 
+/**
+ * v0.8.3 需求1：最近打开文件条目上限。
+ * 从 50 提升到 66（用户要求"记录最近打开的 66 个文档"）：
+ * 头插 + 按 path 去重，超出后丢弃列表最末位（= 最早打开的那条）。
+ */
+export const MAX_RECENT_FILES = 66;
+
+/**
+ * v0.8.4 需求1b：最近打开文件条目。
+ * stale = 旧路径已失效（文件被移动/外部删除）：条目保留并标记，
+ * UI 显示淡黄 ⚠ + hover 提示；成功再次打开同一路径时清除。
+ */
+export interface RecentFile {
+  path: string;
+  name: string;
+  accessedAt: number;
+  /** 旧路径已失效标记（可选——旧持久化数据无此字段，读出为 undefined 即"正常"） */
+  stale?: boolean;
+}
+
 interface FileState {
   /** 兼容字段：= openFolders[0]?.path ?? null，旧代码直接读取 */
   rootPath: string | null;
@@ -25,12 +49,16 @@ interface FileState {
   fileTree: FileNode[];
   /** v0.4.0：同时打开的文件夹列表 */
   openFolders: OpenFolder[];
-  /** 最近打开的文件（最多 50 条，F2 扩展上限） */
-  recentFiles: { path: string; name: string; accessedAt: number }[];
+  /** 最近打开的文件（最多 MAX_RECENT_FILES=66 条，最新在前；v0.8.4 支持条目级 stale 标记） */
+  recentFiles: RecentFile[];
   /** 最近打开的文件夹（最多 10 条，F3 新增） */
   recentFolders: { path: string; name: string; accessedAt: number }[];
-  /** 收藏文件列表（后续阶段 G7 使用，预留持久化空数组） */
-  favorites: { path: string; name: string; addedAt: number }[];
+  /**
+   * 收藏文件列表（后续阶段 G7 使用，预留持久化空数组）。
+   * v0.8.4 需求10（P2 拍板）：外部删除/移动时收藏条目同样标 stale（与最近打开行为统一），
+   * UI 以 hover tooltip 提示，成功重新打开同一路径时语义上已失效（条目路径未变，暂不自动清除）。
+   */
+  favorites: { path: string; name: string; addedAt: number; stale?: boolean }[];
   // 临时打开的文件（非文件夹中的文件），在目录树中显示
   tempFiles: FileNode[];
 
@@ -46,8 +74,20 @@ interface FileState {
   updateFolderTree: (path: string, tree: FileNode[]) => void;
   /** v0.4.0：检查路径是否在任一已打开文件夹下 */
   isPathInOpenFolders: (path: string) => boolean;
-  setRecentFiles: (files: { path: string; name: string; accessedAt: number }[]) => void;
+  setRecentFiles: (files: RecentFile[]) => void;
   addRecentFile: (file: { path: string; name: string }) => void;
+  /**
+   * v0.8.4 需求1b：把路径匹配的最近打开条目标记为 stale（文件已移动/外部删除，
+   * 旧路径失效）。条目保留不清除，供用户找回文件。
+   * 应用内移动场景由 renameFileEntry 调用；外部删除场景由 watcher 删除事件调用。
+   */
+  markRecentStale: (oldPath: string) => void;
+  /**
+   * v0.8.4 需求10（P2 拍板）：把路径匹配的收藏条目标记为 stale（文件已移动/外部删除）。
+   * 与 markRecentStale 同构：路径归一化（\ → /）后比较；条目保留不清除。
+   * 外部删除场景由 watcher 删除事件调用。
+   */
+  markFavoriteStale: (oldPath: string) => void;
   /** F3：新增最近打开的文件夹 */
   addRecentFolder: (folder: { path: string; name: string }) => void;
   /** F3：设置 recentFolders（用于启动恢复失败时移除条目） */
@@ -67,6 +107,8 @@ interface FileState {
   addTempFile: (file: FileNode) => void;
   removeTempFile: (path: string) => void;
   clearTempFiles: () => void;
+  /** v0.8.2：整表写入「打开的文件」栏条目（与打开的标签同步） */
+  setTempFiles: (files: FileNode[]) => void;
 }
 
 export type { FileNode };
@@ -125,6 +167,8 @@ export const useFileStore = create<FileState>()(
           return { fileTree: tree, openFolders };
         }),
       // v0.4.0：添加打开的文件夹（去重，按 MAX_OPEN_FOLDERS 截断）
+      // v0.8.2：**头插** —— 最新打开的文件夹排在第一位（侧栏该栏渲染在最上方），
+      // 超出上限时丢弃最久未打开的那个（列表末位），与"最新在上"的语义一致。
       addOpenFolder: (path) => {
         if (!path) return;
         const name = getFolderName(path);
@@ -139,10 +183,10 @@ export const useFileStore = create<FileState>()(
             };
           }
           const folder: OpenFolder = { path, name, fileTree: [] };
-          const openFolders = [...state.openFolders, folder].slice(0, MAX_OPEN_FOLDERS);
+          const openFolders = [folder, ...state.openFolders].slice(0, MAX_OPEN_FOLDERS);
           return {
             openFolders,
-            // 同步兼容字段指向第一个文件夹
+            // 同步兼容字段指向第一个文件夹（= 最新打开的那个）
             rootPath: openFolders[0]?.path ?? null,
             fileTree: openFolders[0]?.fileTree ?? [],
             recentFolders: [
@@ -187,6 +231,10 @@ export const useFileStore = create<FileState>()(
           (f) => path === f.path || path.startsWith(f.path + "/") || path.startsWith(f.path + "\\")
         ),
       setRecentFiles: (files) => set({ recentFiles: files }),
+      // v0.8.3 需求1：头插 + 按 path 去重 + 按 MAX_RECENT_FILES(66) 截断
+      // （最新在首位；超出上限时列表末位 = 最早打开的那条被清除）
+      // v0.8.4 需求1b：同路径成功再次打开时，匹配的旧条目被过滤、头插的新条目
+      // 不带 stale 字段（= stale: false）——stale 清除逻辑天然由本入口完成
       addRecentFile: (file) =>
         set((state) => {
           const filtered = state.recentFiles.filter((f) => f.path !== file.path);
@@ -194,7 +242,29 @@ export const useFileStore = create<FileState>()(
             recentFiles: [
               { ...file, accessedAt: Date.now() },
               ...filtered,
-            ].slice(0, 50),
+            ].slice(0, MAX_RECENT_FILES),
+          };
+        }),
+      // v0.8.4 需求1b：路径匹配的条目标 stale: true（不删除条目）。
+      // 路径归一化（\ → /）后比较，避免 Windows 下分隔符混用导致漏标。
+      markRecentStale: (oldPath) =>
+        set((state) => {
+          const target = oldPath.replace(/\\/g, "/");
+          return {
+            recentFiles: state.recentFiles.map((f) =>
+              f.path.replace(/\\/g, "/") === target ? { ...f, stale: true } : f
+            ),
+          };
+        }),
+      // v0.8.4 需求10（P2 拍板）：外部删除/移动时收藏条目同样标 stale，
+      // 匹配逻辑与 markRecentStale 同构（归一化后精确匹配）
+      markFavoriteStale: (oldPath) =>
+        set((state) => {
+          const target = oldPath.replace(/\\/g, "/");
+          return {
+            favorites: state.favorites.map((f) =>
+              f.path.replace(/\\/g, "/") === target ? { ...f, stale: true } : f
+            ),
           };
         }),
       addRecentFolder: (folder) =>
@@ -236,12 +306,15 @@ export const useFileStore = create<FileState>()(
       // G7：查询是否已收藏（读取最新状态，不触发订阅）
       isFavorite: (path) => get().favorites.some((f) => f.path === path),
       // 重命名时联动更新收藏和最近文件中的路径和名称
-      renameFileEntry: (oldPath, newPath, newName) =>
+      // v0.8.4 需求1b：拆分原「favorites/recentFiles/tempFiles 统一原地更新」实现——
+      // - tempFiles：原地改路径（「打开的文件」面板 = 活标签镜像，必须跟随新路径）
+      // - favorites：原地改路径（用户维护的清单，不宜自动复制成两条——与最近打开刻意不同，S19）
+      // - recentFiles：改为 stale 双条目语义——旧条目保留标 stale（⚠ 提示可能已变更位置），
+      //   新路径条目经 addRecentFile 头插入列（按 path 去重，天然不冲突）。
+      // 接口签名不变，调用方无需修改。
+      renameFileEntry: (oldPath, newPath, newName) => {
         set((state) => ({
           favorites: state.favorites.map((f) =>
-            f.path === oldPath ? { ...f, path: newPath, name: newName } : f
-          ),
-          recentFiles: state.recentFiles.map((f) =>
             f.path === oldPath ? { ...f, path: newPath, name: newName } : f
           ),
           // v0.8.0 修复 P11-1：侧栏"打开的文件"面板同步骤更新，
@@ -249,7 +322,11 @@ export const useFileStore = create<FileState>()(
           tempFiles: state.tempFiles.map((f) =>
             f.path === oldPath ? { ...f, path: newPath, name: newName } : f
           ),
-        })),
+        }));
+        // 最近打开：先标旧条目 stale，再让新条目头插入列（顺序保证新条目在列表头部）
+        get().markRecentStale(oldPath);
+        get().addRecentFile({ path: newPath, name: newName });
+      },
       addTempFile: (file) =>
         set((state) => {
           // 避免重复
@@ -261,6 +338,8 @@ export const useFileStore = create<FileState>()(
           tempFiles: state.tempFiles.filter((f) => f.path !== path),
         })),
       clearTempFiles: () => set({ tempFiles: [] }),
+      // v0.8.2：「打开的文件」栏条目整表写入（与打开的标签严格同步，见 utils/tempFilesSync.ts）
+      setTempFiles: (files) => set({ tempFiles: files }),
     }),
     {
       name: "lightmd-file-store",

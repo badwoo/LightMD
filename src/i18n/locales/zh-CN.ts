@@ -135,6 +135,9 @@ export const zhCN: Record<string, string> = {
   "statusbar.focusModeTitle": "专注模式 (F8) — 当前编辑段落高亮，其余段落变暗；阅读/编辑/分屏三模式通用",
   "statusbar.typewriterTitle": "打字机模式 (F9) — 光标始终保持在视口中央；阅读/编辑/分屏三模式通用",
   "statusbar.line": "行 {line}",
+  // v0.8.3 需求3：光标行列 + 选中字数
+  "statusbar.lineColumn": "行 {line} 列 {column}",
+  "statusbar.selected": "已选 {count} 字",
   "statusbar.untitled": "无标题",
   // ─── 侧边栏 ────────────────────────────────────
   "sidebar.favorites": "收藏",
@@ -190,6 +193,10 @@ export const zhCN: Record<string, string> = {
   "filetree.viewProperties": "查看属性",
   "filetree.emptySubfolder": "空文件夹",
   "filetree.openFolderFailed": "打开文件夹失败",
+  // v0.8.4 需求10：watch 注册失败的兜底提示（网络盘/权限等场景）
+  "filetree.watchUnavailable": "实时刷新不可用，可用右键刷新或工具栏刷新",
+  // v0.8.4 需求10（P4 拍板）：打开的文件夹根被外部删除 → 保持该栏 + toast，不自动关闭
+  "filetree.folderRemovedExternally": "文件夹已在外部被删除或移动",
   "filetree.unsupportedFileType": "不支持的文件类型",
   "filetree.openFileFailed": "打开文件失败",
   "filetree.renamed": "已重命名: {name}",
@@ -222,6 +229,19 @@ export const zhCN: Record<string, string> = {
   "filetree.pasted": "已粘贴到: {name}",
   // v0.8.0 修复 P11-1：Shift 拖拽（移动）语义的专用提示
   "filetree.moved": "已移动到: {name}",
+  // v0.8.4 需求1：拖拽/粘贴到文件夹自身内部的自嵌套拒绝提示（copy 同样拒绝）
+  "filetree.cannotMoveIntoSelf": "不能移动/复制到自身内部",
+  // v0.8.4 需求3：排序激活时发生同目录拖拽 → 自动退出排序并应用手动顺序
+  "filetree.switchedToManual": "已切回手动排序",
+  // v0.8.4 需求7：文件树排序按钮 / 下拉菜单（徽标语义：U=修改时间，C=创建时间）
+  "filetree.sort": "排序",
+  "filetree.sortNameAsc": "文件名（A-Z）",
+  "filetree.sortNameDesc": "文件名（Z-A）",
+  "filetree.sortModifiedDesc": "修改时间（晚-早）",
+  "filetree.sortModifiedAsc": "修改时间（早-晚）",
+  "filetree.sortCreatedDesc": "创建时间（晚-早）",
+  "filetree.sortCreatedAsc": "创建时间（早-晚）",
+  "filetree.sortCancelled": "已取消排序",
   "filetree.copyFailed": "复制失败: {error}",
   "filetree.openWorkspace": "打开所在文件夹工作区",
   "filetree.workspaceOpened": "已在左侧打开: {name}",
@@ -239,12 +259,33 @@ export const zhCN: Record<string, string> = {
   "newFolder.partialFailed": "部分位置创建失败: {detail}",
   "newFolder.create": "创建",
   "newFolder.cancel": "取消",
+  // v0.8.4 需求5+9（WP5）：新建文件弹框
+  "newFile.title": "新建文件",
+  "newFile.nameLabel": "文件名",
+  "newFile.nameRequired": "请输入文件名",
+  "newFile.invalidName": "文件名不能包含 \\ / : * ? \" < > |",
+  "newFile.exists": "文件已存在",
+  "newFile.target": "将创建于",
+  "newFile.confirm": "创建",
   "filetree.propFileName": "文件名: {name}",
   "filetree.propFilePath": "路径: {path}",
   "filetree.propFileDir": "目录: {dir}",
   "filetree.propFileType": "类型: .{ext} 文件",
   "filetree.propUnknownType": "未知",
   "filetree.propFileSize": "大小: {size}",
+  // ─── v0.8.1 需求3：文件属性对话框（替代原生 alert，避免系统提示音） ──
+  "fileprops.title": "文件属性",
+  "fileprops.name": "名称",
+  "fileprops.path": "路径",
+  "fileprops.dir": "所在目录",
+  "fileprops.type": "类型",
+  "fileprops.size": "大小",
+  "fileprops.close": "关闭",
+  // ─── v0.8.1 需求6：无边框窗口自绘三键 ──
+  "window.minimize": "最小化",
+  "window.maximize": "最大化",
+  "window.restore": "向下还原",
+  "window.close": "关闭",
   // ─── 版本快照（v0.4.0 功能4）────────────────────────────────
   "snapshot.title": "版本快照",
   "snapshot.empty": "暂无快照记录",
@@ -267,11 +308,17 @@ export const zhCN: Record<string, string> = {
   "outline.emptyHeading": "(空标题)",
   "outline.more": "还有 {count} 个标题...",
   "outline.dragHint": "拖拽以重新排序",
+  "outline.searchPlaceholder": "搜索目录…",
+  "outline.searchEmpty": "无匹配标题",
   // ─── 最近文件 ────────────────────────────────────
   "recent.title": "最近打开",
   "recent.justNow": "刚刚",
   "recent.minutesAgo": "{count} 分钟前",
   "recent.hoursAgo": "{count} 小时前",
+  // v0.8.3 需求1：hover tooltip 的"最近打开"绝对时间
+  "recent.lastOpenedAt": "最近打开：{time}",
+  // v0.8.4 需求1b：stale 条目（旧路径已被移动/外部删除）的失效提示（⚠ hover 追加行）
+  "recent.staleHint": "该文件可能已变更位置或删除",
   // ─── AppShell 侧栏 ────────────────────────────────────
   "appshell.expandSidebar": "展开侧栏",
   "appshell.collapseSidebar": "收起侧栏",

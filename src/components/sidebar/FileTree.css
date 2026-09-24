@@ -16,31 +16,8 @@
   flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
-  /* v0.8.0 修复 P12-6：侧栏滚动条更细、更无感（默认近乎透明，悬停才显形） */
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.filetree-scroll:hover {
-  scrollbar-color: var(--scrollbar-thumb) transparent;
-}
-
-/* v0.8.0 修复 P13-3：宽度收窄到上一版的 30%（4px → 1.2px），几乎不可见 */
-.filetree-scroll::-webkit-scrollbar {
-  width: 1.2px;
-}
-
-.filetree-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.filetree-scroll::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 1px;
-}
-
-.filetree-scroll:hover::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb);
+  /* v0.8.1 需求1：滚动条样式已统一到 global.css 的 .app-sidebar 作用域规则
+     （2px 细线 / 浅色 / 悬停侧栏显形），此处不再单独定义，避免两套宽度并存 */
 }
 
 .filetree-header {
@@ -346,6 +323,52 @@
   font-style: italic;
 }
 
+/* ─── v0.8.2 动画优化：文件夹展开/收起的子节点动画 ──────────
+   展开：子节点从左侧滑入（filetree-children-slide），容器高度 0 → 内容高，
+        下方节点被平滑推下去（高度过渡由 JS 内联样式驱动）；
+   收起：子节点先向左滑出（filetree-children-slide-out，占位高度保持），
+        滑出完成后容器高度再平滑收起到 0（下方节点上移补位），
+        动画播完才卸载子节点。
+   .filetree-folder-content 已 overflow-y: auto / overflow-x: hidden，
+   滑出部分被裁剪，不产生横向滚动条。 */
+.filetree-children-slide,
+.filetree-children-slide-out {
+  /* 容器本身不参与布局压缩，高度完全由 JS 内联样式驱动 */
+  min-height: 0;
+}
+
+.filetree-children-slide {
+  animation: tree-node-slide-in 0.45s ease;
+}
+
+.filetree-children-slide-out {
+  animation: tree-node-slide-out 0.42s ease forwards;
+}
+
+/* v0.8.4 需求6：子节点动画方向由"水平滑入/滑出"改为"垂直展开/收回"——
+ * 展开 = 轻微下沉入场（配合容器向下展开），收起 = 轻微上浮离场（配合容器向上收回） */
+@keyframes tree-node-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tree-node-slide-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
 /* ─── 单个节点 ─────────────────────────────────────── */
 .filetree-node-wrapper {
   /* 容器 */
@@ -618,6 +641,16 @@
   margin-left: 8px;
 }
 
+/* v0.8.4 需求1b：最近打开 stale 条目的失效标记（旧路径已被移动/外部删除）。
+   淡黄 ⚠ 走主题变量 --warning-color（主题未定义时回退 #e6c069），避免各主题违和 */
+.recent-file-stale {
+  flex-shrink: 0;
+  margin-left: 6px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--warning-color, #e6c069);
+}
+
 /* ─── 临时打开的文件 ──────────────────────────────── */
 .filetree-temp-section {
   border-top: 1px solid var(--border-color);
@@ -627,6 +660,11 @@
   flex-shrink: 0;
 }
 
+/* v0.8.2 功能1：折叠状态高度自适应（与文件夹栏一致） */
+.filetree-temp-section.collapsed {
+  height: auto !important;
+}
+
 .filetree-temp-header {
   padding: 6px 14px;
   font-size: 11px;
@@ -634,6 +672,11 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-tertiary);
+  /* v0.8.2 功能1：标题栏改为两端布局（标题居左，按钮区居右） */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   /* Issue 4 修复：增强 3D 效果，更深的 gradient + 多层阴影 + 边框 */
   background: linear-gradient(to bottom, var(--bg-tertiary), var(--bg-secondary));
   border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -645,6 +688,24 @@
   flex-shrink: 0;
 }
 
+/* v0.8.2 调整：标题左侧组——快照图标紧跟"打开的文件"标题右侧 */
+.filetree-temp-header-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.filetree-temp-header-left .filetree-temp-snapshot-btn {
+  padding: 2px;
+  flex-shrink: 0;
+}
+
+/* v0.8.2 功能1：缩小/放大按钮 hover 浮现（与其他栏标题栏一致） */
+.filetree-temp-header:hover .section-controls {
+  opacity: 1;
+}
+
 /* v0.4.1：临时文件列表独立滚动容器 */
 .filetree-temp-content {
   overflow-y: auto;
@@ -653,13 +714,73 @@
   min-height: 0;
 }
 
+/* ─── v0.8.2：「打开的文件」条目滑入/滑出动画 ──────────────
+   v0.8.2 调整：动画再放慢 50%（滑入 0.25s→0.5s、滑出 0.3s→0.6s）；
+   关闭串行两阶段：先水平滑出（本动画），滑出完成后 JS 再收起高度。 */
+/* 滑入：条目挂载（打开文件/新建临时文件/启动恢复）时从左侧淡入；
+   已有条目经 React key 复用不会重播。 */
+.filetree-temp-content .filetree-node {
+  animation: item-slide-in 0.5s ease;
+}
+
+/* 滑出 wrapper：条目本体水平滑出+淡出，滑出完成后 wrapper 高度由 JS 过渡到 0
+   （下方条目平滑上移补位）；结束后随 DOM 卸载移除 */
+.item-slide-out {
+  animation: item-slide-out 0.6s ease forwards;
+}
+
+/* 滑出快照是重新挂载的 DOM，禁止其内部条目再播滑入动画 */
+.item-slide-out .filetree-node {
+  animation: none;
+}
+
+@keyframes item-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes item-slide-out {
+  to {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+}
+
 .filetree-temp-node {
   position: relative;
   padding-right: 24px;
 }
 
+/* v0.8.3 需求2：栏内键盘选中项的视觉降级。
+   旧实现与 .filetree-node.active 使用同一个背景变量（--bg-selection），
+   一旦 selectedTempIdx 与 activeItemKey 指向不同条目就会出现"两个高亮块"。
+   现改为**不使用背景填充**，仅以左侧 2px accent 竖线指示键盘目标，
+   与 active 的整行背景在任何状态组合下都明显可区分（防复发）。 */
 .filetree-temp-node.selected {
-  background: var(--bg-selection);
+  background: none;
+}
+
+.filetree-temp-node.selected::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent-color);
+}
+
+/* 同时为 active 与 selected 时（栏内点击自己）仍以 active 背景为准，
+   此时不需要额外竖线（避免同一条目上两种指示叠加） */
+.filetree-temp-node.selected.active::after {
+  display: none;
 }
 
 /* 关闭按钮 */
@@ -852,6 +973,54 @@ body.file-dragging {
   color: #d32f2f;
 }
 
+/* ─── v0.8.4 需求7：文件树排序按钮与下拉菜单 ──────────── */
+/* 激活态按钮：[12px 箭头 + 8px 竖排徽标] 横排，略加宽保持 section-btn 视觉密度 */
+.section-btn.section-sort.sort-active {
+  width: 22px;
+  height: 22px;
+  gap: 1px;
+  color: var(--text-primary);
+}
+
+/* 竖排徽标：逐字符 <span> 纵排（不用 writing-mode，兼容性最稳）；
+   line-height 收紧，A-Z 三字符总高约 20px，不撑破 22px 按钮高度 */
+.sort-badge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 8px;
+  line-height: 0.85;
+  font-weight: 700;
+}
+
+/* 排序菜单项：文字左、语义图标右 */
+.context-menu-item.sort-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-right: 10px;
+}
+
+/* 菜单项右侧图标：箭头（10px）+ 竖排徽标（8px）横排 */
+.sort-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* 当前激活项高亮（区分于 hover：不随鼠标移开消失） */
+.context-menu-item.sort-menu-item.sort-active {
+  background: var(--bg-hover);
+  font-weight: 600;
+}
+
+.context-menu-item.sort-menu-item.sort-active .sort-menu-icon {
+  color: var(--text-primary);
+}
+
 /* ─── v0.4.1：折叠/最大化状态 ──────────────────────── */
 .favorites-section.collapsed .favorites-list,
 .favorites-section.collapsed .favorites-empty,
@@ -941,4 +1110,58 @@ body.file-dragging {
 [data-theme="dark"] .filetree-v-resizer:hover {
   background: var(--accent-color);
   opacity: 0.7;
+}
+
+/* ─── v0.8.2 功能3：section 滑入/滑出动画 ────────────────
+   各栏（打开的文件夹/打开的文件/收藏/最近打开）开启时从左侧平滑滑出，
+   关闭时平滑滑向左侧消失（关闭态由 JS 延迟卸载，动画结束后移除 DOM）。
+   .filetree-scroll 已 overflow-x: hidden，滑出部分被裁剪不产生横向滚动。
+   v0.8.2 调整：动画时长放慢 50%（0.22s→0.33s / 0.24s→0.36s），
+   JS 侧 SECTION_SLIDE_OUT_MS=360 与滑出时长保持同步。 */
+.section-slide {
+  flex-shrink: 0;
+  min-width: 0;
+  animation: section-slide-in 0.33s ease;
+}
+
+.section-slide-out {
+  flex-shrink: 0;
+  min-width: 0;
+  animation: section-slide-out 0.36s ease forwards;
+}
+
+@keyframes section-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-32px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes section-slide-out {
+  to {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+}
+
+/* ─── v0.8.2 动画优化：section 高度平滑过渡 ──────────────
+   栏被撑满/收缩（自动填充、重开新栏时上一栏收缩）时高度平滑变化，
+   下方栏随之顺滑移动；折叠（height auto）与数值间无法插值，保持瞬变。
+   拖拽调整高度时由 body.section-dragging 禁用过渡，保证拖拽跟手。 */
+.filetree-folder-section,
+.filetree-temp-section,
+.favorites-section,
+.recent-files {
+  transition: height 0.3s ease;
+}
+
+body.section-dragging .filetree-folder-section,
+body.section-dragging .filetree-temp-section,
+body.section-dragging .favorites-section,
+body.section-dragging .recent-files {
+  transition: none;
 }

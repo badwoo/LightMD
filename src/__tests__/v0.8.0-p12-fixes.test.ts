@@ -202,17 +202,23 @@ describe("P12-1 文件夹空白区右键粘贴", () => {
 
 // ─── P12-6 侧栏滚动条 ────────────────────────────────────
 describe("P12-6 侧栏滚动条更细更无感", () => {
-  const css = read("../components/sidebar/FileTree.css");
+  // v0.8.1 需求1：侧栏滚动条样式已统一收敛到 global.css 的 .app-sidebar 作用域
+  const css = read("../styles/global.css");
 
-  it("宽度收窄（P13-3 后为 1.2px）且默认透明，悬停才显形", () => {
-    // 具体宽度由 P13-3 用例锁定，这里只校验"更细 + 透明 + 悬停显形"
-    expect(css).toMatch(/\.filetree-scroll::-webkit-scrollbar\s*\{[^}]*width:\s*[\d.]+px/);
-    expect(css).toMatch(/\.filetree-scroll::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*transparent/);
-    expect(css).toMatch(/\.filetree-scroll:hover::-webkit-scrollbar-thumb/);
+  it("v0.8.1：左右两栏宽度 2px 且默认透明，悬停该栏才显形", () => {
+    expect(css).toMatch(
+      /\.app-sidebar ::-webkit-scrollbar,[^{]*\.app-outline ::-webkit-scrollbar\s*\{[^}]*width:\s*2px/,
+    );
+    expect(css).toMatch(
+      /\.app-sidebar ::-webkit-scrollbar-thumb,[^{]*\.app-outline ::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*transparent/,
+    );
+    expect(css).toMatch(/\.app-sidebar:hover ::-webkit-scrollbar-thumb/);
+    expect(css).toMatch(/\.app-outline:hover ::-webkit-scrollbar-thumb/);
   });
 
-  it("Firefox 使用 thin + 透明色", () => {
-    expect(css).toMatch(/scrollbar-width:\s*thin/);
-    expect(css).toMatch(/scrollbar-color:\s*transparent transparent/);
+  it("不声明标准属性 scrollbar-width / scrollbar-color（否则 Chromium 121+ 会忽略 2px）", () => {
+    // 仅在注释中说明；一旦出现真实声明，::-webkit-scrollbar 全系列样式会被整体忽略
+    expect(css).not.toMatch(/^\s*scrollbar-width\s*:/m);
+    expect(css).not.toMatch(/^\s*scrollbar-color\s*:/m);
   });
 });

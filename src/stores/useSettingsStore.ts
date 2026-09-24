@@ -3,6 +3,8 @@ import { persist } from "zustand/middleware";
 // 从 i18n/state 而非 i18n/index 导入，避免循环依赖（i18n/index 反向依赖本 store）
 import { _setCurrentLanguage } from "../i18n/state";
 import type { Language } from "../i18n/types";
+// v0.8.4 需求7：文件树排序模式（纯类型导入，运行时零依赖）
+import type { SortMode } from "../utils/fileSort";
 
 /**
  * 主题类型（G6：从 2 主题扩展到 6 主题）
@@ -191,9 +193,9 @@ interface SettingsState {
   spellcheckEnabled: boolean;
   /** N1: 自动配对补全开关（默认 true，输入括号/引号自动补全配对） */
   autoPairEnabled: boolean;
-  /** v0.4.0: 侧边栏宽度（默认 260，范围 180~480） */
+  /** v0.4.0: 侧边栏宽度（默认 279，范围 180~480；v0.8.1 需求4 由 260 提升） */
   sidebarWidth: number;
-  /** v0.4.0: 大纲栏宽度（默认 240，范围 180~480） */
+  /** v0.4.0: 大纲栏宽度（默认 259，范围 180~480；v0.8.1 需求4 由 240 提升） */
   outlineWidth: number;
   /** v0.4.0: 分屏左右比例（默认 0.5，范围 0.3~0.7） */
   splitRatio: number;
@@ -209,6 +211,12 @@ interface SettingsState {
    * 仅在拖拽/缩放**结束时**写入（非每帧），避免高频 persist 写 localStorage。
    */
   aiChatWindow: AiChatWindowRect | null;
+  /**
+   * v0.8.4 需求7（C5）：文件树排序模式记忆，key = 文件夹根路径（分隔符归一化为 `/`）。
+   * 排序模式按文件夹**根**独立记忆，同一根的整棵树统一应用（D4）；
+   * key 不存在 = 该文件夹未激活排序（回退手动顺序/默认排序）。
+   */
+  fileTreeSort: Record<string, SortMode>;
 
   /** v0.7.0：设置全局 AI 总开关（关闭时联动关闭翻译子开关） */
   setAiEnabled: (v: boolean) => void;
@@ -245,12 +253,45 @@ interface SettingsState {
    * 传入 null 清除记忆（回落默认居中）。
    */
   setAiChatWindow: (rect: AiChatWindowRect | null) => void;
+  /**
+   * v0.8.4 需求7：设置文件夹根的排序模式。
+   * mode = null 表示取消该文件夹的排序（删除 key，回退手动顺序/默认排序）。
+   */
+  setFileTreeSort: (path: string, mode: SortMode | null) => void;
 }
 
 /** 钳制到 [min, max] 范围内 */
 function clamp(value: number, min: number, max: number): number {
   if (Number.isNaN(value)) return min;
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * v0.8.2 需求7：设置持久化数据迁移（导出为纯函数便于单测）。
+ *
+ * - version < 1（v0.8.1 需求4）：默认宽度 260/240 → 279/259；
+ * - version < 2（v0.8.2 需求7）：自动保存 30s → 60s、载入文件 1 → 30、
+ *   文件夹恢复关闭 → 开启且数量 1 → 5；
+ * - version < 3（v0.8.4 需求7）：无字段迁移——仅新增 fileTreeSort（缺字段时
+ *   merge 自动回退默认 {}），故无分支。
+ *
+ * 仅当字段仍是**旧默认值**时才迁移：用户手动自定义过的值（如自动保存 120s）
+ * 保持不动，避免每次升级都改写用户设置。
+ */
+export function migrateSettings(persisted: unknown, version: number): Partial<SettingsState> {
+  const p = { ...((persisted || {}) as Partial<SettingsState>) };
+  if (version < 1) {
+    // 仅当仍是旧默认值时才迁移；用户手动设过的宽度（如 300/220）保持不动
+    if (p.sidebarWidth === 260) p.sidebarWidth = 279;
+    if (p.outlineWidth === 240) p.outlineWidth = 259;
+  }
+  if (version < 2) {
+    if (p.autoSaveIntervalMs === 30000) p.autoSaveIntervalMs = 60000;
+    if (p.loadLastFileCount === 1) p.loadLastFileCount = 30;
+    if (p.loadLastFolderOnStartup === false) p.loadLastFolderOnStartup = true;
+    if (p.loadLastFolderCount === 1) p.loadLastFolderCount = 5;
+  }
+  return p;
 }
 
 /**
@@ -278,19 +319,19 @@ export const useSettingsStore = create<SettingsState>()(
       theme: "light",
       fontSize: 16,
       fontFamily: "var(--font-sans)",
-      // 自动保存默认间隔 30 秒（30000ms）
-      autoSaveIntervalMs: 30000,
+      // v0.8.2 需求7：自动保存默认间隔 60 秒（60000ms）
+      autoSaveIntervalMs: 60000,
       defaultExportFormat: "html",
       customCss: "",
       typewriterMode: false,
       // 默认开启：启动时载入上次打开的文件
       loadLastFileOnStartup: true,
-      // F2：默认恢复 1 个文件（与 0.2.0 行为一致，向后兼容）
-      loadLastFileCount: 1,
-      // F3：默认关闭文件夹恢复（与文件开关不同，需明确开启）
-      loadLastFolderOnStartup: false,
-      // F3：默认恢复 1 个文件夹
-      loadLastFolderCount: 1,
+      // v0.8.2 需求7：默认恢复 30 个文件
+      loadLastFileCount: 30,
+      // v0.8.2 需求7：默认开启文件夹恢复
+      loadLastFolderOnStartup: true,
+      // v0.8.2 需求7：默认恢复 5 个文件夹
+      loadLastFolderCount: 5,
       // F1：默认中文
       language: "zh-CN",
       // G9：默认显示代码行号
@@ -299,10 +340,10 @@ export const useSettingsStore = create<SettingsState>()(
       spellcheckEnabled: false,
       // N1：默认开启自动配对补全
       autoPairEnabled: true,
-      // v0.4.0：侧边栏默认宽度 260px
-      sidebarWidth: 260,
-      // v0.4.0：大纲栏默认宽度 240px
-      outlineWidth: 240,
+      // v0.4.0：侧边栏默认宽度 260px；v0.8.1 需求4：+0.5cm（≈19px）→ 279px
+      sidebarWidth: 279,
+      // v0.4.0：大纲栏默认宽度 240px；v0.8.1 需求4：+0.5cm（≈19px）→ 259px
+      outlineWidth: 259,
       // v0.4.0：分屏默认比例 0.5（左右各半）
       splitRatio: 0.5,
       // v0.8.0 WP4 修复1：侧栏各 section 高度默认空（运行时按 key 取默认值）
@@ -313,6 +354,8 @@ export const useSettingsStore = create<SettingsState>()(
       aiEnabled: false,
       // v0.7.5 功能6：对话窗无位置记忆（首次打开走默认居中）
       aiChatWindow: null,
+      // v0.8.4 需求7：无文件夹激活排序（key 不存在 = 未排序，回退手动/默认顺序）
+      fileTreeSort: {},
 
       // v0.7.0：关闭总开关时联动关闭翻译子开关（所有翻译入口静默）
       setAiEnabled: (v) =>
@@ -357,9 +400,27 @@ export const useSettingsStore = create<SettingsState>()(
         set((s) => ({ translate: { ...s.translate, ...cfg } })),
       // v0.7.5 功能6：对话窗位置/尺寸记忆（非法/过小值 → null，回落默认居中）
       setAiChatWindow: (rect) => set({ aiChatWindow: normalizeAiChatRect(rect) }),
+      // v0.8.4 需求7：设置/取消文件夹根的排序模式（key 归一化分隔符为 `/`；
+      // mode=null 时删除 key 表示取消排序，避免残留无意义的 null 值）
+      setFileTreeSort: (path, mode) =>
+        set((s) => {
+          const key = path.replace(/\\/g, "/");
+          const next = { ...s.fileTreeSort };
+          if (mode === null) {
+            delete next[key];
+          } else {
+            next[key] = mode;
+          }
+          return { fileTreeSort: next };
+        }),
     }),
     {
       name: "lightmd-settings",
+      // v0.8.1 需求4 / v0.8.2 需求7 / v0.8.4 需求7：persist version 一次性迁移（逻辑见 migrateSettings）
+      // v0.8.4 升 3：仅新增 fileTreeSort 字段，缺字段由 merge 回退默认值，无需 migrate 特判
+      version: 3,
+      migrate: (persisted, version) =>
+        migrateSettings(persisted, version) as SettingsState,
       // v0.6.0：自定义合并——translate 嵌套对象做字段级回退，
       // 旧 localStorage 无 translate 或字段缺失时回退默认值
       merge: (persisted, current) => {

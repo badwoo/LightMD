@@ -182,7 +182,25 @@ export function beginSectionDrag(
   const startY = e.clientY;
   onStart?.();
 
+  const handleUp = () => {
+    document.removeEventListener("mousemove", handleMove);
+    document.removeEventListener("mouseup", handleUp);
+    window.removeEventListener("blur", handleUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    // v0.8.2 动画优化：恢复 section 高度过渡
+    document.body.classList.remove("section-dragging");
+    onEnd?.();
+  };
   const handleMove = (ev: MouseEvent) => {
+    // v0.8.2 修复："标题栏偶尔拖不动"主根因——拖拽中窗口失焦（Alt+Tab/系统通知/Win 键）
+    // 时 mouseup 事件丢失，mousemove 监听器永久残留，残留监听器用旧 startY 持续改写
+    // 栏高，新拖拽被旧监听器干扰，直到重启软件才恢复。
+    // 检测到鼠标按键已全部松开（buttons === 0）说明拖拽早已结束，立即清理监听。
+    if (ev.buttons === 0) {
+      handleUp();
+      return;
+    }
     // 自然方向：往下拖 delta>0 → 上区变高（核心：不取反）
     const delta = ev.clientY - startY;
     const { top, bottom } =
@@ -191,24 +209,28 @@ export function beginSectionDrag(
         : computeSplit(startTop, startBottom, delta, minHeight);
     setPair(topKey, bottomKey, top, bottom);
   };
-  const handleUp = () => {
-    document.removeEventListener("mousemove", handleMove);
-    document.removeEventListener("mouseup", handleUp);
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
-    onEnd?.();
-  };
   document.body.style.cursor = "row-resize";
   document.body.style.userSelect = "none";
+  // v0.8.2 动画优化：拖拽期间禁用 section 高度过渡（CSS 据此关闭），保证拖拽跟手
+  document.body.classList.add("section-dragging");
   document.addEventListener("mousemove", handleMove);
   document.addEventListener("mouseup", handleUp);
+  // v0.8.2：窗口失焦兜底——失焦瞬间结束拖拽（mouseup 可能丢失）
+  window.addEventListener("blur", handleUp);
 }
 
 export interface UseSectionSplitOptions {
   /** 本区 key（标题栏属于本区，拖拽改变"上区 + 本区"的高度分配） */
   selfKey: string;
-  /** 上方相邻可见区 key；为空表示本区是最上面一个区域 → 标题栏不可拖拽 */
+  /** 上方相邻可见区 key；为空表示本区是最上面一个区域 */
   prevKey?: string;
+  /**
+   * v0.8.2 功能4：下方相邻可见区 key。
+   * 本区无上方邻区（prevKey 为空）且存在下方邻区时，标题栏拖拽改为
+   * 调整「本区 + 下区」的高度分配（往下拖 → 本区变高、下区变矮），
+   * 修复"第一个可见区域的标题栏拖不动"（如未开文件夹时的"打开的文件"栏）。
+   */
+  nextKey?: string;
   /** 覆盖最小高度（默认 80） */
   minHeight?: number;
   /**
@@ -231,25 +253,119 @@ export function useSectionSplit(opts: UseSectionSplitOptions): UseSectionSplitRe
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      // v0.8.0 修复 P9-1：本区是最上面一个可见区域（无上方邻区）→ 标题栏不可拖拽
-      const prevKey = opts.prevKey;
-      if (!ctx || !prevKey) return;
+      if (!ctx) return;
       const selfKey = opts.selfKey;
-      beginSectionDrag(
-        prevKey,
-        selfKey,
-        () => ({ top: ctx.sizeOf(prevKey), bottom: ctx.sizeOf(selfKey) }),
-        ctx.setPair,
-        minHeight,
-        e,
-        () => setIsDragging(true),
-        () => setIsDragging(false),
-        // v0.8.0 修复 P11-4：最后一个可见区域可一直拖到底部（吞掉容器剩余空间）
-        opts.maxHeight !== undefined ? { maxBottom: opts.maxHeight } : undefined,
-      );
+      // v0.8.0 修复 P9-1：有上方邻区 → 拖「上区 + 本区」，标题栏随上区变高而下移（跟随鼠标）
+      if (opts.prevKey) {
+        const prevKey = opts.prevKey;
+        beginSectionDrag(
+          prevKey,
+          selfKey,
+          () => ({ top: ctx.sizeOf(prevKey), bottom: ctx.sizeOf(selfKey) }),
+          ctx.setPair,
+          minHeight,
+          e,
+          () => setIsDragging(true),
+          () => setIsDragging(false),
+          // v0.8.0 修复 P11-4：最后一个可见区域可一直拖到底部（吞掉容器剩余空间）
+          opts.maxHeight !== undefined ? { maxBottom: opts.maxHeight } : undefined,
+        );
+        return;
+      }
+      // v0.8.2 功能4：本区是第一个可见区域 → 改拖「本区 + 下区」。
+      // 往下拖 delta>0 → 本区变高、下区变矮（与分隔条方向一致）；
+      // 本区是唯一可见区域（无上无下）时仍不可拖（无配对对象，高度已自适应）。
+      if (opts.nextKey) {
+        const nextKey = opts.nextKey;
+        beginSectionDrag(
+          selfKey,
+          nextKey,
+          () => ({ top: ctx.sizeOf(selfKey), bottom: ctx.sizeOf(nextKey) }),
+          ctx.setPair,
+          minHeight,
+          e,
+          () => setIsDragging(true),
+          () => setIsDragging(false),
+        );
+      }
     },
-    [ctx, opts.selfKey, opts.prevKey, opts.maxHeight, minHeight],
+    [ctx, opts.selfKey, opts.prevKey, opts.nextKey, opts.maxHeight, minHeight],
   );
 
   return { onMouseDown, isDragging };
+}
+
+/**
+ * v0.8.2 功能5：按 section key 在 DOM 中查找 section 根元素。
+ * key 可能含特殊字符（如 `folder:D:\path`），属性选择器转义繁琐，
+ * 故遍历 [data-section-key] 比较值，稳定可靠。
+ */
+export function findSectionByKey(
+  root: Document | HTMLElement,
+  key: string,
+): HTMLElement | null {
+  const all = root.querySelectorAll("[data-section-key]");
+  for (const el of Array.from(all)) {
+    if ((el as HTMLElement).dataset.sectionKey === key) return el as HTMLElement;
+  }
+  return null;
+}
+
+/**
+ * v0.8.2 功能5：纯函数——按"两层 offsetHeight"估算 section 的内容自然高度。
+ *
+ * 为什么不能直接用 scrollHeight：列表容器被 flex 拉伸（上一栏被撑满）时
+ * scrollHeight = max(clientHeight, 内容高) = 拉伸后的高度，测不出真实内容。
+ *
+ * 两层规则（对 section 的每个直接子元素 child）：
+ * - 第一个子元素 = 标题栏（temp/folder/favorites/recent 的 DOM 结构约定），
+ *   直接取自身高度（padding 完整计入）；
+ * - 其余为内容容器，取 min(容器高, Σ 内部条目高)：
+ *   - 被 flex 拉伸（撑满）时：条目之和 = 真实内容高度（小于容器高）→ 取条目和 ✓；
+ *   - 无拉伸（内容恰好/压缩）时：本函数只服务于"撑满栏的还原"，此场景下
+ *     与 min(prevHeight, ·) 组合结果仍正确（见 FileTree 调用处）；
+ *   - 条目为 0（空态提示/折叠 display:none）→ 取容器自身高度。
+ * - 树形列表：顶层 wrapper 的 offsetHeight 已包含展开的子树。
+ *
+ * 子元素为空或总高为 0 时返回 null（无法测量）。
+ * 用结构类型（而非 HTMLElement）以便单测注入假 DOM 树。
+ */
+export interface HeightNode {
+  offsetHeight: number;
+  children: ArrayLike<HeightNode>;
+}
+
+export function measureContentHeight(node: HeightNode | null): number | null {
+  if (!node) return null;
+  const kids = Array.from(node.children);
+  if (kids.length === 0) return null;
+  let total = 0;
+  kids.forEach((k, idx) => {
+    const grandSum = Array.from(k.children).reduce((s, g) => s + g.offsetHeight, 0);
+    const h =
+      idx > 0 && grandSum > 0 ? Math.min(k.offsetHeight, grandSum) : k.offsetHeight;
+    total += h;
+  });
+  return total > 0 ? total + 2 : null; // +2：section 自身上下 border
+}
+
+/**
+ * v0.8.2 功能5：测量 section 的内容自然高度（标题栏 + 内容，不含被撑高产生的空白）。
+ * 找不到元素或测不出时返回 null。
+ */
+export function measureSectionContentHeight(section: HTMLElement | null): number | null {
+  if (!section) return null;
+  // DOM 的 HTMLCollection 元素类型在 TS 层面是 Element（无 offsetHeight 定义），
+  // 运行时读取是安全的；此处收敛为 HeightNode 结构后再复用纯函数
+  const kids: HeightNode[] = Array.from(section.children).map((el) => {
+    const he = el as HTMLElement;
+    return {
+      offsetHeight: he.offsetHeight,
+      children: Array.from(he.children).map((g): HeightNode => ({
+        offsetHeight: (g as HTMLElement).offsetHeight,
+        children: [],
+      })),
+    };
+  });
+  return measureContentHeight({ offsetHeight: section.offsetHeight, children: kids });
 }

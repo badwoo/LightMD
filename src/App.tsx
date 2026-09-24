@@ -24,6 +24,10 @@ import { fileScrollProgress } from "./services/fileScrollProgress";
 import { safeSetItem } from "./utils/safeStorage";
 // v0.8.0 WP1：临时（未落盘）标签的持久化与启动恢复
 import { loadUntitledTabs, saveUntitledTabs, clearUntitledTabs, isUntitledRestoreEnabled } from "./utils/untitledTabs";
+// v0.8.3 WP4 需求5：上次会话活跃标签的持久化（临时文件也能被正确定位）
+import { saveLastActiveTab, loadLastActiveTab, resolveLastActiveIndex, clearLastActiveTab } from "./utils/lastActiveTab";
+// v0.8.3 WP4 需求6：浏览进度的标签键（真实文件 = path，临时标签 = untitled:<id>）
+import { tabsProgressKeys, untitledProgressKey } from "./utils/tabKey";
 // v0.8.0 WP2 修复2：删除文件后按路径关闭匹配标签
 import { collectTabsToClose } from "./utils/tabCleanup";
 import { setCurrentDocPath } from "./utils/imagePath";
@@ -147,7 +151,6 @@ function App() {
   // v0.4.0：设置当前文件语言标识，供 EditorContainer 渲染代码高亮
   const setCurrentLanguage = useEditorStore((s) => s.setCurrentLanguage);
   const addRecentFile = useFileStore((s) => s.addRecentFile);
-  const addTempFile = useFileStore((s) => s.addTempFile);
   const rootPath = useFileStore((s) => s.rootPath);
 
   const [content, setContent] = useState(() => {
@@ -192,6 +195,16 @@ function App() {
   const [snapshotFilePath, setSnapshotFilePath] = useState<string | null>(null);
   const [imageFiles, setImageFiles] = useState<File[] | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+
+  /**
+   * v0.8.3 WP4 需求6：会话恢复期标志。
+   *
+   * 启动恢复通过 `lightmd:openFile` 打开每个文件，而该事件处理里对"首次打开"的
+   * 文件会 clear 浏览进度（= 重新打开，重置到顶部）。恢复期间 `alreadyOpen=false`
+   * 会把刚注入的持久化进度当场清掉 → 需求6失效。
+   * 故恢复期内跳过这一次 clear（用户主动打开文件发生在恢复完成之后，不受影响）。
+   */
+  const sessionRestoringRef = useRef(true);
 
   // 是否为源码编辑类模式（edit 或 split）
   const isSourceMode = viewMode === "edit" || viewMode === "split";
@@ -247,7 +260,8 @@ function App() {
         setForceUpdateKey((k) => k + 1);
         // v0.7.0 bug修复：重新打开文件时清除浏览进度（从文件树点击 = 重新打开，重置到顶部）
         // v0.8.0 修复 P11-7：已打开的文件属于"切回标签"，浏览进度应保留
-        if (detail.path && !alreadyOpen) {
+        // v0.8.3 WP4 需求6：启动恢复期间不清除——否则刚注入的跨会话进度会被当场清掉
+        if (detail.path && !alreadyOpen && !sessionRestoringRef.current) {
           fileScrollProgress.clear(detail.path);
         }
 
@@ -276,15 +290,10 @@ function App() {
             path: detail.path,
             name: fileName,
           });
-          // v0.4.0：如果文件不在任一已打开文件夹下，添加为临时文件
-          if (!useFileStore.getState().isPathInOpenFolders(detail.path)) {
-            addTempFile({
-              name: fileName,
-              path: detail.path,
-              isDir: false,
-              size: 0,
-            });
-          }
+          // v0.8.2：「打开的文件」栏条目改由 openTabs 统一同步（见 FileTree 的
+          // syncTempFilesWithTabs effect）——不再按"是否在打开文件夹下"分流，
+          // 否则文件夹内打开的文件、另存为晋升的文件不会出现在栏里，
+          // 造成"栏条目数 ≠ 标签数"。
 
           // ─── 大文件性能优化 ───
           // 超过 5MB 的文件强制切换到编辑模式，禁用阅读模式渲染
@@ -314,7 +323,7 @@ function App() {
     };
     window.addEventListener("lightmd:openFile", handler);
     return () => window.removeEventListener("lightmd:openFile", handler);
-  }, [openFile, addRecentFile, addTempFile, setViewMode, setCurrentLanguage, t]);
+  }, [openFile, addRecentFile, setViewMode, setCurrentLanguage, t]);
 
   // ─── v0.4.0 功能4：版本快照窗口事件 ──────────────────────────
   useEffect(() => {
@@ -345,7 +354,9 @@ function App() {
         if (closedTab) {
           useFileStore.getState().removeRecentFile(closedTab.path);
           // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
-          fileScrollProgress.clear(closedTab.path);
+          // v0.8.3 WP4 需求6：未落盘标签按 untitled:<id> 键清理（path 为空串，
+          // 走 path 分支的 clear 会因空串被 fileScrollProgress 直接忽略）
+          fileScrollProgress.clear(closedTab.path || untitledProgressKey(closedTab.id));
         }
       }
       const remainingTabs = useEditorStore.getState().openTabs;
@@ -492,33 +503,65 @@ function App() {
   // 需求：临时文件只有用户自行保存才落盘，但其编辑内容需在下次启动时恢复。
   // 做法：openTabs 变化后防抖写入 localStorage；窗口关闭前再强制冲刷一次，
   // 避免"最后一次输入后立刻退出"丢失内容。
+  // v0.8.3 WP4 需求5：同一节奏顺带记录"上次活跃标签"（deps 增加 activeTabIdx——
+  // 仅切标签时 openTabs 引用不变，不加依赖会漏记）。
   const untitledSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (untitledSaveTimerRef.current) clearTimeout(untitledSaveTimerRef.current);
     untitledSaveTimerRef.current = setTimeout(() => {
+      const st = useEditorStore.getState();
       // v0.8.0 修复 P2-1：与启动恢复共用开关——关闭时既不写入，也清掉历史残留，
       // 避免"设置里关了恢复，内容却一直留在 localStorage"
       if (!isUntitledRestoreEnabled()) {
         clearUntitledTabs();
+        // v0.8.3：开关关闭时上次活跃记录同样清理（无消费方，避免残留误导）
+        clearLastActiveTab();
         return;
       }
-      saveUntitledTabs(useEditorStore.getState().openTabs);
+      saveUntitledTabs(st.openTabs);
+      saveLastActiveTab(st.openTabs[st.activeTabIdx] ?? null);
     }, 400);
     return () => {
       if (untitledSaveTimerRef.current) clearTimeout(untitledSaveTimerRef.current);
     };
-  }, [openTabs]);
+  }, [openTabs, activeTabIdx]);
 
   useEffect(() => {
     const flush = () => {
+      const st = useEditorStore.getState();
       if (!isUntitledRestoreEnabled()) {
         clearUntitledTabs();
+        clearLastActiveTab();
         return;
       }
-      saveUntitledTabs(useEditorStore.getState().openTabs);
+      saveUntitledTabs(st.openTabs);
+      // v0.8.3 WP4 需求5：关闭前记录最后一次活跃标签（最可靠的一次写入）
+      saveLastActiveTab(st.openTabs[st.activeTabIdx] ?? null);
     };
     window.addEventListener("beforeunload", flush);
     return () => window.removeEventListener("beforeunload", flush);
+  }, []);
+
+  // ─── v0.8.3 WP4 需求6：浏览进度跨会话快照 ──────────────────────
+  // 写路径：5s 心跳 + 窗口关闭前冲刷；且仅在"进度确实变化"（revision 变化）时
+  // 才真正写 localStorage。滚动本身仍是内存 Map.set，**零新增开销**。
+  // 不采用"依赖 openTabs 的防抖"：openTabs 每次击键都会变（updateTabContent），
+  // 防抖会被无限重置 → 持续输入时快照永不落盘。
+  useEffect(() => {
+    const snapshot = () => {
+      if (!isUntitledRestoreEnabled()) {
+        fileScrollProgress.clearAll();
+        return;
+      }
+      if (!fileScrollProgress.hasUnsavedChanges()) return;
+      fileScrollProgress.saveSnapshot(tabsProgressKeys(useEditorStore.getState().openTabs));
+    };
+    const timer = setInterval(snapshot, 5000);
+    window.addEventListener("beforeunload", snapshot);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("beforeunload", snapshot);
+    };
   }, []);
 
   // ─── v0.8.0 WP1：启动恢复临时标签 ──────────────────────────
@@ -529,7 +572,14 @@ function App() {
     if (startupUntitledRestoreRef.current) return;
     startupUntitledRestoreRef.current = true;
     // v0.8.0 修复 P2-1：与写盘共用同一开关判定（直接读 localStorage，避免 hydration 时机问题）
-    if (!isUntitledRestoreEnabled()) return;
+    if (!isUntitledRestoreEnabled()) {
+      // v0.8.3 WP4 需求6：开关关闭 → 不恢复文件，也不留下 scroll-progress 残留
+      fileScrollProgress.clearAll();
+      return;
+    }
+    // v0.8.3 WP4 需求6：先把跨会话的浏览进度注入内存 Map，
+    // 供随后的恢复流程（EditorContainer 的 forceUpdateKey 恢复 effect）消费。
+    fileScrollProgress.loadSnapshot();
     const stored = loadUntitledTabs();
     if (stored.length === 0) return;
     const { addTab } = useEditorStore.getState();
@@ -584,26 +634,45 @@ function App() {
         // restoreRecentFiles 串行打开，最后打开的成为活跃标签，但用户期望最后打开的文件为活跃文件
         if (result.restored > 0 && !cancelled) {
           const { openTabs, setActiveTab, openFile, setCurrentLanguage } = useEditorStore.getState();
-          // v0.8.0 修复 P1-4：临时（untitled）标签先于正式文件恢复，占用了 openTabs 前部。
-          // 激活目标应是"第一个恢复成功的真实文件"，不能写死 openTabs[0]——
-          // 否则临时标签会抢占活跃位，并把 currentDocPath 清空。
-          const firstIdx = openTabs.findIndex((tb) => !tb.isUntitled && tb.path);
-          if (firstIdx !== -1) {
-            const firstTab = openTabs[firstIdx];
-            setActiveTab(firstIdx);
-            // 同步 content 和 filePath，并同步设置 currentDocPath 确保图片渲染正确
-            setCurrentDocPath(firstTab.path);
-            setContent(firstTab.content || "");
-            safeSetItem("lightmd-content", firstTab.content || "");
-            openFile(firstTab.path);
+          /**
+           * v0.8.3 WP4 需求5：激活上次会话结束时的活跃标签。
+           *
+           * 旧实现写死"第一个恢复成功的真实文件"（v0.8.0 修复 P1-4），从不参考上次
+           * 会话活跃的是哪个标签 → 用户关闭前停留在临时文件时，重启后被强制切到真实
+           * 文件，感知为"载入上次打开的文件对临时文件不生效"。
+           *
+           * 现在优先按 lightmd-last-active-tab 定位（临时标签按 id、真实文件按 path）；
+           * 记录缺失/对应标签不存在时回退到既有逻辑（第一个真实文件），
+           * 保证旧会话数据与"首次启动"行为不变。
+           */
+          const lastActiveIdx = resolveLastActiveIndex(loadLastActiveTab(), openTabs);
+          const targetIdx = lastActiveIdx !== -1
+            ? lastActiveIdx
+            // v0.8.0 修复 P1-4：临时（untitled）标签先于正式文件恢复，占用了 openTabs 前部。
+            // 激活目标应是"第一个恢复成功的真实文件"，不能写死 openTabs[0]——
+            // 否则临时标签会抢占活跃位，并把 currentDocPath 清空。
+            : openTabs.findIndex((tb) => !tb.isUntitled && tb.path);
+          if (targetIdx !== -1) {
+            const targetTab = openTabs[targetIdx];
+            setActiveTab(targetIdx);
+            // 同步 content 和 filePath；真实文件同步设置 currentDocPath 确保图片渲染正确
+            // （v0.8.3：临时标签的 path 为空串，setCurrentDocPath("") 清空即可）
+            setCurrentDocPath(targetTab.path || "");
+            setContent(targetTab.content || "");
+            safeSetItem("lightmd-content", targetTab.content || "");
+            openFile(targetTab.path || null);
             // v0.4.0：启动恢复时同步语言标识（v0.8.0 修复 P11-2：临时文档按 markdown 处理）
-            const lang = !firstTab.path || isMarkdownFile(firstTab.path) ? "markdown" : getFileLanguage(firstTab.path);
+            const lang = !targetTab.path || isMarkdownFile(targetTab.path) ? "markdown" : getFileLanguage(targetTab.path);
             setCurrentLanguage(lang);
             setForceUpdateKey((k) => k + 1);
           }
         }
       } catch (err) {
         console.warn("[启动恢复] 文件恢复失败:", err);
+      } finally {
+        // v0.8.3 WP4 需求6：恢复期结束——此后 lightmd:openFile 的"重新打开清进度"
+        // 语义恢复正常（用户在恢复完成后主动打开文件仍会重置到顶部）。
+        sessionRestoringRef.current = false;
       }
     })();
     return () => {
@@ -643,6 +712,9 @@ function App() {
           removeRecentFolder: (path) => {
             useFileStore.getState().removeRecentFolder(path);
           },
+          // v0.8.4 需求10：恢复成功的文件夹补注册 watcher（启动恢复不走 openFolderAt）；
+          // 失败静默（startupRestore 内已 catch），可用工具栏刷新兜底
+          watchFolder: (path) => fileService.watchFolder(path),
           delayMs: 100,
         });
       } catch (err) {
@@ -742,6 +814,10 @@ function App() {
           // v0.8.0 WP1：临时标签保存成功后晋升为正式文件（写真实路径、清 isUntitled/id），
           // 此后自动保存与版本快照对该标签恢复正常生效
           if (idx !== -1) {
+            // v0.8.3 WP4 需求6：进度键从 untitled:<id> 迁移到新路径，
+            // 否则"刚保存就跳回文档顶部"
+            const oldTab = useEditorStore.getState().openTabs[idx];
+            fileScrollProgress.move(untitledProgressKey(oldTab?.id), selected);
             useEditorStore.getState().promoteTab(idx, selected, getFileName(selected));
           }
           addRecentFile({ path: selected, name: getFileName(selected) });
@@ -857,25 +933,15 @@ function App() {
   }, [createUntitledTabAndSync]);
 
   // ─── 新建文件夹 ──────────────────────────────
-  const handleNewFolder = useCallback(async () => {
-    if (isTauri()) {
-      const name = prompt(t("app.inputFolderName"), t("app.newFolderDefault"));
-      if (!name) return;
-      try {
-        const selected = await save({
-          defaultPath: name,
-          filters: [{ name: "All", extensions: ["*"] }],
-        });
-        if (selected) {
-          // 使用选择的路径创建文件夹
-          const folderPath = selected.replace(/[^/\\]*$/, name);
-          await fileService.createDir(folderPath);
-        }
-      } catch (err) {
-        console.error("新建文件夹失败:", err);
-      }
-    }
-  }, [t]);
+  // v0.8.2 修复：标题栏「新建 > 新建文件夹」改为派发命令，由侧栏（FileTree）
+  // 打开应用内 NewFolderDialog（输入名称 + 勾选已打开文件夹或自定义路径，弹框居中）。
+  // 旧实现走原生 prompt() + 保存对话框：既不是应用内弹框，也无法选择目标路径，
+  // 表现为"点击新建文件夹没反应"。
+  const handleNewFolder = useCallback(() => {
+    window.dispatchEvent(
+      new CustomEvent("lightmd:command", { detail: { id: "filetree.newFolder" } })
+    );
+  }, []);
 
   // ─── 标签页关闭回调 ──────────────────────────
   const handleTabClose = useCallback((tab: TabInfo, idx: number) => {
@@ -898,6 +964,9 @@ function App() {
       if (tempFiles.some(f => f.path === tab.path)) {
         useFileStore.getState().removeTempFile(tab.path);
       }
+    } else if (tab.isUntitled) {
+      // v0.8.3 WP4 需求6：未落盘标签的进度键是 untitled:<id>，关闭时按同一键清理
+      fileScrollProgress.clear(untitledProgressKey(tab.id));
     }
     const remainingTabs = useEditorStore.getState().openTabs;
     const newActiveIdx = useEditorStore.getState().activeTabIdx;
@@ -935,6 +1004,9 @@ function App() {
         if (tempFiles.some((f) => f.path === tab.path)) {
           useFileStore.getState().removeTempFile(tab.path);
         }
+      } else if (tab.isUntitled) {
+        // v0.8.3 WP4 需求6：未落盘标签按 untitled:<id> 键清理进度
+        fileScrollProgress.clear(untitledProgressKey(tab.id));
       }
       closeTab(i);
     }
@@ -1317,6 +1389,10 @@ function App() {
     if (targetIdx !== -1) {
       setActiveTab(targetIdx);
     }
+    // v0.8.3 WP4 需求5：显式记录活跃标签（临时标签按 id / 真实文件按 path）。
+    // 不依赖任何 effect 链——切标签时 openTabs 引用不变，防抖 effect 未必触发，
+    // 而"上次活跃标签"必须在每次切换时都是最新的，否则重启后定位错误。
+    saveLastActiveTab(tab);
     // 加载目标标签内容
     setContent(tab.content || "");
     safeSetItem("lightmd-content", tab.content || "");
@@ -1383,6 +1459,8 @@ function App() {
         // v0.8.0 WP2 修复2：文件/文件夹被删除 → 关闭对应标签
         closeTabsByPath(detail.path);
       }
+      // v0.8.2 调整：「打开的文件」栏去掉标题栏关闭按钮，temp.closeAll 命令随之移除——
+      // 该栏随文件数据自动出现/消失（所有文件都关闭后自动隐藏）
     };
     window.addEventListener("lightmd:command", handler);
     return () => window.removeEventListener("lightmd:command", handler);

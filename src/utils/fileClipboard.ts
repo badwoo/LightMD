@@ -4,7 +4,7 @@
  * 注意：**不使用系统剪贴板**——避免与编辑器内文本的 Ctrl+C/Ctrl+V 冲突。
  * 这里只是一块模块级内存，存放"待粘贴的文件路径 + 名称"。
  */
-import { getParentDir } from "./path";
+import { getParentDir, isSameOrInsidePath } from "./path";
 /**
  * v0.8.0 修复 P13-1：剪贴板操作模式。
  * - copy：粘贴时生成副本（重名自动加" - 副本"后缀）
@@ -60,6 +60,18 @@ export function resolvePasteTargetDir(
   if (pickedDir) return pickedDir;
   if (activeFilePath) return getParentDir(activeFilePath);
   return openFolderPaths[0] || "";
+}
+
+/**
+ * v0.8.4 需求1：自嵌套判定——targetDir 是否为 srcPath 自身或其内部目录
+ * （统一 `/` 归一后：targetDir === srcPath 或 targetDir 以 "srcPath/" 为前缀）。
+ * 复用 path.isSameOrInsidePath（归一 + 忽略尾斜杠 + Windows 大小写不敏感语义）。
+ * 用于拖拽/粘贴守卫：防止把文件夹放进自身后代造成递归无限复制/数据损坏（P0）。
+ * srcPath 为文件时，除 targetDir 与其完全同路径（防御性拒绝）外恒返回 false
+ * （文件不可能是任何目录的祖先），可与文件夹统一调用。
+ */
+export function isDescendantDir(srcPath: string, targetDir: string): boolean {
+  return isSameOrInsidePath(targetDir, srcPath);
 }
 
 /** v0.8.0 WP2 需求1：拖拽载荷的 MIME（标签栏 / 打开的文件面板 → 文件夹） */

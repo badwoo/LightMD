@@ -62,11 +62,15 @@ describe("问题1：左侧栏临时文件列表只展示文件名", () => {
     const src = readSrc("../components/sidebar/FileTree.tsx");
     // 临时文件列表项中不应有 filetree-size 类名（原用于显示路径）
     // 排除重命名逻辑中的 getParentDir（重命名需要计算父目录，不是显示用）
-    // tempFiles.map((file, idx) => { ... return (...) }) 结尾是 })}
-    const tempFileListSection = src.match(/tempFiles\.map\([\s\S]*?\n\s*\}\)\}/);
-    expect(tempFileListSection).not.toBeNull();
-    expect(tempFileListSection![0]).not.toMatch(/filetree-size/);
-    expect(tempFileListSection![0]).not.toMatch(/parentDir/);
+    // v0.8.2：条目渲染收拢进 buildTempItems（真实文件条目按"最近使用"顺序构造），
+    // 以 orderedTempEntries.forEach 起点到 return items; 结束截取条目构造段
+    const start = src.indexOf("orderedTempEntries.forEach(");
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf("return items;", start);
+    expect(end).toBeGreaterThan(start);
+    const tempFileListSection = src.substring(start, end);
+    expect(tempFileListSection).not.toMatch(/filetree-size/);
+    expect(tempFileListSection).not.toMatch(/parentDir/);
   });
 });
 
@@ -108,11 +112,15 @@ describe("问题2：重命名联动更新收藏和最近文件", () => {
     // 其他条目不受影响
     expect(state.favorites.find((f) => f.path === "/other/other.md")).toBeDefined();
 
-    // recentFiles 中对应条目已更新
+    // recentFiles 中新路径条目已入列
     const recent = state.recentFiles.find((f) => f.path === "/old/path/renamed.md");
     expect(recent).toBeDefined();
     expect(recent!.name).toBe("renamed.md");
-    expect(state.recentFiles.find((f) => f.path === "/old/path/doc.md")).toBeUndefined();
+    // v0.8.4 需求1b 语义升级：旧条目不再被原地改写/移除，而是保留并标记 stale
+    // （最近打开走"双条目"——旧条目 stale: true + 新条目头插入列）
+    const staleEntry = state.recentFiles.find((f) => f.path === "/old/path/doc.md");
+    expect(staleEntry).toBeDefined();
+    expect(staleEntry!.stale).toBe(true);
   });
 
   it("FileTree.tsx handleRenameConfirm 中调用 renameFileEntry", () => {
@@ -275,9 +283,9 @@ describe("问题6：切换标签页双高亮修复", () => {
 // ─── 问题 7：自动保存间隔默认 30 秒，最大 600 秒 ──────────────────────
 
 describe("问题7：自动保存间隔设置", () => {
-  it("useSettingsStore autoSaveIntervalMs 默认 30000ms（30秒）", () => {
+  it("useSettingsStore autoSaveIntervalMs 默认 60000ms（60秒，v0.8.2 需求7 由 30s 调整）", () => {
     const src = readSrc("../stores/useSettingsStore.ts");
-    expect(src).toMatch(/autoSaveIntervalMs:\s*30000/);
+    expect(src).toMatch(/autoSaveIntervalMs:\s*60000/);
   });
 
   it("setAutoSaveInterval clamp 到 [0, 600000]（600秒）", () => {
@@ -321,9 +329,14 @@ describe("问题8：启动载入逻辑和图片渲染", () => {
     expect(restoreSection).not.toBeNull();
     // v0.8.0 修复 P1-4：临时（untitled）标签会先于正式文件恢复并占用 openTabs 前部，
     // 因此激活目标改为按 isUntitled 过滤后的首个正式文件，不再写死索引 0
+    // v0.8.3 WP4 需求5：改为**优先**按上次会话活跃标签定位（last-active），
+    // 未命中才回退到"第一个真实文件"——回退分支与 P1-4 语义完全一致
     expect(restoreSection![0]).toMatch(/openTabs\.findIndex\(\(tb\) => !tb\.isUntitled && tb\.path\)/);
-    expect(restoreSection![0]).toMatch(/setActiveTab\(firstIdx\)/);
-    expect(restoreSection![0]).toMatch(/setCurrentDocPath\(firstTab\.path\)/);
+    expect(restoreSection![0]).toMatch(/resolveLastActiveIndex\(loadLastActiveTab\(\), openTabs\)/);
+    // 激活块使用统一的目标变量（targetIdx/targetTab），索引不再写死
+    expect(restoreSection![0]).toMatch(/setActiveTab\(targetIdx\)/);
+    expect(restoreSection![0]).toMatch(/setCurrentDocPath\(targetTab\.path \|\| ""\)/);
+    expect(restoreSection![0]).not.toMatch(/setActiveTab\(0\)/);
   });
 
   it("restoreRecentFiles 串行打开保持 recentFiles 顺序（最新在前）", async () => {

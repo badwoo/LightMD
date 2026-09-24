@@ -531,7 +531,16 @@ const nodeSpecs: Record<string, NodeSpec> = {
       const { src, alt, title } = node.attrs;
       // 将相对路径转换为 Tauri webview 可访问的 asset:// URL
       // data-editable="true" 标记图片为可编辑，供阅读模式注入点击监听（G3）
-      return ["img", { src: resolveImageSrc(src), alt, title, "data-editable": "true" }];
+      // v0.8.3 WP5 需求7：loading="lazy" + decoding="async"——大图同步解码会阻塞
+      // 合成帧（滚动掉帧的常见来源），懒加载让视口外图片完全不参与解码。
+      return ["img", {
+        src: resolveImageSrc(src),
+        alt,
+        title,
+        "data-editable": "true",
+        loading: "lazy",
+        decoding: "async",
+      }];
     },
   },
 

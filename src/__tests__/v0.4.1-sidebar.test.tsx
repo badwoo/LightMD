@@ -71,14 +71,14 @@ function createMockElementWithParent(containerWidth: number): HTMLElement {
   return { parentElement: parent } as unknown as HTMLElement;
 }
 
-/** 派发原生 mousemove 事件（含 clientY） */
+/** 派发原生 mousemove 事件（含 clientY；buttons:1 = 左键按住，模拟真实拖拽） */
 function dispatchMouseMoveY(clientY: number) {
-  document.dispatchEvent(new MouseEvent("mousemove", { clientY }));
+  document.dispatchEvent(new MouseEvent("mousemove", { clientY, buttons: 1 }));
 }
 
 /** 派发原生 mousemove 事件（含 clientX） */
 function dispatchMouseMoveX(clientX: number) {
-  document.dispatchEvent(new MouseEvent("mousemove", { clientX }));
+  document.dispatchEvent(new MouseEvent("mousemove", { clientX, buttons: 1 }));
 }
 
 /** 派发原生 mouseup 事件 */

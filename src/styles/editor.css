@@ -34,6 +34,33 @@
   box-shadow: 0 0 0 1px rgba(255, 193, 7, 0.6);
 }
 
+/* ─── v0.8.3 WP5 需求7：长文档滚动性能（实测结论，勿再盲目重加）─────────
+   计划中的方案是给顶层块加 `content-visibility: auto`（视口外跳过布局/绘制）。
+   用真实 Chromium（headless，1400×900）对 1.8 万行 / 9000 个顶层块文档实测，
+   交替顺序、冷/热滚动各两轮（脚本与数据见
+   .trae/documents/lightmd-v0.8.3-implementation-plan.md §实施记录）：
+
+     基线（不加该属性）           冷滚动 avg 16.67ms（60fps）LongTask 0
+     contain: layout style paint  冷滚动 avg 16.67ms（60fps）LongTask 0（无收益）
+     content-visibility: auto     冷滚动 avg 70.4ms（14fps）LongTask 250 个（~17s）
+
+   即：content-visibility 在本应用中让滚动**慢约 4 倍**，且不可接受；`contain` 隔离
+   没有任何可测收益。根因（已用对照实验确认）：
+   - 顶层块数量极大（近万），滚动时每帧都要为"新进入相关区域"的块做**延迟布局**；
+   - `contain-intrinsic-size` 的估值与真实高度不一致（实测 scrollHeight 由 595087px
+     被估值撑到 807745px，+36%），尺寸修正会反复触达大范围重排；
+   - 结论：单帧成本反而从"合成"退化为"全量布局"。另测"缓存 scrollHeight"变体仍为
+     77ms/13fps，说明这不是滚动处理器读几何造成的，而是该特性在此工作负载下的固有行为。
+   - 文档打开耗时也无收益（基线 219ms vs 开启 234ms）。
+
+   因此**不采用** content-visibility，也不引入 contain。基线本身已是 60fps / 0 长任务，
+   说明瓶颈不在"整篇 DOM"这一层。本版落地的滚动/输入优化为：
+   - 图片 loading="lazy" + decoding="async"（大图不再阻塞合成帧）
+   - 滚动监听全部声明 passive
+   - 选区变化时的全文档文本序列化改为惰性 + 行号改结构化计算（WP2 需求3）
+   若未来要重新评估 content-visibility，必须以同一基准脚本复测并证明不回退。
+   ────────────────────────────────────────────────────────────── */
+
 .ProseMirror h1, .ProseMirror h2, .ProseMirror h3,
 .ProseMirror h4, .ProseMirror h5, .ProseMirror h6 {
   color: var(--heading-color);

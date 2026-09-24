@@ -23,11 +23,13 @@ interface FavoritesProps {
   sectionKey?: string;
   /** 上方相邻可见区 key（为空 = 本区最靠上，标题栏不可拖） */
   prevSectionKey?: string;
+  /** v0.8.2 功能4：下方相邻可见区 key（本区最靠上时标题栏改拖「本区+下区」） */
+  nextSectionKey?: string;
   /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
 }
 
-export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey, maxHeight }: FavoritesProps) {
+export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey, nextSectionKey, maxHeight }: FavoritesProps) {
   const favorites = useFileStore((s) => s.favorites);
   const removeFavorite = useFileStore((s) => s.removeFavorite);
   const t = useT();
@@ -55,18 +57,33 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
   }
 
   // v0.8.0 修复 P9-1：标题栏拖拽移动本区上边界 → 配对「上方邻区 + 本区」
+  // v0.8.2 功能4：无上方邻区时改拖「本区 + 下区」（nextSectionKey）
   const { onMouseDown } = useSectionSplit({
     selfKey: sectionKey ?? "favorites",
     prevKey: prevSectionKey,
+    nextKey: nextSectionKey,
     maxHeight,
   });
+
+  // v0.8.2 功能2：双击标题栏切换缩小/放大（对应缩小按钮），折叠时禁用拖拽
+  const handleHeaderDoubleClick = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    setCollapsed((c) => !c);
+    setMaximized(false);
+  };
 
   return (
     <div
       className={`favorites-section ${collapsed ? "collapsed" : ""} ${maximized ? "maximized" : ""}`}
       style={sectionStyle}
+      // v0.8.2 功能5：data-section-key 供内容高度测量（重新打开栏时上一栏收缩到内容高度）
+      data-section-key={sectionKey ?? "favorites"}
     >
-      <div className="favorites-header" onMouseDown={onMouseDown}>
+      <div
+        className="favorites-header"
+        onMouseDown={(e) => { if (!collapsed && !maximized) onMouseDown(e); }}
+        onDoubleClick={handleHeaderDoubleClick}
+      >
         <span className="filetree-title">
           {favorites.length > 0
             ? t("sidebar.favoritesCount", { count: favorites.length })
@@ -125,7 +142,9 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
                   e.stopPropagation();
                   setContextMenu({ x: e.clientX, y: e.clientY, path: file.path });
                 }}
-                title={file.path}
+                // v0.8.4 需求10（P2 拍板）：stale 条目（外部删除/移动）在 hover tooltip
+                // 追加失效提示（复用 RecentFiles 的 staleHint 文案，最小实现不加 ⚠ 图标）
+                title={`${file.path}${file.stale ? `\n${t("recent.staleHint")}` : ""}`}
               >
                 <span className="filetree-icon favorite-star">★</span>
                 <div className="favorite-info">

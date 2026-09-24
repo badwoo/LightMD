@@ -7,14 +7,14 @@
   background: var(--titlebar-bg);
   border-bottom: 1px solid var(--border-color);
   user-select: none;
-  -webkit-app-region: drag;
+  /* v0.8.1 需求6：无边框窗口的拖动依赖 data-tauri-drag-region 属性
+     （-webkit-app-region 是 Electron 特性，WebView2 下不生效，已移除） */
 }
 
 .titlebar-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  -webkit-app-region: drag;
 }
 
 .titlebar-brand {
@@ -32,7 +32,6 @@
   border-radius: 6px;
   padding: 1px;
   gap: 1px;
-  -webkit-app-region: no-drag;
 }
 
 .titlebar-mode-btn {
@@ -61,7 +60,6 @@
   display: flex;
   align-items: center;
   gap: 1px;
-  -webkit-app-region: no-drag;
 }
 
 .titlebar-menu-btn {
@@ -83,7 +81,6 @@
 .titlebar-center {
   flex: 1;
   text-align: center;
-  -webkit-app-region: drag;
 }
 
 .titlebar-title {
@@ -96,7 +93,6 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  -webkit-app-region: no-drag;
 }
 
 .titlebar-icon-btn {

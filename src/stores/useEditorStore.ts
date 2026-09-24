@@ -82,6 +82,10 @@ interface EditorState {
    */
   translateUndoSnapshot: TranslateUndoSnapshot | null;
   cursorLine: number;
+  /** v0.8.3 需求3：光标列号（1 起，源码模式与阅读模式均生效） */
+  cursorColumn: number;
+  /** v0.8.3 需求3：当前选中字符数（无选区为 0） */
+  selectedChars: number;
   /** 字数统计详情（G11：扩展为对象，含字数/字符数/行数/段落数/阅读时长） */
   wordCount: WordCountResult;
   viewMode: ViewMode;
@@ -113,6 +117,10 @@ interface EditorState {
   /** v0.6.1 问题2：设置/清除翻译取消快照（v0.6.3 P0-2：绑定文档上下文） */
   setTranslateUndoSnapshot: (v: TranslateUndoSnapshot | null) => void;
   setCursorLine: (line: number) => void;
+  /** v0.8.3 需求3：设置光标列号 */
+  setCursorColumn: (column: number) => void;
+  /** v0.8.3 需求3：设置选中字符数 */
+  setSelectedChars: (count: number) => void;
   /** 更新字数统计详情（接收 calculateWordCount 的结果） */
   setWordCount: (count: WordCountResult) => void;
   setViewMode: (mode: ViewMode) => void;
@@ -159,6 +167,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   suppressAutoSave: false,
   translateUndoSnapshot: null,
   cursorLine: 0,
+  cursorColumn: 0,
+  selectedChars: 0,
   wordCount: { words: 0, chars: 0, charsNoSpaces: 0, lines: 0, paragraphs: 0, readingTimeMin: 0 },
   viewMode: "preview",
   prevViewMode: "preview",
@@ -178,12 +188,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   // 跨标签切换保留（切走再切回同一文档、且文档未编辑/未关闭时气泡仍在）。
   // 快照本身绑定 filePath/key，恢复时按归属校验；Toast 显示也按文件归属过滤，
   // 故跨文档不会误恢复/误显示。
-  openFile: (path) => set({ filePath: path, isDirty: false, suppressAutoSave: false, cursorLine: 0 }),
+  // v0.8.3 需求3：切换文件时同步重置光标列号与选中字符数（行号原有行为不变）
+  openFile: (path) => set({
+    filePath: path,
+    isDirty: false,
+    suppressAutoSave: false,
+    cursorLine: 0,
+    cursorColumn: 0,
+    selectedChars: 0,
+  }),
   setCurrentLanguage: (lang) => set({ currentLanguage: lang }),
   setDirty: (dirty) => set({ isDirty: dirty }),
   setSuppressAutoSave: (v) => set({ suppressAutoSave: v }),
   setTranslateUndoSnapshot: (v) => set({ translateUndoSnapshot: v }),
   setCursorLine: (line) => set({ cursorLine: line }),
+  setCursorColumn: (column) => set({ cursorColumn: column }),
+  setSelectedChars: (count) => set({ selectedChars: count }),
   setWordCount: (count) => set({ wordCount: count }),
   setViewMode: (mode) => set((s) => {
     // 记录上一个非分屏模式

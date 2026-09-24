@@ -16,6 +16,8 @@ import { markdownToDoc } from "./markdown/parser";
 import { docToMarkdown } from "./markdown/serializer";
 import { buildInputRules } from "./inputrules";
 import { buildKeymap } from "./keymap";
+// v0.8.3 需求3：光标行（结构化行号）与列的计算（纯函数，可单测）
+import { computeDocLine, computeBlockColumn } from "../utils/cursorPosition";
 import { wysiwygPlugin } from "./plugins/wysiwyg";
 import { imagePastePlugin } from "./plugins/image-paste";
 import { focusModePlugin } from "./plugins/focus-mode";
@@ -93,8 +95,24 @@ export interface EditorOptions {
   initialContent?: string;
   /** 文档变更回调 */
   onDocChange?: (markdown: string) => void;
-  /** 选区变更回调（G11：第二参数由 wordCount:number 改为 text:string，字数计算移至 EditorContainer 调用 calculateWordCount） */
-  onSelectionChange?: (line: number, text: string) => void;
+  /**
+   * 选区变更回调。
+   *
+   * G11：第二参数由 wordCount:number 改为 text:string，字数计算移至
+   * EditorContainer 调用 calculateWordCount。
+   * v0.8.3 需求3：签名为 (line, column, selectedChars, getText)——
+   * - column：光标在当前文本块内的列（1 起），O(块内) 成本可忽略；
+   * - selectedChars：选中的字符数（无选区恒为 0，不计算）；
+   * - getText：**惰性**取全文档文本的函数。旧实现每次选区变化（含每次击键）
+   *   都做 doc.textContent 全量序列化，长文档下是输入卡顿来源之一；
+   *   现在只有真正需要字数统计时才调用（EditorContainer 内 300ms 防抖）。
+   */
+  onSelectionChange?: (
+    line: number,
+    column: number,
+    selectedChars: number,
+    getText: () => string,
+  ) => void;
   /** 编辑器就绪回调 */
   onReady?: (view: EditorView) => void;
   /**
@@ -279,15 +297,26 @@ export function createEditor(options: EditorOptions): EditorView | null {
       // 标记初始事务已完成
       if (!initialized) initialized = true;
 
-      // 选区变化时更新行号和文本（字数计算由 EditorContainer 防抖 300ms 后调用 calculateWordCount 完成）
+      // 选区变化时更新行号/列号/选中字符数（字数计算由 EditorContainer 防抖 300ms 后
+      // 惰性调用 getText() 完成）
       // 注意：此处不再节流，避免快速输入时最后一次更新被丢失（EditorContainer 内部已有防抖）
       if (tr.selectionSet && onSelectionChange) {
-        const { $from } = newState.selection;
-        const lineCount = newState.doc.content.size > 0
-          ? newState.doc.textBetween(0, $from.pos).split("\n").length
-          : 1;
-        const allText = newState.doc.textContent;
-        onSelectionChange(lineCount, allText);
+        const sel = newState.selection;
+        const { $from } = sel;
+        // v0.8.3 需求3：行号改为**结构化**计算（utils/cursorPosition）。
+        // 旧实现 `doc.textBetween(0, $from.pos).split("\n").length` 有两处问题：
+        // ① textBetween 未传 blockSeparator 时不在块间插入分隔符 → 该值只统计光标前的
+        //    硬换行数，常规 Markdown 文档里恒为 1（"行"永远显示 1，语义错误）；
+        // ② split("\n") 分配整个光标前文本的字符串数组。
+        // 新实现零字符串分配，O(光标前的块数)，且与"逻辑块行号"语义一致。
+        const lineCount = newState.doc.content.size > 0 ? computeDocLine($from) : 1;
+        // 列号只取光标所在文本块，O(块内)
+        const column = computeBlockColumn($from);
+        // v0.8.3 需求3：仅在有选区时计算选中字符数（无选区恒为 0，零成本）
+        const selectedChars = sel.empty
+          ? 0
+          : newState.doc.textBetween(sel.from, sel.to).length;
+        onSelectionChange(lineCount, column, selectedChars, () => newState.doc.textContent);
       }
     },
   });

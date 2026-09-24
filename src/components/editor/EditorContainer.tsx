@@ -110,6 +110,10 @@ import { versionSnapshotService } from "../../services/versionSnapshotService";
 import { notifyWarning, notifySuccess } from "../../services/notificationService";
 // v0.7.0 bug修复：按文件记录浏览进度（切换标签保留，重新打开重置）
 import { fileScrollProgress } from "../../services/fileScrollProgress";
+// v0.8.3 需求3：源码模式光标行列/选中字符数纯函数
+import { computeTextareaCursorPosition } from "../../utils/cursorPosition";
+// v0.8.3 WP4 需求6：进度键前缀（临时标签 = untitled:<id>，与 utils/tabKey.ts 单源）
+import { UNTITLED_PROGRESS_PREFIX } from "../../utils/tabKey";
 import "../../styles/editor.css";
 
 // ─── 源码模式撤销/恢复栈（增量差异存储）──────────────
@@ -310,6 +314,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   const setDirty = useEditorStore((s) => s.setDirty);
   const setCursorLine = useEditorStore((s) => s.setCursorLine);
+  // v0.8.3 需求3：光标列号 / 选中字符数
+  const setCursorColumn = useEditorStore((s) => s.setCursorColumn);
+  const setSelectedChars = useEditorStore((s) => s.setSelectedChars);
   const setWordCount = useEditorStore((s) => s.setWordCount);
   const focusMode = useEditorStore((s) => s.focusMode);
   const viewMode = useEditorStore((s) => s.viewMode);
@@ -362,9 +369,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   const setDirtyRef = useRef(setDirty);
   const setCursorLineRef = useRef(setCursorLine);
+  const setCursorColumnRef = useRef(setCursorColumn);
+  const setSelectedCharsRef = useRef(setSelectedChars);
   const setWordCountRef = useRef(setWordCount);
   setDirtyRef.current = setDirty;
   setCursorLineRef.current = setCursorLine;
+  setCursorColumnRef.current = setCursorColumn;
+  setSelectedCharsRef.current = setSelectedChars;
   setWordCountRef.current = setWordCount;
 
   const wordCountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -636,11 +647,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           useEditorStore.getState().setTranslateUndoSnapshot(null);
         }
       },
-      onSelectionChange: (line, text) => {
+      onSelectionChange: (line, column, selectedChars, getText) => {
         setCursorLineRef.current(line);
+        // v0.8.3 需求3：列号 / 选中字符数实时同步（均为 O(块内) / O(选区) 计算）
+        setCursorColumnRef.current(column);
+        setSelectedCharsRef.current(selectedChars);
         if (wordCountTimerRef.current) clearTimeout(wordCountTimerRef.current);
         // G11：调用 calculateWordCount 计算字数详情（含字符数/行数/段落数/阅读时长）
-        wordCountTimerRef.current = setTimeout(() => setWordCountRef.current(calculateWordCount(text)), 300);
+        // v0.8.3 需求3：getText 为惰性 getter——全文序列化从"每次选区变化"降为
+        // "每 300ms 至多一次"，是长文档输入卡顿的既定热点修复。
+        wordCountTimerRef.current = setTimeout(() => setWordCountRef.current(calculateWordCount(getText())), 300);
         // v0.8.0 修复4：打字机开启且非模式切换恢复滚动期间，移动光标即时居中
         // 用 rAF 延后到浏览器布局稳定后执行；scrollToCenter 内部 computeTypewriterScrollTop
         // 自带 5px 阈值防抖，光标已在中央附近时不触发滚动（避免打字抖动）
@@ -738,10 +754,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (percent !== null) {
         pmScrollPercentRef.current = percent;
         // v0.7.0 bug修复：按文件记录浏览进度（标签切换保留；重新打开由 App 层 clear 重置）
-        fileScrollProgress.set(activeFileRef.current, percent);
+        fileScrollProgress.set(progressKeyRef.current, percent);
       }
     };
-    container.addEventListener("scroll", handler);
+    // v0.8.3 WP5 需求7：passive 滚动监听——滚动处理不调用 preventDefault，
+    // 声明 passive 后浏览器无需等待 JS 即可提交合成帧。
+    container.addEventListener("scroll", handler, { passive: true });
     return () => container.removeEventListener("scroll", handler);
   }, [content, forceUpdateKey]);
 
@@ -781,12 +799,54 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (percent !== null) {
         textareaScrollPercentRef.current = percent;
         // v0.7.0 bug修复：按文件记录浏览进度（同上）
-        fileScrollProgress.set(activeFileRef.current, percent);
+        fileScrollProgress.set(progressKeyRef.current, percent);
       }
     };
-    textarea.addEventListener("scroll", handler);
+    // v0.8.3 WP5：passive 监听（滚动路径上无需 preventDefault）——浏览器无需等待
+    // JS 返回即可提交合成帧，滚动同步更稳。
+    textarea.addEventListener("scroll", handler, { passive: true });
     return () => textarea.removeEventListener("scroll", handler);
   }, []); // textarea 始终在 DOM 中，只需绑定一次
+
+  // ─── v0.8.3 需求3：源码模式（textarea）光标行列 / 选中字符数 ──────────
+  // textarea 的 selectionStart/End 是唯一真相源；用 rAF 合并同一帧内的多次事件
+  // （select → click → input 常连续触发），避免重复写 store。
+  const sourceCursorRafRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!isSourceMode) return;
+    const textarea = sourceTextareaRef.current;
+    if (!textarea) return;
+    const update = () => {
+      if (sourceCursorRafRef.current !== null) return;
+      sourceCursorRafRef.current = requestAnimationFrame(() => {
+        sourceCursorRafRef.current = null;
+        const ta = sourceTextareaRef.current;
+        if (!ta) return;
+        const pos = computeTextareaCursorPosition(ta.value, ta.selectionStart, ta.selectionEnd);
+        setCursorLineRef.current(pos.line);
+        setCursorColumnRef.current(pos.column);
+        setSelectedCharsRef.current(pos.selectedChars);
+      });
+    };
+    textarea.addEventListener("keyup", update);
+    textarea.addEventListener("click", update);
+    textarea.addEventListener("input", update);
+    textarea.addEventListener("select", update);
+    textarea.addEventListener("focus", update);
+    // 进入源码模式时先同步一次当前光标位置（不等用户操作）
+    update();
+    return () => {
+      textarea.removeEventListener("keyup", update);
+      textarea.removeEventListener("click", update);
+      textarea.removeEventListener("input", update);
+      textarea.removeEventListener("select", update);
+      textarea.removeEventListener("focus", update);
+      if (sourceCursorRafRef.current !== null) {
+        cancelAnimationFrame(sourceCursorRafRef.current);
+        sourceCursorRafRef.current = null;
+      }
+    };
+  }, [isSourceMode]);
 
   // ─── 文件切换：更新编辑器内容 ──────────────────
   // 非 md 文件不需要更新 ProseMirror（阅读模式使用纯文本视图）
@@ -819,7 +879,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 新文件的进度并恢复。重新打开场景 App 层已 clear → get 返回 null → 不恢复（顶部）。
   // 性能：Map.get 单次哈希查询；恢复仅在切换时执行一次（双 rAF 等布局稳定）。
   useEffect(() => {
-    const percent = fileScrollProgress.get(activeFileRef.current);
+    // v0.8.3 WP4 需求6：进度键从"文件路径"改为"tab 键"（临时标签 = untitled:<id>），
+    // 这样跨会话恢复的临时标签也能记住阅读位置。
+    const percent = fileScrollProgress.get(progressKeyRef.current);
     if (percent === null) return;
     // 标记恢复中，防打字机 effect 的 smooth 滚动覆盖（与 applyScroll 相同策略）
     isRestoringScrollRef.current = true;
@@ -1631,6 +1693,21 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   //   （handleTranslateApply 等空依赖 useCallback 拿不到最新 props，必须走 ref）
   const activeFileRef = useRef<string | null | undefined>(undefined);
   activeFileRef.current = filePath;
+
+  // ─── v0.8.3 WP4 需求6：浏览进度的独立键 ──────────────────────
+  // activeFileRef 的语义是"当前文档的真实磁盘路径"（AI 上下文归属 / 翻译快照
+  // 归属判断依赖它，临时文档恒为 null），**不能**被改写成 tab 键。
+  // 浏览进度需要按"标签"维度记录（临时标签也要能记住位置），故新增独立 ref：
+  // 真实文件 = path，临时标签 = "untitled:<id>"（见 utils/tabKey.ts 单源）。
+  const activeProgressKey = useEditorStore((s) => {
+    const tab = s.openTabs[s.activeTabIdx];
+    if (!tab) return null;
+    return tab.isUntitled
+      ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? s.activeTabIdx}`
+      : tab.path || null;
+  });
+  const progressKeyRef = useRef<string | null>(null);
+  progressKeyRef.current = activeProgressKey;
   const activeKeyRef = useRef<number>(0);
   activeKeyRef.current = forceUpdateKey ?? 0;
 

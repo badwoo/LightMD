@@ -90,15 +90,20 @@ describe("问题2：左侧栏「打开的文件」和「文档」栏显示位置
 
   it("打开文件夹后，临时文件栏渲染在 FolderSection 之后", () => {
     const src = readSrc("../components/sidebar/FileTree.tsx");
-    // FolderSection（treeDataByFolder.map）应出现在 tempFiles 栏之前
-    const idxFolderSection = src.indexOf("treeDataByFolder.map");
+    // FolderSection（treeDataByFolder）应出现在 tempFiles 栏之前
+    const idxFolderSection = src.indexOf("treeDataByFolder");
     const idxTempSection = src.indexOf("filetree-temp-section");
     expect(idxFolderSection).toBeGreaterThan(-1);
     expect(idxTempSection).toBeGreaterThan(-1);
-    // 这里仅验证两者都存在；顺序由 openFolders 长度判断控制
-    // 主要验证：openFolders.length > 0 时才渲染 treeDataByFolder.map
-    const folderRenderArea = src.match(/openFolders\.length\s*>\s*0\s*\?[\s\S]*?treeDataByFolder\.map/);
-    expect(folderRenderArea).not.toBeNull();
+    // v0.8.2 重构：文件夹区与"关闭中快照"合并为一次渲染
+    // （按原位置插回，关闭中间一栏时下方栏平滑上移补位）。
+    // 原来的 `openFolders.length > 0 ? ... treeDataByFolder.map ...` 内联三元
+    // 已改为 liveSections/closingSnapshots 合并，故此处改为锁定等价行为：
+    // ①文件夹区只由 treeDataByFolder 产出；②两个 SlideWrap 的可见条件互斥且
+    // 打开文件夹时第二处（FolderSection 之后）才渲染 temp 栏。
+    expect(src).toMatch(/const liveSections\s*=\s*treeDataByFolder\.map/);
+    expect(src).toMatch(/openFolders\.length\s*>\s*0\s*&&\s*tempVisible/);
+    expect(src).toMatch(/openFolders\.length\s*===\s*0\s*&&\s*tempVisible/);
   });
 
   it("不打开文件夹也不打开文件时，placeholder 仍然显示（提示用户打开文件夹）", () => {

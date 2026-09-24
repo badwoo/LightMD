@@ -3,7 +3,7 @@ pub mod db;
 pub mod translate;
 pub mod utils;
 
-use commands::{config, file_ops, image, export};
+use commands::{config, file_ops, image, export, watcher};
 use translate::TranslateState;
 use std::io::Cursor;
 use tauri::{Emitter, Manager};
@@ -62,6 +62,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_sql::Builder::new().build())
+        // v0.8.3 需求4：窗口状态记忆（大小/位置/最大化标志）。
+        // 显式收窄 StateFlags：不记忆 FULLSCREEN / DECORATIONS / VISIBLE 等状态，
+        // 避免"用户偶发全屏一次，之后每次启动都全屏"之类的怪行为。
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         // v0.6.0 AI 翻译：单任务状态托管（取消标志）
         .manage(TranslateState::default())
         .setup(|app| {
@@ -111,6 +123,11 @@ pub fn run() {
             file_ops::delete_file,
             file_ops::rename_file,
             file_ops::copy_file,
+            // v0.8.4 需求1：移动文件/目录（同盘 rename，跨盘降级复制+删除）
+            file_ops::move_file,
+            // v0.8.4 需求10：目录实时监听（notify）与注销
+            watcher::watch_folder,
+            watcher::unwatch_folder,
             file_ops::exists,
             file_ops::reveal_in_folder,
             image::save_image,

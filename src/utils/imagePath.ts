@@ -53,6 +53,23 @@ function resolveRelativePath(base: string, rel: string): string {
 }
 
 /**
+ * v0.8.2 修复：去掉 Windows 扩展长度路径前缀（`\\?\` / `//?/`）。
+ *
+ * 根因：Rust 侧 `canonicalize()` 返回 `\\?\D:\dir\file`，经 `list_dir` 转成正斜杠后
+ * 变成 `//?/D:/dir/file`。相对路径解析会把 `?` 当成普通路径段，
+ * 转成 asset URL 时被百分号编码为 `%3F%2F`，资源协议随即找不到文件——
+ * 表现为"通过文件夹打开的 md 图片不渲染，直接打开却正常"。
+ *
+ * Rust 侧已在 `resolve_path` 剥离该前缀（见 commands/file_ops.rs），
+ * 这里再兜一层：任何来源（拖拽、启动恢复、外部传入）的路径都不会带前缀进入解析。
+ */
+export function stripExtendedPathPrefix(path: string): string {
+  if (path.startsWith("\\\\?\\")) return path.slice(4);
+  if (path.startsWith("//?/")) return path.slice(4);
+  return path;
+}
+
+/**
  * 将图片 src 转换为 webview 可访问的 URL（纯函数）
  *
  * 转换规则：
@@ -74,19 +91,26 @@ export function resolveImageSrc(src: string, docPath: string | null = currentDoc
   // 非 Tauri 环境原样返回
   if (!isTauri()) return src;
 
+  const cleanSrc = stripExtendedPathPrefix(src);
+  const cleanDoc = docPath ? stripExtendedPathPrefix(docPath) : docPath;
+
   let absPath: string;
 
-  if (src.startsWith("./") || src.startsWith("../") || (!/^[A-Za-z]:[\\/]/.test(src) && !src.startsWith("/"))) {
+  if (
+    cleanSrc.startsWith("./") ||
+    cleanSrc.startsWith("../") ||
+    (!/^[A-Za-z]:[\\/]/.test(cleanSrc) && !cleanSrc.startsWith("/"))
+  ) {
     // 相对路径：基于文档目录解析
-    if (!docPath) return src;
-    const docDir = docPath.replace(/[\\/][^\\/]*$/, "").replace(/\\/g, "/");
-    absPath = resolveRelativePath(docDir, src);
-  } else if (/^[A-Za-z]:[\\/]/.test(src)) {
+    if (!cleanDoc) return src;
+    const docDir = cleanDoc.replace(/[\\/][^\\/]*$/, "").replace(/\\/g, "/");
+    absPath = resolveRelativePath(docDir, cleanSrc);
+  } else if (/^[A-Za-z]:[\\/]/.test(cleanSrc)) {
     // Windows 绝对路径
-    absPath = src.replace(/\\/g, "/");
-  } else if (src.startsWith("/")) {
+    absPath = cleanSrc.replace(/\\/g, "/");
+  } else if (cleanSrc.startsWith("/")) {
     // Unix 绝对路径
-    absPath = src;
+    absPath = cleanSrc;
   } else {
     return src;
   }
