@@ -180,14 +180,17 @@ describe("P12-1 文件夹空白区右键粘贴", () => {
   });
 
   it("菜单项根据剪贴板是否为空决定是否置灰", () => {
-    expect(fileTreeSrc).toContain("canPaste: hasClipboard()");
-    expect(fileTreeSrc).toContain("disabled={!folderCtxMenu.canPaste}");
+    // v0.8.4 反馈1：改用渲染期实时读取 hasClipboard()（去掉打开菜单时的 canPaste 快照），
+    // 保证"复制/剪切后重开菜单即为可用态"
+    expect(fileTreeSrc).toContain("disabled={!hasClipboard()}");
   });
 
   it("点击粘贴把剪贴板文件传送到该文件夹（模式由剪贴板决定，P13-1）", () => {
+    // v0.8.4 反馈1：粘贴链路收敛到 handlePasteIntoDir，空白区菜单项与文件夹节点右键菜单共用
     expect(fileTreeSrc).toMatch(
-      /void transferTo\(\s*clip\.path,\s*folderCtxMenu\.dir,\s*clipboardTransferMode\(clip\)/,
+      /const handlePasteIntoDir = useCallback\([\s\S]{0,400}?void transferTo\(\s*clip\.path,\s*targetDir,\s*clipboardTransferMode\(clip\)/,
     );
+    expect(fileTreeSrc).toContain("handlePasteIntoDir(folderCtxMenu.dir)");
   });
 
   it("提供置灰时的提示文案（中英）", () => {

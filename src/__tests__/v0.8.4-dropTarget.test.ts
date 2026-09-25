@@ -12,7 +12,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { isDescendantDir } from "../utils/fileClipboard";
-import { resolveInsertPlace } from "../utils/dropTarget";
+import { resolveInsertPlace, canDropIntoTarget } from "../utils/dropTarget";
 import {
   beginFileDrag,
   resolveDropAction,
@@ -61,6 +61,31 @@ describe("v0.8.4 isDescendantDir（自嵌套守卫）", () => {
   it("空路径守卫 → false", () => {
     expect(isDescendantDir("", "D:/a")).toBe(false);
     expect(isDescendantDir("D:/a", "")).toBe(false);
+  });
+});
+
+describe("v0.8.4 需求3 修复：canDropIntoTarget（落点准入按源类型分流）", () => {
+  it("文件源：落到自身所在目录/祖先目录/同目录 → 放行（不得误判为自嵌套）", () => {
+    // 这是本次修复的核心断言：修复前对文件源套用 isDescendantDir 虽不误拒父目录，
+    // 但语义上"文件不可能是目录祖先"，此处明确文件源一律放行（除完全同路径）。
+    expect(canDropIntoTarget("D:/proj/a.md", false, "D:/proj")).toBe(true);
+    expect(canDropIntoTarget("D:/proj/sub/a.md", false, "D:/proj")).toBe(true);
+    expect(canDropIntoTarget("D:/proj/a.md", false, "D:/proj/sub")).toBe(true);
+    // 分隔符/尾斜杠/大小写归一
+    expect(canDropIntoTarget("D:\\proj\\a.md", false, "D:/proj/")).toBe(true);
+  });
+
+  it("文件源：仅当 targetDir 与源完全同路径时防御性拒绝", () => {
+    expect(canDropIntoTarget("D:/proj/a.md", false, "D:/proj/a.md")).toBe(false);
+    expect(canDropIntoTarget("D:/proj/a.md", false, "D:\\proj\\A.MD")).toBe(false);
+  });
+
+  it("目录源：落到自身或自身后代 → 拒绝；其他目录 → 放行", () => {
+    expect(canDropIntoTarget("D:/a", true, "D:/a")).toBe(false);
+    expect(canDropIntoTarget("D:/a", true, "D:/a/sub")).toBe(false);
+    // 落到自身父目录（如区域根）/兄弟目录 → 放行
+    expect(canDropIntoTarget("D:/a", true, "D:/")).toBe(true);
+    expect(canDropIntoTarget("D:/a/sub", true, "D:/a")).toBe(true);
   });
 });
 

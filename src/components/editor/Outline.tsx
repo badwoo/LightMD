@@ -16,11 +16,13 @@
  * - 限制垂直方向拖拽
  * - 跨层级拖拽时智能调整标题级别（保持相对层级）
  *
- * 搜索（v0.8.4 需求11）：
- * - 容器 hover / 搜索框聚焦 / 有关键字 任一成立 → 展开搜索条，否则收起
+ * 搜索（v0.8.4 需求11，反馈3/4 已改造）：
+ * - 搜索框内联在标题栏（outline-header）内，位于"大纲"标题右侧、计数左侧，保持单行布局
+ * - 容器 hover / 搜索框聚焦 / 有关键字 任一成立 → 展开搜索框，否则收起；显隐用宽度/透明度过渡
  * - 防误关：输入中鼠标移出但焦点仍在 → 不收起；blur 且鼠标不在 → 收起
  * - 过滤为大小写不敏感的包含匹配，先过滤再做 MAX_OUTLINE_ITEMS 截断
  * - 过滤态下禁用拖拽（dnd-kit items 索引随过滤变化，禁用最稳）
+ * - 有关键字时输入框右侧显示清空按钮（×），点击清空并保持焦点（反馈4）
  */
 import { useEffect, useState, useCallback, useRef, useMemo, type CSSProperties } from "react";
 import type { EditorView } from "prosemirror-view";
@@ -124,6 +126,8 @@ export function Outline({ editorView }: OutlineProps) {
   const observerRef = useRef<IntersectionObserver | null>(null);
   // 缓存上一次的标题列表，避免内容未变时重复更新
   const lastHeadingsRef = useRef<string>("");
+  // v0.8.4 需求11 反馈4：搜索输入框引用，供清空按钮把焦点交还输入框
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const t = useT();
 
   // 所有模式启用拖拽（v0.3.0 修复：阅读模式下也支持大纲拖拽排序）
@@ -307,6 +311,13 @@ export function Outline({ editorView }: OutlineProps) {
     [editorView]
   );
 
+  // v0.8.4 需求11 反馈4：清空按钮点击处理——清空关键字并把焦点交还输入框。
+  // 保持焦点可避免清空后因失焦导致搜索框随即收起；与 ESC 的"清空 + 失焦"语义区分开。
+  const handleClear = useCallback(() => {
+    setQuery("");
+    inputRef.current?.focus();
+  }, []);
+
   // v0.8.4 需求11：先按关键字过滤（大小写不敏感、包含匹配），再做 MAX_OUTLINE_ITEMS 截断
   // 顺序很重要——若先截断后过滤，位于前 100 条之外但命中的标题会丢失
   const normalizedQuery = query.trim().toLowerCase();
@@ -366,26 +377,40 @@ export function Outline({ editorView }: OutlineProps) {
     >
       <div className="outline-header">
         <span className="outline-title">{t("outline.title")}</span>
+        {/* v0.8.4 需求11 反馈3：搜索框内联到标题栏——位于标题右侧、计数左侧，单行布局。
+            显隐由 CSS 宽度/透明度过渡控制（见 Outline.css），收起时不占布局，避免挤压标题与计数。 */}
+        <div className={`outline-search${searchVisible ? " visible" : ""}`}>
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            placeholder={t("outline.searchPlaceholder")}
+            onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+            onKeyDown={(e) => {
+              // ESC：清空关键字并失焦（失焦后若无 hover 随之收起）
+              if (e.key === "Escape") {
+                setQuery("");
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
+          {/* v0.8.4 需求11 反馈4：仅当有关键字时渲染的清空按钮，点击清空并保持焦点 */}
+          {hasQuery && (
+            <button
+              type="button"
+              className="outline-search-clear"
+              aria-label={t("outline.searchClear")}
+              title={t("outline.searchClear")}
+              onClick={handleClear}
+            >
+              ×
+            </button>
+          )}
+        </div>
         {/* v0.8.4 需求11：计数保持文档标题总数，不随过滤变化（总数反映文档结构） */}
         <span className="outline-count">{headings.length}</span>
-      </div>
-      {/* v0.8.4 需求11：搜索条（header 与 list 之间），显隐由 CSS max-height/opacity 过渡 */}
-      <div className={`outline-search${searchVisible ? " visible" : ""}`}>
-        <input
-          type="text"
-          value={query}
-          placeholder={t("outline.searchPlaceholder")}
-          onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => setSearchFocused(true)}
-          onBlur={() => setSearchFocused(false)}
-          onKeyDown={(e) => {
-            // ESC：清空关键字并失焦（失焦后若无 hover 随之收起）
-            if (e.key === "Escape") {
-              setQuery("");
-              (e.target as HTMLInputElement).blur();
-            }
-          }}
-        />
       </div>
       <nav className="outline-list">
         {dragActive ? (

@@ -7,7 +7,8 @@
  * 2. 需求8：文件夹空白区右键菜单扩为四项（新建文件/新建文件夹/刷新/粘贴）：
  *    - 点击"刷新"以 folderCtxMenu.dir 为目标调用 refreshTree（经 listDir 调用参数断言）
  *    - 点击"新建文件"以 folderCtxMenu.dir 为落点调用 handleNewFile（经 createFile 调用参数断言）
- *    - 粘贴项保留 canPaste disabled 态
+ *    - 粘贴项置灰/可用态（v0.8.4 反馈1：改为渲染期实时读取 hasClipboard()）
+ * 3. 反馈1：右键「粘贴」激活/置灰状态实时化 + 文件夹节点右键粘贴 + 同次右键不误关菜单
  *
  * 注：本文件为 v0.8.4 各工作包共享的集成测试文件，
  *     后续工作包（WP5 新建弹窗、S1 workspace 逐级加载、S7 刷新范围）将追加用例。
@@ -169,7 +170,8 @@ describe("v0.8.4 需求2：树内节点右键复制/剪切", () => {
       expect.arrayContaining(["复制", "剪切"]),
     );
     fireEvent.click(findMenuButton(menu, "剪切"));
-    expect(getClipboard()).toEqual({ path: DIR_PATH, name: "sub", mode: "cut" });
+    // v0.8.4 需求3 修复：剪贴板新增 isDir（目录为 true），供粘贴时自嵌套守卫按源类型分流
+    expect(getClipboard()).toEqual({ path: DIR_PATH, name: "sub", mode: "cut", isDir: true });
   });
 });
 
@@ -427,5 +429,122 @@ describe("v0.8.4 需求10 S7：右键深层子文件夹刷新 node.path", () => 
     });
     expect(vi.mocked(fileService.listDir)).toHaveBeenCalledWith(DIR_PATH);
     expect(vi.mocked(fileService.listDir)).not.toHaveBeenCalledWith("C:/proj");
+  });
+});
+
+// ─── 7. 反馈1：右键「粘贴」可用态实时化 + 文件夹节点右键粘贴 ──────────
+describe("v0.8.4 反馈1：右键粘贴的激活/置灰状态", () => {
+  /** 打开含"文件 + 子文件夹"的文件夹，并复位剪贴板（本组用例需要精细控制剪贴板） */
+  function setupFolderWithClipboard(
+    clip: { path: string; name: string; mode?: "copy" | "cut"; isDir?: boolean } | null,
+  ) {
+    setupFolder();
+    if (clip) setClipboard(clip);
+  }
+
+  it("剪贴板为空时：空白区菜单与文件夹节点菜单的「粘贴」都置灰（disabled）", () => {
+    // ① 文件夹空白区右键
+    let menu = openBlankContextMenu();
+    const blankPaste = findMenuButton(menu, "粘贴");
+    expect(blankPaste.disabled).toBe(true);
+    // 置灰时给出 tooltip 提示文案
+    expect(blankPaste.title).toBe("剪贴板为空，请先复制文件");
+    cleanup();
+
+    // ② 文件夹节点右键（v0.8.4 反馈1 新增的粘贴项）
+    menu = openNodeContextMenu(DIR_PATH);
+    const nodePaste = findMenuButton(menu, "粘贴");
+    expect(nodePaste.disabled).toBe(true);
+    expect(nodePaste.title).toBe("剪贴板为空，请先复制文件");
+  });
+
+  it("复制后：两处「粘贴」均为可用态（disabled === false）", () => {
+    // 走真实用户路径：文件节点右键「复制」写入剪贴板
+    let menu = openNodeContextMenu(FILE_PATH);
+    fireEvent.click(findMenuButton(menu, "复制"));
+    expect(getClipboard()).toEqual({ path: FILE_PATH, name: "a.md", mode: "copy" });
+    cleanup();
+
+    // ① 空白区菜单：粘贴可用
+    menu = openBlankContextMenu();
+    expect(findMenuButton(menu, "粘贴").disabled).toBe(false);
+    cleanup();
+
+    // ② 文件夹节点菜单：粘贴可用
+    menu = openNodeContextMenu(DIR_PATH);
+    expect(findMenuButton(menu, "粘贴").disabled).toBe(false);
+  });
+
+  it("点击文件夹节点的「粘贴」→ 以 node.path 为目标复制（copyFile 落点正确）", async () => {
+    setupFolderWithClipboard({ path: FILE_PATH, name: "a.md", mode: "copy" });
+    const menu = openNodeContextMenu(DIR_PATH);
+    await act(async () => {
+      fireEvent.click(findMenuButton(menu, "粘贴"));
+    });
+    // 目标目录为右键的那个文件夹（复用 handlePasteIntoDir → transferTo）
+    expect(vi.mocked(fileService.copyFile)).toHaveBeenCalledWith(FILE_PATH, `${DIR_PATH}/a.md`);
+    // 点击后菜单关闭
+    expect(document.querySelector(".filetree-context-menu")).toBeNull();
+  });
+
+  it("剪贴板为「剪切」时，节点「粘贴」= 移动（moveFile），且粘贴后剪贴板清空", async () => {
+    setupFolderWithClipboard({ path: FILE_PATH, name: "a.md", mode: "cut" });
+    const menu = openNodeContextMenu(DIR_PATH);
+    await act(async () => {
+      fireEvent.click(findMenuButton(menu, "粘贴"));
+    });
+    expect(vi.mocked(fileService.moveFile)).toHaveBeenCalledWith(FILE_PATH, `${DIR_PATH}/a.md`);
+    // 与系统资源管理器一致：剪切粘贴成功后清空剪贴板
+    expect(getClipboard()).toBeNull();
+  });
+
+  it("文件节点右键不渲染「粘贴」项（对文件粘贴无意义）", () => {
+    setupFolderWithClipboard({ path: DIR_PATH, name: "sub", mode: "copy", isDir: true });
+    const menu = openNodeContextMenu(FILE_PATH);
+    expect(menuButtonTexts(menu)).not.toContain("粘贴");
+    // 对照组：同一剪贴板状态下文件夹节点是有「粘贴」的
+    cleanup();
+    const dirMenu = openNodeContextMenu(DIR_PATH);
+    expect(menuButtonTexts(dirMenu)).toContain("粘贴");
+  });
+
+  it("菜单已打开时再次右键另一文件夹：菜单保持打开并重新定位，粘贴落到新目标", async () => {
+    // 两个打开的文件夹（第二个用于"右键另一文件夹"）
+    setupFolderWithClipboard({ path: FILE_PATH, name: "a.md", mode: "copy" });
+    useFileStore.setState({
+      openFolders: [
+        {
+          path: "C:/proj",
+          name: "proj",
+          fileTree: [
+            { name: "a.md", path: FILE_PATH, isDir: false, size: 10 },
+            { name: "sub", path: DIR_PATH, isDir: true, size: 0 },
+          ],
+        },
+        { path: "C:/other", name: "other", fileTree: [] },
+      ],
+    });
+    render(createElement(FileTree));
+    const contents = document.querySelectorAll(".filetree-folder-content");
+    expect(contents.length).toBe(2);
+
+    // 第一次右键第一个文件夹空白区 → 菜单打开
+    fireEvent.contextMenu(contents[0], { clientX: 10, clientY: 20 });
+    const firstMenu = document.querySelector(".filetree-context-menu") as HTMLElement | null;
+    expect(firstMenu).toBeTruthy();
+    expect(firstMenu!.style.left).toBe("10px");
+
+    // 菜单仍打开时右键第二个文件夹空白区 → 不应被"同一次右键"的 window 关闭监听干掉
+    fireEvent.contextMenu(contents[1], { clientX: 40, clientY: 50 });
+    const secondMenu = document.querySelector(".filetree-context-menu") as HTMLElement | null;
+    expect(secondMenu).toBeTruthy();
+    // 重新定位到第二次右键的坐标（证明菜单是"新打开"的那个，而非残留的旧菜单）
+    expect(secondMenu!.style.left).toBe("40px");
+
+    // 再点「粘贴」→ 目标已切换为第二个文件夹
+    await act(async () => {
+      fireEvent.click(findMenuButton(secondMenu!, "粘贴"));
+    });
+    expect(vi.mocked(fileService.copyFile)).toHaveBeenCalledWith(FILE_PATH, "C:/other/a.md");
   });
 });

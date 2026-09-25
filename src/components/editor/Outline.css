@@ -19,6 +19,7 @@
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--text-secondary);
+  flex-shrink: 0; /* 不随搜索框展开被压缩，避免标题抖动 */
 }
 
 .outline-count {
@@ -27,21 +28,28 @@
   background: var(--bg-secondary);
   padding: 1px 8px;
   border-radius: 8px;
+  flex-shrink: 0; /* 计数宽度恒定，避免抖动 */
 }
 
-/* ─── 搜索条（v0.8.4 需求11）─────────────────────────── */
-/* 默认收起：max-height 0 + 透明 + 不可交互；hover/聚焦/有关键字时加 .visible 展开 */
+/* ─── 搜索框（v0.8.4 需求11：内联于标题栏，反馈3）─────────────────────────── */
+/* 收起态：宽度 0 + 透明 + 不可交互，不占布局；展开态加 .visible 恢复宽度与透明度。
+   使用 max-width 而非 max-height 过渡，保证与标题/计数同处一行且无纵向撑高。
+   收起时 flex 收缩到 0 且标题/计数 flex-shrink:0，二者不被挤压，避免抖动。 */
 .outline-search {
-  max-height: 0;
+  position: relative; /* 作为清空按钮的定位参照 */
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 0;
+  margin-left: 0;
   opacity: 0;
   overflow: hidden;
   pointer-events: none; /* 收起后不拦截鼠标事件 */
-  padding: 0 14px;
-  transition: max-height 240ms ease, opacity 240ms ease;
+  transition: max-width 240ms ease, margin-left 240ms ease, opacity 240ms ease;
 }
 
 .outline-search.visible {
-  max-height: 28px;
+  max-width: 240px; /* 展开上限，实际宽度由 flex 自适应可用空间 */
+  margin-left: 8px;   /* 与"大纲"标题拉开间距，仅展开时占据 */
   opacity: 1;
   pointer-events: auto;
 }
@@ -50,9 +58,8 @@
 .outline-search input {
   display: block;
   width: 100%;
-  height: 24px;
-  margin: 2px 0;
-  padding: 0 8px;
+  height: 22px;
+  padding: 0 24px 0 8px; /* 右侧预留清空按钮空间 */
   border: 1px solid var(--border-light);
   border-radius: 4px;
   background: var(--bg-secondary);
@@ -67,6 +74,32 @@
 
 .outline-search input::placeholder {
   color: var(--text-tertiary);
+}
+
+/* 清空按钮（v0.8.4 需求11 反馈4）：仅有关键字时渲染，绝对定位在输入框右内侧 */
+.outline-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.outline-search-clear:hover {
+  color: var(--text-primary);
 }
 
 /* 过滤后无匹配标题的空态提示 */

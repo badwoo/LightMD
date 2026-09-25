@@ -27,8 +27,11 @@ describe("P13-1 打开的文件右键剪切", () => {
   });
 
   it("文件夹空白区粘贴按剪贴板模式决定复制或移动", () => {
+    // v0.8.4 反馈1：空白区菜单项改为调用共用链路 handlePasteIntoDir（落点 = folderCtxMenu.dir），
+    // 链路内部仍按剪贴板模式决定 copy/move
+    expect(fileTreeSrc).toContain("handlePasteIntoDir(folderCtxMenu.dir)");
     expect(fileTreeSrc).toMatch(
-      /void transferTo\(clip\.path, folderCtxMenu\.dir, clipboardTransferMode\(clip\)/,
+      /void transferTo\(clip\.path, targetDir, clipboardTransferMode\(clip\)/,
     );
   });
 
@@ -42,7 +45,10 @@ describe("P13-1 打开的文件右键剪切", () => {
   });
 
   it("移动后剪贴板保留原有模式（路径更新而非丢失模式）", () => {
-    expect(fileTreeSrc).toMatch(/setClipboard\(\{ path: dst, name: unique, mode: clip\.mode \}\)/);
+    // v0.8.4 需求3 修复：更新剪贴板路径时同步保留 isDir（供后续粘贴的自嵌套守卫按源类型分流）
+    expect(fileTreeSrc).toMatch(
+      /setClipboard\(\{ path: dst, name: unique, mode: clip\.mode, isDir: clip\.isDir \}\)/,
+    );
   });
 });
 

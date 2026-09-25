@@ -974,7 +974,7 @@ body.file-dragging {
 }
 
 /* ─── v0.8.4 需求7：文件树排序按钮与下拉菜单 ──────────── */
-/* 激活态按钮：[12px 箭头 + 8px 竖排徽标] 横排，略加宽保持 section-btn 视觉密度 */
+/* 激活态按钮：[箭头 + 竖排徽标] 横排，略加宽保持 section-btn 视觉密度 */
 .section-btn.section-sort.sort-active {
   width: 22px;
   height: 22px;
@@ -982,15 +982,40 @@ body.file-dragging {
   color: var(--text-primary);
 }
 
+/* v0.8.4 反馈5：图标容器——箭头与徽标横排并垂直居中（标题栏按钮激活态 + 菜单项共用） */
+.sort-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
 /* 竖排徽标：逐字符 <span> 纵排（不用 writing-mode，兼容性最稳）；
-   line-height 收紧，A-Z 三字符总高约 20px，不撑破 22px 按钮高度 */
+   line-height 收紧，避免撑破 22px 按钮高度 */
 .sort-badge {
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  font-size: 8px;
-  line-height: 0.85;
   font-weight: 700;
+}
+
+/* ── v0.8.4 反馈5：两组的对齐规则（箭头尺寸由 JS 的 SORT_ARROW_SIZE 控制）──
+   时间组（U/C）：徽标单字母、**大写**（不改写文字，默认即大写）；字号 9px / 行高 1
+     → 字高≈6.5px。箭头为短箭头（size=9，16×16 viewBox → 图形实高 9×11/16≈6.2px），
+     与字母字高相当，配合 align-items:center 落在同一条水平线上。
+   名称组（A-Z / Z-A 竖排）：徽标字母**小写**（text-transform，不改 sortModeBadge API）；
+     字号 7px / 行高 0.9 → 三行（a / - / z）总高≈18.9px。箭头为长箭头（elongate，
+     16×28 viewBox、size=11 → 盒子高 19px、图形实高 19×25/28≈17px），
+     与竖排徽标总高相当，两柱视觉等高、平行对齐（盒子高 ≤ 22px 按钮高）。 */
+.sort-icon-time .sort-badge {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.sort-icon-name .sort-badge {
+  font-size: 7px;
+  line-height: 0.9;
+  /* 名称组徽标小写："A-Z" 竖排渲染为 a / - / z，与拉长的箭头等高对齐 */
+  text-transform: lowercase;
 }
 
 /* 排序菜单项：文字左、语义图标右 */
@@ -1002,11 +1027,9 @@ body.file-dragging {
   padding-right: 10px;
 }
 
-/* 菜单项右侧图标：箭头（10px）+ 竖排徽标（8px）横排 */
+/* 菜单项右侧图标：与标题栏按钮激活态共用 .sort-icon / .sort-icon-time|name 规则，
+   此处只补配色与防压缩（尺寸规则全部来自上面的分组块） */
 .sort-menu-icon {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
   color: var(--text-tertiary);
   flex-shrink: 0;
 }

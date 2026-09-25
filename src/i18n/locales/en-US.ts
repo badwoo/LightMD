@@ -309,6 +309,8 @@ export const enUS: Record<string, string> = {
   "outline.dragHint": "Drag to reorder",
   "outline.searchPlaceholder": "Search outline…",
   "outline.searchEmpty": "No matching headings",
+  // v0.8.4 feature 11 feedback 4: accessible label for the search-clear button
+  "outline.searchClear": "Clear search",
   // ─── Recent files ───────────────────────────────────
   "recent.title": "Recent",
   "recent.justNow": "Just now",

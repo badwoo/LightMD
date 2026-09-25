@@ -8,6 +8,35 @@
  * 抽成纯函数便于单测：hitEl 由调用方注入（jsdom 未实现 elementFromPoint，
  * 测试通过覆盖 getBoundingClientRect 注入行几何信息），本模块不做命中测试。
  */
+import { isDescendantDir } from "./fileClipboard";
+import { normalizePath } from "./path";
+
+/** 归一化目录路径（统一 `/`、去尾斜杠、Windows 大小写不敏感） */
+function normDir(p: string): string {
+  return normalizePath(p).replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * v0.8.4 需求3 修复：拖拽落点准入谓词（canDrop）。
+ *
+ * 语义按**源类型**分流（这是本次修复的核心）：
+ * - 目录源（srcIsDir=true）：拒绝落到自身或其内部（`!isDescendantDir`），
+ *   防止把文件夹放进自身后代造成递归无限复制（P0）；
+ * - 文件源（srcIsDir=false）：文件不可能是任何目录的祖先，一律放行；
+ *   仅防御性排除"targetDir 与源文件完全同路径"（归一化后比较，实际不可能发生——
+ *   投放目录来自 data-drop-dir 必为目录）。
+ *
+ * 修复前对文件源也套用 isDescendantDir 会在"同目录重排"场景产生误判（详见测试
+ * v0.8.4-dropTarget.test.ts 的 canDropIntoTarget 用例），本次仅让目录源套用目录语义。
+ */
+export function canDropIntoTarget(
+  srcPath: string,
+  srcIsDir: boolean,
+  targetDir: string,
+): boolean {
+  if (srcIsDir) return !isDescendantDir(srcPath, targetDir);
+  return normDir(srcPath) !== normDir(targetDir);
+}
 
 export interface InsertPlace {
   /** 目标行的显示名（未命中行时为 null） */

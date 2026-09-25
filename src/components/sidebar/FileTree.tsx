@@ -23,14 +23,16 @@ import { NewFileDialog } from "../dialogs/NewFileDialog";
 // v0.8.1 需求3：文件属性对话框（替代原生 alert，避免系统提示音）
 import { FilePropertiesDialog, type FilePropertiesData } from "../dialogs/FilePropertiesDialog";
 // v0.8.0 WP2 需求1：文件复制/粘贴（内存剪贴板 + 重名自动副本）
-// v0.8.4 需求1：isDescendantDir 自嵌套守卫（拖拽/粘贴到文件夹自身内部一律拒绝）
+// v0.8.4 需求3 修复：自嵌套守卫改由 dropTarget.canDropIntoTarget 按源类型分流
+// （目录源才套用 isDescendantDir；文件源一律放行）——见下方 transferTo / handleFileDragStart
 // v0.8.4 需求5（WP5）：makeUniqueName 为新建文件预填不冲突默认名
-import { setClipboard, getClipboard, hasClipboard, clearClipboard, clipboardTransferMode, resolveTransferName, resolvePasteTargetDir, isDescendantDir, makeUniqueName } from "../../utils/fileClipboard";
+import { setClipboard, getClipboard, hasClipboard, clearClipboard, clipboardTransferMode, resolveTransferName, resolvePasteTargetDir, makeUniqueName } from "../../utils/fileClipboard";
 // v0.8.0 修复 P3：自制鼠标拖拽（HTML5 DnD 被 Tauri 原生拖放拦截）
 // v0.8.4 需求3：onReorder 同目录重排回调（D5 落点三分流）
 import { beginFileDrag, DROP_DIR_ATTR, type FileDragPayload } from "../../utils/fileDragMouse";
 // v0.8.4 需求3：拖拽重排的插入位置计算（elementFromPoint 命中 → 行前/行后/末尾）
-import { resolveInsertPlace } from "../../utils/dropTarget";
+// v0.8.4 需求3 修复：canDropIntoTarget 按源类型分流落点准入（文件源不再被误拒）
+import { resolveInsertPlace, canDropIntoTarget } from "../../utils/dropTarget";
 // v0.8.4 需求3：源所在目录计算（path.ts 版本已归一 `\` → `/`，与树内路径口径一致）
 import { getParentDir as getParentDirOf } from "../../utils/path";
 import { syncOpenTabsAfterRename } from "../../services/renameService";
@@ -543,11 +545,18 @@ export function FileTree() {
   const [pasteTargetDir, setPasteTargetDir] = useState<string | null>(null);
 
   // v0.8.0 修复 P12-1：文件夹空白区右键菜单（粘贴）
-  // canPaste 在打开菜单的瞬间从内存剪贴板读取 —— 剪贴板是模块级变量，
-  // 不进 React 状态，因此这里快照一次用于决定菜单项是否置灰。
+  // v0.8.4 反馈1：去掉 canPaste 快照 —— 粘贴项的 disabled 改为渲染期实时读取 hasClipboard()。
+  // 剪贴板是模块级变量、不进 React 状态，而"打开菜单"本身必然触发一次渲染，
+  // 因此渲染期读到的就是最新值，"复制/剪切后重开菜单即为可用态"，与节点右键菜单行为统一。
   const [folderCtxMenu, setFolderCtxMenu] = useState<
-    { x: number; y: number; dir: string; canPaste: boolean } | null
+    { x: number; y: number; dir: string } | null
   >(null);
+  // v0.8.4 反馈1：记录"打开本菜单的那一次"原生 contextmenu 事件。
+  // React 离散事件同步 flush：section 的 onContextMenu 先 setState 打开新菜单，
+  // 事件随后继续冒泡到 window 时会被下面的"右键关闭"监听立刻关掉——表现为
+  // "菜单已打开时右键另一文件夹，菜单闪一下就没了（需再点一次）"。
+  // 用 ref 记住本次打开事件，关闭监听跳过与之相同的那一次即可。
+  const folderCtxOpenEventRef = useRef<Event | null>(null);
 
   // v0.8.0 修复 P11-8：侧栏文件操作的浮动提示（显示在侧栏右侧，不占布局、不抖动）
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1555,12 +1564,13 @@ export function FileTree() {
   // 与「打开的文件」面板右键一致：写内存剪贴板 + toast 反馈
   // （FileNode 无 toast 通道，经 props 注入，点击后由 FileNode 自行关闭菜单）。
   const handleCopyNode = useCallback((node: FileNodeData) => {
-    setClipboard({ path: node.path, name: node.name });
+    // v0.8.4 需求3 修复：写入 isDir，供粘贴时自嵌套守卫按源类型分流
+    setClipboard({ path: node.path, name: node.name, isDir: node.isDir });
     showMessage(t("filetree.copied", { name: node.name }));
   }, [t]);
 
   const handleCutNode = useCallback((node: FileNodeData) => {
-    setClipboard({ path: node.path, name: node.name, mode: "cut" });
+    setClipboard({ path: node.path, name: node.name, mode: "cut", isDir: node.isDir });
     showMessage(t("filetree.cutted", { name: node.name }));
   }, [t]);
 
@@ -1793,12 +1803,20 @@ export function FileTree() {
   // v0.8.0 修复 P12-1：关闭文件夹空白区右键菜单
   useEffect(() => {
     if (!folderCtxMenu) return;
-    const close = () => setFolderCtxMenu(null);
-    window.addEventListener("click", close);
-    window.addEventListener("contextmenu", close);
+    const onWindowClick = () => setFolderCtxMenu(null);
+    // v0.8.4 反馈1：跳过"打开本菜单的那一次右键事件"。
+    // 菜单已打开时右键另一文件夹 → section 的 onContextMenu 已把新菜单打开，
+    // 该事件冒泡到 window 时不能把它关掉，否则表现为菜单直接消失。
+    // 其余右键（标题栏/工具栏等非本菜单打开源）仍按原逻辑关闭菜单。
+    const onWindowContextMenu = (e: Event) => {
+      if (e === folderCtxOpenEventRef.current) return;
+      setFolderCtxMenu(null);
+    };
+    window.addEventListener("click", onWindowClick);
+    window.addEventListener("contextmenu", onWindowContextMenu);
     return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("click", onWindowClick);
+      window.removeEventListener("contextmenu", onWindowContextMenu);
     };
   }, [folderCtxMenu]);
 
@@ -1858,14 +1876,18 @@ export function FileTree() {
       srcPath: string,
       targetDir: string,
       mode: "copy" | "move",
-      opts?: { isClipboardPaste?: boolean },
+      opts?: { isClipboardPaste?: boolean; srcIsDir?: boolean },
     ) => {
       if (!srcPath || !targetDir) return;
       if (!isTauri()) return;
       // v0.8.4 需求1（P0）：自嵌套守卫——文件夹复制/移动到自身内部任何层级一律拒绝
       // （copy 同样拒绝，避免递归无限复制）。拖拽路径的高亮阶段已由 canDrop 前置拦截，
       // 此处覆盖剪切→粘贴与标签栏拖入等不经三分流的路径，是最后防线。
-      if (isDescendantDir(srcPath, targetDir)) {
+      // v0.8.4 需求3 修复：守卫按源类型分流（canDropIntoTarget）——只有**目录源**才判自嵌套；
+      // 文件源一律放行（文件不可能是目录祖先），仅防御性拒绝与源完全同路径。
+      // 修复前对文件源也套用 isDescendantDir，会把"子文件夹里的文件复制/移动到所属文件夹根"
+      // （targetDir 是文件的祖先）误判为自嵌套而失败，这是真实 bug。
+      if (!canDropIntoTarget(srcPath, opts?.srcIsDir === true, targetDir)) {
         showError(t("filetree.cannotMoveIntoSelf"));
         return;
       }
@@ -1894,9 +1916,9 @@ export function FileTree() {
           // 保留标 stale（⚠ 提示）+ 新路径条目头插入列。拖拽移动与剪切粘贴共用
           // 本函数，两条路径的 stale 联动由此统一成立。
           useFileStore.getState().renameFileEntry(srcPath, dst, unique);
-          // 移动后内存剪贴板里的路径失效（把剪贴板更新为新路径）
+          // 移动后内存剪贴板里的路径失效（把剪贴板更新为新路径，isDir 保持不变）
           const clip = getClipboard();
-          if (clip?.path === srcPath) setClipboard({ path: dst, name: unique, mode: clip.mode });
+          if (clip?.path === srcPath) setClipboard({ path: dst, name: unique, mode: clip.mode, isDir: clip.isDir });
           // 移动语义使用专用提示（此前误用"已粘贴到"）
           showMessage(t("filetree.moved", { name: targetDir }));
         } else {
@@ -1917,12 +1939,48 @@ export function FileTree() {
     [refreshTree, t],
   );
 
+  // v0.8.4 反馈1：剪贴板粘贴到指定文件夹——文件夹空白区右键菜单与
+  // 文件夹节点右键菜单共用的唯一链路（模式由剪贴板决定：copy → 复制，cut → 移动）。
+  const handlePasteIntoDir = useCallback(
+    (targetDir: string) => {
+      const clip = getClipboard();
+      // v0.8.0 修复 P13-1：剪贴板为"剪切"时粘贴 = 移动（cut → move），成功后清空剪贴板
+      // v0.8.4 需求3 修复：srcIsDir 取自剪贴板（目录源才判自嵌套）
+      if (clip) {
+        void transferTo(clip.path, targetDir, clipboardTransferMode(clip), {
+          isClipboardPaste: true,
+          srcIsDir: clip.isDir === true,
+        });
+      }
+    },
+    [transferTo],
+  );
+
   // ─── v0.8.4 需求3：同目录拖拽重排（D5 分支③）──────────────────
-  /** 从 store 的打开文件夹树中递归查找 dir 的子节点列表（childrenMap 缺失时的回退源） */
+  /**
+   * v0.8.4 需求3 修复：childrenMap 的 key 来源不统一——
+   * 文件夹根 key 为 store 的 folder.path（Tauri 目录对话框在 Windows 可能返回**反斜杠**），
+   * 子目录 key 为 node.path（Rust list_dir 已归一为 `/`）；而 handleReorder 的 dir
+   * 来自 getParentDirOf（必然已归一为 `/`）。若直接 childrenMap.get(dir)，在"根路径带
+   * 反斜杠"的真实场景会落空 → 走到 findDirNodesInStore（严格相等）同样落空 → 重排静默无效。
+   * 这里**比对时归一化、返回实际 key**，写入时继续用该 key，避免同一目录出现两份缓存。
+   */
+  const findChildrenMapKey = (map: Map<string, FileNodeData[]>, dir: string): string | null => {
+    if (map.has(dir)) return dir;
+    const norm = normalizePath(dir).replace(/\/+$/, "").toLowerCase();
+    for (const k of map.keys()) {
+      if (normalizePath(k).replace(/\/+$/, "").toLowerCase() === norm) return k;
+    }
+    return null;
+  };
+
+  /** 从 store 的打开文件夹树中递归查找 dir 的子节点列表（childrenMap 缺失时的回退源；路径归一比对） */
   const findDirNodesInStore = (dir: string): FileNodeData[] | null => {
+    const norm = normalizePath(dir).replace(/\/+$/, "").toLowerCase();
+    const isDirMatch = (p: string) => normalizePath(p).replace(/\/+$/, "").toLowerCase() === norm;
     const find = (nodes: FileNodeData[]): FileNodeData[] | null => {
       for (const n of nodes) {
-        if (n.path === dir) return n.children ?? null;
+        if (isDirMatch(n.path)) return n.children ?? null;
         if (n.isDir && n.children && n.children.length > 0) {
           const hit = find(n.children);
           if (hit) return hit;
@@ -1948,8 +2006,11 @@ export function FileTree() {
    */
   const handleReorder = useCallback(
     (dir: string, srcName: string, targetName: string | null, place: "before" | "after" | "end") => {
-      // 当前渲染顺序：childrenMap 缓存即排序后的渲染源；缺失（如 mock/未加载）时回退 store
-      const base = childrenMap.get(dir) ?? findDirNodesInStore(dir);
+      // 当前渲染顺序：childrenMap 缓存即排序后的渲染源；缺失（如 mock/未加载）时回退 store。
+      // v0.8.4 需求3 修复：key 归一化比对并从缓存取实际 key（根路径可能为反斜杠），
+      // 写入时用实际 key（命中）或归一后的 dir（未命中），避免同一目录两份缓存。
+      const cacheKey = findChildrenMapKey(childrenMap, dir) ?? dir;
+      const base = childrenMap.get(cacheKey) ?? findDirNodesInStore(dir);
       if (!base || base.length === 0) return; // 目录不在任何已打开文件夹内 → 无从重排（如纯临时文件所在目录）
       const names = base.map((n) => n.name);
       const nextOrder =
@@ -1968,9 +2029,9 @@ export function FileTree() {
       }
       // UI 立即生效：目录缓存按新手动顺序重排（排序已退出，直接走 applyManualOrder）
       setChildrenMap((prev) => {
-        const cur = prev.get(dir) ?? base;
+        const cur = prev.get(cacheKey) ?? base;
         const next = new Map(prev);
-        next.set(dir, applyManualOrder(sortTree(cur), nextOrder));
+        next.set(cacheKey, applyManualOrder(sortTree(cur), nextOrder));
         return next;
       });
     },
@@ -1999,11 +2060,18 @@ export function FileTree() {
   // v0.8.0 修复 P3：拖拽源启动（自制鼠标拖拽）——默认复制，按住 Shift 移动
   const handleFileDragStart = useCallback(
     (node: FileNodeData, e: React.MouseEvent) => {
+      // v0.8.4 需求3 修复：canDrop 准入谓词**只对目录源注入**。
+      // isDescendantDir 的语义是「srcPath 是目录，targetDir 是否为其自身或后代」，
+      // 对文件源套用会在"同目录重排"（targetDir 为文件的父目录）场景产生误判（误判为自嵌套）。
+      // 文件源不注入 canDrop（等价恒真），落点一律放行，交由 resolveDropAction 判断重排/传输。
+      const handlers = node.isDir
+        ? { canDrop: (targetDir: string) => canDropIntoTarget(node.path, true, targetDir) }
+        : {};
       beginFileDrag({ path: node.path, name: node.name }, e, {
-        // v0.8.4 需求1（S3）：拖文件夹悬停到自身/自身后代 → 不高亮、不投放。
-        // 对文件该谓词恒真（文件不可能是目录的祖先），统一注入无副作用。
-        canDrop: (targetDir) => !isDescendantDir(node.path, targetDir),
-        onDrop: (payload, targetDir, mode) => void transferTo(payload.path, targetDir, mode),
+        ...handlers,
+        // srcIsDir 供 transferTo 的自嵌套守卫按源类型分流（文件源不再误判）
+        onDrop: (payload, targetDir, mode) =>
+          void transferTo(payload.path, targetDir, mode, { srcIsDir: node.isDir }),
         // v0.8.4 需求3：落在源所在目录 → 同目录重排
         onReorder: handleDragReorder,
       });
@@ -2063,8 +2131,10 @@ export function FileTree() {
         if (!targetDir) return;
         e.preventDefault();
         // v0.8.0 修复 P13-1：剪贴板为"剪切"时粘贴 = 移动
+        // v0.8.4 需求3 修复：srcIsDir 取自剪贴板（目录源才判自嵌套）
         void transferTo(clip.path, targetDir, clipboardTransferMode(clip), {
           isClipboardPaste: true,
+          srcIsDir: clip.isDir === true,
         });
       }
     };
@@ -2483,6 +2553,8 @@ export function FileTree() {
         onNewFolder={handleNewFolder}
         onCopyNode={handleCopyNode}
         onCutNode={handleCutNode}
+        // v0.8.4 反馈1：节点右键"粘贴"（仅文件夹节点）——以右键目标路径为落点，复用同一粘贴链路
+        onPasteInto={handlePasteIntoDir}
         onFileDragStart={handleFileDragStart}
         onRefresh={refreshTree}
         onClose={opts?.closing ? () => {} : closeFolder}
@@ -2496,9 +2568,11 @@ export function FileTree() {
         }}
         onOpenWorkspace={handleOpenWorkspace}
         onActivateFolder={setPasteTargetDir}
-        onFolderContextMenu={(dir, x, y) => {
+        onFolderContextMenu={(dir, x, y, nativeEvent) => {
           setPasteTargetDir(dir);
-          setFolderCtxMenu({ x, y, dir, canPaste: hasClipboard() });
+          // v0.8.4 反馈1：记住本次打开事件（供 window 关闭监听跳过，见 folderCtxOpenEventRef 注释）
+          folderCtxOpenEventRef.current = nativeEvent ?? null;
+          setFolderCtxMenu({ x, y, dir });
         }}
         height={sizeOf(fkey)}
         sectionKey={fkey}
@@ -2961,16 +3035,12 @@ export function FileTree() {
           </button>
           <button
             className="context-menu-item"
-            disabled={!folderCtxMenu.canPaste}
-            title={folderCtxMenu.canPaste ? t("filetree.paste") : t("filetree.pasteEmpty")}
+            // v0.8.4 反馈1：渲染期实时读取剪贴板（打开菜单必然触发一次渲染 → 必为最新值），
+            // 不再用"打开菜单那一刻"的 canPaste 快照，避免复制后重开菜单仍旧置灰
+            disabled={!hasClipboard()}
+            title={hasClipboard() ? t("filetree.paste") : t("filetree.pasteEmpty")}
             onClick={() => {
-              const clip = getClipboard();
-              // v0.8.0 修复 P13-1：剪贴板为"剪切"时粘贴 = 移动（cut → move），成功后清空剪贴板
-              if (clip) {
-                void transferTo(clip.path, folderCtxMenu.dir, clipboardTransferMode(clip), {
-                  isClipboardPaste: true,
-                });
-              }
+              handlePasteIntoDir(folderCtxMenu.dir);
               setFolderCtxMenu(null);
             }}
           >
@@ -3000,8 +3070,48 @@ export function FileTree() {
 // useSectionSplit 是 hook，不能在 map 中调用，故提取为子组件
 
 // ─── v0.8.4 需求7：排序按钮 / 下拉菜单的图标与常量 ──────────
+/**
+ * v0.8.4 反馈5：排序图标分组与尺寸（标题栏按钮激活态与下拉菜单项共用同一套值）。
+ * - time 组（U=修改 / C=创建）：徽标是**单个大写字母**，箭头用短箭头，
+ *   长度≈大写字高 → 箭头与字母对齐成一条水平线（见 CSS .sort-icon-time）。
+ * - name 组（A-Z / Z-A 竖排）：徽标字母显示为**小写**（CSS text-transform），
+ *   箭头改用 elongate 长箭头，长度≈竖排徽标总高 → 箭头与徽标柱视觉等高（见 .sort-icon-name）。
+ * SVG 等比缩放（stroke 随之缩放），两组的"箭头缩短/拉长"仅由这里的尺寸差体现。
+ */
+export const SORT_ARROW_SIZE = { time: 9, name: 11 } as const;
+
 /** 箭头语义（C2 拍板）：↑ = 升序（A-Z / 早-晚），↓ = 降序（Z-A / 晚-早） */
-function SortArrowIcon({ dir, size = 12 }: { dir: "up" | "down"; size?: number }) {
+function SortArrowIcon({
+  dir,
+  size = 12,
+  /** v0.8.4 反馈5：true = 长箭头（viewBox 16×28，用于名称组竖排徽标） */
+  elongate = false,
+}: {
+  dir: "up" | "down";
+  size?: number;
+  elongate?: boolean;
+}) {
+  if (elongate) {
+    // 长箭头：宽度仍为 size，高度 = size × 28/16（等比，故 stroke 同步缩放）
+    const long = Math.round(size * 1.75);
+    return (
+      <svg
+        className={`sort-arrow sort-arrow-${dir} sort-arrow-long`}
+        width={size}
+        height={long}
+        viewBox="0 0 16 28"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {dir === "up"
+          ? <path d="M8 26.5V1.5M4.2 5.3L8 1.5 11.8 5.3" />
+          : <path d="M8 1.5v25M4.2 22.7L8 26.5 11.8 22.7" />}
+      </svg>
+    );
+  }
   return (
     <svg
       className={`sort-arrow sort-arrow-${dir}`}
@@ -3017,6 +3127,11 @@ function SortArrowIcon({ dir, size = 12 }: { dir: "up" | "down"; size?: number }
       {dir === "up" ? <path d="M8 13.5V2.5M4.5 6L8 2.5 11.5 6" /> : <path d="M8 2.5v11M4.5 10L8 13.5 11.5 10" />}
     </svg>
   );
+}
+
+/** v0.8.4 反馈5：名称组（竖排 A-Z / Z-A）判定 —— 决定徽标是否小写、箭头是否拉长 */
+function isNameSortMode(mode: SortMode): boolean {
+  return mode === "name-asc" || mode === "name-desc";
 }
 
 /** 默认态图标：上下双箭头（↑↓ 竖排，提示"可排序"，当前未激活） */
@@ -3085,6 +3200,11 @@ interface FolderSectionProps {
   onCopyNode?: (node: FileNodeData) => void;
   onCutNode?: (node: FileNodeData) => void;
   /**
+   * v0.8.4 反馈1：树内**文件夹**节点右键"粘贴"——以该文件夹路径为落点执行粘贴，
+   * 复用 FileTree 的 handlePasteIntoDir（剪贴板 → copy/move → transferTo）。
+   */
+  onPasteInto?: (targetDir: string) => void;
+  /**
    * v0.8.0 修复 P3：文件节点按下鼠标 → 启动自制拖拽
    */
   onFileDragStart?: (node: FileNodeData, e: React.MouseEvent) => void;
@@ -3110,8 +3230,9 @@ interface FolderSectionProps {
   onOpenWorkspace?: (filePath: string) => void;
   /** v0.8.0 修复 P1-2：点击本区域（含空白处）即把本文件夹设为粘贴目标 */
   onActivateFolder?: (dir: string) => void;
-  /** v0.8.0 修复 P12-1：在文件夹空白区右键 → 打开"粘贴"菜单 */
-  onFolderContextMenu?: (dir: string, x: number, y: number) => void;
+  /** v0.8.0 修复 P12-1：在文件夹空白区右键 → 打开"粘贴"菜单
+   *  v0.8.4 反馈1：第 4 参传入原生事件，供 FileTree 记录"本次打开事件"（见 folderCtxOpenEventRef） */
+  onFolderContextMenu?: (dir: string, x: number, y: number, nativeEvent?: Event) => void;
   /** v0.8.2 动画优化：子目录缓存（按父路径），供树节点展开/收起动画取子节点 */
   childrenByPath?: Map<string, FileNodeData[]>;
   /** v0.8.2 动画优化：树节点子容器动画包装（由 FileTree 注入） */
@@ -3125,7 +3246,7 @@ interface FolderSectionProps {
 function FolderSection(props: FolderSectionProps) {
   const { folder, nodes, activePath, renamingPath, expandedPaths, onSelect,
     onToggleExpand, onRenameStart, onRenameConfirm, onRenameCancel,
-    onDelete, onNewFile, onNewFolder, onCopyNode, onCutNode, onFileDragStart, onRefresh, onClose,
+    onDelete, onNewFile, onNewFolder, onCopyNode, onCutNode, onPasteInto, onFileDragStart, onRefresh, onClose,
     height, sectionKey, prevSectionKey, nextSectionKey, maxHeight, onOpenWorkspace, onActivateFolder,
     onFolderContextMenu, childrenByPath, childrenWrap, sortMode, onSortChange } = props;
   const t = useT();
@@ -3233,11 +3354,19 @@ function FolderSection(props: FolderSectionProps) {
             {sortMode
               ? (() => {
                   const badge = sortModeBadge(sortMode);
+                  // v0.8.4 反馈5：按组套类名——.sort-icon-time（箭头短、字母大写，
+                  // 一条水平线）/ .sort-icon-name（箭头长、字母小写竖排，两柱等高）。
+                  // 与下拉菜单项共用同一套类名规则（见 .sort-menu-icon 同时带 .sort-icon）。
+                  const nameGroup = isNameSortMode(sortMode);
                   return (
-                    <>
-                      <SortArrowIcon dir={badge.arrow} />
+                    <span className={`sort-icon ${nameGroup ? "sort-icon-name" : "sort-icon-time"}`}>
+                      <SortArrowIcon
+                        dir={badge.arrow}
+                        size={nameGroup ? SORT_ARROW_SIZE.name : SORT_ARROW_SIZE.time}
+                        elongate={nameGroup}
+                      />
                       <SortBadge label={badge.label} />
-                    </>
+                    </span>
                   );
                 })()
               : <SortBothIcon />}
@@ -3273,7 +3402,7 @@ function FolderSection(props: FolderSectionProps) {
           onContextMenu={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            onFolderContextMenu?.(folder.path, e.clientX, e.clientY);
+            onFolderContextMenu?.(folder.path, e.clientX, e.clientY, e.nativeEvent);
           }}
         >
           {nodes.length > 0 ? (
@@ -3297,6 +3426,8 @@ function FolderSection(props: FolderSectionProps) {
                 onNewFolder={onNewFolder}
                 onCopyNode={onCopyNode}
                 onCutNode={onCutNode}
+                // v0.8.4 反馈1：文件夹节点右键"粘贴"（落到该文件夹）
+                onPasteInto={onPasteInto}
                 onFileDragStart={onFileDragStart}
                 // v0.8.4 需求10 S7 修复：直传 refreshTree，FileNode 以 node.path 调用
                 onRefresh={onRefresh}
@@ -3325,6 +3456,9 @@ function FolderSection(props: FolderSectionProps) {
               {group.map((mode) => {
                 const badge = sortModeBadge(mode);
                 const active = sortMode === mode;
+                // v0.8.4 反馈5：菜单项图标与标题栏按钮激活态共用同一套类名规则
+                // （.sort-icon + .sort-icon-time / .sort-icon-name）与同一组尺寸常量
+                const nameGroup = isNameSortMode(mode);
                 return (
                   <button
                     key={mode}
@@ -3336,8 +3470,14 @@ function FolderSection(props: FolderSectionProps) {
                     }}
                   >
                     <span className="sort-menu-label">{t(SORT_MENU_KEYS[mode])}</span>
-                    <span className="sort-menu-icon">
-                      <SortArrowIcon dir={badge.arrow} size={10} />
+                    <span
+                      className={`sort-icon sort-menu-icon ${nameGroup ? "sort-icon-name" : "sort-icon-time"}`}
+                    >
+                      <SortArrowIcon
+                        dir={badge.arrow}
+                        size={nameGroup ? SORT_ARROW_SIZE.name : SORT_ARROW_SIZE.time}
+                        elongate={nameGroup}
+                      />
                       <SortBadge label={badge.label} />
                     </span>
                   </button>

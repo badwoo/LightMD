@@ -16,17 +16,31 @@ export interface ClipboardItem {
   path: string;
   name: string;
   mode: ClipboardMode;
+  /**
+   * v0.8.4 需求3 修复：剪贴板项是否为目录。
+   * 供粘贴时 transferTo 的"自嵌套守卫"区分目录源/文件源（文件不可能是目录祖先，
+   * 套用目录守卫会误判）；旧调用点不传时视为文件（undefined），保持既有行为。
+   */
+  isDir?: boolean;
 }
 
 let clipboard: ClipboardItem | null = null;
 
 /** 写入剪贴板（未指定 mode 时按 copy 处理，兼容既有调用） */
-export function setClipboard(item: { path: string; name: string; mode?: ClipboardMode }): void {
+export function setClipboard(item: {
+  path: string;
+  name: string;
+  mode?: ClipboardMode;
+  isDir?: boolean;
+}): void {
   clipboard = {
     path: item.path,
     name: item.name,
     mode: item.mode === "cut" ? "cut" : "copy",
   };
+  // 仅目录显式写入 isDir（文件不写入该键），避免给"文件项"带来无意义的 false 字段，
+  // 也让既有 `toEqual({path,name,mode})` 形式的断言对文件保持成立
+  if (item.isDir === true) clipboard.isDir = true;
 }
 
 export function getClipboard(): ClipboardItem | null {
@@ -67,8 +81,13 @@ export function resolvePasteTargetDir(
  * （统一 `/` 归一后：targetDir === srcPath 或 targetDir 以 "srcPath/" 为前缀）。
  * 复用 path.isSameOrInsidePath（归一 + 忽略尾斜杠 + Windows 大小写不敏感语义）。
  * 用于拖拽/粘贴守卫：防止把文件夹放进自身后代造成递归无限复制/数据损坏（P0）。
- * srcPath 为文件时，除 targetDir 与其完全同路径（防御性拒绝）外恒返回 false
- * （文件不可能是任何目录的祖先），可与文件夹统一调用。
+ *
+ * ⚠ v0.8.4 需求3 修复：**本函数只对"目录源"有意义**。
+ * 语义为「srcPath 是目录，targetDir 是否为其自身或后代」；若 srcPath 是文件，
+ * 其父目录（targetDir 为 srcPath 去掉末段后的祖先）并不满足 `targetDir 以 srcPath+"/" 开头`，
+ * 唯一会返回 true 的情形是 targetDir 恰与文件路径完全相同（防御性兜底，实际投放目录
+ * 来自 data-drop-dir 必为目录，不会发生）。调用方应先判断源类型后再决定是否套用本函数，
+ * 或直接使用 dropTarget.canDropIntoTarget（已按源类型分流），不要对文件源套用目录语义。
  */
 export function isDescendantDir(srcPath: string, targetDir: string): boolean {
   return isSameOrInsidePath(targetDir, srcPath);

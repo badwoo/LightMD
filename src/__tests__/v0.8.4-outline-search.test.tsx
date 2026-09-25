@@ -1,13 +1,16 @@
 /**
- * v0.8.4 需求11：大纲栏 hover 搜索框
+ * v0.8.4 需求11：大纲栏 hover 搜索框（反馈3/4 改造）
  *
  * 覆盖（对应实施文档 §7 v0.8.4-outline-search 行）：
- * 1. hover 显隐：hover 展开 / 移出收起；聚焦兜底（输入中鼠标移出不收起，防误关）；
+ * 1. 位置（反馈3）：搜索框内联在 .outline-header 内、位于标题之后、计数之前，
+ *    不再是 header 的兄弟整行
+ * 2. hover 显隐：hover 展开 / 移出收起；聚焦兜底（输入中鼠标移出不收起，防误关）；
  *    blur 且鼠标不在 → 收起；关键字非空 → 保持显示
- * 2. 过滤：大小写不敏感、包含匹配；无匹配提示；outline-count 始终显示总数
- * 3. 过滤态禁用拖拽手柄（清空关键字后恢复）
- * 4. 过滤顺序：先 filter 后 MAX_OUTLINE_ITEMS 截断（>100 条时截断线之后的命中项仍可见）
- * 5. ESC 清空并收起；空文档（无标题）永不显示搜索条
+ * 3. 清空按钮（反馈4）：query 为空不渲染；有输入出现；点击清空、列表恢复、按钮消失、焦点保持
+ * 4. 过滤：大小写不敏感、包含匹配；无匹配提示；outline-count 始终显示总数
+ * 5. 过滤态禁用拖拽手柄（清空关键字后恢复）
+ * 6. 过滤顺序：先 filter 后 MAX_OUTLINE_ITEMS 截断（>100 条时截断线之后的命中项仍可见）
+ * 7. ESC 清空并收起；空文档（无标题）永不显示搜索框
  *
  * 测试约定（项目教训）：
  * - vitest 未开 globals → describe/it/expect/vi 全部显式 import
@@ -80,25 +83,60 @@ function makeView(markdown: string): EditorView {
   } as unknown as EditorView;
 }
 
-/** 渲染 Outline 并返回根容器 / 搜索条包裹层 / 搜索输入框 */
+/** 渲染 Outline 并返回根容器 / 标题栏 / 搜索框包裹层 / 输入框 */
 function setup(markdown: string) {
   const utils = render(<Outline editorView={makeView(markdown)} />);
   const root = utils.container.querySelector(".outline") as HTMLElement;
+  const header = utils.container.querySelector(".outline-header") as HTMLElement | null;
   const searchWrap = utils.container.querySelector(
     ".outline-search",
   ) as HTMLElement | null;
   const input = searchWrap
     ? (searchWrap.querySelector("input") as HTMLInputElement)
     : null;
-  return { ...utils, root, searchWrap, input };
+  return { ...utils, root, header, searchWrap, input };
 }
 
-/** 搜索条当前是否处于展开态（.visible 类；收起态由 CSS pointer-events:none 保证不可交互） */
+/** 搜索框当前是否处于展开态（.visible 类；收起态由 CSS pointer-events:none 保证不可交互） */
 function isVisible(searchWrap: HTMLElement | null): boolean {
   return !!searchWrap?.classList.contains("visible");
 }
 
+/** 取当前渲染出的清空按钮（不存在时返回 null） */
+function clearButton(container: HTMLElement): HTMLButtonElement | null {
+  return container.querySelector(".outline-search-clear") as HTMLButtonElement | null;
+}
+
 const SAMPLE = "# Apple\n## banana\n### Application\n# 樱桃\n";
+
+// ─── 位置：内联于标题栏（反馈3）───────────────────────────────────
+describe("v0.8.4 需求11 搜索框位置", () => {
+  it("搜索框位于 .outline-header 内、标题之后、计数之前", () => {
+    const { header } = setup(SAMPLE);
+    expect(header).not.toBeNull();
+    const title = header!.querySelector(".outline-title") as HTMLElement;
+    const search = header!.querySelector(".outline-search") as HTMLElement;
+    const count = header!.querySelector(".outline-count") as HTMLElement;
+    // 三者均在同一标题栏内
+    expect(title).not.toBeNull();
+    expect(search).not.toBeNull();
+    expect(count).not.toBeNull();
+    // DOM 顺序断言：title → search → count
+    expect(
+      title.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      search.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("搜索框不再是标题栏的兄弟整行", () => {
+    const { header } = setup(SAMPLE);
+    // header 的下一个兄弟不应是搜索框（已内联，紧随的是大纲列表）
+    expect(header!.nextElementSibling?.classList.contains("outline-search")).toBe(false);
+    expect(header!.nextElementSibling?.classList.contains("outline-list")).toBe(true);
+  });
+});
 
 // ─── hover 显隐（含防误关）───────────────────────────────────
 describe("v0.8.4 需求11 hover 显隐", () => {
@@ -142,10 +180,51 @@ describe("v0.8.4 需求11 hover 显隐", () => {
     expect(isVisible(searchWrap)).toBe(true);
   });
 
-  it("空文档（无标题）永不显示搜索条", () => {
+  it("空文档（无标题）永不显示搜索框", () => {
     const { container } = setup("普通段落，没有标题");
     expect(container.querySelector(".outline-search")).toBeNull();
     expect(container.querySelector(".outline-empty")).not.toBeNull();
+  });
+});
+
+// ─── 清空按钮（反馈4）───────────────────────────────────
+describe("v0.8.4 需求11 清空按钮", () => {
+  it("query 为空时不渲染清空按钮，输入后按钮出现", () => {
+    const { container, root, input } = setup(SAMPLE);
+    fireEvent.mouseEnter(root);
+    expect(clearButton(container)).toBeNull();
+    fireEvent.change(input!, { target: { value: "ap" } });
+    expect(clearButton(container)).not.toBeNull();
+  });
+
+  it("点击清空按钮：关键字清空、列表恢复全量、按钮消失、输入框保持焦点", () => {
+    const { container, root, input } = setup(SAMPLE);
+    fireEvent.mouseEnter(root);
+    // 让输入框真正获得焦点（原生 focus() 同步 jsdom activeElement）
+    fireEvent.focus(input!);
+    input!.focus();
+    fireEvent.change(input!, { target: { value: "ap" } });
+    // 过滤已生效
+    expect(screen.queryByText("banana")).toBeNull();
+    expect(screen.queryByText("Apple")).not.toBeNull();
+
+    fireEvent.click(clearButton(container)!);
+
+    // 关键字清空 → 列表恢复全量
+    expect(screen.queryByText("banana")).not.toBeNull();
+    expect(screen.queryByText("Apple")).not.toBeNull();
+    // 按钮随之消失
+    expect(clearButton(container)).toBeNull();
+    // 焦点仍在输入框（避免清空后因失焦收起）
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("清空按钮带可访问文案（aria-label / title）", () => {
+    const { container, input } = setup(SAMPLE);
+    fireEvent.change(input!, { target: { value: "ap" } });
+    const btn = clearButton(container)!;
+    expect(btn.getAttribute("aria-label")).toBe("清空搜索");
+    expect(btn.getAttribute("title")).toBe("清空搜索");
   });
 });
 

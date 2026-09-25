@@ -6,6 +6,8 @@ import { useT } from "../../i18n";
 import { fileService } from "../../services/fileService";
 // v0.8.0 修复 P3：自制鼠标拖拽（HTML5 DnD 被 Tauri 原生拖放拦截，改用鼠标事件）
 import { DROP_DIR_ATTR } from "../../utils/fileDragMouse";
+// v0.8.4 反馈1：节点右键"粘贴"项的可用态需在渲染期实时读取内存剪贴板
+import { hasClipboard } from "../../utils/fileClipboard";
 import "./FileTree.css";
 
 export interface FileNodeData {
@@ -58,6 +60,11 @@ interface FileNodeProps {
   /** v0.8.4 需求2：树内节点右键"剪切"（文件/文件夹通用），注入方式同上 */
   onCutNode?: (node: FileNodeData) => void;
   /**
+   * v0.8.4 反馈1：树内**文件夹**节点右键"粘贴"——以本节点路径为落点执行粘贴
+   * （剪贴板为空时菜单项置灰）。FileNode 无粘贴通道，由 FileTree 注入共用链路。
+   */
+  onPasteInto?: (targetDir: string) => void;
+  /**
    * v0.8.2 动画优化：由 FileTree 注入的文件树子节点动画容器
    * （展开滑入 + 高度展开 / 收起滑出 + 高度收起）。
    * 参数为 (父文件夹路径, 是否可见, 子节点内容)；通过注入而非直接 import，
@@ -86,6 +93,7 @@ export function FileEntryNode({
   onOpenWorkspace,
   onCopyNode,
   onCutNode,
+  onPasteInto,
   childrenWrap,
 }: FileNodeProps) {
   const [isRenaming, setIsRenaming] = useState(false);
@@ -255,11 +263,20 @@ export function FileEntryNode({
             onOpenWorkspace={onOpenWorkspace}
             onCopyNode={onCopyNode}
             onCutNode={onCutNode}
+            onPasteInto={onPasteInto}
             childrenWrap={childrenWrap}
           />
         ));
         const body = (
-          <div className="filetree-children">
+          <div
+            className="filetree-children"
+            // v0.8.4 需求3 修复：子列表容器承载"该文件夹"的投放语义——
+            // 拖到子文件夹内的行/空白 = 落到**该子文件夹**（同目录则重排、跨目录则复制/移动），
+            // 而不是被最外层的区域根（data-drop-dir=文件夹根）截获而误判为"传输到根目录"。
+            // closest 天然取最近者：拖到本层某个子文件夹行上时仍优先命中该子文件夹自身，
+            // 拖到本层文件行/空白时命中本容器（= 本文件夹），与外层区域根互不冲突。
+            {...{ [DROP_DIR_ATTR]: node.path }}
+          >
             {childNodes}
             {children.length === 0 && (
               <div
@@ -385,6 +402,23 @@ export function FileEntryNode({
               }}
             >
               {t("filetree.cut")}
+            </button>
+          )}
+          {/* v0.8.4 反馈1：粘贴（仅文件夹节点——对文件粘贴无意义，不渲染）。
+              紧接"复制/剪切"组，与空白区右键菜单的粘贴项语义一致。
+              disabled 在渲染期实时读取 hasClipboard()：菜单打开本身即触发一次渲染，
+              因此复制/剪切后重开菜单必然是可用态（不再有快照过期导致的错误置灰）。 */}
+          {node.isDir && onPasteInto && (
+            <button
+              className="context-menu-item"
+              disabled={!hasClipboard()}
+              title={hasClipboard() ? t("filetree.paste") : t("filetree.pasteEmpty")}
+              onClick={() => {
+                onPasteInto(node.path);
+                setContextMenu(null);
+              }}
+            >
+              {t("filetree.paste")}
             </button>
           )}
           <button

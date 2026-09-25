@@ -310,6 +310,8 @@ export const zhCN: Record<string, string> = {
   "outline.dragHint": "拖拽以重新排序",
   "outline.searchPlaceholder": "搜索目录…",
   "outline.searchEmpty": "无匹配标题",
+  // v0.8.4 需求11 反馈4：搜索框清空按钮的可访问文案
+  "outline.searchClear": "清空搜索",
   // ─── 最近文件 ────────────────────────────────────
   "recent.title": "最近打开",
   "recent.justNow": "刚刚",
