@@ -259,7 +259,8 @@ export function StatusBar() {
           </span>
         )}
         {/* 搜索入口：放大镜图标 + "搜索"文字，点击切换开关
-            data-genie-anchor：神灯丝带动画的锚点标识（GenieSearchDialog 据此定位丝带） */}
+            data-genie-anchor：搜索面板「橡皮尾」呼出/收回动画的锚点
+            （尾巴固定端 = 本按钮上沿中心，GenieSearchDialog 据此实测定位） */}
         <button
           className={`statusbar-toggle ${showSearch ? "active" : ""}`}
           title={t("search.placeholder")}

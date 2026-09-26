@@ -14,7 +14,7 @@
  * - buildOffsetMap 从每字符 Map 改为块级数组 + 二分查找
  * - 100KB 文档：内存从 4-8MB 降至 20-80KB
  */
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { searchHighlightKey } from "../../core/editor";
 import { useEditorStore } from "../../stores/useEditorStore";
 import { useT } from "../../i18n";
@@ -552,47 +552,57 @@ export function SearchReplaceDialog({
 }
 
 /**
- * v0.8.5 需求7：搜索面板「神灯精灵」呼出/收回动画的延迟卸载壳。
+ * 搜索面板「神灯 / 橡皮尾」呼出·收回动画的延迟卸载壳（v0.8.5 需求7 第二版）。
  *
  * 链路：StatusBar 搜索按钮 → useEditorStore.showSearch → EditorContainer 渲染本组件
  * （替代原先的条件渲染 SearchReplaceDialog）。
  *
  * 为什么需要壳：SearchReplaceDialog 关闭即被卸载，收回动画来不及播放。
  * 本壳采用「延迟卸载」模式（思路同 FileTree 的 SlideWrap）：
- * - 打开（active=true）→ 立即挂载内部面板与丝带，CSS 动画挂载自动播放；
- * - 关闭（active=false）→ 面板/丝带先切 out 类播放收回动画，
+ * - 打开（active=true）→ 挂载内部面板与尾巴，几何测量完成后播放呼出动画；
+ * - 关闭（active=false）→ 先播「尾巴垂落连到按钮 → 面板+尾巴被吸回底栏」，
  *   动画结束后才真正卸载；
  * - 未打开过 → 不渲染任何 DOM（与原条件渲染行为一致，不引入常驻节点）。
  *
- * v0.8.5 反馈5 重做：丝带具象化 —— 新增一条连接底栏搜索按钮与面板的
- * 垂直光带（.search-genie-ribbon，fixed 定位，坐标由 JS 一次性测量后
- * 以 CSS 变量注入），面板沿丝带从按钮处滑出/滑回，丝带随后淡出/收回，
- * 具体编排见 SearchReplace.css。
+ * 尾巴不是装饰性的"激光"，而是**面板本体被拉长**的那一段橡胶：
+ * - 与面板同色（--bg-primary）、同边（--border-color），从底栏搜索按钮长出来；
+ * - 形状随窗口位置变化——尾根宽度、长度、朝向都由开合瞬间的实测几何算出，
+ *   窗口拖到左边，尾巴就从左下斜着连回按钮，拖得越远尾巴越细长；
+ * - 只做 transform/opacity（合成层属性），且只在开合那 0.5s 内存在，
+ *   拖拽窗口期间没有任何额外开销（不监听、不逐帧计算）。
  *
- * 好处：SearchReplaceDialog 本体零改动——mount 时机仍与原实现一致
- * （editorView prop 等在打开时才求值），卸载清理高亮逻辑也照常触发。
+ * 与面板"永远连得住"的关键：面板只做纵向位移 + Y 向缩放，且 transform-origin 取
+ * 50% 100%（下沿不动），尾巴与面板因此可以共用同一段 translateY 关键帧。
+ * 具体编排见 SearchReplace.css。
  */
-/** 收回卸载延迟：丝带/面板收回动画 350ms，取 400ms 留余量（反馈5 编排） */
-const GENIE_OUT_MS = 400;
+/** 尾巴伸进面板内部、盖住接缝的搭接量（px） */
+const GENIE_TAIL_OVERLAP = 18;
+
+/** 收回动画总时长：尾巴垂落 0.16s + 面板尾巴一起被吸回 0.3s = 0.46s，定时留 60ms 余量 */
+const GENIE_OUT_MS = 520;
+
+/** 尾巴轮廓（viewBox 0 0 100 100：y=0 贴面板一侧、y=100 抵按钮一侧）：宽尾根 + 细颈 + 圆头水滴 */
+const GENIE_TAIL_PATH =
+  "M0,0 C16,16 32,18 33,32 C34,46 34,70 35,86 Q37,100 50,100 Q63,100 65,86 C66,70 66,46 67,32 C68,18 84,16 100,0 Z";
 
 export function GenieSearchDialog(props: SearchReplaceProps & { active: boolean }) {
   const { active, ...rest } = props;
-  // mounted：内部面板是否挂载；closing：收回动画播放中
+  // mounted：内部面板是否挂载；closing：收回动画播放中；ready：几何变量是否已注入
   const [mounted, setMounted] = useState(active);
   const [closing, setClosing] = useState(false);
+  const [ready, setReady] = useState(false);
   // effect 内判定"关闭前是否打开过"用 ref 兜底（避免 state 滞后一帧）
   const mountedRef = useRef(active);
   const shellRef = useRef<HTMLDivElement>(null);
 
   /**
-   * 反馈5：测量底栏搜索按钮与面板的位置，一次性注入丝带/滑出轨迹 CSS 变量
-   * （仅 mount 后与 closing 时各调一次，无监听、无持续开销）。
-   * - --genie-x      按钮中心 x —— 丝带的水平位置
-   * - --genie-from-y 面板顶部平移到按钮顶部的位移 —— 面板滑出/滑回的起终点
-   * - --ribbon-top   丝带顶端 y（面板底部）
-   * - --ribbon-h     丝带高度（按钮顶部 − 面板底部，面板在按钮上方才为正）
-   * 窗口 resize / 拖拽后面板位移：resize 场景少见不做监听（下次开合重新测量）；
-   * 拖拽则在关闭前重新测量覆盖变量，保证滑回轨迹连到按钮。
+   * 一次测量"按钮 ↔ 面板"的几何关系，注入尾巴所需的 CSS 变量
+   * （开合各一次，无监听、无持续开销）：
+   * - --genie-x        按钮上沿中心 x —— 尾巴固定端
+   * - --genie-anchor-y 按钮上沿 y —— 尾巴裁剪窗高度（尾巴永不会盖住底栏本身）
+   * - --genie-from-y   面板起始位移 —— 从按钮处被"拉"出来的起点
+   * - --genie-len/-w/-rot  尾巴长度（含搭接量）/ 尾根宽度 / 朝向
+   * 测量失败（锚点或面板缺失）时自动退化为"只有面板动画、没有尾巴"。
    */
   const syncGenieVars = useCallback(() => {
     const shell = shellRef.current;
@@ -601,15 +611,45 @@ export function GenieSearchDialog(props: SearchReplaceProps & { active: boolean 
     if (!shell || !anchor || !panel) return;
     const btn = anchor.getBoundingClientRect();
     const pn = panel.getBoundingClientRect();
-    shell.style.setProperty("--genie-x", `${btn.left + btn.width / 2}px`);
+    const bx = btn.left + btn.width / 2;
+    const by = btn.top;
+    // 兜底：底栏不可见（如被打印样式隐藏）时锚点矩形全 0 —— 退化成"只有面板动画、没有尾巴"，
+    // 面板的起始位移取一个合理默认值，避免 from-y 变成 0 而动画失效
+    const anchored = btn.width > 0 && btn.height > 0 && pn.width > 0;
+    if (!anchored) {
+      shell.style.setProperty("--genie-anchor-y", "0px");
+      shell.style.setProperty("--genie-len", "0px");
+      shell.style.setProperty("--genie-w", "0px");
+      shell.style.setProperty("--genie-rot", "0deg");
+      shell.style.setProperty("--genie-from-y", "200px");
+      return;
+    }
+    // 先用"按钮 ↔ 面板最近点"估距离：拖得越远尾巴越细长（橡皮被抻细）
+    const nearX = Math.min(Math.max(bx, pn.left), pn.right);
+    const nearY = Math.min(Math.max(by, pn.top), pn.bottom);
+    const rough = Math.hypot(nearX - bx, nearY - by);
+    const stretch = Math.min(1.05, Math.max(0.62, rough / 520));
+    const tailW = Math.round(Math.min(150, Math.max(76, pn.width * 0.3)) * stretch);
+    // 尾根整段落在面板边缘之内（搭接段被面板压住，接缝不可见），朝向仍指向按钮
+    const halfW = Math.max(0, Math.min(tailW / 2, pn.width / 2 - 1));
+    const ax = Math.min(Math.max(bx, pn.left + halfW), pn.right - halfW);
+    const ay = Math.min(Math.max(by, pn.top), pn.bottom);
+    const dx = ax - bx;
+    const dy = ay - by;
+    const dist = Math.hypot(dx, dy);
+    // 退化守卫：面板被拖到按钮正上方贴合（距离≈0）时不画尾巴，避免出现一小块白斑
+    const tailLen = dist < 8 ? 0 : dist + GENIE_TAIL_OVERLAP;
+    shell.style.setProperty("--genie-x", `${bx}px`);
+    shell.style.setProperty("--genie-anchor-y", `${by}px`);
     shell.style.setProperty("--genie-from-y", `${btn.top - pn.top}px`);
-    shell.style.setProperty("--ribbon-top", `${pn.bottom}px`);
-    shell.style.setProperty("--ribbon-h", `${Math.max(0, btn.top - pn.bottom)}px`);
+    shell.style.setProperty("--genie-len", `${tailLen}px`);
+    shell.style.setProperty("--genie-w", `${tailLen > 0 ? tailW : 0}px`);
+    shell.style.setProperty("--genie-rot", `${Math.round((Math.atan2(dx, -dy) * 180) / Math.PI * 100) / 100}deg`);
   }, []);
 
   useEffect(() => {
     if (active) {
-      // 打开：清掉未完成的收回定时器，立即挂载并播放呼出动画
+      // 打开：清掉未完成的收回定时器，立即挂载并（测量后）播放呼出动画
       mountedRef.current = true;
       setMounted(true);
       setClosing(false);
@@ -622,41 +662,66 @@ export function GenieSearchDialog(props: SearchReplaceProps & { active: boolean 
       mountedRef.current = false;
       setMounted(false);
       setClosing(false);
+      setReady(false);
     }, GENIE_OUT_MS);
     return () => clearTimeout(timer);
   }, [active]);
 
-  // 打开：等 SearchReplaceDialog 内部初始定位（居中）effect 完成后再测量——
-  // 双层 rAF 确保面板已落到最终位置（fixed 定位坐标就绪）再注入变量
+  // 打开：等 SearchReplaceDialog 内部初始定位（居中）effect 完成后再测量——双层 rAF
+  // 确保面板已落到最终位置（fixed 定位坐标就绪）；测量到位才挂 in 类开始播放动画，
+  // 否则动画首帧会读到还没注入的 --genie-from-y 而跳一下。
+  // 期间壳带 pending 类把面板藏起来（≈2 帧，用户不可感）。
   useEffect(() => {
-    if (!mounted || closing) return;
+    if (!mounted || closing || ready) return;
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => syncGenieVars());
+      raf2 = requestAnimationFrame(() => {
+        syncGenieVars();
+        // 即使测量失败也放行：面板照常显示，只是没有尾巴（fail-open）
+        setReady(true);
+      });
     });
     return () => {
       cancelAnimationFrame(raf1);
       cancelAnimationFrame(raf2);
     };
-  }, [mounted, closing, syncGenieVars]);
+  }, [mounted, closing, ready, syncGenieVars]);
 
-  // 关闭：同步重测（面板可能已被拖拽移动，滑回轨迹须按当前位置连回按钮）
-  useEffect(() => {
+  // 关闭：同步重测（面板可能已被拖拽移动，垂落轨迹须按当前位置连回按钮）。
+  // 用 useLayoutEffect：几何变量在浏览器绘制前就位，收回动画的每一帧都按新位置播放，
+  // 不会出现"尾巴先按旧角度冒出来一帧、再跳到新角度"的抖动
+  useLayoutEffect(() => {
     if (closing) syncGenieVars();
   }, [closing, syncGenieVars]);
 
   if (!mounted) return null;
+  const stateClass = closing
+    ? "search-genie-out"
+    : ready
+      ? "search-genie-in"
+      : "search-genie-pending";
   return (
-    // 壳本身无定位样式（子面板/丝带均为 fixed），仅承载 in/out 状态类驱动 CSS 动画
+    // 壳本身无定位样式（子面板/尾巴均为 fixed），仅承载状态类驱动 CSS 动画
     <div
       ref={shellRef}
-      className={`search-genie${closing ? " search-genie-out" : " search-genie-in"}`}
+      className={`search-genie ${stateClass}`}
       data-testid="search-genie"
     >
-      {/* 反馈5：神灯丝带 —— 连接底栏搜索按钮与面板的垂直光带，fixed 定位、
-          坐标由 syncGenieVars 注入的 CSS 变量驱动，z-index 低于面板（10000），
-          位于壳内随壳卸载，无障碍隐藏 */}
-      <div className="search-genie-ribbon" aria-hidden="true" />
+      {/* 橡皮尾：裁剪窗只覆盖按钮上沿以上，尾巴被平移到底栏以下的部分直接裁掉，
+          所以它看起来是从底栏里长出来、而不会盖住底栏本身；z-index 低于面板，
+          搭接段被面板压住，接缝与面板阴影自然融合 */}
+      <div className="search-genie-tail-clip" aria-hidden="true">
+        <div className="search-genie-tail">
+          <svg
+            className="search-genie-tail-shape"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            focusable="false"
+          >
+            <path d={GENIE_TAIL_PATH} />
+          </svg>
+        </div>
+      </div>
       <SearchReplaceDialog {...rest} />
     </div>
   );

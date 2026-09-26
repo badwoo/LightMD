@@ -9,7 +9,7 @@
  * 设计：本组件只负责"收集与校验"，实际创建（createDir）由调用方注入 onConfirm 处理，
  * 因此可在 jsdom 下直接单测校验与目标解析逻辑。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import { useT } from "../../i18n";
 import "./NewFolderDialog.css";
 
@@ -68,7 +68,9 @@ export function NewFolderDialog({
   const customActive = customPath.trim().length > 0;
 
   // 打开时重置表单并应用预选（只有一个文件夹时默认勾选它）
-  useEffect(() => {
+  // v0.8.5 反馈（第二版）：改用 useLayoutEffect —— 重置在浏览器绘制前完成，
+  // 避免"弹窗已经画出来、打开动画跑到一半又改一次勾选/输入态"造成的闪烁
+  useLayoutEffect(() => {
     if (!open) return;
     setName("");
     setCustomPath("");

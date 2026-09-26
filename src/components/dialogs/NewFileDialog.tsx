@@ -11,7 +11,7 @@
  * 设计：本组件只负责"收集与校验"，实际创建由调用方注入 onConfirm（可 reject 报错），
  * 可在 jsdom 下直接单测校验 / 扩展名策略 / 错误内联。
  */
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { useT } from "../../i18n";
 
 /** Windows 下非法的文件名字符（与 NewFolderDialog 同一套） */
@@ -61,7 +61,9 @@ export function NewFileDialog({
   const [busy, setBusy] = useState(false);
 
   // 打开时重置表单并应用默认名
-  useEffect(() => {
+  // v0.8.5 反馈（第二版）：改用 useLayoutEffect —— 重置在浏览器绘制前完成，
+  // 与打开动画同帧落定，不会出现"动画途中输入框内容跳一次"的闪烁
+  useLayoutEffect(() => {
     if (!open) return;
     setName(defaultName);
     setError(null);

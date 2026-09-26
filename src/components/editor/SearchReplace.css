@@ -127,160 +127,185 @@
   background: var(--bg-hover);
 }
 
-/* ─── v0.8.5 需求7 + 反馈5：底部栏搜索按钮「神灯精灵」呼出/收回动画（丝带重做版） ─────
+/* ─── 底部栏搜索按钮「神灯 / 橡皮尾」呼出·收回动画（v0.8.5 需求7 第二版） ───────────
    链路：StatusBar 搜索按钮（data-genie-anchor）→ useEditorStore.showSearch →
    EditorContainer 渲染 GenieSearchDialog（延迟卸载壳，见 SearchReplace.tsx）→ 面板。
 
-   反馈5 重做思路（用户要具象的"尾巴连着按钮"）：
-   壳内新增独立丝带元素 .search-genie-ribbon —— 一条连接底栏搜索按钮与面板的
-   垂直光带（fixed 定位，水平 x = 按钮中心、顶端 = 面板底部、底端 = 按钮顶部，
-   均由 GenieSearchDialog 的 syncGenieVars 一次性测量后注入 CSS 变量）。
-   面板沿丝带从按钮处滑出/滑回，丝带负责"生长—领航—消散"。
+   【设计意图】用户要的不是"一条发光激光"，而是**面板本体被拉长**的橡皮感：
+   尾巴与面板同色（--bg-primary）同边（--border-color），像窗口这块橡胶从底栏被抻出来，
+   关闭时又整块被底栏吸回去；并且尾巴形状必须**随窗口位置变化**。
 
-   【打开编排】总时长 420ms，三拍：
-   - 第一拍（0-40%）：丝带从按钮向上生长到面板位置（scaleY 0→1，origin bottom）；
-   - 第二拍（20-80%）：面板从按钮位置（translateY(--genie-from-y)、scale 0.3、blur）
-     沿丝带滑出到屏幕中间落位，80% 处轻微 overshoot 回弹；
-   - 第三拍（70-100%）：丝带顺滑淡出（opacity→0）。
-   【关闭编排】总时长 350ms：
-   - 丝带重新亮起连接按钮（opacity 0→1，0-30%）
-     → 面板沿丝带滑回按钮（translateY 回 --genie-from-y、scale 0.3、blur 渐起、淡出）
-     → 丝带向下收回归零（scaleY 1→0，origin bottom，缩回按钮处）。
-   动画全部只动 transform / opacity / filter（合成层属性）；落位后面板 transform
-   归零，不影响拖拽定位（left/top 由面板内部管理）。 */
+   【几何：为什么尾巴一定连得住】尾巴外壳 .search-genie-tail 的底端固定锚在
+   搜索按钮上沿中心（transform-origin: 50% 100%），箱体高度 = 按钮到面板最近点的
+   实测距离 + 一小段伸进面板的搭接量，朝向 rotate(--genie-rot) 也由实测两点算出。
+   于是**尾巴与面板共用同一段 translateY 关键帧**：面板被拉出去多远，尾巴就跟着伸多长，
+   顶端始终贴在面板边缘（面板的 transform-origin 取 50% 100%，缩放不会挪动其下沿）。
+   → 因此打开时"尾巴连着按钮 + 面板悬在屏幕中间"，关闭时"尾巴先垂落连到按钮 + 面板被吸回"。
 
-/* 丝带基础样式：垂直渐变光带，底端（按钮侧）实、顶端（面板侧）渐隐，
-   端部圆润 + 发光；坐标全部来自壳上的 CSS 变量（JS 注入），高度为 0 时不占视觉 */
-.search-genie-ribbon {
-  position: fixed;
-  left: var(--genie-x, 50%);
-  top: var(--ribbon-top, 0px);
-  width: 4px;
-  height: var(--ribbon-h, 0px);
-  border-radius: 999px;
-  background: linear-gradient(
-    to top,
-    var(--accent-color, #4a9eff) 0%,
-    var(--accent-color, #4a9eff) 55%,
-    transparent 100%
-  );
-  box-shadow: 0 0 8px var(--accent-color, #4a9eff);
+   【尾巴不会被底栏挡住】.search-genie-tail-clip 是高度 = 按钮上沿 y 的裁剪窗，
+   尾巴被平移到底栏以下的部分直接裁掉，所以它看起来是从底栏里长出来、而不会盖住底栏本身。
+
+   【随窗口位置变化】--genie-x/-y/-len/-w/-rot 全部由 JS 在开合瞬间实测注入：
+   窗口拖到左边，尾巴就从左下斜着连回按钮；拖得越远，尾巴越细长（stretch 系数）。
+   尾巴只做 transform/opacity（合成层属性），且只有开合那 0.5s 内存在，不影响拖拽时的性能。 */
+
+/* 待命态：几何变量尚未注入（挂载后 2 帧内），面板先藏起来，
+   避免 CSS 动画的首帧读到未注入的 --genie-from-y 而跳一下 */
+.search-genie-pending > .search-replace {
   opacity: 0;
+}
+
+/* 尾根裁剪窗：只覆盖"按钮上沿以上"的区域 */
+.search-genie-tail-clip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  right: 0;
+  height: var(--genie-anchor-y, 0px);
+  overflow: hidden;
   pointer-events: none;
-  z-index: 9999; /* 低于面板（10000），被面板遮挡重叠部分，只露出连接段 */
-  transform-origin: bottom center;
+  z-index: 9999; /* 低于面板（10000）：搭接段被面板压住，接缝不可见 */
+}
+
+/* 尾巴本体箱体：底端锚在按钮上沿中心，顶端贴住面板最近点 */
+.search-genie-tail {
+  position: absolute;
+  left: calc(var(--genie-x, 50%) - var(--genie-w, 160px) / 2);
+  top: calc(var(--genie-anchor-y, 0px) - var(--genie-len, 0px));
+  width: var(--genie-w, 160px);
+  height: var(--genie-len, 0px);
+  transform-origin: 50% 100%;
+  transform: translateY(var(--genie-from-y, 0px)) rotate(var(--genie-rot, 0deg));
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* 尾巴轮廓：尾根（贴面板一侧）宽、中段收成细颈、末端圆头水滴形
+   （preserveAspectRatio=none → 被拉长时自然变细，就是"本体被拉长"的形变），
+   与面板同色（--bg-primary）同边（--border-color），像面板这块橡胶被抻出来 */
+.search-genie-tail-shape {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 0%;
   will-change: transform, opacity;
 }
 
-/* 【第一拍】丝带向上生长（0-40% scaleY 0→1，origin bottom）→ 保持 → 【第三拍】淡出 */
-@keyframes search-genie-ribbon-grow {
-  0% {
-    opacity: 0;
-    transform: translateX(-50%) scaleY(0);
-  }
-  40% {
-    opacity: 0.9;
-    transform: translateX(-50%) scaleY(1);
-  }
-  70% {
-    opacity: 0.9;
-    transform: translateX(-50%) scaleY(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(-50%) scaleY(1);
-  }
+.search-genie-tail-shape path {
+  fill: var(--bg-primary);
+  stroke: var(--border-color);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
 
-/* 【第二拍】面板沿丝带滑出：0% 藏在按钮位置（小团+模糊）→ 20% 起势上浮 →
-   80% 抵达屏幕中间（轻微 overshoot）→ 100% 落定归零 */
+/* 【打开·第一拍】面板被拉出来：从按钮处（纵向压扁成一条）舒展到屏幕中间。
+   只做 Y 向缩放 + 位移 —— X 不缩放，面板下沿与尾巴顶端才能始终对齐 */
 @keyframes search-genie-panel-in {
-  0% {
-    opacity: 0;
-    transform: translateY(var(--genie-from-y, 160px)) scale(0.3);
-    filter: blur(6px);
+  from {
+    transform: translateY(var(--genie-from-y, 200px)) scale(1, 0.3);
   }
-  20% {
-    opacity: 0.6;
-    transform: translateY(calc(var(--genie-from-y, 160px) * 0.7)) scale(0.55);
-  }
-  80% {
-    opacity: 1;
-    filter: blur(0);
-    /* 轻微 overshoot 后回弹落定 */
-    transform: translateY(-6px) scale(1.02);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: blur(0);
+  to {
+    transform: translateY(0) scale(1, 1);
   }
 }
 
-/* 【关闭】丝带重新亮起（0-30% opacity 0→0.9）→ 向下收回归零（scaleY 1→0，
-   origin bottom，缩回按钮处消失） */
-@keyframes search-genie-ribbon-return {
-  0% {
+/* 【打开·第一拍】尾巴与面板共用同一段位移（同 duration / 同 easing）→ 顶端永远贴住面板 */
+@keyframes search-genie-tail-follow-in {
+  from {
+    transform: translateY(var(--genie-from-y, 200px)) rotate(var(--genie-rot, 0deg));
+  }
+  to {
+    transform: translateY(0) rotate(var(--genie-rot, 0deg));
+  }
+}
+
+/* 【打开·第二拍】面板落定后，尾巴从面板一端被吸回本体（顺滑消失） */
+@keyframes search-genie-tail-absorb {
+  from {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+  to {
+    transform: scaleY(0);
     opacity: 0;
-    transform: translateX(-50%) scaleY(1);
+  }
+}
+
+/* 【关闭·第一拍】面板原地不动，尾巴先从面板下沿垂落、连到按钮 */
+@keyframes search-genie-tail-drip {
+  0% {
+    transform: scaleY(0);
+    opacity: 0;
   }
   30% {
-    opacity: 0.9;
-    transform: translateX(-50%) scaleY(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(-50%) scaleY(0);
-  }
-}
-
-/* 【关闭】面板沿丝带滑回按钮：translateY 回 --genie-from-y、scale 0.3、
-   blur 渐起、淡出（ease-in 加速坠回，"像被撤回底部栏"） */
-@keyframes search-genie-panel-out {
-  0% {
     opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: blur(0);
   }
   100% {
-    opacity: 0;
-    transform: translateY(var(--genie-from-y, 160px)) scale(0.3);
-    filter: blur(6px);
+    transform: scaleY(1);
+    opacity: 1;
   }
 }
 
-/* 呼出编排绑定：丝带与面板同时启动（420ms），靠关键帧百分比错拍 */
-.search-genie-in .search-genie-ribbon {
-  animation: search-genie-ribbon-grow 0.42s ease-out both;
+/* 【关闭·第二拍】尾巴跟着面板一起被底栏吸回去（与面板同 duration / 同 easing / 同延迟） */
+@keyframes search-genie-tail-follow-out {
+  from {
+    transform: translateY(0) rotate(var(--genie-rot, 0deg));
+  }
+  to {
+    transform: translateY(var(--genie-from-y, 200px)) rotate(var(--genie-rot, 0deg));
+  }
 }
 
-/* 面板 transform-origin 底部中心（按钮一侧），cubic-bezier 前快后缓落定 */
+/* 【关闭·第二拍】面板压扁着坠回底栏（橡皮被吸回去） */
+@keyframes search-genie-panel-out {
+  from {
+    transform: translateY(0) scale(1, 1);
+  }
+  to {
+    transform: translateY(var(--genie-from-y, 200px)) scale(1, 0.3);
+  }
+}
+
+/* 打开编排：面板与尾巴同步 0.52s 呼出；尾巴在 0.32s 后开始被吸回本体（0.2s 收完） */
 .search-genie-in > .search-replace {
   transform-origin: 50% 100%;
-  animation: search-genie-panel-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: search-genie-panel-in 0.52s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* 收回编排绑定：丝带亮起+收回、面板滑回（350ms），结束后由壳延迟卸载 */
-.search-genie-out .search-genie-ribbon {
-  animation: search-genie-ribbon-return 0.35s ease-in both;
+.search-genie-in .search-genie-tail {
+  animation: search-genie-tail-follow-in 0.52s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+.search-genie-in .search-genie-tail-shape {
+  animation: search-genie-tail-absorb 0.2s cubic-bezier(0.4, 0, 0.6, 1) 0.32s both;
+}
+
+/* 收回编排：尾巴先垂落连到按钮（0-0.16s），随即面板+尾巴一起被吸回（0.16-0.46s） */
 .search-genie-out > .search-replace {
   transform-origin: 50% 100%;
-  animation: search-genie-panel-out 0.35s ease-in forwards;
+  animation: search-genie-panel-out 0.3s cubic-bezier(0.4, 0, 0.7, 1) 0.16s both;
   pointer-events: none;
 }
 
-/* 尊重系统减弱动效：丝带不渲染，面板直接显示/隐藏（收回时立即不可见，
+.search-genie-out .search-genie-tail {
+  animation: search-genie-tail-follow-out 0.3s cubic-bezier(0.4, 0, 0.7, 1) 0.16s both;
+}
+
+.search-genie-out .search-genie-tail-shape {
+  animation: search-genie-tail-drip 0.16s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+/* 尊重系统减弱动效：不画尾巴，面板直接显隐（收回时立即不可见，
    卸载仍由 GenieSearchDialog 的定时器完成，两者视觉一致） */
 @media (prefers-reduced-motion: reduce) {
-  .search-genie-ribbon {
+  .search-genie-tail-clip {
     display: none;
   }
 
+  .search-genie-pending > .search-replace,
   .search-genie-in > .search-replace {
+    opacity: 1;
     animation: none;
-    filter: none;
   }
 
   .search-genie-out > .search-replace {

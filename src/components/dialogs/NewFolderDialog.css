@@ -182,22 +182,23 @@
   cursor: default;
 }
 
-/* ─── v0.8.5 需求6 + 反馈3：弹窗打开过渡动画（NewFolderDialog / NewFileDialog 共用） ───
+/* ─── v0.8.5 需求6 + 反馈（第二版）：弹窗打开过渡动画（NewFolderDialog / NewFileDialog 共用） ───
    两弹窗均由条件渲染挂载（open 时 mount），CSS animation 挂载即自动播放，
    无需关闭动画（需求仅要求打开过渡）。全部走 opacity/transform 合成层属性。
 
-   反馈3「动画期间背景杂乱闪动、掉帧」根因分析与修法：
-   - 根因：原实现把遮罩淡入（opacity 0→1）直接挂在 overlay 容器上，而弹窗是 overlay
-     的子元素——动画期间弹窗实际透明度 = overlay 透明度 × 弹窗 pop-in 透明度，
-     两层 opacity 相乘，弹窗前半程高度半透明，背后编辑器文字/文件树大量透出，
-     形成"杂乱闪动"观感；且全屏 overlay 与带大 box-shadow 的弹窗缺合成层提升提示时，
-     WebView2 每帧都要重新混合/重绘整屏，产生掉帧感。
-     （排查结论：本组件从未使用 backdrop-filter，box-shadow 为静态值不参与过渡，
-     动画属性也均为 opacity/transform——故嫌疑聚焦在双层透明度叠加 + 缺合成层提升。）
-   - 修法：① 遮罩淡入移到 overlay 的 ::before 独立层，overlay 容器 opacity 恒为 1，
-     弹窗透明度只由自身动画决定（双层叠加解耦），半透明遮罩视觉不变；
-     ② 遮罩伪元素与弹窗加 will-change 强制提升合成层，动画在合成器线程完成，
-     弹窗阴影只栅格化一次后随层合成，不再逐帧重绘。 */
+   反馈「动画期间背景杂乱闪动、像掉帧」的真实根因（用 Edge 逐帧定格复核确认）：
+   ① 弹窗本体动画里带了 opacity 0→1 —— 弹窗是 420px 宽的不透明方块，
+      淡入前半程背后编辑器/文件树的文字是**透过弹窗**显形的；弹窗同时还在做 scale，
+      透出来的背景逐帧位移，观感就是"背景在弹窗里杂乱闪动"。
+   ② 遮罩也从全透明起步且比弹窗慢，动画第一帧整屏还全亮、随后才压暗，
+      形成一次全屏明暗跳变。原「双层 opacity 相乘」的推断只解释了①的一半，
+      真正让①被看见的是"弹窗自己在淡入"这一件事本身。
+
+   → 修法：
+   · 弹窗本体**完全不做 opacity 动画**：第一帧起就不透明，背景永远不可能透出来，
+     观感由 transform（上浮 + 轻微缩放）承担，且它是合成层属性、在合成器线程完成；
+   · 遮罩淡入仍挂在 overlay 的 ::before 独立层，只动一个纯色层的 opacity，代价极低；
+   · 弹窗阴影是静态值（不参与动画），缩放由合成层承担，不会逐帧重绘整屏。 */
 
 /* 遮罩层：挂在 overlay 的 ::before 独立层上，仅 opacity 参与（合成层属性），
    弹窗与遮罩各自独立动画、互不叠加透明度 */
@@ -207,31 +208,30 @@
   inset: 0;
   background: rgba(0, 0, 0, 0.35);
   will-change: opacity;
-  animation: dialog-overlay-fade-in 0.16s ease-out both;
+  animation: dialog-overlay-fade-in 0.15s ease-out both;
 }
 
-/* 遮罩淡入（约 160ms，仅 opacity） */
+/* 遮罩淡入（约 150ms，仅 opacity） */
 @keyframes dialog-overlay-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
-/* 弹窗本体：轻微上移 + 缩放 + 淡入（约 180ms，ease-out 顺滑落定） */
+/* 弹窗本体：轻微上移 + 缩放（约 180ms，ease-out 顺滑落定）。
+   注意：这里**不得**再加 opacity —— 见上方根因说明，那是"背景透出闪动"的来源 */
 @keyframes dialog-pop-in {
   from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.96);
+    transform: translateY(12px) scale(0.96);
   }
   to {
-    opacity: 1;
     transform: translateY(0) scale(1);
   }
 }
 
 .dialog-pop-in {
   transform-origin: center;
-  will-change: transform, opacity;
-  animation: dialog-pop-in 0.18s ease-out both;
+  will-change: transform;
+  animation: dialog-pop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* 尊重系统减弱动效：直接显示，无动画

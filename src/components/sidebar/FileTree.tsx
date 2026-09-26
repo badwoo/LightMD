@@ -904,6 +904,15 @@ export function FileTree() {
     // 避免双处排序打架（同一出口保证逻辑单源）
   }, [openFolders, childrenMap, sortChildren]);
 
+  // v0.8.5 反馈（第二版）：NewFolderDialog 的可选目标文件夹列表。
+  // 必须 memo —— 旧写法在 JSX 里直接 `openFolders.map(...)`，每次 FileTree 重渲染
+  // 都会产生新数组引用，触发弹窗内 useEffect([openFolders]) 重新跑一遍表单重置，
+  // 在打开动画进行中多出一次无谓的重渲染与 DOM 变更。
+  const newFolderTargets = useMemo(
+    () => openFolders.map((f) => ({ path: f.path, name: f.name })),
+    [openFolders],
+  );
+
   // v0.4.3 Issue 2：全局文件搜索结果（递归遍历所有打开文件夹的文件树 + 临时文件 + 收藏文件）
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -2786,7 +2795,7 @@ export function FileTree() {
       {/* v0.8.0 WP2 需求4(2)：新建文件夹弹框（多选目标文件夹 / 自定义路径） */}
       <NewFolderDialog
         open={showNewFolderDialog}
-        openFolders={openFolders.map((f) => ({ path: f.path, name: f.name }))}
+        openFolders={newFolderTargets}
         preselected={newFolderPreselected}
         onBrowse={async () => {
           try {
