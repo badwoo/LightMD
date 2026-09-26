@@ -213,7 +213,7 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 - **File tree search box animation** — the search box now expands / collapses with a smooth slide-down animation
 - **Sort dropdown animation** — the sort menu in folder headers now expands / collapses smoothly
 - **New-item dialog transition** — the New Folder / New File dialogs rise and settle with a slight scale; the dialog is fully opaque from the very first frame, so the background can never flicker through it
-- **"Genie / rubber-tail" status-bar search panel animation** — the panel is pulled out of the status-bar search button; the tail shares the panel's colour and border and stays attached to the button, then retracts into the panel once the panel lands. On close the tail first drips back down to the button, then the panel is sucked back into the bar. The tail's shape follows the window position in real time (drag the panel to the left and the tail connects diagonally, thinner the further it stretches); it degrades to a plain show/hide when the system "reduce motion" preference is on
+- **Status-bar search panel open / close animation** — the search window grows smoothly out of the status-bar search button (it starts flush against the button, squashed and narrowed towards it, then expands into the middle of the screen); closing flattens it back into the same button. The direction follows the panel's current position, and it degrades to a plain show/hide when the system "reduce motion" preference is on
 
 **Interaction Changes**
 

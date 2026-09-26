@@ -21,7 +21,7 @@ import { useSettingsStore, isAiChatRectVisible } from "../../stores/useSettingsS
 import { useAutoSave } from "../../hooks/useAutoSave";
 import { useResizable } from "../../hooks/useResizable";
 import { useT, t as translate } from "../../i18n";
-// v0.8.5 需求7：改用 GenieSearchDialog 延迟卸载壳（搜索面板带神灯呼出/收回动画）
+// v0.8.5 需求7：改用 GenieSearchDialog 延迟卸载壳（搜索面板带"从底栏搜索按钮冒出 / 缩回"动画）
 import { GenieSearchDialog } from "./SearchReplace";
 import { LinkDialog } from "../dialogs/LinkDialog";
 import { TableDialog } from "../dialogs/TableDialog";
