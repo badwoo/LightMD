@@ -78,6 +78,69 @@
   flex-direction: column;
   gap: 6px;
   flex-shrink: 0;
+  /* v0.8.5 需求4：max-height 上限取 400px —— 展开瞬间仅输入框（约 40px），
+     结果列表最多约 360px，端点取上限保证任何内容高度下动画首尾均无裁剪；
+     过渡斜率由该数值决定，视觉动效主要由 opacity/translateY 承担 */
+  max-height: 400px;
+}
+
+/* v0.8.5 需求4：搜索面板展开动画类（挂载即播，220ms ease-out，
+   与 FileTree.tsx SEARCH_PANEL_IN_MS 同步）——
+   max-height 0→400px + opacity 0→1 + translateY(-4px)→0。
+   仅用 transform/opacity/max-height，合成层友好；不设 forwards，
+   播完回落到上方规则值 max-height:400px，结果列表可正常撑开 */
+.filetree-search-panel.search-panel-open {
+  animation: search-panel-in 220ms ease-out;
+}
+
+/* v0.8.5 需求4：搜索面板收回动画类（180ms ease-in + forwards 停在收起态，
+   与 FileTree.tsx SEARCH_PANEL_OUT_MS 同步；到点后由 TSX 延迟卸载）；
+   收回期间 pointer-events: none 防止动画期间误点击 */
+.filetree-search-panel.search-panel-closing {
+  animation: search-panel-out 180ms ease-in forwards;
+  pointer-events: none;
+}
+
+/* v0.8.5 需求4：搜索面板展开 —— max-height/opacity/translateY 三通道，220ms ease-out */
+@keyframes search-panel-in {
+  from {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    max-height: 400px;
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* v0.8.5 需求4：搜索面板收回 —— 展开的反向（400px→0 / 1→0 / 0→-4px），180ms ease-in；
+   forwards 保持收起末态，等待 TSX 延迟卸载 */
+@keyframes search-panel-out {
+  from {
+    max-height: 400px;
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* v0.8.5 需求4：减弱动态效果偏好下直接显示/隐藏（收回以 display:none 立即隐藏，
+   DOM 卸载仍由 TSX 延迟执行，用户无感知） */
+@media (prefers-reduced-motion: reduce) {
+  .filetree-search-panel.search-panel-open,
+  .filetree-search-panel.search-panel-closing {
+    animation: none;
+  }
+
+  .filetree-search-panel.search-panel-closing {
+    display: none;
+  }
 }
 
 .filetree-search-box {
@@ -468,6 +531,63 @@
   padding: 4px 0;
   min-width: 160px;
   animation: fadeIn 0.1s ease;
+}
+
+/* v0.8.5 需求5：排序下拉展开动画类（挂载即播，200ms ease-out，
+   与 FileTree.tsx SORT_MENU_IN_MS 同步）——
+   opacity 0→1 + translateY(-6px)→0；transform-origin: top 让菜单有
+   "从排序按钮方向展开"的纵深感（覆盖基类 fadeIn，本规则特异性更高）。
+   仅用 transform/opacity，合成层友好。右键菜单不加动画，保持即时出现 */
+.filetree-sort-menu.sort-menu-open {
+  animation: sort-menu-in 200ms ease-out;
+  transform-origin: top;
+}
+
+/* v0.8.5 需求5：排序下接收回动画类（160ms ease-in + forwards 停在收起态，
+   与 FileTree.tsx SORT_MENU_OUT_MS 同步；到点后由 TSX 延迟卸载）；
+   收回期间 pointer-events: none 防止动画期间误点击菜单项 */
+.filetree-sort-menu.sort-menu-closing {
+  animation: sort-menu-out 160ms ease-in forwards;
+  transform-origin: top;
+  pointer-events: none;
+}
+
+/* v0.8.5 需求5：排序下拉展开 —— opacity/translateY 双通道，200ms ease-out */
+@keyframes sort-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* v0.8.5 需求5：排序下接收回 —— 展开的反向，160ms ease-in；
+   forwards 保持收起末态，等待 TSX 延迟卸载 */
+@keyframes sort-menu-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* v0.8.5 需求5：减弱动态效果偏好下直接显示/隐藏（收回以 display:none 立即隐藏，
+   DOM 卸载仍由 TSX 延迟执行，用户无感知） */
+@media (prefers-reduced-motion: reduce) {
+  .filetree-sort-menu.sort-menu-open,
+  .filetree-sort-menu.sort-menu-closing {
+    animation: none;
+  }
+
+  .filetree-sort-menu.sort-menu-closing {
+    display: none;
+  }
 }
 
 .context-menu-item {

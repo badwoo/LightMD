@@ -211,11 +211,12 @@ export const enUS: Record<string, string> = {
   "filetree.pleaseOpenFolderFirst": "Please open a folder before creating a new folder",
   "filetree.createdFolder": "Folder created: {name}",
   "filetree.createFolderFailed": "Failed to create folder",
-  "filetree.confirmDelete": "Confirm delete {type} \"{name}\"?",
+  // v0.8.5 requirement 2: delete = move to trash (restorable); confirm dialog and toast follow trash semantics
+  "filetree.confirmDelete": "Move {type} \"{name}\" to trash?",
   "filetree.fileType": "File",
   "filetree.folderType": "Folder",
-  "filetree.deleted": "Deleted: {name}",
-  "filetree.deleteFailed": "Delete failed",
+  "filetree.deleted": "Moved to trash: {name}",
+  "filetree.deleteFailed": "Failed to move to trash",
   // v0.8.0 WP2: copy/paste/drag into open folders, open containing folder as workspace, new folder dialog
   "filetree.copy": "Copy",
   "filetree.paste": "Paste",

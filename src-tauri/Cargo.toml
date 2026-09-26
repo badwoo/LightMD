@@ -1,6 +1,6 @@
 [package]
 name = "lightmd"
-version = "0.8.4"
+version = "0.8.5"
 description = "LightMD - 轻量级 Markdown 编辑器"
 authors = ["LightMD"]
 edition = "2021"
@@ -39,3 +39,6 @@ keyring = { version = "3", features = ["windows-native"] }
 # ─── v0.8.4 需求10：目录实时刷新 ───
 # 跨平台文件系统事件监听（Windows ReadDirectoryChangesW / inotify / FSEvents）
 notify = "6"
+# ─── v0.8.5 需求2：删除 = 移到系统回收站 ───
+# 跨平台回收站删除（Windows 走 IFileOperation，文件/目录进入回收站而非永久删除，可还原）
+trash = "5"

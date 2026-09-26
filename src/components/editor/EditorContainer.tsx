@@ -21,7 +21,8 @@ import { useSettingsStore, isAiChatRectVisible } from "../../stores/useSettingsS
 import { useAutoSave } from "../../hooks/useAutoSave";
 import { useResizable } from "../../hooks/useResizable";
 import { useT, t as translate } from "../../i18n";
-import { SearchReplaceDialog } from "./SearchReplace";
+// v0.8.5 需求7：改用 GenieSearchDialog 延迟卸载壳（搜索面板带神灯呼出/收回动画）
+import { GenieSearchDialog } from "./SearchReplace";
 import { LinkDialog } from "../dialogs/LinkDialog";
 import { TableDialog } from "../dialogs/TableDialog";
 import { ImageInsertDialog } from "../dialogs/ImageInsertDialog";
@@ -4606,24 +4607,24 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         />
       </div>
 
-      {/* 搜索/替换 */}
-      {(showSearch || showSearchReplace) && (
-        <SearchReplaceDialog
-          onClose={() => { setShowSearch(false); setShowSearchReplace(false); }}
-          editorView={viewRef.current}
-          sourceTextareaRef={sourceTextareaRef}
-          sourceContent={sourceContent}
-          onSourceContentChange={(newContent) => {
-            setSourceContent(newContent);
-            onContentChangeRef.current?.(newContent);
-            setDirtyRef.current(true);
-            // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
-            lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
-          }}
-          initialShowReplace={showSearchReplace}
-          isMdFile={isMdFile}
-        />
-      )}
+      {/* 搜索/替换（v0.8.5 需求7：由 GenieSearchDialog 包裹，active 驱动呼出/收回动画，
+          收回动画结束后才真正卸载面板；props 与原条件渲染完全一致） */}
+      <GenieSearchDialog
+        active={showSearch || showSearchReplace}
+        onClose={() => { setShowSearch(false); setShowSearchReplace(false); }}
+        editorView={viewRef.current}
+        sourceTextareaRef={sourceTextareaRef}
+        sourceContent={sourceContent}
+        onSourceContentChange={(newContent) => {
+          setSourceContent(newContent);
+          onContentChangeRef.current?.(newContent);
+          setDirtyRef.current(true);
+          // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+          lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
+        }}
+        initialShowReplace={showSearchReplace}
+        isMdFile={isMdFile}
+      />
 
       {/* 链接插入对话框 */}
       <LinkDialog

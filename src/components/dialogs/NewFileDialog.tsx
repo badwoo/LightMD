@@ -93,8 +93,9 @@ export function NewFileDialog({
   return (
     // 视觉复用 newfolder 居中 overlay（同一 CSS 文件已随 NewFolderDialog 引入），
     // 附加 newfile-overlay 标识类供测试/样式钩子定位
-    <div className="newfolder-overlay newfile-overlay" onClick={onClose}>
-      <div className="newfolder-dialog" onClick={(e) => e.stopPropagation()}>
+    // v0.8.5 需求6：复用同一套打开过渡动画类（与 NewFolderDialog 共用 keyframes）
+    <div className="newfolder-overlay newfile-overlay dialog-overlay-in" onClick={onClose}>
+      <div className="newfolder-dialog dialog-pop-in" onClick={(e) => e.stopPropagation()}>
         <div className="newfolder-header">
           <span>{t("newFile.title")}</span>
           <button className="newfolder-close" onClick={onClose} title={t("newFolder.cancel")}>

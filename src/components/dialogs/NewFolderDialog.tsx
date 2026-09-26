@@ -125,8 +125,9 @@ export function NewFolderDialog({
   };
 
   return (
-    <div className="newfolder-overlay" onClick={onClose}>
-      <div className="newfolder-dialog" onClick={(e) => e.stopPropagation()}>
+    // v0.8.5 需求6：打开过渡动画（overlay 淡入 + 本体 pop-in），条件渲染挂载即自动播放
+    <div className="newfolder-overlay dialog-overlay-in" onClick={onClose}>
+      <div className="newfolder-dialog dialog-pop-in" onClick={(e) => e.stopPropagation()}>
         <div className="newfolder-header">
           <span>{t("newFolder.title")}</span>
           <button className="newfolder-close" onClick={onClose} title={t("newFolder.cancel")}>

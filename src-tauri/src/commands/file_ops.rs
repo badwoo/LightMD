@@ -168,19 +168,23 @@ pub async fn create_dir(path: String) -> Result<(), String> {
     })
 }
 
+/// v0.8.5 需求2：删除文件/目录 = 移到系统回收站（可从回收站还原），不再永久删除。
 #[tauri::command]
 pub async fn delete_file(path: String) -> Result<(), String> {
-    let path = resolve_path(&path)?;
+    // v0.8.5 需求2：拆出同步核心 delete_path 便于单元测试（同 list_dir/move_file 模式）
+    delete_path(&resolve_path(&path)?)
+}
+
+/// delete_file 的同步核心（供单测复用）。
+/// v0.8.5 需求2：删除 = 移到系统回收站（可从回收站还原）。文件与目录统一走
+/// `trash::delete`（Windows 走 IFileOperation，文件/目录进入回收站而非永久删除），
+/// 命令名与参数签名保持不变，前端零改动调用，仅语义由"永久删除"变为"可还原"。
+fn delete_path(path: &std::path::Path) -> Result<(), String> {
+    // trash::delete 对不存在的路径会报错，此处先行校验以给出一致的友好错误
     if !path.exists() {
         return Err(format!("文件不存在: {}", path.display()));
     }
-    if path.is_dir() {
-        std::fs::remove_dir_all(&path)
-            .map_err(|e| format!("删除目录失败 \"{}\": {}", path.display(), e))
-    } else {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("删除文件失败 \"{}\": {}", path.display(), e))
-    }
+    trash::delete(path).map_err(|e| format!("移到回收站失败 \"{}\": {}", path.display(), e))
 }
 
 #[tauri::command]
@@ -555,5 +559,44 @@ mod tests {
         assert!(dst.join("sub").join("x.md").exists());
         assert!(!src.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.5 需求2：删除文件 = 移到回收站——delete_path 成功后原路径消失
+    /// （文件进入系统回收站而非永久删除，可从回收站还原）
+    #[test]
+    fn delete_path_moves_file_to_trash() {
+        let dir = std::env::temp_dir().join("lightmd_trash_file_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.md");
+        std::fs::write(&f, "hello").unwrap();
+        delete_path(&f).unwrap();
+        assert!(!f.exists(), "删除后原路径应消失（文件已进入回收站）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.5 需求2：删除目录 = 整目录移到回收站——delete_path 成功后原目录消失，
+    /// 且与文件走同一 trash::delete 通道（无需按类型分流）
+    #[test]
+    fn delete_path_moves_dir_to_trash() {
+        let dir = std::env::temp_dir().join("lightmd_trash_dir_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let sub = dir.join("sub_dir");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("x.md"), "c").unwrap();
+        delete_path(&sub).unwrap();
+        assert!(!sub.exists(), "删除后原目录应消失（整目录已进入回收站）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.8.5 需求2：路径不存在时先给出与旧实现一致的友好错误（trash::delete
+    /// 对不存在路径也会报错，前置校验统一错误口径）
+    #[test]
+    fn delete_path_errors_when_missing() {
+        let dir = std::env::temp_dir().join("lightmd_trash_missing_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let ghost = dir.join("ghost.md");
+        let err = delete_path(&ghost).unwrap_err();
+        assert!(err.contains("文件不存在"), "错误信息应包含'文件不存在': {}", err);
     }
 }

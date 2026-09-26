@@ -91,7 +91,7 @@ beforeEach(() => {
   useSettingsStore.setState({ fileTreeSort: {} });
 });
 
-/** 设置打开一个文件夹（folderPath 可含反斜杠），并渲染 FileTree + 点"刷新"载入 childrenMap */
+/** 设置打开一个文件夹（folderPath 可含反斜杠），并渲染 FileTree + 触发刷新载入 childrenMap */
 async function renderFolder(folderPath: string, entries: FileEntry[]) {
   useFileStore.setState({
     favorites: [],
@@ -106,10 +106,10 @@ async function renderFolder(folderPath: string, entries: FileEntry[]) {
     p === folderPath ? entries : [],
   );
   render(createElement(FileTree));
-  const refreshBtn = document.querySelector('.filetree-btn[title="刷新"]') as HTMLElement;
-  expect(refreshBtn).toBeTruthy();
+  // v0.8.5 需求1 适配：工具栏全局刷新按钮已移除，改用保留的 Ctrl+R 快捷键触发
+  // refreshTree()——与原按钮同为无参刷新（刷所有打开文件夹），childrenMap 载入语义不变
   await act(async () => {
-    fireEvent.click(refreshBtn);
+    fireEvent.keyDown(window, { ctrlKey: true, key: "r" });
   });
 }
 
@@ -257,8 +257,9 @@ describe("v0.8.4 需求3：子文件夹内的重排（子列表容器承载落�
       ],
     });
     render(createElement(FileTree));
+    // v0.8.5 需求1 适配：全局刷新按钮已移除，改用 Ctrl+R 触发 refreshTree 载入 childrenMap
     await act(async () => {
-      fireEvent.click(document.querySelector('.filetree-btn[title="刷新"]') as HTMLElement);
+      fireEvent.keyDown(window, { ctrlKey: true, key: "r" });
     });
     // 展开 sub（childrenMap 写入 SUB 的子节点）
     await act(async () => {

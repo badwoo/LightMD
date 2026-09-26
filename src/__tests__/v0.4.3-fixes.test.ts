@@ -83,8 +83,11 @@ describe("Issue 2：文件管理标题栏全局搜索", () => {
 
   it("FileTree.tsx 包含搜索按钮 UI", () => {
     const src = readSrc("../components/sidebar/FileTree.tsx");
-    // 搜索按钮的 onClick 切换 showSearch
-    expect(src).toMatch(/setShowSearch\(\(v\) => !v\)/);
+    // v0.8.5 需求4 适配：搜索按钮 toggle 不再直接 setShowSearch((v) => !v)，
+    // 改走 openSearchPanel / closeSearchPanel（展开/收回动画 + 延迟卸载），
+    // 断言同步为新的开关函数
+    expect(src).toMatch(/openSearchPanel\(\)/);
+    expect(src).toMatch(/closeSearchPanel\(\)/);
     expect(src).toMatch(/filetree\.searchTitle/);
   });
 

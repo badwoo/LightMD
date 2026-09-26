@@ -2,9 +2,11 @@
  * RecentFiles ── 最近打开文件列表
  *
  * v0.4.1：标题栏新增缩小/放大/关闭按钮（hover 浮现），支持折叠/最大化/关闭
+ * v0.8.5 需求8：最近打开文件夹与文件按 accessedAt 降序混排在同一列表（总上限 66 条），
+ *               文件夹条目带专属图标，点击派发 lightmd:openFolder 事件打开为文件夹栏
  */
-import { useState, useEffect } from "react";
-import { useFileStore, type FileNode } from "../../stores/useFileStore";
+import { useState, useEffect, useMemo } from "react";
+import { useFileStore, MAX_RECENT_FILES, type FileNode } from "../../stores/useFileStore";
 import { useT } from "../../i18n";
 import { fileService } from "../../services/fileService";
 import { useSectionSplit } from "../../hooks/useSectionSplit";
@@ -28,6 +30,8 @@ interface RecentFilesProps {
 
 export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKey, nextSectionKey, maxHeight }: RecentFilesProps) {
   const recentFiles = useFileStore((s) => s.recentFiles);
+  // v0.8.5 需求8：最近打开文件夹（数据层 addRecentFolder 保证去重头插 + 上限 10 条）
+  const recentFolders = useFileStore((s) => s.recentFolders);
   const t = useT();
 
   // v0.4.1：折叠/最大化状态
@@ -62,8 +66,25 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
     setMaximized(false);
   };
 
+  // v0.8.5 需求8：文件与文件夹按 accessedAt 降序混排为同一列表；
+  // 总条目上限复用数据层导出的 MAX_RECENT_FILES=66（文件+文件夹合并计数，
+  // 超出后截断掉最旧条目；文件夹自身 10 条上限由数据层 addRecentFolder 保证）。
+  // 文件夹条目暂不做 stale 标记（范围外）：recentFolders 无 stale 字段，
+  // 打开已失效文件夹由 FileTree.openFolderAt 的失败提示兜底。
+  const mergedItems = useMemo(
+    () =>
+      [
+        ...recentFiles.map((f) => ({ kind: "file" as const, ...f })),
+        ...recentFolders.map((d) => ({ kind: "folder" as const, ...d })),
+      ]
+        .sort((a, b) => b.accessedAt - a.accessedAt)
+        .slice(0, MAX_RECENT_FILES),
+    [recentFiles, recentFolders]
+  );
+
   // 空状态返回 null（保持现有行为，由父组件 toggle 按钮控制显示）
-  if (recentFiles.length === 0) return null;
+  // v0.8.5 需求8：文件与文件夹记录全空时才不渲染（原仅判断 recentFiles）
+  if (recentFiles.length === 0 && recentFolders.length === 0) return null;
 
   // 计算 section 高度样式
   const sectionStyle: React.CSSProperties = {};
@@ -115,40 +136,56 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
       </div>
       {!collapsed && (
         <div className="recent-files-list">
-          {/* v0.8.3 需求1：渲染全量 recentFiles（上限由数据层 MAX_RECENT_FILES=66 保证），
-              不再 slice(0,10)；列表超出栏高时由 .recent-files-list 内部滚动 */}
-          {recentFiles.map((file) => {
-            const name = file.name;
-            const dir = file.path.substring(0, file.path.lastIndexOf("/"));
+          {/* v0.8.3 需求1：列表超出栏高时由 .recent-files-list 内部滚动 */}
+          {/* v0.8.5 需求8：文件与文件夹混排渲染（mergedItems 已按 accessedAt 降序 + 截断 66 条） */}
+          {mergedItems.map((item) => {
+            const isFolder = item.kind === "folder";
+            const name = item.name;
+            const dir = item.path.substring(0, item.path.lastIndexOf("/"));
             return (
               <div
-                key={file.path}
+                key={item.path}
                 className="filetree-node recent-file-item"
-                onClick={() =>
-                  onOpen({
-                    name: file.name,
-                    path: file.path,
-                    isDir: false,
-                    size: 0,
-                  })
-                }
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setContextMenu({ x: e.clientX, y: e.clientY, path: file.path });
+                onClick={() => {
+                  if (item.kind === "folder") {
+                    // v0.8.5 需求8：点击文件夹条目 → 派发既有 lightmd:openFolder 事件
+                    // （FileTree 已监听该事件并调用 openFolderAt 打开为文件夹栏；
+                    //   已打开的文件夹重复触发时 addOpenFolder 去重，表现为刷新定位，无副作用）
+                    window.dispatchEvent(
+                      new CustomEvent("lightmd:openFolder", { detail: { path: item.path } })
+                    );
+                  } else {
+                    onOpen({
+                      name: item.name,
+                      path: item.path,
+                      isDir: false,
+                      size: 0,
+                    });
+                  }
                 }}
-                // v0.8.3 需求1：悬停提示 = 完整路径 + 最近打开日期时间
-                // v0.8.4 需求1b：stale 条目（文件被移动/外部删除）追加失效提示行
-                title={`${file.path}\n${t("recent.lastOpenedAt", { time: formatDateTime(file.accessedAt) })}${file.stale ? `\n${t("recent.staleHint")}` : ""}`}
+                onContextMenu={
+                  // 文件夹条目暂不提供右键「打开所在目录」（原文件条目行为保持不变）
+                  item.kind === "folder"
+                    ? undefined
+                    : (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setContextMenu({ x: e.clientX, y: e.clientY, path: item.path });
+                      }
+                }
+                // v0.8.3 需求1：悬停提示 = 完整路径 + 最近打开日期时间（文件夹同格式）
+                // v0.8.4 需求1b：stale 条目（文件被移动/外部删除）追加失效提示行（仅文件条目）
+                title={`${item.path}\n${t("recent.lastOpenedAt", { time: formatDateTime(item.accessedAt) })}${item.kind === "file" && item.stale ? `\n${t("recent.staleHint")}` : ""}`}
               >
-                <span className="filetree-icon">📝</span>
+                {/* v0.8.5 需求8：文件夹专属图标（与树内未展开文件夹一致 📁） */}
+                <span className="filetree-icon">{isFolder ? "📁" : "📝"}</span>
                 <div className="recent-file-info">
                   <span className="filetree-name">{name}</span>
                   <span className="recent-file-path">{dir}</span>
                 </div>
-                <span className="recent-file-time">{formatTime(file.accessedAt, t)}</span>
-                {/* v0.8.4 需求1b：旧路径已失效标记（淡黄 ⚠，颜色走主题变量） */}
-                {file.stale && <span className="recent-file-stale">⚠</span>}
+                <span className="recent-file-time">{formatTime(item.accessedAt, t)}</span>
+                {/* v0.8.4 需求1b：旧路径已失效标记（淡黄 ⚠，颜色走主题变量；仅文件条目） */}
+                {item.kind === "file" && item.stale && <span className="recent-file-stale">⚠</span>}
               </div>
             );
           })}

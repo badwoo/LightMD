@@ -354,15 +354,16 @@ describe("v0.8.4 WP5 S1：workspace 深层定位逐级加载中间层", () => {
 
 // ─── 5. 需求10（D6 拍板）：刷新按钮去留 ──────────────────────
 describe("v0.8.4 需求10：标题栏刷新按钮移除，兜底入口保留", () => {
-  it("FolderSection 标题栏无 section-refresh 按钮；工具栏全局刷新按钮仍在", () => {
-    // 工具栏全局刷新按钮的渲染条件是 rootPath（打开过文件夹即有值）
+  it("FolderSection 标题栏无 section-refresh 按钮；工具栏全局刷新按钮已移除（v0.8.5 需求1）", () => {
+    // 工具栏全局刷新按钮的渲染条件原为 rootPath（打开过文件夹即有值）
     useFileStore.setState({ rootPath: "C:/proj" });
     render(createElement(FileTree));
     // D6 拍板：仅移除标题栏刷新按钮（watch 实时刷新取代）
     expect(document.querySelector(".section-refresh")).toBeNull();
-    // 兜底保留：工具栏全局刷新按钮（title=filetree.refreshTitle="刷新"）
-    const toolbarRefresh = document.querySelector('.filetree-btn[title="刷新"]');
-    expect(toolbarRefresh).toBeTruthy();
+    // v0.8.5 需求1 适配：工具栏全局刷新按钮也已移除（刷新入口收敛为
+    // 空白右键「刷新」/ Ctrl+R / FileNode 文件夹右键「刷新」+ watch 实时刷新），
+    // 断言从 v0.8.4 的"兜底保留"改为"确认移除"
+    expect(document.querySelector('.filetree-btn[title="刷新"]')).toBeNull();
   });
 
   it("空白右键菜单「刷新」项保留（D6：右键刷新兜底不回填标题栏）", () => {

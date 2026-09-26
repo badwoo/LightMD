@@ -155,7 +155,10 @@ describe("P12-4 关闭末栏后上一栏自动填充", () => {
   it("RecentFiles 的拖拽 hook 先于空状态 return（否则 hook 数量变化会抛错）", () => {
     const src = read("../components/sidebar/RecentFiles.tsx");
     const hookIdx = src.indexOf("useSectionSplit({");
-    const returnIdx = src.indexOf("if (recentFiles.length === 0) return null;");
+    // v0.8.5 适配：RecentFiles 新增「最近文件夹」区，空状态 return 条件同步含 recentFolders
+    const returnIdx = src.indexOf(
+      "if (recentFiles.length === 0 && recentFolders.length === 0) return null;",
+    );
     expect(hookIdx).toBeGreaterThan(-1);
     expect(returnIdx).toBeGreaterThan(hookIdx);
   });

@@ -248,12 +248,13 @@ describe("阶段 2f 扩展 key 翻译验证", () => {
     _setCurrentLanguage("zh-CN");
     expect(t("outline.more", { count: 5 })).toBe("还有 5 个标题...");
     expect(t("statusbar.line", { line: 42 })).toBe("行 42");
-    expect(t("filetree.confirmDelete", { type: "文件", name: "test.md" })).toBe("确认删除 文件 \"test.md\"？");
+    // v0.8.5 需求2：删除改为移到回收站，文案同步更新
+    expect(t("filetree.confirmDelete", { type: "文件", name: "test.md" })).toBe("确定将 文件 \"test.md\" 移到回收站？");
 
     _setCurrentLanguage("en-US");
     expect(t("outline.more", { count: 5 })).toBe("5 more headings...");
     expect(t("statusbar.line", { line: 42 })).toBe("Line 42");
-    expect(t("filetree.confirmDelete", { type: "file", name: "test.md" })).toBe("Confirm delete file \"test.md\"?");
+    expect(t("filetree.confirmDelete", { type: "file", name: "test.md" })).toBe("Move file \"test.md\" to trash?");
     // 恢复中文
     _setCurrentLanguage("zh-CN");
   });

@@ -550,3 +550,61 @@ export function SearchReplaceDialog({
     </div>
   );
 }
+
+/**
+ * v0.8.5 需求7：搜索面板「神灯精灵」呼出/收回动画的延迟卸载壳。
+ *
+ * 链路：StatusBar 搜索按钮 → useEditorStore.showSearch → EditorContainer 渲染本组件
+ * （替代原先的条件渲染 SearchReplaceDialog）。
+ *
+ * 为什么需要壳：SearchReplaceDialog 关闭即被卸载，收回动画来不及播放。
+ * 本壳采用「延迟卸载」模式（思路同 FileTree 的 SlideWrap）：
+ * - 打开（active=true）→ 立即挂载内部面板，CSS 动画 search-genie-in 挂载自动播放；
+ * - 关闭（active=false）→ 面板先切 search-genie-out 类播放收回动画，
+ *   动画（含尾巴延迟副本）结束后才真正卸载；
+ * - 未打开过 → 不渲染任何 DOM（与原条件渲染行为一致，不引入常驻节点）。
+ *
+ * 好处：SearchReplaceDialog 本体零改动——mount 时机仍与原实现一致
+ * （editorView prop 等在打开时才求值），卸载清理高亮逻辑也照常触发。
+ */
+/** 收回卸载延迟：尾巴最长 40ms delay + 220ms 收回动画 ≈ 260ms，取 280ms 留余量 */
+const GENIE_OUT_MS = 280;
+
+export function GenieSearchDialog(props: SearchReplaceProps & { active: boolean }) {
+  const { active, ...rest } = props;
+  // mounted：内部面板是否挂载；closing：收回动画播放中
+  const [mounted, setMounted] = useState(active);
+  const [closing, setClosing] = useState(false);
+  // effect 内判定"关闭前是否打开过"用 ref 兜底（避免 state 滞后一帧）
+  const mountedRef = useRef(active);
+
+  useEffect(() => {
+    if (active) {
+      // 打开：清掉未完成的收回定时器，立即挂载并播放呼出动画
+      mountedRef.current = true;
+      setMounted(true);
+      setClosing(false);
+      return;
+    }
+    if (!mountedRef.current) return;
+    // 关闭：先播收回动画，结束后再真正卸载（此时组件卸载清理逻辑照常触发）
+    setClosing(true);
+    const timer = setTimeout(() => {
+      mountedRef.current = false;
+      setMounted(false);
+      setClosing(false);
+    }, GENIE_OUT_MS);
+    return () => clearTimeout(timer);
+  }, [active]);
+
+  if (!mounted) return null;
+  return (
+    // 壳本身无定位样式（子面板为 fixed 悬浮），仅承载 in/out 状态类驱动 CSS 动画
+    <div
+      className={`search-genie${closing ? " search-genie-out" : " search-genie-in"}`}
+      data-testid="search-genie"
+    >
+      <SearchReplaceDialog {...rest} />
+    </div>
+  );
+}

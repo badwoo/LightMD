@@ -126,3 +126,164 @@
 .replace-btn:hover:not(:disabled) {
   background: var(--bg-hover);
 }
+
+/* ─── v0.8.5 需求7：底部栏搜索按钮「神灯精灵」呼出/收回动画 ─────────────
+   链路：StatusBar 搜索按钮 → useEditorStore.showSearch → EditorContainer 渲染
+   GenieSearchDialog（延迟卸载壳，见 SearchReplace.tsx）→ SearchReplaceDialog。
+
+   实现方式（用户拍板：纯 CSS 弧线 + 残影尾巴，不做 JS 粒子）：
+   1) 动画只动 transform / opacity / filter（合成层属性），面板本就是 fixed 悬浮，
+      动画不引起周边布局抖动；fixed 元素自身的 transform 不改变其定位基准；
+   2) transform-origin 底部中心（50% 100%）——朝底部栏搜索按钮一侧缩放，
+      呼应"从神灯口冒出 / 缩回神灯"；
+   3) 呼出：小尺寸 + 模糊 + 从按钮方向（下方 44px）沿弧线 overshoot 飞入（260ms ease-out）；
+   4) 收回：反向缩回按钮方向（220ms ease-in forwards），收回期间禁交互，
+      由 GenieSearchDialog 在动画（含尾巴）结束后再真正卸载面板；
+   5) 尾巴残影：面板 ::before / ::after 两个伪元素做底部小圆角"丝带块"
+      （主题强调色 + blur 烟雾感），复用同款运动轨迹但各自延迟 45/90ms、
+      峰值透明度递减，运动结束后 opacity 归 0 消散——
+      比 box-shadow 方案更贴近"尾巴跟随主体运动"的方向感；
+      z-index:-1 让丝带被面板不透明背景遮挡重叠部分，只露出面板外的拖尾。 */
+
+@keyframes search-genie-in {
+  0% {
+    opacity: 0;
+    transform: translateY(44px) scale(0.3);
+    filter: blur(6px);
+  }
+  60% {
+    opacity: 1;
+    /* 弧线 overshoot：轻微上冲回弹后落定 */
+    transform: translateY(-6px) scale(1.03);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes search-genie-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(44px) scale(0.3);
+    filter: blur(6px);
+  }
+}
+
+/* 呼出：动画作用于面板自身（壳 .search-genie-in 仅承载状态） */
+.search-genie-in > .search-replace {
+  transform-origin: 50% 100%;
+  animation: search-genie-in 0.26s ease-out both;
+}
+
+/* 收回：反向缩回按钮方向，动画保持末帧（不可见）直到卸载 */
+.search-genie-out > .search-replace {
+  transform-origin: 50% 100%;
+  animation: search-genie-out 0.22s ease-in forwards;
+  pointer-events: none;
+}
+
+/* 尾巴丝带块（呼出）：底部中心的圆角光带，跟随主体延迟飞入后消散。
+   峰值透明度走 --tail-peak 变量：::after（第二层）设更低值形成递减层次，
+   （keyframes 中的 opacity 为动画值，静态 opacity 会被覆盖，故用变量注入） */
+@keyframes search-genie-tail-in {
+  0% {
+    opacity: 0;
+    /* translateX(-50%) 维持水平居中；Y 方向滞后于主体形成拖尾 */
+    transform: translate(-50%, 30px) scale(0.4);
+  }
+  55% {
+    opacity: var(--tail-peak, 0.32);
+    transform: translate(-50%, -4px) scale(1.05);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+/* 尾巴丝带块（收回）：跟随主体缩回按钮方向后消散 */
+@keyframes search-genie-tail-out {
+  0% {
+    opacity: var(--tail-peak, 0.28);
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 30px) scale(0.4);
+  }
+}
+
+.search-genie-in > .search-replace::before,
+.search-genie-in > .search-replace::after,
+.search-genie-out > .search-replace::before,
+.search-genie-out > .search-replace::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  width: 46%;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--accent-color, #4a9eff);
+  filter: blur(6px);
+  z-index: -1;
+  pointer-events: none;
+  /* 第二层（::after）峰值透明度减半，形成"丝绸带"递减层次 */
+  --tail-peak: 0.32;
+}
+
+.search-genie-in > .search-replace::after,
+.search-genie-out > .search-replace::after {
+  --tail-peak: 0.16;
+}
+
+/* 呼出尾巴：第二层（::after）更晚出现，形成跟随拖尾 */
+.search-genie-in > .search-replace::before {
+  animation: search-genie-tail-in 0.26s ease-out both;
+  animation-delay: 0.045s;
+}
+
+.search-genie-in > .search-replace::after {
+  animation: search-genie-tail-in 0.26s ease-out both;
+  animation-delay: 0.09s;
+}
+
+/* 收回尾巴：延迟收紧到 0/40ms（保证在 280ms 卸载定时内播完） */
+.search-genie-out > .search-replace::before {
+  animation: search-genie-tail-out 0.22s ease-in forwards;
+}
+
+.search-genie-out > .search-replace::after {
+  animation: search-genie-tail-out 0.22s ease-in forwards;
+  animation-delay: 0.04s;
+}
+
+/* 尊重系统减弱动效：直接显示/隐藏，无动画（收回时立即不可见，
+   卸载仍由 GenieSearchDialog 的定时器完成，两者视觉一致） */
+@media (prefers-reduced-motion: reduce) {
+  .search-genie-in > .search-replace,
+  .search-genie-out > .search-replace {
+    animation: none;
+    filter: none;
+  }
+
+  .search-genie-out > .search-replace {
+    opacity: 0;
+  }
+
+  .search-genie-in > .search-replace::before,
+  .search-genie-in > .search-replace::after,
+  .search-genie-out > .search-replace::before,
+  .search-genie-out > .search-replace::after {
+    animation: none;
+    content: none;
+  }
+}

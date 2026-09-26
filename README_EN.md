@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.8.4**
+**Current Version: v0.8.5**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -143,10 +143,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.8.4 installers:
+Visit the [Releases](../../releases) page to download the 0.8.5 installers:
 
-- **`LightMD_0.8.4_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.8.4_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.8.5_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.8.5_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -197,6 +197,27 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.8.5 (2026-09-26)
+
+**Safer deletion / UI motion polish** (baseline 0.8.4; 8 requirements)
+
+**New Features**
+
+- **Recycle Bin deletion** — deleting files / folders from the file tree no longer removes them permanently; they are moved to the system Recycle Bin and can be restored anytime; the delete confirmation message was updated accordingly
+- **"Recent" now includes folders** — the Recent list shows recently opened files and folders side by side; clicking a folder entry opens it as a folder panel
+
+**UI Improvements**
+
+- **Refreshed Markdown file icons** — Markdown files in the tree now use a light blue-grey pencil-style SVG icon that follows the theme colors
+- **File tree search box animation** — the search box now expands / collapses with a smooth slide-down animation
+- **Sort dropdown animation** — the sort menu in folder headers now expands / collapses smoothly
+- **New-item dialog transition** — the New Folder / New File dialogs open with a smooth transition
+- **"Genie" status-bar search panel animation** — the panel slides out along an arc with a motion-trail tail and slides back the same way; it degrades to a plain show/hide when the system "reduce motion" preference is on
+
+**Interaction Changes**
+
+- **Global refresh button removed from the file-management toolbar** — refresh is now available via the right-click "Refresh" menu and the `Ctrl+R` shortcut; external changes still sync into the tree automatically, with `Ctrl+R` as a fallback
 
 ### v0.8.4 (2026-09-24)
 

@@ -176,6 +176,11 @@ export const ITEM_OUT_TOTAL_MS =
 /** v0.8.2 动画优化：文件树「文件夹展开/收起」子节点动画时长（ms），与 CSS 同步 */
 export const TREE_SLIDE_EXPAND_MS = 450;
 export const TREE_SLIDE_COLLAPSE_MS = 420;
+/** v0.8.5 需求4：搜索面板展开动画时长（ms），与 FileTree.css search-panel-in 同步 */
+export const SEARCH_PANEL_IN_MS = 220;
+/** v0.8.5 需求4：搜索面板收回动画时长（ms），与 FileTree.css search-panel-out 同步；
+ * 收回动画播完才延迟卸载面板（setShowSearch(false) 推迟到此时执行） */
+export const SEARCH_PANEL_OUT_MS = 180;
 
 /**
  * v0.8.2 修复：命令总线 id —— 标题栏「新建 > 新建文件夹」通过它触发侧栏的新建文件夹弹框。
@@ -599,6 +604,39 @@ export function FileTree() {
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // v0.8.5 需求4：搜索面板收回动画状态（true = 正在播放收回动画，动画结束才真正卸载）
+  const [searchClosing, setSearchClosing] = useState(false);
+  const searchCloseTimerRef = useRef<number | null>(null);
+
+  // v0.8.5 需求4：展开搜索面板（若收回动画进行中则取消收回、立即重新展开）
+  const openSearchPanel = useCallback(() => {
+    if (searchCloseTimerRef.current !== null) {
+      window.clearTimeout(searchCloseTimerRef.current);
+      searchCloseTimerRef.current = null;
+    }
+    setSearchClosing(false);
+    setShowSearch(true);
+  }, []);
+
+  // v0.8.5 需求4：收起搜索面板——先播收回动画（SEARCH_PANEL_OUT_MS），
+  // 播完才 setShowSearch(false) 卸载（保持输入过滤/Esc 等既有逻辑不变，仅卸载时机后移）
+  const closeSearchPanel = useCallback(() => {
+    if (searchCloseTimerRef.current !== null) return; // 收回已在进行 → 幂等
+    setSearchClosing(true);
+    searchCloseTimerRef.current = window.setTimeout(() => {
+      searchCloseTimerRef.current = null;
+      setShowSearch(false);
+      setSearchClosing(false);
+    }, SEARCH_PANEL_OUT_MS);
+  }, []);
+
+  // v0.8.5 需求4：卸载时清理未触发的收回定时器（避免卸载后 setState）
+  useEffect(
+    () => () => {
+      if (searchCloseTimerRef.current !== null) window.clearTimeout(searchCloseTimerRef.current);
+    },
+    [],
+  );
 
   // v0.8.0 WP4 修复1：相邻配对分配的分栏拖拽（替代旧 useResizable 垂直分支）
   // 各 section 高度集中管理；拖拽时本区+delta、下区-delta，总和守恒，双向钳制 80px。
@@ -1607,7 +1645,7 @@ export function FileTree() {
     [refreshTree, t],
   );
 
-  // ─── 删除文件 ────────────────────────────────
+  // ─── 删除文件（v0.8.5 需求2：删除 = 移到系统回收站，文案同步回收站语义） ────────────────────────────────
 
   const handleDelete = useCallback(
     async (node: FileNodeData) => {
@@ -2643,16 +2681,19 @@ export function FileTree() {
               <path d="M11.5 10.5l1.8 1.8" stroke="#e65100" strokeWidth="1.2" fill="none" strokeLinecap="round"/>
             </svg>
           </button>
-          {rootPath && (
-            <button className="filetree-btn" title={t("filetree.refreshTitle")} onClick={() => refreshTree()}>
-              <svg width="14" height="14" viewBox="0 0 16 16"><path d="M13.451 5.67l-.724-.69A5.5 5.5 0 008 2.5 5.5 5.5 0 002.5 8a5.5 5.5 0 009.227 4.077l-.69-.724A4.5 4.5 0 013.5 8 4.5 4.5 0 018 3.5a4.5 4.5 0 013.751 2h-2.25v1h4V2.5h-1v3.17z" fill="#66bb6a"/></svg>
-            </button>
-          )}
-          {/* v0.4.3 Issue 2：全局文件搜索按钮 */}
+          {/* v0.8.5 需求1：移除工具栏全局刷新按钮（v0.8.4 需求10 的兜底入口）。
+              刷新入口保留：搜索按钮右侧不设刷新、空白右键菜单「刷新」、Ctrl+R、
+              FileNode 文件夹右键「刷新」，且 watch 实时刷新兜底 */}
+          {/* v0.4.3 Issue 2：全局文件搜索按钮
+              v0.8.5 需求4：toggle 改走 openSearchPanel/closeSearchPanel——
+              收回动画进行中再点 = 取消收回重新展开 */}
           <button
             className={`filetree-btn ${showSearch ? "active" : ""}`}
             title={t("filetree.searchTitle")}
-            onClick={() => setShowSearch((v) => !v)}
+            onClick={() => {
+              if (showSearch && !searchClosing) closeSearchPanel();
+              else openSearchPanel();
+            }}
           >
             <svg width="14" height="14" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke={showSearch ? "#5c9dff" : "#888"} strokeWidth="1.5"/><path d="M10.5 10.5l3 3" stroke={showSearch ? "#5c9dff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/></svg>
           </button>
@@ -2674,9 +2715,16 @@ export function FileTree() {
         </div>
       </div>
 
-      {/* v0.4.3 Issue 2：全局文件搜索面板 */}
+      {/* v0.4.3 Issue 2：全局文件搜索面板
+          v0.8.5 需求4：挂载即播展开动画（search-panel-open），关闭先播收回动画
+          （search-panel-closing，收回期间 pointer-events:none 防误交互），
+          动画播完才由 closeSearchPanel 延迟卸载 */}
       {showSearch && (
-        <div className="filetree-search-panel">
+        <div
+          className={`filetree-search-panel ${
+            searchClosing ? "search-panel-closing" : "search-panel-open"
+          }`}
+        >
           <div className="filetree-search-box">
             <input
               ref={searchInputRef}
@@ -2685,7 +2733,8 @@ export function FileTree() {
               placeholder={t("filetree.searchPlaceholder")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Escape") setShowSearch(false); }}
+              // v0.8.5 需求4：Esc 关闭改走 closeSearchPanel（先播收回动画再延迟卸载）
+              onKeyDown={(e) => { if (e.key === "Escape") closeSearchPanel(); }}
             />
             {searchQuery && (
               <button className="filetree-search-clear" onClick={() => setSearchQuery("")}>✕</button>
@@ -3182,6 +3231,14 @@ const SORT_MENU_KEYS: Record<SortMode, string> = {
   "created-asc": "filetree.sortCreatedAsc",
 };
 
+/** v0.8.5 需求5：排序下拉展开动画时长（ms），与 FileTree.css sort-menu-in 同步 */
+const SORT_MENU_IN_MS = 200;
+/** v0.8.5 需求5：排序下接收回动画时长（ms），与 FileTree.css sort-menu-out 同步；
+ * 收回动画播完才延迟卸载菜单（setSortMenu(null) 推迟到此时执行）。
+ * 仅排序下拉有动画：右键菜单（folderCtxMenu/FileNode contextMenu）保持即时出现，
+ * 符合右键交互惯例 */
+const SORT_MENU_OUT_MS = 160;
+
 interface FolderSectionProps {
   folder: { path: string; name: string };
   nodes: FileNodeData[];
@@ -3254,19 +3311,56 @@ function FolderSection(props: FolderSectionProps) {
   const [maximized, setMaximized] = useState(false);
   // v0.8.4 需求7：排序下拉菜单（null = 关闭；值 = fixed 定位坐标，取自按钮 rect）
   const [sortMenu, setSortMenu] = useState<{ x: number; y: number } | null>(null);
+  // v0.8.5 需求5：排序下接收回动画状态（true = 正在播收回动画，动画结束才真正卸载）
+  const [sortClosing, setSortClosing] = useState(false);
+  const sortCloseTimerRef = useRef<number | null>(null);
+
+  // v0.8.5 需求5：在指定坐标展开排序下拉（若收回动画进行中则取消收回、原地重新展开）
+  const openSortMenuAt = useCallback((x: number, y: number) => {
+    if (sortCloseTimerRef.current !== null) {
+      window.clearTimeout(sortCloseTimerRef.current);
+      sortCloseTimerRef.current = null;
+    }
+    setSortClosing(false);
+    setSortMenu({ x, y });
+  }, []);
+
+  /**
+   * v0.8.5 需求5：收起排序下拉——先播收回动画（SORT_MENU_OUT_MS），播完才卸载。
+   * 三条关闭路径统一走此函数：点击外部（window click/contextmenu）、点击菜单项、
+   * 再次点击排序按钮 toggle。幂等：收回已在进行时重复调用直接忽略。
+   */
+  const closeSortMenu = useCallback(() => {
+    if (sortCloseTimerRef.current !== null) return;
+    setSortClosing(true);
+    sortCloseTimerRef.current = window.setTimeout(() => {
+      sortCloseTimerRef.current = null;
+      setSortMenu(null);
+      setSortClosing(false);
+    }, SORT_MENU_OUT_MS);
+  }, []);
+
+  // v0.8.5 需求5：卸载时清理未触发的收回定时器（避免卸载后 setState）
+  useEffect(
+    () => () => {
+      if (sortCloseTimerRef.current !== null) window.clearTimeout(sortCloseTimerRef.current);
+    },
+    [],
+  );
 
   // v0.8.4 需求7：点击外部 / 右键关闭排序下拉（与 folderCtxMenu 相同的 window 监听模式；
   // 菜单与按钮内部点击均 stopPropagation，不会误触发本监听）
+  // v0.8.5 需求5：关闭改走 closeSortMenu（先播收回动画再延迟卸载）
   useEffect(() => {
     if (!sortMenu) return;
-    const close = () => setSortMenu(null);
+    const close = () => closeSortMenu();
     window.addEventListener("click", close);
     window.addEventListener("contextmenu", close);
     return () => {
       window.removeEventListener("click", close);
       window.removeEventListener("contextmenu", close);
     };
-  }, [sortMenu]);
+  }, [sortMenu, closeSortMenu]);
 
   // v0.8.0 修复 P9-1：标题栏在本区顶部，拖动它移动的是本区上边界，
   // 因此配对为「上方邻区 + 本区」；第一个区域无上方邻区 → 标题栏不可拖
@@ -3336,19 +3430,24 @@ function FolderSection(props: FolderSectionProps) {
           {/* v0.8.4 需求7：排序按钮 —— 默认态上下双箭头；激活态箭头+竖排徽标（↑A-Z/↓Z-A/↑U/↓U/↑C/↓C）。
               onClick stopPropagation：防打开动作冒泡到 window 立即关闭菜单，也防触发标题栏双击折叠。
               mousedown 无需处理：useSectionSplit.beginSectionDrag 已按 closest("button") 排除，
-              不会误启动分栏拖拽（与 section-new-folder 等现有按钮同规则） */}
+              不会误启动分栏拖拽（与 section-new-folder 等现有按钮同规则）
+              v0.8.5 需求5：toggle 改走 openSortMenuAt/closeSortMenu——收回动画进行中再点 = 取消收回 */}
           <button
             className={`section-btn section-sort${sortMode ? " sort-active" : ""}`}
             title={t("filetree.sort")}
             onClick={(e) => {
               e.stopPropagation();
-              if (sortMenu) { setSortMenu(null); return; }
+              if (sortMenu) {
+                if (sortClosing) openSortMenuAt(sortMenu.x, sortMenu.y);
+                else closeSortMenu();
+                return;
+              }
               // position: fixed 定位到按钮下方（fixed 不受 section overflow:hidden 裁剪，
               // 多栏高度受限时菜单依然完整可见）；右缘越出视口时回拉
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               const menuWidth = 190;
               const x = Math.max(0, Math.min(rect.left, window.innerWidth - menuWidth));
-              setSortMenu({ x, y: rect.bottom + 4 });
+              openSortMenuAt(x, rect.bottom + 4);
             }}
           >
             {sortMode
@@ -3442,10 +3541,14 @@ function FolderSection(props: FolderSectionProps) {
       {/* v0.8.4 需求7：排序下拉菜单 —— position: fixed 定位到按钮下方（不受栏高/overflow 裁剪）；
           3 组 6 项组间 divider，每项文字右侧放语义小图标（箭头 + 竖排徽标）；
           当前激活项高亮，再次点击激活项 = 取消排序（onSortChange(null) → toast "已取消排序"）。
-          菜单容器 onClick stopPropagation，防止内部点击冒泡到 window 误关 */}
+          菜单容器 onClick stopPropagation，防止内部点击冒泡到 window 误关。
+          v0.8.5 需求5：挂载即播展开动画（sort-menu-open），三条关闭路径统一先播收回动画
+          （sort-menu-closing，收回期间 pointer-events:none 防误交互），播完延迟卸载 */}
       {sortMenu && (
         <div
-          className="filetree-context-menu filetree-sort-menu"
+          className={`filetree-context-menu filetree-sort-menu ${
+            sortClosing ? "sort-menu-closing" : "sort-menu-open"
+          }`}
           style={{ left: sortMenu.x, top: sortMenu.y, position: "fixed" }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
@@ -3465,8 +3568,9 @@ function FolderSection(props: FolderSectionProps) {
                     className={`context-menu-item sort-menu-item${active ? " sort-active" : ""}`}
                     onClick={() => {
                       // 再次点击激活项 = 取消排序，恢复手动/默认顺序
+                      // v0.8.5 需求5：关闭改走 closeSortMenu（先播收回动画再延迟卸载）
                       onSortChange?.(active ? null : mode);
-                      setSortMenu(null);
+                      closeSortMenu();
                     }}
                   >
                     <span className="sort-menu-label">{t(SORT_MENU_KEYS[mode])}</span>

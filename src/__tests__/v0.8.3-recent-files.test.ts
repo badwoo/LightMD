@@ -88,9 +88,10 @@ describe("v0.8.3 需求1：源码接线（UI 结构锁定）", () => {
 
   it("tooltip = 完整路径 + 最近打开时间", () => {
     expect(recentSrc).toContain("recent.lastOpenedAt");
-    expect(recentSrc).toContain("formatDateTime(file.accessedAt)");
+    // v0.8.5 需求8：渲染改为文件/文件夹混排条目（item），tooltip 语义不变
+    expect(recentSrc).toContain("formatDateTime(item.accessedAt)");
     // 标题为两行：路径换行 + "最近打开：…"
-    expect(recentSrc).toMatch(/title=\{`\$\{file\.path\}\\n\$\{t\(/);
+    expect(recentSrc).toMatch(/title=\{`\$\{item\.path\}\\n\$\{t\(/);
   });
 
   it("列表容器具备独立滚动（栏内可滚动浏览 66 条）", () => {

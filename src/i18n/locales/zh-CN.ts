@@ -212,11 +212,12 @@ export const zhCN: Record<string, string> = {
   "filetree.pleaseOpenFolderFirst": "请先打开文件夹后再新建文件夹",
   "filetree.createdFolder": "已创建文件夹: {name}",
   "filetree.createFolderFailed": "创建文件夹失败",
-  "filetree.confirmDelete": "确认删除 {type} \"{name}\"？",
+  // v0.8.5 需求2：删除 = 移到系统回收站（可还原），确认弹窗与 toast 同步回收站语义
+  "filetree.confirmDelete": "确定将 {type} \"{name}\" 移到回收站？",
   "filetree.fileType": "文件",
   "filetree.folderType": "文件夹",
-  "filetree.deleted": "已删除: {name}",
-  "filetree.deleteFailed": "删除失败",
+  "filetree.deleted": "已移到回收站: {name}",
+  "filetree.deleteFailed": "移到回收站失败",
   // v0.8.0 WP2：复制/粘贴/拖拽到打开文件夹、打开所在文件夹工作区、新建文件夹弹框
   "filetree.copy": "复制",
   "filetree.paste": "粘贴",

@@ -178,3 +178,42 @@
   opacity: 0.6;
   cursor: default;
 }
+
+/* ─── v0.8.5 需求6：弹窗打开过渡动画（NewFolderDialog / NewFileDialog 共用） ───
+   两弹窗均由条件渲染挂载（open 时 mount），CSS animation 挂载即自动播放，
+   无需关闭动画（需求仅要求打开过渡）。全部走 opacity/transform 合成层属性。 */
+
+/* overlay 淡入（约 160ms） */
+@keyframes dialog-overlay-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 弹窗本体：轻微上移 + 缩放 + 淡入（约 180ms，ease-out 顺滑落定） */
+@keyframes dialog-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.dialog-overlay-in {
+  animation: dialog-overlay-fade-in 0.16s ease-out both;
+}
+
+.dialog-pop-in {
+  transform-origin: center;
+  animation: dialog-pop-in 0.18s ease-out both;
+}
+
+/* 尊重系统减弱动效：直接显示，无动画 */
+@media (prefers-reduced-motion: reduce) {
+  .dialog-overlay-in,
+  .dialog-pop-in {
+    animation: none;
+  }
+}

@@ -206,30 +206,57 @@ describe("v0.8.4 需求7：排序下拉菜单结构", () => {
     expect(icon.querySelector(".sort-badge")?.textContent).toBe(label);
   });
 
-  it("点击外部关闭菜单；再次点击按钮也可关闭", () => {
-    const btn = renderAndGetSortBtn();
-    fireEvent.click(btn);
-    expect(document.querySelector(".filetree-sort-menu")).toBeTruthy();
-    // 点外部（window click）→ 关闭
-    fireEvent.click(document.body);
-    expect(document.querySelector(".filetree-sort-menu")).toBeNull();
-    // 再点按钮打开，再点按钮（toggle）→ 关闭
-    fireEvent.click(btn);
-    expect(document.querySelector(".filetree-sort-menu")).toBeTruthy();
-    fireEvent.click(btn);
-    expect(document.querySelector(".filetree-sort-menu")).toBeNull();
+  it("点击外部关闭菜单；再次点击按钮也可关闭（v0.8.5 需求5：均先播收回动画，结束后才卸载）", () => {
+    // v0.8.5 需求5 适配：菜单关闭改为"先播收回动画（160ms）再延迟卸载"，
+    // 故用 fake timers 前进动画时长后再断言卸载
+    vi.useFakeTimers();
+    try {
+      const btn = renderAndGetSortBtn();
+      fireEvent.click(btn);
+      expect(document.querySelector(".filetree-sort-menu")).toBeTruthy();
+      // 点外部（window click）→ 进入收回动画（仍挂载、带 closing 类）
+      fireEvent.click(document.body);
+      const closing = document.querySelector(".filetree-sort-menu") as HTMLElement | null;
+      expect(closing).toBeTruthy();
+      expect(closing!.classList.contains("sort-menu-closing")).toBe(true);
+      act(() => {
+        vi.advanceTimersByTime(160);
+      });
+      expect(document.querySelector(".filetree-sort-menu")).toBeNull();
+      // 再点按钮打开，再点按钮（toggle）→ 收回动画后关闭
+      fireEvent.click(btn);
+      expect(document.querySelector(".filetree-sort-menu")).toBeTruthy();
+      fireEvent.click(btn);
+      act(() => {
+        vi.advanceTimersByTime(160);
+      });
+      expect(document.querySelector(".filetree-sort-menu")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
 // ─── 3. 接线：选择 / 取消排序 ────────────────────────
 describe("v0.8.4 需求7：排序选择与取消", () => {
   it("点击未激活项 → setFileTreeSort(root, mode) 写入记忆，菜单关闭", () => {
-    const menu = openSortMenu();
-    fireEvent.click(findMenuItem(menu, "修改时间（晚-早）"));
-    expect(useSettingsStore.getState().fileTreeSort[ROOT]).toBe("modified-desc");
-    expect(document.querySelector(".filetree-sort-menu")).toBeNull();
-    // 按钮进入激活态（箭头+U 徽标）
-    expectBtnBadge("down", "U");
+    // v0.8.5 需求5 适配：菜单关闭改为先播收回动画再延迟卸载，fake timers 前进后断言
+    vi.useFakeTimers();
+    try {
+      const menu = openSortMenu();
+      fireEvent.click(findMenuItem(menu, "修改时间（晚-早）"));
+      expect(useSettingsStore.getState().fileTreeSort[ROOT]).toBe("modified-desc");
+      // 收回动画期间仍挂载（closing 类），动画结束后才卸载
+      expect(document.querySelector(".filetree-sort-menu.sort-menu-closing")).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(160);
+      });
+      expect(document.querySelector(".filetree-sort-menu")).toBeNull();
+      // 按钮进入激活态（箭头+U 徽标）
+      expectBtnBadge("down", "U");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("激活态下打开菜单，激活项高亮；再次点击激活项 → 取消排序（删 key）+ toast「已取消排序」", () => {
