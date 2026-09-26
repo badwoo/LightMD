@@ -6,8 +6,12 @@
  * 2. 兼容字段 rootPath / fileTree 的同步维护
  * 3. setRootPath / setFileTree 的兼容行为
  * 4. persist partialize：openFolders 持久化路径但 fileTree 清空
- * 5. restoreRecentFolders(count) 多文件夹恢复（含路径不存在时移除）
+ * 5. restoreRecentFolders(count) 多文件夹恢复（含路径不存在时标 stale 跳过）
  * 6. restoreRecentFolders 兼容模式（未传 addOpenFolder 时走旧逻辑）
+ *
+ * v0.8.5 需求6 说明：本文件 restoreRecentFolders 测试的 mock 数据仍写入
+ * recentFolders（无 sessionFolders 字段）——走 startupRestore 的旧数据回退路径，
+ * 兼作回退逻辑的回归覆盖；回调断言已按新语义适配（恢复失败 = 标 stale，不再移除）。
  */
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -387,7 +391,7 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
       count: 3,
       addOpenFolder: (path) => added.push(path),
       updateFolderTree: (path, entries) => updated.push({ path, entries }),
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -402,7 +406,7 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
     expect(updated[2].path).toBe("/test/folder-3");
   });
 
-  it("路径不存在时移除并继续恢复其他（listDir 抛错）", async () => {
+  it("路径不存在时标 stale 并继续恢复其他（listDir 抛错；v0.8.5 失败不再移除条目）", async () => {
     setSettings({ loadLastFolderOnStartup: true });
     setFileStore({ recentFolders: genFolders(3) });
     mockedFileService.listDir.mockImplementation(async (path: string) => {
@@ -411,12 +415,12 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
     });
 
     const added: string[] = [];
-    const removed: string[] = [];
+    const staleMarked: string[] = [];
     const result = await restoreRecentFolders({
       count: 3,
       addOpenFolder: (path) => added.push(path),
       updateFolderTree: () => {},
-      removeRecentFolder: (path) => removed.push(path),
+      markRecentFolderStale: (path) => staleMarked.push(path),
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -425,7 +429,8 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
     expect(result.skipped).toBe(1);
     // folder-2 失败被跳过，folder-1 和 folder-3 成功
     expect(added).toEqual(["/test/folder-1", "/test/folder-3"]);
-    expect(removed).toEqual(["/test/folder-2"]);
+    // v0.8.5 需求6：folder-2 失败被标 stale（条目保留），folder-1 和 folder-3 成功恢复
+    expect(staleMarked).toEqual(["/test/folder-2"]);
   });
 
   it("所有路径都不存在时全部跳过，restored=0", async () => {
@@ -434,12 +439,12 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
     mockedFileService.listDir.mockRejectedValue(new Error("all gone"));
 
     const added: string[] = [];
-    const removed: string[] = [];
+    const staleMarked: string[] = [];
     const result = await restoreRecentFolders({
       count: 3,
       addOpenFolder: (path) => added.push(path),
       updateFolderTree: () => {},
-      removeRecentFolder: (path) => removed.push(path),
+      markRecentFolderStale: (path) => staleMarked.push(path),
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -447,7 +452,7 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
     expect(result.restored).toBe(0);
     expect(result.skipped).toBe(3);
     expect(added).toHaveLength(0);
-    expect(removed).toHaveLength(3);
+    expect(staleMarked).toHaveLength(3);
   });
 
   it("count 超过 5 时被钳制到 5", async () => {
@@ -460,7 +465,7 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
       count: 100,
       addOpenFolder: (path) => added.push(path),
       updateFolderTree: () => {},
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -497,7 +502,7 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
       setRootPath: (path) => {
         setRootPathValue = path;
       },
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -516,7 +521,7 @@ describe("v0.4.0: restoreRecentFolders 多文件夹恢复", () => {
     const result = await restoreRecentFolders({
       addOpenFolder: (path) => added.push(path),
       updateFolderTree: () => {},
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });

@@ -364,7 +364,8 @@ describe("问题8：启动载入逻辑和图片渲染", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      // v0.8.5 需求6：恢复失败回调改为标 stale（原 removeRecentFile 已废弃）
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 

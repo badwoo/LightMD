@@ -447,47 +447,16 @@ export function FileEntryNode({
 
 // ─── 工具函数 ──────────────────────────────────────────
 
-/**
- * v0.8.5 需求3：md/markdown/mdown 文件图标 —— 内联 SVG 替代 📝 emoji。
- * 构图与原 📝 一致（纸张左上 + 右上折角 + 右下一支斜置铅笔、笔尖朝左下），
- * 但铅笔改淡色：笔杆淡蓝灰 #9db4c8、笔尖深灰 #5a6b7a——emoji 无法改色，
- * 用户反馈原 📝 的铅笔视觉太红，故换用可配色的 SVG。
- * 主题适配策略：纸张填充用 var(--bg-secondary)（随深浅主题自动切换底色，
- * 始终与侧栏背景形成对比），描边与折角用 currentColor（随正文文字色），
- * 两主题下无需单独配色即清晰；铅笔为固定淡色系，深浅底色上均可辨识。
- */
-function MarkdownIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      {/* 纸张主体（右上角斜切出折角） */}
-      <path
-        d="M3 1.5h6L12.5 5v8H3V1.5z"
-        fill="var(--bg-secondary)"
-        stroke="currentColor"
-        strokeWidth="1"
-        strokeLinejoin="round"
-      />
-      {/* 折角三角（淡色填充，随文字色） */}
-      <path d="M9 1.5V5h3.5L9 1.5z" fill="currentColor" opacity="0.4" />
-      {/* 铅笔：整体绕 (10.2,10.2) 旋转 45°（笔尖转向左下、笔杆伸向右上，同 📝 构图） */}
-      <g transform="rotate(45 10.2 10.2)">
-        {/* 笔杆：淡蓝灰 */}
-        <rect x="9.3" y="4.6" width="1.8" height="6.4" rx="0.5" fill="#9db4c8" />
-        {/* 笔尖：深灰 */}
-        <path d="M9.3 11h1.8l-0.9 2.6z" fill="#5a6b7a" />
-      </g>
-    </svg>
-  );
-}
-
-// 返回 ReactNode：md 类为 SVG 元素，其余扩展名仍为 emoji 字符串（v0.8.5 需求3）
-function getFileIcon(name: string): React.ReactNode {
+// v0.8.5 反馈1：md/markdown/mdown 文件图标恢复为原 📝 emoji——上一版曾改为自绘
+// SVG（MarkdownIcon 淡色铅笔），用户要求还原默认观感，故删除该组件、恢复字符串返回值。
+// 返回 emoji 字符串，其余扩展名同为 emoji（保持原实现）
+function getFileIcon(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase();
   switch (ext) {
     case "md":
     case "markdown":
     case "mdown":
-      return <MarkdownIcon />;
+      return "📝";
     case "js":
     case "ts":
     case "jsx":

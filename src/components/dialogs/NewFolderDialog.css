@@ -2,7 +2,8 @@
 .newfolder-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
+  /* 反馈3：遮罩背景移至 overlay 的 ::before 伪元素独立层（见下方动画区说明），
+     容器自身不再承载半透明背景参与 opacity 动画 */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -20,6 +21,8 @@
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
   overflow: hidden;
+  /* 反馈3：position:relative 保证弹窗绘制在遮罩伪元素（absolute 定位）之上 */
+  position: relative;
 }
 
 .newfolder-header {
@@ -179,11 +182,35 @@
   cursor: default;
 }
 
-/* ─── v0.8.5 需求6：弹窗打开过渡动画（NewFolderDialog / NewFileDialog 共用） ───
+/* ─── v0.8.5 需求6 + 反馈3：弹窗打开过渡动画（NewFolderDialog / NewFileDialog 共用） ───
    两弹窗均由条件渲染挂载（open 时 mount），CSS animation 挂载即自动播放，
-   无需关闭动画（需求仅要求打开过渡）。全部走 opacity/transform 合成层属性。 */
+   无需关闭动画（需求仅要求打开过渡）。全部走 opacity/transform 合成层属性。
 
-/* overlay 淡入（约 160ms） */
+   反馈3「动画期间背景杂乱闪动、掉帧」根因分析与修法：
+   - 根因：原实现把遮罩淡入（opacity 0→1）直接挂在 overlay 容器上，而弹窗是 overlay
+     的子元素——动画期间弹窗实际透明度 = overlay 透明度 × 弹窗 pop-in 透明度，
+     两层 opacity 相乘，弹窗前半程高度半透明，背后编辑器文字/文件树大量透出，
+     形成"杂乱闪动"观感；且全屏 overlay 与带大 box-shadow 的弹窗缺合成层提升提示时，
+     WebView2 每帧都要重新混合/重绘整屏，产生掉帧感。
+     （排查结论：本组件从未使用 backdrop-filter，box-shadow 为静态值不参与过渡，
+     动画属性也均为 opacity/transform——故嫌疑聚焦在双层透明度叠加 + 缺合成层提升。）
+   - 修法：① 遮罩淡入移到 overlay 的 ::before 独立层，overlay 容器 opacity 恒为 1，
+     弹窗透明度只由自身动画决定（双层叠加解耦），半透明遮罩视觉不变；
+     ② 遮罩伪元素与弹窗加 will-change 强制提升合成层，动画在合成器线程完成，
+     弹窗阴影只栅格化一次后随层合成，不再逐帧重绘。 */
+
+/* 遮罩层：挂在 overlay 的 ::before 独立层上，仅 opacity 参与（合成层属性），
+   弹窗与遮罩各自独立动画、互不叠加透明度 */
+.dialog-overlay-in::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  will-change: opacity;
+  animation: dialog-overlay-fade-in 0.16s ease-out both;
+}
+
+/* 遮罩淡入（约 160ms，仅 opacity） */
 @keyframes dialog-overlay-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -201,18 +228,17 @@
   }
 }
 
-.dialog-overlay-in {
-  animation: dialog-overlay-fade-in 0.16s ease-out both;
-}
-
 .dialog-pop-in {
   transform-origin: center;
+  will-change: transform, opacity;
   animation: dialog-pop-in 0.18s ease-out both;
 }
 
-/* 尊重系统减弱动效：直接显示，无动画 */
+/* 尊重系统减弱动效：直接显示，无动画
+   （遮罩动画在伪元素上，降级需同样指向 ::before；animation:none 后伪元素
+   opacity 回落默认值 1，遮罩直接呈现，视觉效果不变） */
 @media (prefers-reduced-motion: reduce) {
-  .dialog-overlay-in,
+  .dialog-overlay-in::before,
   .dialog-pop-in {
     animation: none;
   }

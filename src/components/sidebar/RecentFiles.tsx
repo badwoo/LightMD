@@ -69,8 +69,8 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
   // v0.8.5 需求8：文件与文件夹按 accessedAt 降序混排为同一列表；
   // 总条目上限复用数据层导出的 MAX_RECENT_FILES=66（文件+文件夹合并计数，
   // 超出后截断掉最旧条目；文件夹自身 10 条上限由数据层 addRecentFolder 保证）。
-  // 文件夹条目暂不做 stale 标记（范围外）：recentFolders 无 stale 字段，
-  // 打开已失效文件夹由 FileTree.openFolderAt 的失败提示兜底。
+  // v0.8.5 需求6：文件夹条目同样支持 stale 标记（外部删除/移动、启动恢复失败时，
+  // 数据层 markRecentFolderStale 标记；条目永不删除，成功重新打开同路径时自动清除）。
   const mergedItems = useMemo(
     () =>
       [
@@ -174,8 +174,9 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
                       }
                 }
                 // v0.8.3 需求1：悬停提示 = 完整路径 + 最近打开日期时间（文件夹同格式）
-                // v0.8.4 需求1b：stale 条目（文件被移动/外部删除）追加失效提示行（仅文件条目）
-                title={`${item.path}\n${t("recent.lastOpenedAt", { time: formatDateTime(item.accessedAt) })}${item.kind === "file" && item.stale ? `\n${t("recent.staleHint")}` : ""}`}
+                // v0.8.4 需求1b：stale 条目（文件被移动/外部删除）追加失效提示行
+                // v0.8.5 需求6：文件夹条目失效（外部删除/移动、恢复失败）时同样追加
+                title={`${item.path}\n${t("recent.lastOpenedAt", { time: formatDateTime(item.accessedAt) })}${item.stale ? `\n${t("recent.staleHint")}` : ""}`}
               >
                 {/* v0.8.5 需求8：文件夹专属图标（与树内未展开文件夹一致 📁） */}
                 <span className="filetree-icon">{isFolder ? "📁" : "📝"}</span>
@@ -184,8 +185,9 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
                   <span className="recent-file-path">{dir}</span>
                 </div>
                 <span className="recent-file-time">{formatTime(item.accessedAt, t)}</span>
-                {/* v0.8.4 需求1b：旧路径已失效标记（淡黄 ⚠，颜色走主题变量；仅文件条目） */}
-                {item.kind === "file" && item.stale && <span className="recent-file-stale">⚠</span>}
+                {/* v0.8.4 需求1b：旧路径已失效标记（淡黄 ⚠，颜色走主题变量）
+                    v0.8.5 需求6：文件夹条目失效时同样显示（样式与文件条目一致） */}
+                {item.stale && <span className="recent-file-stale">⚠</span>}
               </div>
             );
           })}

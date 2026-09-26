@@ -1,15 +1,20 @@
 /**
- * v0.4.5 关闭文件夹/文件后启动不再载入 - 单元测试
+ * 关闭文件夹/文件后的行为测试（v0.8.5 需求6 重写）
  *
- * 验证 Issue 1 修复：
- * 1. removeOpenFolder 同步从 recentFolders 中移除，避免下次启动恢复已关闭的文件夹
- * 2. closeTab 后调用 removeRecentFile，避免下次启动恢复已关闭的文件
- * 3. App.tsx 中两处 closeTab 调用都同步清理 recentFiles
+ * 语义变更说明（v0.8.5 需求6，用户拍板「最近打开 = 纯历史记录」）：
+ * - 旧 v0.4.5 行为：关闭文件夹/文件时同步从 recentFolders/recentFiles 中移除条目，
+ *   以避免下次启动恢复已关闭的条目。
+ * - 新行为：最近打开条目永不随关闭而消失；启动恢复改读 sessionFolders
+ *   （上次会话结束时的打开文件夹快照），与 recentFolders 历史彻底解耦。
+ *   本文件原「关闭同步移除」的断言已按新语义适配为「关闭不移除 + 快照同步」。
  *
- * 测试策略：
- * - 直接测试 useFileStore.removeOpenFolder 的副作用（recentFolders 同步移除）
- * - 模拟启动恢复场景：关闭文件夹后 recentFolders 为空，restoreRecentFolders 不会恢复
- * - 验证 App.tsx 源码中 closeTab 调用处包含 removeRecentFile 清理逻辑
+ * 覆盖：
+ * 1. removeOpenFolder 只更新会话快照 sessionFolders，recentFolders 历史条目保留
+ * 2. 关闭文件夹后启动恢复不会载入（数据源 = sessionFolders 为空）
+ * 3. 未关闭的文件夹仍可在下次启动时恢复
+ * 4. App.tsx 各关闭路径（handleTabClose / lightmd:closeFile / closeTabsByPath /
+ *    handleCloseMany）不再调用 removeRecentFile
+ * 5. removeRecentFile action 本身仍正确（保留供未来手动清理功能使用）
  */
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -43,14 +48,15 @@ Object.defineProperty(globalThis, "localStorage", {
   writable: true,
 });
 
-// ─── Issue 1: removeOpenFolder 同步清理 recentFolders ──────────────────────
+// ─── 需求6: removeOpenFolder 与历史/快照的关系 ──────────────────────
 
-describe("Issue 1: 关闭文件夹后启动不再载入", () => {
+describe("v0.8.5 需求6: 关闭文件夹不移除最近打开历史", () => {
   beforeEach(() => {
     useFileStore.setState({
       openFolders: [],
       recentFiles: [],
       recentFolders: [],
+      sessionFolders: [],
       favorites: [],
       tempFiles: [],
       rootPath: null,
@@ -59,7 +65,7 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
     Object.keys(mockStorage).forEach((k) => delete mockStorage[k]);
   });
 
-  it("removeOpenFolder 同步从 recentFolders 中移除该文件夹", () => {
+  it("removeOpenFolder 后 recentFolders 历史条目保留（纯历史，不再同步移除）", () => {
     const store = useFileStore.getState();
     // 模拟打开文件夹
     store.addOpenFolder("/test/folder-1");
@@ -70,12 +76,15 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
     // 关闭文件夹
     store.removeOpenFolder("/test/folder-1");
 
-    // 验证 recentFolders 也被同步移除（v0.4.5 修复）
+    // openFolders 已移除；v0.8.5 需求6：历史条目保留在「最近打开」中
     expect(useFileStore.getState().openFolders).toHaveLength(0);
-    expect(useFileStore.getState().recentFolders).toHaveLength(0);
+    expect(useFileStore.getState().recentFolders).toHaveLength(1);
+    expect(useFileStore.getState().recentFolders[0].path).toBe("/test/folder-1");
+    // 会话快照同步移除（启动恢复数据源）
+    expect(useFileStore.getState().sessionFolders).toEqual([]);
   });
 
-  it("关闭一个文件夹不影响其他文件夹的 recentFolders 记录", () => {
+  it("关闭一个文件夹不影响其他文件夹的历史条目，快照只剩未关闭的", () => {
     const store = useFileStore.getState();
     store.addOpenFolder("/test/folder-1");
     store.addOpenFolder("/test/folder-2");
@@ -85,21 +94,23 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
     // 关闭 folder-1
     store.removeOpenFolder("/test/folder-1");
 
-    // recentFolders 中应只剩 folder-2
-    expect(useFileStore.getState().recentFolders).toHaveLength(1);
-    expect(useFileStore.getState().recentFolders[0].path).toBe("/test/folder-2");
+    // 历史条目两条都保留（folder-1 关闭后仍出现在「最近打开」）
+    expect(useFileStore.getState().recentFolders).toHaveLength(2);
+    // 会话快照只剩 folder-2
+    expect(useFileStore.getState().sessionFolders).toEqual(["/test/folder-2"]);
     expect(useFileStore.getState().openFolders).toHaveLength(1);
     expect(useFileStore.getState().openFolders[0].path).toBe("/test/folder-2");
   });
 
-  it("关闭所有文件夹后 recentFolders 为空，启动恢复不会载入任何文件夹", async () => {
+  it("关闭所有文件夹后 sessionFolders 为空，启动恢复不会载入任何文件夹（历史条目仍在）", async () => {
     // 模拟用户打开文件夹后关闭
     const store = useFileStore.getState();
     store.addOpenFolder("/test/folder-1");
     store.removeOpenFolder("/test/folder-1");
 
-    // 验证 recentFolders 为空
-    expect(useFileStore.getState().recentFolders).toHaveLength(0);
+    // 历史条目仍在；会话快照为空
+    expect(useFileStore.getState().recentFolders).toHaveLength(1);
+    expect(useFileStore.getState().sessionFolders).toEqual([]);
 
     // 模拟启动恢复：settings 开启 loadLastFolderOnStartup，count=1
     mockStorage["lightmd-settings"] = JSON.stringify({
@@ -108,9 +119,10 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
         loadLastFolderCount: 1,
       },
     });
-    // 模拟 recentFolders 持久化到 localStorage（空数组）
+    // 模拟持久化（zustand persist partialize 已包含 sessionFolders）
     mockStorage["lightmd-file-store"] = JSON.stringify({
       state: {
+        sessionFolders: useFileStore.getState().sessionFolders,
         recentFolders: useFileStore.getState().recentFolders,
         recentFiles: [],
         favorites: [],
@@ -118,7 +130,6 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
     });
 
     const addOpenFolder = vi.fn();
-    const removeRecentFolder = vi.fn();
     const result = await restoreRecentFolders({
       storage: mockLocalStorage,
       fileServiceImpl: {
@@ -127,26 +138,26 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
       },
       addOpenFolder,
       updateFolderTree: vi.fn(),
-      removeRecentFolder,
+      markRecentFolderStale: vi.fn(),
       isTauriEnv: true,
       count: 1,
     });
 
-    // 启动恢复应返回 restored=0，不调用 addOpenFolder
+    // 启动恢复应返回 restored=0，不调用 addOpenFolder（即使 recentFolders 历史有条目）
     expect(result.restored).toBe(0);
     expect(addOpenFolder).not.toHaveBeenCalled();
   });
 
-  it("未关闭的文件夹仍可在下次启动时恢复", async () => {
+  it("未关闭的文件夹仍可在下次启动时恢复（数据源 = sessionFolders 快照）", async () => {
     // 模拟用户打开两个文件夹，关闭其中一个
     const store = useFileStore.getState();
     store.addOpenFolder("/test/folder-1");
     store.addOpenFolder("/test/folder-2");
     store.removeOpenFolder("/test/folder-1");
 
-    // recentFolders 中应只剩 folder-2
-    expect(useFileStore.getState().recentFolders).toHaveLength(1);
-    expect(useFileStore.getState().recentFolders[0].path).toBe("/test/folder-2");
+    // 会话快照只剩 folder-2；历史两条都在
+    expect(useFileStore.getState().sessionFolders).toEqual(["/test/folder-2"]);
+    expect(useFileStore.getState().recentFolders).toHaveLength(2);
 
     // 模拟启动恢复
     mockStorage["lightmd-settings"] = JSON.stringify({
@@ -157,6 +168,7 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
     });
     mockStorage["lightmd-file-store"] = JSON.stringify({
       state: {
+        sessionFolders: useFileStore.getState().sessionFolders,
         recentFolders: useFileStore.getState().recentFolders,
         recentFiles: [],
         favorites: [],
@@ -172,7 +184,7 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
       },
       addOpenFolder,
       updateFolderTree: vi.fn(),
-      removeRecentFolder: vi.fn(),
+      markRecentFolderStale: vi.fn(),
       isTauriEnv: true,
       count: 1,
     });
@@ -183,30 +195,40 @@ describe("Issue 1: 关闭文件夹后启动不再载入", () => {
   });
 });
 
-// ─── Issue 1: 关闭文件标签页后启动不再载入 ──────────────────────
+// ─── 需求6: 关闭文件标签页不再移除 recentFiles ──────────────────────
 
-describe("Issue 1: 关闭文件标签页后启动不再载入", () => {
-  it("App.tsx handleTabClose 中 closeTab 后调用 removeRecentFile", () => {
+describe("v0.8.5 需求6: 关闭文件标签页不移除最近打开历史", () => {
+  it("App.tsx handleTabClose 中不再调用 removeRecentFile（v0.8.5 纯历史）", () => {
     const src = readSrc("../App.tsx");
     // 定位 handleTabClose 函数
     const handleTabCloseSection = src.match(/const handleTabClose[\s\S]*?\}, \[closeTab/);
     expect(handleTabCloseSection).not.toBeNull();
-    // 验证 closeTab 后有 removeRecentFile 调用
+    // 仍有关闭逻辑
     expect(handleTabCloseSection![0]).toMatch(/closeTab\(idx\)/);
-    expect(handleTabCloseSection![0]).toMatch(/removeRecentFile\(tab\.path\)/);
+    // v0.8.5 需求6：关闭标签不再移除最近打开条目（旧 v0.4.5 行为已废弃）
+    expect(handleTabCloseSection![0]).not.toMatch(/removeRecentFile\(/);
   });
 
-  it("App.tsx lightmd:closeFile 事件处理中 closeTab 后调用 removeRecentFile", () => {
+  it("App.tsx lightmd:closeFile 事件处理中不再调用 removeRecentFile", () => {
     const src = readSrc("../App.tsx");
     // 定位文件关闭事件处理区域（从 "文件关闭事件" 注释到 addEventListener）
     const closeFileSection = src.match(/文件关闭事件[\s\S]*?addEventListener\("lightmd:closeFile"/);
     expect(closeFileSection).not.toBeNull();
-    // 验证 closeTab 后有 removeRecentFile 调用
     expect(closeFileSection![0]).toMatch(/closeTab\(activeTabIdx\)/);
-    expect(closeFileSection![0]).toMatch(/removeRecentFile\(closedTab\.path\)/);
+    // v0.8.5 需求6：关闭标签不再移除最近打开条目
+    expect(closeFileSection![0]).not.toMatch(/removeRecentFile\(/);
   });
 
-  it("removeRecentFile 正确从 recentFiles 中移除指定路径", () => {
+  it("App.tsx 全文不再有任何 removeRecentFile 调用（handleTabClose / closeFile 事件 / closeTabsByPath / handleCloseMany / 启动恢复回调均已移除）", () => {
+    const src = readSrc("../App.tsx");
+    // v0.8.5 需求6：最近打开 = 纯历史记录，所有业务路径都不再删除条目
+    // （文件被删除/移动的失效提示由 markRecentStale 标 ⚠，条目永不删除）
+    expect(src).not.toMatch(/removeRecentFile\(/);
+    // 启动恢复失败回调已改为注入 markRecentStale（标 stale 不移除）
+    expect(src).toMatch(/markRecentStale: \(path\)/);
+  });
+
+  it("removeRecentFile action 本身仍正确移除指定路径（action 保留，业务不再调用）", () => {
     useFileStore.setState({
       recentFiles: [
         { path: "/test/file1.md", name: "file1.md", accessedAt: Date.now() },
@@ -214,33 +236,13 @@ describe("Issue 1: 关闭文件标签页后启动不再载入", () => {
       ],
       openFolders: [],
       recentFolders: [],
+      sessionFolders: [],
       favorites: [],
       tempFiles: [],
     });
 
     useFileStore.getState().removeRecentFile("/test/file1.md");
 
-    expect(useFileStore.getState().recentFiles).toHaveLength(1);
-    expect(useFileStore.getState().recentFiles[0].path).toBe("/test/file2.md");
-  });
-
-  it("关闭文件后 recentFiles 不再包含该文件，启动恢复不会载入", () => {
-    // 模拟打开两个文件
-    useFileStore.setState({
-      recentFiles: [
-        { path: "/test/file1.md", name: "file1.md", accessedAt: Date.now() },
-        { path: "/test/file2.md", name: "file2.md", accessedAt: Date.now() },
-      ],
-      openFolders: [],
-      recentFolders: [],
-      favorites: [],
-      tempFiles: [],
-    });
-
-    // 关闭 file1.md（模拟 App.tsx 中的 closeTab + removeRecentFile）
-    useFileStore.getState().removeRecentFile("/test/file1.md");
-
-    // recentFiles 中应只剩 file2.md
     expect(useFileStore.getState().recentFiles).toHaveLength(1);
     expect(useFileStore.getState().recentFiles[0].path).toBe("/test/file2.md");
   });

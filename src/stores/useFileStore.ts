@@ -42,6 +42,19 @@ export interface RecentFile {
   stale?: boolean;
 }
 
+/**
+ * v0.8.5 需求6：最近打开文件夹条目（与 RecentFile 同构）。
+ * stale = 文件夹被外部删除/移动或恢复失败：条目保留并标记（淡黄 ⚠ + hover 提示），
+ * 成功再次打开同一路径时经 addRecentFolder/addOpenFolder 头插天然清除。
+ */
+export interface RecentFolder {
+  path: string;
+  name: string;
+  accessedAt: number;
+  /** 旧路径已失效标记（可选——旧持久化数据无此字段，读出为 undefined 即"正常"） */
+  stale?: boolean;
+}
+
 interface FileState {
   /** 兼容字段：= openFolders[0]?.path ?? null，旧代码直接读取 */
   rootPath: string | null;
@@ -51,8 +64,18 @@ interface FileState {
   openFolders: OpenFolder[];
   /** 最近打开的文件（最多 MAX_RECENT_FILES=66 条，最新在前；v0.8.4 支持条目级 stale 标记） */
   recentFiles: RecentFile[];
-  /** 最近打开的文件夹（最多 10 条，F3 新增） */
-  recentFolders: { path: string; name: string; accessedAt: number }[];
+  /**
+   * v0.8.5 需求6：最近打开的文件夹（最多 10 条，最新在前）。
+   * v0.8.5 起为纯历史记录：关闭文件夹不再移除条目；文件夹失效时仅标 stale（永不删除）。
+   */
+  recentFolders: RecentFolder[];
+  /**
+   * v0.8.5 需求6：上次会话打开的文件夹快照（启动恢复数据源，与 recentFolders 历史记录解耦）。
+   * openFolders 任何变化（setRootPath/addOpenFolder/removeOpenFolder）时同步更新，
+   * 随 persist 持久化；启动恢复 restoreRecentFolders 读它而非 recentFolders，
+   * 因此"关闭文件夹"只影响快照（下次启动不恢复），不影响最近打开历史条目。
+   */
+  sessionFolders: string[];
   /**
    * 收藏文件列表（后续阶段 G7 使用，预留持久化空数组）。
    * v0.8.4 需求10（P2 拍板）：外部删除/移动时收藏条目同样标 stale（与最近打开行为统一），
@@ -88,13 +111,27 @@ interface FileState {
    * 外部删除场景由 watcher 删除事件调用。
    */
   markFavoriteStale: (oldPath: string) => void;
+  /**
+   * v0.8.5 需求6：把路径匹配的最近打开文件夹条目标记为 stale（文件夹已移动/外部删除，
+   * 或启动恢复失败）。与 markRecentStale 同构：路径归一化（\ → /）后比较；条目保留不清除。
+   * 外部删除场景由 FileTree watch 删除事件接线（主流程）；启动恢复失败由 restoreRecentFolders 调用。
+   */
+  markRecentFolderStale: (oldPath: string) => void;
   /** F3：新增最近打开的文件夹 */
   addRecentFolder: (folder: { path: string; name: string }) => void;
-  /** F3：设置 recentFolders（用于启动恢复失败时移除条目） */
-  setRecentFolders: (folders: { path: string; name: string; accessedAt: number }[]) => void;
-  /** F3：从 recentFolders 中移除指定路径 */
+  /** F3：设置 recentFolders（整表替换） */
+  setRecentFolders: (folders: RecentFolder[]) => void;
+  /**
+   * F3：从 recentFolders 中移除指定路径。
+   * v0.8.5 起业务代码不再调用（最近打开为纯历史，关闭/失效均不移除条目）；
+   * action 保留供未来「手动清理单条历史」等功能使用。
+   */
   removeRecentFolder: (path: string) => void;
-  /** 从 recentFiles 中移除指定路径（启动恢复失败时使用） */
+  /**
+   * 从 recentFiles 中移除指定路径。
+   * v0.8.5 起业务代码不再调用（最近打开为纯历史，关闭标签/删除文件均不移除条目，
+   * 文件失效场景由 markRecentStale 标记）；action 保留供未来手动清理功能使用。
+   */
   removeRecentFile: (path: string) => void;
   /** G7：添加到收藏（按 path 去重，头插，最多 50 条） */
   addFavorite: (file: { path: string; name: string }) => void;
@@ -128,6 +165,7 @@ export const useFileStore = create<FileState>()(
       openFolders: [],
       recentFiles: [],
       recentFolders: [],
+      sessionFolders: [],
       favorites: [],
       tempFiles: [],
 
@@ -144,6 +182,8 @@ export const useFileStore = create<FileState>()(
               openFolders: [folder],
               rootPath: path,
               fileTree: [],
+              // v0.8.5 需求6：同步会话快照（单文件夹语义 = 快照仅此一个）
+              sessionFolders: [path],
               recentFolders: [
                 { path, name, accessedAt: Date.now() },
                 ...state.recentFolders.filter((f) => f.path !== path),
@@ -151,7 +191,7 @@ export const useFileStore = create<FileState>()(
             };
           });
         } else {
-          set({ rootPath: null, fileTree: [], openFolders: [] });
+          set({ rootPath: null, fileTree: [], openFolders: [], sessionFolders: [] });
         }
       },
       // 兼容方法：更新 openFolders[0].fileTree（旧调用点保留）
@@ -189,6 +229,8 @@ export const useFileStore = create<FileState>()(
             // 同步兼容字段指向第一个文件夹（= 最新打开的那个）
             rootPath: openFolders[0]?.path ?? null,
             fileTree: openFolders[0]?.fileTree ?? [],
+            // v0.8.5 需求6：同步会话快照（与 openFolders 顺序一致，头插 = 最优先恢复）
+            sessionFolders: openFolders.map((f) => f.path),
             recentFolders: [
               { path, name, accessedAt: Date.now() },
               ...state.recentFolders.filter((f) => f.path !== path),
@@ -197,8 +239,9 @@ export const useFileStore = create<FileState>()(
         });
       },
       // v0.4.0：移除指定文件夹，同步 rootPath/fileTree 指向新的第一个
-      // v0.4.5 修复：同时从 recentFolders 中移除，避免下次启动时恢复已被用户关闭的文件夹
-      // （recentFolders 仅用于启动恢复，不在 UI 中显示，因此同步移除无副作用）
+      // v0.8.5 需求6：不再从 recentFolders 中移除（最近打开 = 纯历史记录，
+      // 关闭文件夹后条目仍保留在「最近打开」列表中）；启动恢复改读 sessionFolders
+      // 会话快照（下方同步移除），保证下次启动不会恢复已关闭的文件夹。
       removeOpenFolder: (path) => {
         set((state) => {
           const openFolders = state.openFolders.filter((f) => f.path !== path);
@@ -206,8 +249,8 @@ export const useFileStore = create<FileState>()(
             openFolders,
             rootPath: openFolders[0]?.path ?? null,
             fileTree: openFolders[0]?.fileTree ?? [],
-            // 同步移除 recentFolders 中的对应条目，确保启动恢复不会载入已关闭的文件夹
-            recentFolders: state.recentFolders.filter((f) => f.path !== path),
+            // 同步会话快照：仅从恢复数据源中移除，历史条目（recentFolders）不动
+            sessionFolders: openFolders.map((f) => f.path),
           };
         });
       },
@@ -263,6 +306,19 @@ export const useFileStore = create<FileState>()(
           const target = oldPath.replace(/\\/g, "/");
           return {
             favorites: state.favorites.map((f) =>
+              f.path.replace(/\\/g, "/") === target ? { ...f, stale: true } : f
+            ),
+          };
+        }),
+      // v0.8.5 需求6：路径匹配的最近打开文件夹条目标 stale: true（不删除条目）。
+      // 匹配逻辑与 markRecentStale 同构：路径归一化（\ → /）后比较，避免 Windows 下
+      // 分隔符混用导致漏标；条目保留供用户找回，成功重新打开同一路径时经
+      // addRecentFolder/addOpenFolder 头插的新条目（无 stale 字段）天然清除。
+      markRecentFolderStale: (oldPath) =>
+        set((state) => {
+          const target = oldPath.replace(/\\/g, "/");
+          return {
+            recentFolders: state.recentFolders.map((f) =>
               f.path.replace(/\\/g, "/") === target ? { ...f, stale: true } : f
             ),
           };
@@ -343,14 +399,16 @@ export const useFileStore = create<FileState>()(
     }),
     {
       name: "lightmd-file-store",
-      // 持久化 recentFiles / recentFolders / favorites（fileTree 清空，启动时重新读取）
+      // 持久化 recentFiles / recentFolders / favorites / sessionFolders（fileTree 清空，启动时重新读取）
       // Issue 1 修复：不再持久化 openFolders，避免 zustand persist 启动时自动恢复文件夹，
       // 绕过 startupRestore.ts 中 loadLastFolderOnStartup 开关检查。
-      // 启动恢复逻辑只由 restoreRecentFolders 控制，确保开关关闭时不恢复任何文件夹。
+      // v0.8.5 需求6：启动恢复逻辑只由 restoreRecentFolders 读取 sessionFolders（会话快照），
+      // 确保开关关闭时不恢复任何文件夹，且恢复列表与 recentFolders 历史记录解耦。
       partialize: (state) => ({
         recentFiles: state.recentFiles,
         recentFolders: state.recentFolders,
         favorites: state.favorites,
+        sessionFolders: state.sessionFolders,
       }),
     }
   )

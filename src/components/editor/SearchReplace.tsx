@@ -559,16 +559,21 @@ export function SearchReplaceDialog({
  *
  * 为什么需要壳：SearchReplaceDialog 关闭即被卸载，收回动画来不及播放。
  * 本壳采用「延迟卸载」模式（思路同 FileTree 的 SlideWrap）：
- * - 打开（active=true）→ 立即挂载内部面板，CSS 动画 search-genie-in 挂载自动播放；
- * - 关闭（active=false）→ 面板先切 search-genie-out 类播放收回动画，
- *   动画（含尾巴延迟副本）结束后才真正卸载；
+ * - 打开（active=true）→ 立即挂载内部面板与丝带，CSS 动画挂载自动播放；
+ * - 关闭（active=false）→ 面板/丝带先切 out 类播放收回动画，
+ *   动画结束后才真正卸载；
  * - 未打开过 → 不渲染任何 DOM（与原条件渲染行为一致，不引入常驻节点）。
+ *
+ * v0.8.5 反馈5 重做：丝带具象化 —— 新增一条连接底栏搜索按钮与面板的
+ * 垂直光带（.search-genie-ribbon，fixed 定位，坐标由 JS 一次性测量后
+ * 以 CSS 变量注入），面板沿丝带从按钮处滑出/滑回，丝带随后淡出/收回，
+ * 具体编排见 SearchReplace.css。
  *
  * 好处：SearchReplaceDialog 本体零改动——mount 时机仍与原实现一致
  * （editorView prop 等在打开时才求值），卸载清理高亮逻辑也照常触发。
  */
-/** 收回卸载延迟：尾巴最长 40ms delay + 220ms 收回动画 ≈ 260ms，取 280ms 留余量 */
-const GENIE_OUT_MS = 280;
+/** 收回卸载延迟：丝带/面板收回动画 350ms，取 400ms 留余量（反馈5 编排） */
+const GENIE_OUT_MS = 400;
 
 export function GenieSearchDialog(props: SearchReplaceProps & { active: boolean }) {
   const { active, ...rest } = props;
@@ -577,6 +582,30 @@ export function GenieSearchDialog(props: SearchReplaceProps & { active: boolean 
   const [closing, setClosing] = useState(false);
   // effect 内判定"关闭前是否打开过"用 ref 兜底（避免 state 滞后一帧）
   const mountedRef = useRef(active);
+  const shellRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 反馈5：测量底栏搜索按钮与面板的位置，一次性注入丝带/滑出轨迹 CSS 变量
+   * （仅 mount 后与 closing 时各调一次，无监听、无持续开销）。
+   * - --genie-x      按钮中心 x —— 丝带的水平位置
+   * - --genie-from-y 面板顶部平移到按钮顶部的位移 —— 面板滑出/滑回的起终点
+   * - --ribbon-top   丝带顶端 y（面板底部）
+   * - --ribbon-h     丝带高度（按钮顶部 − 面板底部，面板在按钮上方才为正）
+   * 窗口 resize / 拖拽后面板位移：resize 场景少见不做监听（下次开合重新测量）；
+   * 拖拽则在关闭前重新测量覆盖变量，保证滑回轨迹连到按钮。
+   */
+  const syncGenieVars = useCallback(() => {
+    const shell = shellRef.current;
+    const anchor = document.querySelector<HTMLElement>("[data-genie-anchor]");
+    const panel = shell?.querySelector<HTMLElement>(".search-replace");
+    if (!shell || !anchor || !panel) return;
+    const btn = anchor.getBoundingClientRect();
+    const pn = panel.getBoundingClientRect();
+    shell.style.setProperty("--genie-x", `${btn.left + btn.width / 2}px`);
+    shell.style.setProperty("--genie-from-y", `${btn.top - pn.top}px`);
+    shell.style.setProperty("--ribbon-top", `${pn.bottom}px`);
+    shell.style.setProperty("--ribbon-h", `${Math.max(0, btn.top - pn.bottom)}px`);
+  }, []);
 
   useEffect(() => {
     if (active) {
@@ -597,13 +626,37 @@ export function GenieSearchDialog(props: SearchReplaceProps & { active: boolean 
     return () => clearTimeout(timer);
   }, [active]);
 
+  // 打开：等 SearchReplaceDialog 内部初始定位（居中）effect 完成后再测量——
+  // 双层 rAF 确保面板已落到最终位置（fixed 定位坐标就绪）再注入变量
+  useEffect(() => {
+    if (!mounted || closing) return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => syncGenieVars());
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [mounted, closing, syncGenieVars]);
+
+  // 关闭：同步重测（面板可能已被拖拽移动，滑回轨迹须按当前位置连回按钮）
+  useEffect(() => {
+    if (closing) syncGenieVars();
+  }, [closing, syncGenieVars]);
+
   if (!mounted) return null;
   return (
-    // 壳本身无定位样式（子面板为 fixed 悬浮），仅承载 in/out 状态类驱动 CSS 动画
+    // 壳本身无定位样式（子面板/丝带均为 fixed），仅承载 in/out 状态类驱动 CSS 动画
     <div
+      ref={shellRef}
       className={`search-genie${closing ? " search-genie-out" : " search-genie-in"}`}
       data-testid="search-genie"
     >
+      {/* 反馈5：神灯丝带 —— 连接底栏搜索按钮与面板的垂直光带，fixed 定位、
+          坐标由 syncGenieVars 注入的 CSS 变量驱动，z-index 低于面板（10000），
+          位于壳内随壳卸载，无障碍隐藏 */}
+      <div className="search-genie-ribbon" aria-hidden="true" />
       <SearchReplaceDialog {...rest} />
     </div>
   );

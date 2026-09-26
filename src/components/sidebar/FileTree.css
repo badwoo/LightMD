@@ -78,17 +78,17 @@
   flex-direction: column;
   gap: 6px;
   flex-shrink: 0;
-  /* v0.8.5 需求4：max-height 上限取 400px —— 展开瞬间仅输入框（约 40px），
-     结果列表最多约 360px，端点取上限保证任何内容高度下动画首尾均无裁剪；
-     过渡斜率由该数值决定，视觉动效主要由 opacity/translateY 承担 */
-  max-height: 400px;
+  /* v0.8.5 反馈2：动画改水平方向（max-width 宽度过渡）——overflow:hidden 使宽度
+     小于内容时裁剪溢出而非回流挤压，避免文字换行变形（也因此不用 scaleX） */
+  overflow: hidden;
 }
 
-/* v0.8.5 需求4：搜索面板展开动画类（挂载即播，220ms ease-out，
+/* v0.8.5 需求4 → 反馈2：搜索面板展开动画类（挂载即播，220ms ease-out，
    与 FileTree.tsx SEARCH_PANEL_IN_MS 同步）——
-   max-height 0→400px + opacity 0→1 + translateY(-4px)→0。
-   仅用 transform/opacity/max-height，合成层友好；不设 forwards，
-   播完回落到上方规则值 max-height:400px，结果列表可正常撑开 */
+   改为水平方向，从左往右展开：max-width 0→480px（端点取侧栏宽度上限 480px，
+   任何侧栏宽度下动画首尾均无截断）+ opacity 0→1 + translateX(-8px)→0 增强方向感。
+   仅用 transform/opacity/max-width；不设 forwards，播完回落到默认 max-width:none，
+   内容随侧栏宽度自然铺满，结果列表高度自适应照旧 */
 .filetree-search-panel.search-panel-open {
   animation: search-panel-in 220ms ease-out;
 }
@@ -101,32 +101,32 @@
   pointer-events: none;
 }
 
-/* v0.8.5 需求4：搜索面板展开 —— max-height/opacity/translateY 三通道，220ms ease-out */
+/* v0.8.5 反馈2：搜索面板展开 —— max-width/opacity/translateX 三通道（从左往右），220ms ease-out */
 @keyframes search-panel-in {
   from {
-    max-height: 0;
+    max-width: 0;
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateX(-8px);
   }
   to {
-    max-height: 400px;
+    max-width: 480px;
     opacity: 1;
-    transform: translateY(0);
+    transform: translateX(0);
   }
 }
 
-/* v0.8.5 需求4：搜索面板收回 —— 展开的反向（400px→0 / 1→0 / 0→-4px），180ms ease-in；
+/* v0.8.5 反馈2：搜索面板收回 —— 展开的反向（480px→0 / 1→0 / 0→-8px，向左收合），180ms ease-in；
    forwards 保持收起末态，等待 TSX 延迟卸载 */
 @keyframes search-panel-out {
   from {
-    max-height: 400px;
+    max-width: 480px;
     opacity: 1;
-    transform: translateY(0);
+    transform: translateX(0);
   }
   to {
-    max-height: 0;
+    max-width: 0;
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateX(-8px);
   }
 }
 

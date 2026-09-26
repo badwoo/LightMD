@@ -4,8 +4,10 @@
  * 覆盖：
  * 1. 需求1：工具栏「文件管理」全局刷新按钮已移除（rootPath 有值——原渲染条件——也不渲染）；
  *    空白右键菜单「刷新」项保留（其余刷新入口：Ctrl+R / FileNode 文件夹右键「刷新」）
- * 2. 需求3：md/markdown/mdown 节点图标为内联 SVG（含淡蓝灰笔杆 #9db4c8 / 深灰笔尖 #5a6b7a
- *    的淡色笔配色）；txt 等其他类型仍为 emoji 文本
+ * 2. v0.8.5 反馈1：md/markdown/mdown 节点图标恢复为原 📝 emoji（回滚内联 SVG 方案）；
+ *    txt 等其他类型仍为 emoji 文本
+ * 2b. v0.8.5 反馈7：「打开的文件」条目图标改为打开的小书本 SVG —— 未落盘临时文件
+ *     黄 #e0a458 / 真实文件蓝 #5c9dff，形状为左右两页对称 path（中缝 x=7.5/8.5）
  * 3. 需求4：搜索面板挂载带展开动画类（search-panel-open）；toggle/Esc 关闭 → 收回动画类
  *    （search-panel-closing）→ 动画播完（180ms）才延迟卸载；输入过滤功能不回退
  * 4. 需求5：排序下拉挂载带展开动画类（sort-menu-open）；三条关闭路径
@@ -116,21 +118,18 @@ describe("v0.8.5 需求1：工具栏全局刷新按钮移除", () => {
   });
 });
 
-// ─── 需求3：md 图标改为内联 SVG 淡色笔 ────────────────────
-describe("v0.8.5 需求3：md 文件图标为内联 SVG 淡色笔", () => {
-  it("md/markdown/mdown 节点图标为 svg，含淡蓝灰笔杆 #9db4c8 与深灰笔尖 #5a6b7a", () => {
+// ─── v0.8.5 反馈1：md 图标恢复 📝 emoji ────────────────────
+describe("v0.8.5 反馈1：md 文件图标恢复 📝 emoji", () => {
+  it("md/markdown/mdown 节点图标为 📝 文本（无 svg）", () => {
     render(createElement(FileTree));
     for (const name of ["a.md", "b.markdown", "c.mdown"]) {
       const icon = document.querySelector(
         `.filetree-node[title="${ROOT}/${name}"] .filetree-icon`,
       ) as HTMLElement | null;
       expect(icon, name).toBeTruthy();
-      const svg = icon!.querySelector("svg");
-      expect(svg, name).toBeTruthy();
-      const html = svg!.innerHTML;
-      // 淡色笔配色（笔杆淡蓝灰 / 笔尖深灰）——替代原 📝 的红色铅笔观感
-      expect(html, name).toContain("#9db4c8");
-      expect(html, name).toContain("#5a6b7a");
+      // 回滚内联 SVG 方案：不应再有 svg，且文本恢复为 📝 emoji
+      expect(icon!.querySelector("svg"), name).toBeNull();
+      expect(icon!.textContent, name).toBe("📝");
     }
   });
 
@@ -142,6 +141,58 @@ describe("v0.8.5 需求3：md 文件图标为内联 SVG 淡色笔", () => {
     expect(icon).toBeTruthy();
     expect(icon!.querySelector("svg")).toBeNull();
     expect(icon!.textContent).toBe("📄");
+  });
+});
+
+// ─── v0.8.5 反馈7：「打开的文件」条目图标为打开的小书本 ──────────
+describe("v0.8.5 反馈7：打开的文件条目图标为打开的小书本", () => {
+  /** 在树形工作区基础上，追加一个未落盘临时标签 + 一个真实文件标签（面板同时承载两类条目） */
+  function setupOpenFiles() {
+    useEditorStore.setState({
+      openTabs: [
+        { path: "", name: "未命名", isUntitled: true, id: "untitled-1" },
+        { path: `${ROOT}/a.md`, name: "a.md" },
+      ],
+      activeTabIdx: 0,
+    });
+    useFileStore.setState({
+      tempFiles: [{ name: "a.md", path: `${ROOT}/a.md`, isDir: false, size: 10 }],
+    });
+  }
+
+  it("未落盘临时条目图标为书本 SVG（黄色 #e0a458，两页 path 为书本形状）", () => {
+    setupOpenFiles();
+    render(createElement(FileTree));
+    const icon = document.querySelector(
+      ".filetree-untitled-node .filetree-icon",
+    ) as HTMLElement | null;
+    expect(icon).toBeTruthy();
+    const svg = icon!.querySelector("svg");
+    expect(svg).toBeTruthy();
+    const html = svg!.innerHTML;
+    // 颜色保持原黄色
+    expect(html).toContain("#e0a458");
+    // 书本形状：左右两页 path（中缝 x=7.5 / x=8.5）——替代旧"纸张"path（M9.5 1.1）
+    expect(html).toContain("M7.5 3.7");
+    expect(html).toContain("M8.5 3.7");
+    expect(html).not.toContain("M9.5 1.1");
+  });
+
+  it("真实文件条目图标为书本 SVG（蓝色 #5c9dff，同款书本形状）", () => {
+    setupOpenFiles();
+    render(createElement(FileTree));
+    const icon = document.querySelector(
+      ".filetree-temp-node:not(.filetree-untitled-node) .filetree-icon",
+    ) as HTMLElement | null;
+    expect(icon).toBeTruthy();
+    const svg = icon!.querySelector("svg");
+    expect(svg).toBeTruthy();
+    const html = svg!.innerHTML;
+    // 颜色保持原蓝色
+    expect(html).toContain("#5c9dff");
+    expect(html).toContain("M7.5 3.7");
+    expect(html).toContain("M8.5 3.7");
+    expect(html).not.toContain("M9.5 1.1");
   });
 });
 
@@ -310,16 +361,41 @@ function extractKeyframes(css: string, name: string): string {
   throw new Error(`keyframes ${name} 未闭合`);
 }
 
+/** 截取指定选择器规则块源文本（从选择器到配对大括号结束） */
+function extractRule(css: string, selector: string): string {
+  const start = css.indexOf(selector);
+  expect(start, `应存在 ${selector}`).toBeGreaterThanOrEqual(0);
+  let depth = 0;
+  for (let i = start; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}") {
+      depth--;
+      if (depth === 0) return css.slice(start, i + 1);
+    }
+  }
+  throw new Error(`规则 ${selector} 未闭合`);
+}
+
 describe("v0.8.5 需求4/5：FileTree.css 动画源文本断言", () => {
-  it("搜索面板两组 keyframes 存在且含 max-height/opacity/translateY 动画通道", () => {
+  it("搜索面板动画为水平方向：keyframes 含 max-width/opacity/translateX，无 max-height/translateY 残留", () => {
+    // 反馈2：动画通道从垂直（max-height + translateY）改为水平（max-width + translateX）
     const inAnim = extractKeyframes(treeCss, "search-panel-in");
-    expect(inAnim).toContain("max-height");
+    expect(inAnim).toContain("max-width");
     expect(inAnim).toContain("opacity");
-    expect(inAnim).toContain("translateY(-4px)");
+    expect(inAnim).toContain("translateX(-8px)");
+    expect(inAnim).toContain("translateX(0)");
+    expect(inAnim).not.toContain("max-height");
+    expect(inAnim).not.toContain("translateY");
     const outAnim = extractKeyframes(treeCss, "search-panel-out");
-    expect(outAnim).toContain("max-height");
+    expect(outAnim).toContain("max-width");
     expect(outAnim).toContain("opacity");
-    expect(outAnim).toContain("translateY(-4px)");
+    expect(outAnim).toContain("translateX(-8px)");
+    expect(outAnim).not.toContain("max-height");
+    expect(outAnim).not.toContain("translateY");
+    // 基础规则：max-height 已删除；overflow:hidden 保证宽度动画裁剪内容而非回流挤压
+    const panelRule = extractRule(treeCss, ".filetree-search-panel {");
+    expect(panelRule).not.toContain("max-height");
+    expect(panelRule).toContain("overflow: hidden");
   });
 
   it("排序下拉两组 keyframes 存在且含 opacity/translateY 动画通道", () => {

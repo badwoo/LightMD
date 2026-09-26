@@ -72,6 +72,14 @@ function genFolders(n: number) {
   }));
 }
 
+/**
+ * v0.8.5 需求6：生成 N 条会话快照路径（folder-1 … folder-N）。
+ * 启动恢复数据源 = sessionFolders（上次会话打开文件夹快照），与 recentFolders 解耦。
+ */
+function genSessionFolders(n: number) {
+  return Array.from({ length: n }, (_, i) => `/test/folder-${i + 1}`);
+}
+
 const mockedFileService = fileService as unknown as {
   readFile: ReturnType<typeof vi.fn>;
   listDir: ReturnType<typeof vi.fn>;
@@ -93,7 +101,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -111,7 +119,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -132,7 +140,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -148,7 +156,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -164,7 +172,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -180,14 +188,14 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
     expect(result.restored).toBe(1);
   });
 
-  it("文件不存在时静默跳过并调用 removeRecentFile", async () => {
+  it("文件不存在时静默跳过并调用 markRecentStale（v0.8.5 标 stale 不移除条目）", async () => {
     setSettings({ loadLastFileOnStartup: true, loadLastFileCount: 3 });
     setFileStore({ recentFiles: genFiles(3) });
     // 第 2 个文件读取失败
@@ -199,17 +207,18 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     });
 
     const dispatched: Array<{ path: string; content: string }> = [];
-    const removedPaths: string[] = [];
+    const stalePaths: string[] = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: (path) => removedPaths.push(path),
+      markRecentStale: (path) => stalePaths.push(path),
       isTauriEnv: true,
     });
 
     expect(result.restored).toBe(2);
     expect(result.skipped).toBe(1);
     expect(dispatched).toHaveLength(2);
-    expect(removedPaths).toEqual(["/test/file-2.md"]);
+    // v0.8.5 需求6：失败文件被标 stale（回调收到路径），条目本身不再被移除
+    expect(stalePaths).toEqual(["/test/file-2.md"]);
     // 失败的文件未被 dispatch
     expect(dispatched.find((d) => d.path === "/test/file-2.md")).toBeUndefined();
   });
@@ -221,7 +230,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -236,7 +245,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: false,
     });
 
@@ -253,7 +262,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -269,7 +278,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     const dispatched: Array<{ path: string; content: string }> = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -295,7 +304,7 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
       dispatchOpenFile: (detail) => {
         dispatchOrder.push(`dispatch:${detail.path}`);
       },
-      removeRecentFile: () => {},
+      markRecentStale: () => {},
       isTauriEnv: true,
     });
 
@@ -317,17 +326,17 @@ describe("F2: restoreRecentFiles 多文件恢复", () => {
     mockedFileService.readFile.mockRejectedValue(new Error("all gone"));
 
     const dispatched: Array<{ path: string; content: string }> = [];
-    const removedPaths: string[] = [];
+    const stalePaths: string[] = [];
     const result = await restoreRecentFiles({
       dispatchOpenFile: (detail) => dispatched.push(detail),
-      removeRecentFile: (path) => removedPaths.push(path),
+      markRecentStale: (path) => stalePaths.push(path),
       isTauriEnv: true,
     });
 
     expect(result.restored).toBe(0);
     expect(result.skipped).toBe(3);
     expect(dispatched).toHaveLength(0);
-    expect(removedPaths).toHaveLength(3);
+    expect(stalePaths).toHaveLength(3);
   });
 });
 
@@ -340,14 +349,14 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
   it("loadLastFolderOnStartup=false 时不恢复", async () => {
     setSettings({ loadLastFolderOnStartup: false, loadLastFolderCount: 1 });
-    setFileStore({ recentFolders: genFolders(3) });
+    setFileStore({ sessionFolders: genSessionFolders(3) });
 
     let setRootCalled = false;
     const result = await restoreRecentFolders({
       setRootPath: () => {
         setRootCalled = true;
       },
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -358,7 +367,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
   it("N=1 时恢复第一个文件夹为 rootPath", async () => {
     setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 1 });
-    setFileStore({ recentFolders: genFolders(3) });
+    setFileStore({ sessionFolders: genSessionFolders(3) });
     mockedFileService.listDir.mockResolvedValue([]);
 
     let setRootPathValue: string | null = null;
@@ -366,7 +375,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
       setRootPath: (path) => {
         setRootPathValue = path;
       },
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -377,12 +386,12 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
   it("N 超过 5 时被钳制到 5", async () => {
     setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 100 });
-    setFileStore({ recentFolders: genFolders(8) });
+    setFileStore({ sessionFolders: genSessionFolders(8) });
     mockedFileService.listDir.mockResolvedValue([]);
 
     const result = await restoreRecentFolders({
       setRootPath: () => {},
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -394,7 +403,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
   it("第一个文件夹不存在时尝试下一个", async () => {
     setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 3 });
-    setFileStore({ recentFolders: genFolders(3) });
+    setFileStore({ sessionFolders: genSessionFolders(3) });
     // 第 1 个失败，第 2 个成功
     mockedFileService.listDir.mockImplementation(async (path: string) => {
       if (path === "/test/folder-1") throw new Error("not exists");
@@ -402,12 +411,12 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
     });
 
     let setRootPathValue: string | null = null;
-    const removedFolders: string[] = [];
+    const staleFolders: string[] = [];
     const result = await restoreRecentFolders({
       setRootPath: (path) => {
         setRootPathValue = path;
       },
-      removeRecentFolder: (path) => removedFolders.push(path),
+      markRecentFolderStale: (path) => staleFolders.push(path),
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -415,21 +424,22 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
     expect(result.restored).toBe(1);
     expect(result.skipped).toBe(1);
     expect(setRootPathValue).toBe("/test/folder-2");
-    expect(removedFolders).toEqual(["/test/folder-1"]);
+    // v0.8.5 需求6：失败的文件夹被标 stale（回调收到路径），条目不再被移除
+    expect(staleFolders).toEqual(["/test/folder-1"]);
   });
 
   it("所有文件夹都不存在时静默跳过所有，不调用 setRootPath", async () => {
     setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 3 });
-    setFileStore({ recentFolders: genFolders(3) });
+    setFileStore({ sessionFolders: genSessionFolders(3) });
     mockedFileService.listDir.mockRejectedValue(new Error("all gone"));
 
     let setRootCalled = false;
-    const removedFolders: string[] = [];
+    const staleFolders: string[] = [];
     const result = await restoreRecentFolders({
       setRootPath: () => {
         setRootCalled = true;
       },
-      removeRecentFolder: (path) => removedFolders.push(path),
+      markRecentFolderStale: (path) => staleFolders.push(path),
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -437,19 +447,19 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
     expect(result.restored).toBe(0);
     expect(result.skipped).toBe(3);
     expect(setRootCalled).toBe(false);
-    expect(removedFolders).toHaveLength(3);
+    expect(staleFolders).toHaveLength(3);
   });
 
   it("非 Tauri 环境不恢复", async () => {
     setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 3 });
-    setFileStore({ recentFolders: genFolders(3) });
+    setFileStore({ sessionFolders: genSessionFolders(3) });
 
     let setRootCalled = false;
     const result = await restoreRecentFolders({
       setRootPath: () => {
         setRootCalled = true;
       },
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: false,
       delayMs: 0,
     });
@@ -467,7 +477,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
       setRootPath: () => {
         setRootCalled = true;
       },
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -478,13 +488,13 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
   it("delayMs > 0 时延迟执行", async () => {
     setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 1 });
-    setFileStore({ recentFolders: genFolders(1) });
+    setFileStore({ sessionFolders: genSessionFolders(1) });
     mockedFileService.listDir.mockResolvedValue([]);
 
     const start = Date.now();
     await restoreRecentFolders({
       setRootPath: () => {},
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 50,
     });
@@ -494,12 +504,12 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
   it("N 小于 1 时被钳制到 1", async () => {
     setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 0 });
-    setFileStore({ recentFolders: genFolders(3) });
+    setFileStore({ sessionFolders: genSessionFolders(3) });
     mockedFileService.listDir.mockResolvedValue([]);
 
     const result = await restoreRecentFolders({
       setRootPath: () => {},
-      removeRecentFolder: () => {},
+      markRecentFolderStale: () => {},
       isTauriEnv: true,
       delayMs: 0,
     });
@@ -511,7 +521,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
   describe("v0.3.0 问题2：恢复文件夹时派发 openFolder 事件", () => {
     it("恢复成功时调用 dispatchOpenFolder 派发恢复的文件夹路径", async () => {
       setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 1 });
-      setFileStore({ recentFolders: genFolders(3) });
+      setFileStore({ sessionFolders: genSessionFolders(3) });
       mockedFileService.listDir.mockResolvedValue([]);
 
       let dispatchedPath: string | null = null;
@@ -520,7 +530,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
         dispatchOpenFolder: (path) => {
           dispatchedPath = path;
         },
-        removeRecentFolder: () => {},
+        markRecentFolderStale: () => {},
         isTauriEnv: true,
         delayMs: 0,
       });
@@ -531,7 +541,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
     it("dispatchOpenFolder 在 setRootPath 之前调用（确保 FileTree 先加载文件树）", async () => {
       setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 1 });
-      setFileStore({ recentFolders: genFolders(1) });
+      setFileStore({ sessionFolders: genSessionFolders(1) });
       mockedFileService.listDir.mockResolvedValue([]);
 
       const callOrder: string[] = [];
@@ -542,7 +552,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
         dispatchOpenFolder: () => {
           callOrder.push("dispatchOpenFolder");
         },
-        removeRecentFolder: () => {},
+        markRecentFolderStale: () => {},
         isTauriEnv: true,
         delayMs: 0,
       });
@@ -553,7 +563,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
     it("所有文件夹都不存在时不调用 dispatchOpenFolder", async () => {
       setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 3 });
-      setFileStore({ recentFolders: genFolders(3) });
+      setFileStore({ sessionFolders: genSessionFolders(3) });
       mockedFileService.listDir.mockRejectedValue(new Error("not exists"));
 
       let dispatchedCount = 0;
@@ -562,7 +572,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
         dispatchOpenFolder: () => {
           dispatchedCount++;
         },
-        removeRecentFolder: () => {},
+        markRecentFolderStale: () => {},
         isTauriEnv: true,
         delayMs: 0,
       });
@@ -573,7 +583,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
     it("第一个文件夹失败、第二个成功时，dispatchOpenFolder 派发的是成功文件夹路径", async () => {
       setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 3 });
-      setFileStore({ recentFolders: genFolders(3) });
+      setFileStore({ sessionFolders: genSessionFolders(3) });
       mockedFileService.listDir.mockImplementation(async (path: string) => {
         if (path === "/test/folder-1") throw new Error("not exists");
         return [];
@@ -585,7 +595,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
         dispatchOpenFolder: (path) => {
           dispatchedPath = path;
         },
-        removeRecentFolder: () => {},
+        markRecentFolderStale: () => {},
         isTauriEnv: true,
         delayMs: 0,
       });
@@ -596,7 +606,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
     it("未传入 dispatchOpenFolder 时向后兼容（不报错）", async () => {
       setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 1 });
-      setFileStore({ recentFolders: genFolders(1) });
+      setFileStore({ sessionFolders: genSessionFolders(1) });
       mockedFileService.listDir.mockResolvedValue([]);
 
       let setRootPathValue: string | null = null;
@@ -605,7 +615,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
         setRootPath: (path) => {
           setRootPathValue = path;
         },
-        removeRecentFolder: () => {},
+        markRecentFolderStale: () => {},
         isTauriEnv: true,
         delayMs: 0,
       });
@@ -616,7 +626,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
     it("loadLastFolderOnStartup=false 时不调用 dispatchOpenFolder", async () => {
       setSettings({ loadLastFolderOnStartup: false, loadLastFolderCount: 1 });
-      setFileStore({ recentFolders: genFolders(3) });
+      setFileStore({ sessionFolders: genSessionFolders(3) });
 
       let dispatchedCount = 0;
       const result = await restoreRecentFolders({
@@ -624,7 +634,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
         dispatchOpenFolder: () => {
           dispatchedCount++;
         },
-        removeRecentFolder: () => {},
+        markRecentFolderStale: () => {},
         isTauriEnv: true,
         delayMs: 0,
       });
@@ -635,7 +645,7 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
 
     it("非 Tauri 环境不调用 dispatchOpenFolder", async () => {
       setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 1 });
-      setFileStore({ recentFolders: genFolders(3) });
+      setFileStore({ sessionFolders: genSessionFolders(3) });
 
       let dispatchedCount = 0;
       const result = await restoreRecentFolders({
@@ -643,13 +653,61 @@ describe("F3: restoreRecentFolders 文件夹恢复", () => {
         dispatchOpenFolder: () => {
           dispatchedCount++;
         },
-        removeRecentFolder: () => {},
+        markRecentFolderStale: () => {},
         isTauriEnv: false,
         delayMs: 0,
       });
 
       expect(result.restored).toBe(0);
       expect(dispatchedCount).toBe(0);
+    });
+  });
+
+  // ─── v0.8.5 需求6：旧版本数据兼容回退 ──────────────────────
+  describe("v0.8.5 需求6：无 sessionFolders 字段时回退 recentFolders", () => {
+    it("持久化数据无 sessionFolders 字段（旧版本数据）时回退读取 recentFolders 路径", async () => {
+      setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 2 });
+      // 旧版本持久化数据只有 recentFolders（对象数组），无 sessionFolders 字段
+      setFileStore({ recentFolders: genFolders(3) });
+      mockedFileService.listDir.mockResolvedValue([]);
+
+      const added: string[] = [];
+      const result = await restoreRecentFolders({
+        count: 2,
+        addOpenFolder: (path) => added.push(path),
+        updateFolderTree: () => {},
+        markRecentFolderStale: () => {},
+        isTauriEnv: true,
+        delayMs: 0,
+      });
+
+      // 回退：按 recentFolders 中的路径顺序恢复 folder-1、folder-2
+      expect(result.restored).toBe(2);
+      expect(added).toEqual(["/test/folder-1", "/test/folder-2"]);
+    });
+
+    it("sessionFolders 为显式空数组（上次会话未开文件夹）时不回退、不恢复", async () => {
+      setSettings({ loadLastFolderOnStartup: true, loadLastFolderCount: 2 });
+      // 新版本数据：sessionFolders 显式为空（用户上次没开文件夹），
+      // 即使 recentFolders 历史里还有条目也不应恢复（历史 ≠ 会话快照）
+      setFileStore({
+        sessionFolders: [],
+        recentFolders: genFolders(2),
+      });
+      mockedFileService.listDir.mockResolvedValue([]);
+
+      const added: string[] = [];
+      const result = await restoreRecentFolders({
+        count: 2,
+        addOpenFolder: (path) => added.push(path),
+        updateFolderTree: () => {},
+        markRecentFolderStale: () => {},
+        isTauriEnv: true,
+        delayMs: 0,
+      });
+
+      expect(result.restored).toBe(0);
+      expect(added).toHaveLength(0);
     });
   });
 });

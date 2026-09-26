@@ -258,10 +258,12 @@ export function StatusBar() {
             </button>
           </span>
         )}
-        {/* 搜索入口：放大镜图标 + "搜索"文字，点击切换开关 */}
+        {/* 搜索入口：放大镜图标 + "搜索"文字，点击切换开关
+            data-genie-anchor：神灯丝带动画的锚点标识（GenieSearchDialog 据此定位丝带） */}
         <button
           className={`statusbar-toggle ${showSearch ? "active" : ""}`}
           title={t("search.placeholder")}
+          data-genie-anchor="search"
           onClick={toggleSearch}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">

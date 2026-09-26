@@ -350,9 +350,9 @@ function App() {
       // 关闭当前活跃标签
       if (openTabs.length > 0) {
         const closedTab = closeTab(activeTabIdx);
-        // v0.4.5 修复：同步从 recentFiles 中移除，避免下次启动时恢复已被用户关闭的文件
+        // v0.8.5 需求6：最近打开为纯历史记录，关闭标签不再从 recentFiles 中移除条目
+        // （旧 v0.4.5 行为已废弃——关闭文件后历史条目保留，供下次快速找回）
         if (closedTab) {
-          useFileStore.getState().removeRecentFile(closedTab.path);
           // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
           // v0.8.3 WP4 需求6：未落盘标签按 untitled:<id> 键清理（path 为空串，
           // 走 path 分支的 clear 会因空串被 fileScrollProgress 直接忽略）
@@ -626,8 +626,10 @@ function App() {
               new CustomEvent("lightmd:openFile", { detail })
             );
           },
-          removeRecentFile: (path) => {
-            useFileStore.getState().removeRecentFile(path);
+          // v0.8.5 需求6：恢复失败的文件（已被删除/移动）仅标 stale（⚠ 提示），
+          // 不再从 recentFiles 中移除（最近打开 = 纯历史，永不删除）
+          markRecentStale: (path) => {
+            useFileStore.getState().markRecentStale(path);
           },
         });
         // 问题8修复：恢复完成后，切换到第一个打开的文件（即 recentFiles[0]，最后打开的文件）
@@ -709,8 +711,10 @@ function App() {
             }));
             useFileStore.getState().updateFolderTree(path, nodes);
           },
-          removeRecentFolder: (path) => {
-            useFileStore.getState().removeRecentFolder(path);
+          // v0.8.5 需求6：恢复失败的文件夹（已被删除/移动）仅标 stale（⚠ 提示），
+          // 不再从 recentFolders 中移除（最近打开 = 纯历史，永不删除）
+          markRecentFolderStale: (path) => {
+            useFileStore.getState().markRecentFolderStale(path);
           },
           // v0.8.4 需求10：恢复成功的文件夹补注册 watcher（启动恢复不走 openFolderAt）；
           // 失败静默（startupRestore 内已 catch），可用工具栏刷新兜底
@@ -955,8 +959,8 @@ function App() {
     closeTab(idx);
     // v0.8.0 WP1：临时标签（path 为空）不参与 recentFiles / 滚动进度 / 左侧临时文件列表
     if (tab.path) {
-      // v0.4.5 修复：同步从 recentFiles 中移除，避免下次启动时恢复已被用户关闭的文件
-      useFileStore.getState().removeRecentFile(tab.path);
+      // v0.8.5 需求6：最近打开为纯历史记录，关闭标签不再从 recentFiles 中移除条目
+      // （旧 v0.4.5 行为已废弃——关闭后历史条目保留，供下次快速找回）
       // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
       fileScrollProgress.clear(tab.path);
       // 同步移除左侧"打开的文件"中的临时文件
@@ -995,8 +999,7 @@ function App() {
       const tab = useEditorStore.getState().openTabs[i];
       if (!tab) continue;
       if (tab.path) {
-        // v0.4.5 修复：同步从 recentFiles 中移除
-        useFileStore.getState().removeRecentFile(tab.path);
+        // v0.8.5 需求6：最近打开为纯历史记录，批量关闭不再从 recentFiles 中移除条目
         // v0.7.0 bug修复：关闭标签清除浏览进度
         fileScrollProgress.clear(tab.path);
         // 同步移除左侧"打开的文件"中的临时文件
@@ -1419,7 +1422,8 @@ function App() {
       const p = openTabs[i]?.path;
       closeTab(i);
       if (p) {
-        useFileStore.getState().removeRecentFile(p);
+        // v0.8.5 需求6：最近打开为纯历史记录，文件删除后不再从 recentFiles 中移除条目；
+        // 条目的失效提示由 FileTree watcher 的删除事件（markRecentStale）标记 ⚠
         fileScrollProgress.clear(p);
         const { tempFiles } = useFileStore.getState();
         if (tempFiles.some((f) => f.path === p)) useFileStore.getState().removeTempFile(p);

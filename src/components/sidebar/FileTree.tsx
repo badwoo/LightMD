@@ -183,6 +183,23 @@ export const SEARCH_PANEL_IN_MS = 220;
 export const SEARCH_PANEL_OUT_MS = 180;
 
 /**
+ * v0.8.5 反馈7：「打开的文件」条目图标 —— 打开的小书本形状（替代原"纸张"path）。
+ * emoji 无法指定颜色，故用自绘单色剪影 SVG：左右两页对称（中缝在 x=8，两页间留
+ * 1px 缝隙露出底色形成书脊凹口），页顶向中缝下斜、页底向中缝下垂，呈现翻开书本轮廓；
+ * 颜色由调用处传入 —— 真实文件蓝 #5c9dff、未落盘临时文件黄 #e0a458（保持原配色）。
+ */
+function OpenBookIcon({ color }: { color: string }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+      {/* 左页：书脊外缘 x=1.5，右缘为中缝 x=7.5（与右页间留缝） */}
+      <path d="M7.5 3.7C6.4 2.6 4.3 2.2 2.2 2.4l-.7.1v9.4l.7.1c2.1-.1 4 .4 5.3 1.4V3.7z" fill={color} />
+      {/* 右页：与左页镜像对称（书脊外缘 x=14.5，左缘为中缝 x=8.5） */}
+      <path d="M8.5 3.7v9.7c1.3-1 3.2-1.5 5.3-1.4l.7-.1V2.5l-.7-.1c-2.1-.2-4.2.2-5.3 1.3z" fill={color} />
+    </svg>
+  );
+}
+
+/**
  * v0.8.2 修复：命令总线 id —— 标题栏「新建 > 新建文件夹」通过它触发侧栏的新建文件夹弹框。
  *
  * 此前 App.tsx 收到标题栏菜单事件后走的是原生 `prompt()` + 保存对话框，
@@ -1424,11 +1441,13 @@ export function FileTree() {
       pending.delete(root);
       const paths = Array.from(item.paths);
       if (item.hasRemove) {
-        // 删除事件 → stale 联动（markRecentStale/markFavoriteStale 仅匹配各自清单，
-        // 数据层已做归一化匹配；成功重新打开同路径时经 addRecentFile 天然清除）
+        // 删除事件 → stale 联动（markRecentStale/markRecentFolderStale/markFavoriteStale
+        // 仅匹配各自清单，数据层已做归一化匹配；成功重新打开同路径时天然清除。
+        // v0.8.5：最近打开为纯历史——外部删除/移出只标 ⚠，永不移除条目）
         const fileStore = useFileStore.getState();
         for (const p of paths) {
           fileStore.markRecentStale(p);
+          fileStore.markRecentFolderStale(p);
           fileStore.markFavoriteStale(p);
         }
         // 根目录自身在删除事件中且该栏仍打开 → toast 提示（不自动关闭）
@@ -2303,7 +2322,8 @@ export function FileTree() {
             title={t("filetree.untitledHint")}
           >
             <span className="filetree-icon">
-              <svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 1.1l3.4 3.5.1.4v10l-.5.5h-9l-.5-.5v-13l.5-.5h6.7l.3.1zM9 2v3h2.9L9 2z" fill="#e0a458"/></svg>
+              {/* v0.8.5 反馈7：图标改为打开的小书本（未落盘临时文件 = 黄色） */}
+              <OpenBookIcon color="#e0a458" />
             </span>
             <span className="filetree-name">{tab.name}</span>
             {tab.isDirty ? <span className="filetree-untitled-dirty">●</span> : null}
@@ -2359,7 +2379,8 @@ export function FileTree() {
             title={file.path}
           >
             <span className="filetree-icon">
-              <svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 1.1l3.4 3.5.1.4v10l-.5.5h-9l-.5-.5v-13l.5-.5h6.7l.3.1zM9 2v3h2.9L9 2z" fill="#5c9dff"/></svg>
+              {/* v0.8.5 反馈7：图标改为打开的小书本（真实文件 = 蓝色） */}
+              <OpenBookIcon color="#5c9dff" />
             </span>
             {isRenaming ? (
               <input
