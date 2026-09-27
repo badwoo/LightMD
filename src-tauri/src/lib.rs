@@ -72,27 +72,19 @@ fn route_file_to_primary(app: &tauri::AppHandle, path: String) {
 
 /// 应用退出前收尾：落盘会话快照 + 释放文件 watcher + 取消全部在途 AI 任务。
 ///
-/// 会话规则（v0.9.0 用户反馈后的口径）：
-/// - 只在**还有存活窗口**时重写快照——「逐个关闭窗口直到最后」的路径不能把上一次
-///   有效会话覆盖成空，否则主窗口的标签恢复也会丢；
-/// - 显式退出（`quit_app`）时窗口仍存活，此处会写完整窗口集合；
-/// - 纯单窗口会话（`ever_multi_window == false`）删除会话文件，保持 v0.8.5 语义（REG-1）。
+/// 会话规则（v0.9.0 第二轮修订）：
+/// - 快照 = 此刻仍存活的窗口 + 主窗口的最后状态副本（`WindowManager::main_state`），
+///   因此**无论此刻是否还有存活窗口都写一次**——「逐个关闭窗口直到最后」是最常见的
+///   退出方式，主窗口的标签/文件夹必须留在文件里，否则下次启动主窗口空白
+///   （用户反馈：关闭窗口选"不保存"后重开，所有标签都被关闭了）；
+/// - 纯单窗口且从未有过会话文件的用户：删除会话文件，保持 v0.8.5 语义（REG-1）。
 fn finalize_session(app: &tauri::AppHandle) {
     let state = app.state::<AppWindowManager>();
-    let (ever_multi, live, snapshot) = {
+    let (ever_multi, snapshot) = {
         let mgr = state.lock();
-        (
-            mgr.ever_multi_window(),
-            mgr.window_count(),
-            mgr.snapshot_with(window::now_ms()),
-        )
+        (mgr.ever_multi_window(), mgr.snapshot_with(window::now_ms()))
     };
-    if live > 0 {
-        window_cmds::persist_session(app, ever_multi, &snapshot);
-    } else if !ever_multi {
-        // 单窗口会话：删掉可能遗留的会话文件
-        let _ = window::session::remove_session(app);
-    }
+    window_cmds::persist_session(app, ever_multi, &snapshot);
     window::open_files::clear_file_watchers();
     app.state::<TranslateState>().cancel_all();
 }
@@ -255,6 +247,8 @@ pub fn run() {
             window_cmds::get_window_session,
             window_cmds::restore_windows,
             window_cmds::discard_session,
+            // v0.9.0 第二轮修复：只裁掉会话里的辅助窗口条目（保留主窗口标签/文件夹）
+            window_cmds::prune_session_secondaries,
             // v0.9.0：显式退出（写完整窗口集合后退出，供「恢复其他窗口」下次还原）
             window_cmds::quit_app,
         ])

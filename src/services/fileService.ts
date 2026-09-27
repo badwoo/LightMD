@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { notifyError } from "./notificationService";
 import { getWindowLabel } from "../utils/windowLabel";
+import { noteSelfWrittenFile } from "./selfWriteGuard";
 
 export interface FileEntry {
   name: string;
@@ -50,6 +51,10 @@ export const fileService = {
   async writeFile(path: string, content: string): Promise<void> {
     try {
       await invoke("write_file", { path, content });
+      // v0.9.0 第二轮修复（问题3）：登记自身写盘的内容指纹。
+      // Rust 侧按 mtime 抑制 watcher 事件存在毫秒级竞态，前端用内容比对兜底，
+      // 确保「保存成功」不会被随后的 watcher 回声误判为「文件已被外部修改」。
+      noteSelfWrittenFile(path, content);
     } catch (err) {
       const msg = wrapError("保存文件失败", err);
       notifyError(msg);

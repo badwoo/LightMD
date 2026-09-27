@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use notify::Watcher;
 use serde::Serialize;
@@ -119,12 +119,32 @@ static FILE_WATCHERS: OnceLock<Mutex<HashMap<String, notify::RecommendedWatcher>
 /// path → 最近一次已上报的 mtime（毫秒），用于「同 mtime 只上报一次」
 static FILE_MTIMES: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
+/// 自身写入抑制窗口（毫秒）。
+///
+/// v0.9.0 第二轮修复（问题3）：`note_file_written` 只在 `std::fs::write` **返回之后**
+/// 登记 mtime，而 notify 的事件回调线程可能已经先一步取到新 mtime 并完成
+/// `is_known_mtime` 判定（此时登记表里还是旧值）→ 事件被真的 emit 出去，前端在
+/// 「清脏标记」之前收到它，于是把自己刚保存的文件当成「被外部修改」。
+/// 这段窗口把「刚写过」的事实也纳入判定，彻底消除该竞态。
+///
+/// 取值权衡：要覆盖「写盘返回 → watcher 线程被调度」的调度延迟（通常 ms 级，
+/// 极端负载下可达数百 ms）；窗口期内若有真正的外部修改紧随其后，会被这一次事件吞掉
+/// ——代价远小于"每次保存都误报外部修改"。
+const SELF_WRITE_SUPPRESS_MS: u64 = 1500;
+
+/// path → 本应用最近一次写入的时刻（用于上面的抑制窗口）
+static SELF_WRITES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
 fn file_watchers() -> &'static Mutex<HashMap<String, notify::RecommendedWatcher>> {
     FILE_WATCHERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn file_mtimes() -> &'static Mutex<HashMap<String, u64>> {
     FILE_MTIMES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn self_writes() -> &'static Mutex<HashMap<String, Instant>> {
+    SELF_WRITES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// 取锁（中毒时退化为内部数据：监听功能不应拖垮主流程）
@@ -154,14 +174,25 @@ fn mtime_ms(path: &std::path::Path) -> u64 {
 ///
 /// 由 `commands::file_ops::write_file` 在写盘成功后调用，因此**任何**调用点
 /// （手动保存 / 自动保存 / 版本回滚 / 另存为）都自动被覆盖，无需前端逐处适配。
+///
+/// v0.9.0 第二轮修复：除 mtime 外再登记一个 [`SELF_WRITE_SUPPRESS_MS`] 抑制窗口，
+/// 覆盖「事件先于本函数到达」的调度竞态（见常量注释）。
 pub fn note_file_written(path: &str) {
     let key = normalize_path(path);
     let mtime = mtime_ms(std::path::Path::new(path));
-    if mtime == 0 {
-        return;
+    let now = Instant::now();
+    // mtime 读不到（罕见）时仍登记抑制窗口：仅靠时间也能挡掉紧随其后的事件
+    if mtime != 0 {
+        lock_or_recover(file_mtimes()).insert(key.clone(), mtime);
     }
-    let mut mtimes = lock_or_recover(file_mtimes());
-    mtimes.insert(key, mtime);
+    let mut writes = lock_or_recover(self_writes());
+    // 顺手丢弃已过期的抑制记录（窗口仅 1.5s，表大小天然很小）
+    writes.retain(|_, at| {
+        now.checked_duration_since(*at)
+            .map(|d| d < Duration::from_millis(SELF_WRITE_SUPPRESS_MS))
+            .unwrap_or(true)
+    });
+    writes.insert(key, now);
 }
 
 /// 事件去重判定：该路径当前 mtime 是否等于**已知的最近 mtime**（本应用自己刚写过，
@@ -174,6 +205,30 @@ fn is_known_mtime(path: &str, mtime: u64) -> bool {
     }
     let mtimes = lock_or_recover(file_mtimes());
     mtimes.get(path).copied() == Some(mtime)
+}
+
+/// 该路径是否处在「本应用刚写入」的抑制窗口内。
+///
+/// 与 [`is_known_mtime`] 互补：后者依赖 mtime 登记的先后顺序，前者只看时间，
+/// 因此不怕「watcher 回调抢在登记之前执行」的竞态。
+fn is_recent_self_write(path: &str) -> bool {
+    is_recent_self_write_at(path, Instant::now())
+}
+
+/// [`is_recent_self_write`] 的可注入时钟版本（单测用）
+fn is_recent_self_write_at(path: &str, now: Instant) -> bool {
+    let mut writes = lock_or_recover(self_writes());
+    let Some(written_at) = writes.get(path).copied() else {
+        return false;
+    };
+    let elapsed = now.checked_duration_since(written_at);
+    let recent = elapsed
+        .map(|d| d < Duration::from_millis(SELF_WRITE_SUPPRESS_MS))
+        .unwrap_or(true); // now 早于记录时刻（理论不可能）→ 保守按"刚写过"处理
+    if !recent {
+        writes.remove(path);
+    }
+    recent
 }
 
 /// 记录「已按该 mtime 上报过」，避免同一变更重复通知前端
@@ -243,12 +298,18 @@ fn build_file_watcher(app: &tauri::AppHandle, path: &str) -> Option<notify::Reco
             }
             let mtime = mtime_ms(std::path::Path::new(&path_owned));
             if !removed {
-                // 幂等去重：mtime 与本应用刚写入 / 已上报过的一致 → 忽略
-                // （覆盖「自己保存」与「目录 watcher + 文件 watcher 双路到达」两种场景）
-                if is_known_mtime(&path_owned, mtime) {
+                // 幂等去重（三重）：
+                // 1. mtime 与本应用刚写入 / 已上报过的一致 → 忽略（覆盖「自己保存」与
+                //    「目录 watcher + 文件 watcher 双路到达」两种场景）；
+                // 2. v0.9.0 第二轮修复：仍在「刚写过」抑制窗口内 → 忽略（覆盖 watcher
+                //    回调抢在 mtime 登记之前执行的竞态）。
+                // 两种情况都顺带登记当前 mtime，避免抑制窗口过期后同一次写入被再次上报。
+                let suppress =
+                    is_known_mtime(&path_owned, mtime) || is_recent_self_write(&path_owned);
+                remember_reported_mtime(&path_owned, mtime);
+                if suppress {
                     return;
                 }
-                remember_reported_mtime(&path_owned, mtime);
             }
             let _ = app_handle.emit(
                 "lightmd:fileChanged",
@@ -269,6 +330,7 @@ fn build_file_watcher(app: &tauri::AppHandle, path: &str) -> Option<notify::Reco
 pub fn clear_file_watchers() {
     lock_or_recover(file_watchers()).clear();
     lock_or_recover(file_mtimes()).clear();
+    lock_or_recover(self_writes()).clear();
 }
 
 /// 测试用：当前文件 watcher 数量
@@ -452,5 +514,32 @@ mod tests {
         remember_reported_mtime(path, 12345);
         assert!(is_known_mtime(path, 12345));
         assert!(!is_known_mtime(path, 12346));
+    }
+
+    // ─── v0.9.0 第二轮修复（问题3）：抑制窗口覆盖「事件抢在登记之前」的竞态 ───
+
+    /// 即便 mtime 尚未登记（watcher 回调抢在 `note_file_written` 之前执行），
+    /// 「刚写过」的时间窗口也必须把这次事件挡掉——否则前端会把自身保存误报为
+    /// 「文件已被外部修改，保存前请确认」。
+    #[test]
+    fn self_write_window_suppresses_race_event() {
+        let path = "D:/lightmd-race-nonexistent.md";
+        let key = normalize_path(path);
+        // 文件不存在 → mtime 读不到（0），只有时间窗口生效
+        note_file_written(path);
+        assert!(!is_known_mtime(&key, 0), "mtime 未知时不参与 mtime 去重");
+        assert!(is_recent_self_write(&key), "刚写过的路径应落在抑制窗口内");
+
+        // 窗口过期后不再抑制（外部修改必须能被上报）
+        let later = Instant::now() + Duration::from_millis(SELF_WRITE_SUPPRESS_MS + 50);
+        assert!(!is_recent_self_write_at(&key, later));
+        // 过期记录已被清理，后续查询也是 false
+        assert!(!is_recent_self_write(&key));
+    }
+
+    /// 从未写过的路径不在抑制窗口内（外部修改照常上报）
+    #[test]
+    fn unknown_path_is_not_suppressed() {
+        assert!(!is_recent_self_write("D:/lightmd-never-written.md"));
     }
 }

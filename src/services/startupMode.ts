@@ -33,3 +33,21 @@ export function decideStartupMode(input: StartupModeInput): StartupMode {
   if (input.hasSession) return "session";
   return "legacy";
 }
+
+/**
+ * v0.9.0 第二轮修复（问题1）：窗口引导流程结束时，是否应当结束「会话恢复期」
+ * （即复位 `sessionRestoringRef`）。
+ *
+ * 为什么 legacy 必须延后：`legacy` 模式的恢复流程（临时标签 → 最近文件 → 活跃标签）
+ * 是在 `setStartupMode("legacy")` **之后**才由 App 的 effect 启动的。若引导流程的
+ * finally 当场复位标志，恢复期派发的 `lightmd:openFile` 就会走「首次打开 → 清空浏览
+ * 进度」分支，把刚刚 `loadSnapshot()` 注入的跨会话阅读位置逐个清掉——用户感知为
+ * "重开软件后所有标签的阅读位置都重置了"。legacy 的复位因此交给「最近文件恢复」
+ * effect 的 finally。
+ *
+ * `session` / `skip`（含 `null` = 尚未决定，例如引导流程异常）都必须在这里复位，
+ * 否则窗口会永久停在恢复期：冲突检测失效、重新打开文件不再重置浏览进度。
+ */
+export function shouldEndRestoreWindowOnBoot(appliedMode: StartupMode | null): boolean {
+  return appliedMode !== "legacy";
+}

@@ -387,19 +387,24 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             {/* v0.9.0：启动时是否恢复其他窗口（放在「外部文件打开方式」下方） */}
             <div className="settings-field">
               <label>{t("settings.general.restoreOtherWindows")}</label>
-              <label className="settings-switch">
-                <input
-                  type="checkbox"
-                  data-testid="settings-restore-other-windows"
-                  checked={settings.restoreOtherWindows}
-                  onChange={(e) => settings.setRestoreOtherWindows(e.target.checked)}
-                />
-                <span className="settings-switch-slider"></span>
-                <span className="settings-switch-label">
-                  {settings.restoreOtherWindows ? t("settings.on") : t("settings.off")}
+              {/* v0.9.0 第二轮修复（问题5）：功能描述改为按钮**后面**的小字号灰色提示 */}
+              <div className="settings-switch-row">
+                <label className="settings-switch">
+                  <input
+                    type="checkbox"
+                    data-testid="settings-restore-other-windows"
+                    checked={settings.restoreOtherWindows}
+                    onChange={(e) => settings.setRestoreOtherWindows(e.target.checked)}
+                  />
+                  <span className="settings-switch-slider"></span>
+                  <span className="settings-switch-label">
+                    {settings.restoreOtherWindows ? t("settings.on") : t("settings.off")}
+                  </span>
+                </label>
+                <span className="settings-hint settings-hint-inline">
+                  {t("settings.general.restoreOtherWindowsHint")}
                 </span>
-              </label>
-              <span className="settings-hint">{t("settings.general.restoreOtherWindowsHint")}</span>
+              </div>
             </div>
 
             {/* G9：显示代码行号（实时生效） */}

@@ -237,6 +237,22 @@ export const windowService = {
   },
 
   /**
+   * v0.9.0 第二轮修复：只裁掉会话里的辅助窗口条目，保留主窗口条目。
+   *
+   * 「启动时恢复其他窗口」关闭时使用（替代整份 `discardSession`）：主窗口下次启动
+   * 仍能按会话快照精确恢复全部标签/文件夹，而不会退回「最近文件」近似恢复
+   * （默认只回 1 个文件，用户感知为"标签丢了"）。
+   */
+  async pruneSecondarySessions(): Promise<void> {
+    if (!isTauri()) return;
+    try {
+      await invoke("prune_session_secondaries");
+    } catch (err) {
+      console.error("裁剪会话中的辅助窗口失败:", err);
+    }
+  },
+
+  /**
    * v0.9.0：显式退出应用（窗口菜单 / 命令面板 `Ctrl+Q`）。
    *
    * 与「逐个关闭窗口」的关键差异：此刻全部窗口仍存活，Rust 会把**完整窗口集合**

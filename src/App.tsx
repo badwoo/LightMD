@@ -8,7 +8,7 @@ import { useWindowStore } from "./stores/useWindowStore";
 import { getWindowLabel, isMainWindow, MAIN_WINDOW_LABEL } from "./utils/windowLabel";
 import { windowService, type WindowSession } from "./services/windowService";
 import { evaluateOpenConflict } from "./services/openConflict";
-import { decideStartupMode, type StartupMode } from "./services/startupMode";
+import { decideStartupMode, shouldEndRestoreWindowOnBoot, type StartupMode } from "./services/startupMode";
 import { setupBroadcastListeners } from "./utils/broadcast";
 import {
   clearSlotResidue,
@@ -36,6 +36,8 @@ import { fileService, isTauri, type FileEntry } from "./services/fileService";
 import { versionSnapshotService } from "./services/versionSnapshotService";
 // v0.7.0 bug修复：文件浏览进度（重新打开/关闭标签时清除，标签切换保留）
 import { fileScrollProgress } from "./services/fileScrollProgress";
+// v0.9.0 第二轮修复（问题3）：自身写盘内容指纹——抑制 watcher 回声被误判为外部修改
+import { isSelfWrittenContent } from "./services/selfWriteGuard";
 import { safeSetItem } from "./utils/safeStorage";
 // v0.8.0 WP1：临时（未落盘）标签的持久化与启动恢复
 import { loadUntitledTabs, saveUntitledTabs, clearUntitledTabs, isUntitledRestoreEnabled } from "./utils/untitledTabs";
@@ -1063,6 +1065,14 @@ function App() {
     bootDoneRef.current = true;
     let cancelled = false;
     (async () => {
+      /**
+       * 本窗口最终**实际生效**的恢复模式（见下方 v0.9.0 第二轮修复）。
+       * - `effectiveMode`：会话快照里没有主窗口条目时回退为 `legacy`；
+       * - `appliedMode`：真正 `setStartupMode` 成功的模式——只有它才能证明
+       *   「legacy 恢复流程随后一定会跑」，据此决定是否在此处结束「恢复期」。
+       */
+      let effectiveMode: StartupMode = "skip";
+      let appliedMode: StartupMode | null = null;
       // 无论启动流程成功或异常，都必须复位这两个标志：
       // 否则一次异常会让窗口永久停留在「恢复期」——冲突检测永不生效、
       // 首次打开文件不再重置浏览进度。
@@ -1087,6 +1097,7 @@ function App() {
         restoreEnabled: enabled,
         hasSession,
       });
+      effectiveMode = mode;
       /** 是否需要在本次启动后注销遗留会话文件（走出「多窗口语义」） */
       let discardSession = false;
 
@@ -1094,16 +1105,26 @@ function App() {
         // ① 按 session.json 精确恢复本窗口的标签/打开文件夹
         fileScrollProgress.loadSnapshot();
         const session = await windowService.getWindowSession(boot.label);
-        if (session && !cancelled) await restoreFromSession(session);
-        if (isMain && !cancelled) {
+        if (session && !cancelled) {
+          await restoreFromSession(session);
+        } else if (isMain && enabled && !cancelled) {
+          // v0.9.0 第二轮修复（问题4）：会话快照里**没有主窗口条目**时不能让主窗口
+          // 空着——旧版本「先关主窗口、再关辅助窗口」会写出这种残缺快照，用户重开
+          // 软件看到的是"所有标签都被关闭了"（含临时文件）。
+          // 回退到 v0.8.5 的恢复路径（最近文件 + 临时标签），至少把标签找回来。
+          effectiveMode = "legacy";
+        }
+        if (isMain && !cancelled && effectiveMode === "session") {
           // v0.9.0（用户反馈）：是否连同其他窗口一起恢复由设置决定。
           // - 开启：重建会话快照里记录的辅助窗口；
-          // - 关闭（默认）：只恢复主窗口，并丢弃快照里的辅助窗口条目，
-          //   避免残留数据在下次开启开关时又复活一批早已关闭的窗口。
+          // - 关闭（默认）：只保留主窗口条目、裁掉快照里的辅助窗口，避免残留数据在
+          //   下次开启开关时又复活一批早已关闭的窗口。
+          //   ⚠ 只裁剪辅助窗口而不是整份丢弃：整份丢弃会把主窗口退回「最近文件」
+          //   近似恢复（默认只回 1 个文件），用户感知为"标签变少/丢失"。
           if (useSettingsStore.getState().restoreOtherWindows) {
             await windowService.restoreWindows();
           } else {
-            await windowService.discardSession();
+            await windowService.pruneSecondarySessions();
           }
         }
       } else if (isMain) {
@@ -1161,13 +1182,26 @@ function App() {
 
       if (cancelled) return;
       // ⑤ 决定 v0.8.5 遗留恢复路径是否执行（辅助窗口恒为 skip）
-      if (isMain) setStartupMode(mode);
+      //    v0.9.0 第二轮修复：以 effectiveMode 为准（会话残缺时回退 legacy），
+      //    并把「真正置位」记录下来供 finally 判断恢复期由谁结束。
+      if (isMain) {
+        setStartupMode(effectiveMode);
+        appliedMode = effectiveMode;
+      }
       } catch (err) {
         // 启动流程异常也必须放行后续交互（否则窗口永久卡在「恢复期」）
         console.error("[启动] 窗口引导流程失败:", err);
       } finally {
-        // 启动恢复流程结束：此后打开文件恢复"重新打开清进度"与冲突检测的正常语义
-        sessionRestoringRef.current = false;
+        // v0.9.0 第二轮修复（问题1）：legacy 模式的恢复流程**在 setStartupMode 之后**
+        // 才由下方「启动恢复临时标签 / 最近文件」两个 effect 启动，它们每次派发
+        // lightmd:openFile 时都要靠 `sessionRestoringRef` 跳过「重新打开 → 清空浏览
+        // 进度」分支。若在此处提前复位，刚 loadSnapshot 注入的跨会话阅读位置会被
+        // 逐个清掉——用户感知为"重开软件后所有标签的阅读位置都重置了"。
+        // 故 legacy 的复位交给「最近文件恢复」effect 的 finally（见下方），
+        // 其余情况（含异常路径）必须在这里复位，否则窗口会永久停在恢复期。
+        if (shouldEndRestoreWindowOnBoot(appliedMode)) {
+          sessionRestoringRef.current = false;
+        }
         // 冲突检测再延后一拍：等辅助窗口完成各自的上报，避免恢复期的假冲突
         setTimeout(() => {
           suppressConflictCheckRef.current = false;
@@ -1253,6 +1287,13 @@ function App() {
         const idx = st.openTabs.findIndex((tb) => !tb.isUntitled && tb.path && pathCompareKey(tb.path) === key);
         if (idx === -1) return; // 本窗口未打开该文件
         const tab = st.openTabs[idx];
+        /** 事件处理期间标签可能被关闭/重排，故每次按路径重新定位 */
+        const findIdx = () => {
+          const s = useEditorStore.getState();
+          return s.openTabs.findIndex(
+            (tb) => !tb.isUntitled && tb.path && pathCompareKey(tb.path) === key,
+          );
+        };
 
         // v0.9.0 AC-18（N23）：文件被删除 / 移出 → 关闭标签并提示。
         // 这条路径覆盖「监听目录之外的单文件」（目录内文件另有 folder-changed 联动）。
@@ -1276,25 +1317,37 @@ function App() {
 
         if (tab.isDirty) {
           // 脏标签：不自动重载（会丢用户编辑），标记「脏状态下被外部修改」，
-          // 保存时由 handleSaveFile 弹「覆盖 / 另存为 / 取消」（N22）
-          st.setTabExternallyChanged(idx, true);
-          void import("./services/notificationService").then(({ notify: n }) =>
-            n(t("multiwindow.fileChanged.dirtyHint", { name: tab.name }), "warning"),
-          );
+          // 保存时由 handleSaveFile 弹「覆盖 / 另存为 / 取消」（N22）。
+          //
+          // v0.9.0 第二轮修复（问题3）：必须先排除「自己保存的回声」。
+          // Rust 侧 `note_file_written` 的 mtime 去重与 watcher 线程调度之间存在
+          // 毫秒级竞态，事件可能赶在「清脏标记」之前到达——此时仅凭 isDirty 判定
+          // 会误报「已被外部修改，保存前请确认」（保存后右下角仍弹提示）。
+          // 实证手段：读一次磁盘，内容等于本应用刚写入的内容 → 纯回声，忽略。
+          void fileService
+            .readFile(path)
+            .then((fresh) => {
+              if (isSelfWrittenContent(path, fresh)) return;
+              const idx2 = findIdx();
+              if (idx2 === -1) return;
+              useEditorStore.getState().setTabExternallyChanged(idx2, true);
+              void import("./services/notificationService").then(({ notify: n }) =>
+                n(t("multiwindow.fileChanged.dirtyHint", { name: tab.name }), "warning"),
+              );
+            })
+            .catch(() => undefined);
           return;
         }
         // 干净标签：自动重载并保留滚动位置
-        const findIdx = () => {
-          const s = useEditorStore.getState();
-          return s.openTabs.findIndex(
-            (tb) => !tb.isUntitled && tb.path && pathCompareKey(tb.path) === key,
-          );
-        };
         fileService
           .readFile(path)
           .then((fresh) => {
             const idx2 = findIdx();
             if (idx2 === -1) return;
+            // v0.9.0 第二轮修复（问题3）：磁盘内容与标签内容一致（含自身保存的回声、
+            // 以及编辑器已是最新的重复事件）→ 无需重载，也不弹「已自动重新载入」。
+            const current = useEditorStore.getState().openTabs[idx2];
+            if (current && current.content === fresh) return;
             useEditorStore.getState().updateTabContent(idx2, fresh);
             if (useEditorStore.getState().activeTabIdx === idx2) {
               setContent(fresh);

@@ -245,6 +245,8 @@ pub fn confirm_close(
     // 3+4. 登记清理与 Primary 晋升
     let (new_primary, was_primary, ever_multi, window_count_after, snapshot) = {
         let mut mgr = state.lock();
+        // 关闭前的最后上报：关掉最后一个窗口（= 退出应用）时要把它一并写进快照
+        let closing_state = mgr.window_session_of(&label);
         let (_, was_primary) = mgr.remove_window(&label);
         if was_primary {
             mgr.promote_primary();
@@ -252,19 +254,26 @@ pub fn confirm_close(
         let new_primary = mgr.primary_label().to_string();
         let ever_multi = mgr.ever_multi_window();
         let window_count_after = mgr.window_count();
-        // 关闭的这个窗口已从注册表移除，故快照天然只含存活窗口
-        let snapshot = mgr.snapshot_with(window::now_ms());
+        // 关闭的这个窗口已从注册表移除，故快照天然只含存活窗口（+ 主窗口最后状态）；
+        // 关掉最后一个时额外补上它自己（见 `snapshot_after_close`）
+        let snapshot = mgr.snapshot_after_close(
+            closing_state.as_ref(),
+            window_count_after == 0,
+            window::now_ms(),
+        );
         // 放行标记最后设置（`remove_window` 会清除它）：万一某平台 destroy 也会
         // 触发 CloseRequested，此处兜底放行，避免形成「拦截 → 再确认」死循环
         mgr.approve_close(&label);
         (new_primary, was_primary, ever_multi, window_count_after, snapshot)
     };
 
-    // 5. 会话落盘：仅当**还有存活窗口**时重写（已关闭的窗口随之从快照消失）；
-    //    关掉最后一个窗口时不重写——保留上一次有效会话，用户下次启动仍能恢复主窗口。
-    if window_count_after > 0 {
-        persist_session(&app, ever_multi, &snapshot);
-    }
+    // 5. 会话落盘：v0.9.0 第二轮修复——**关掉最后一个窗口时也必须重写**。
+    //    快照 = 仍存活的窗口 + 主窗口最后状态（`main_state`）+（关掉最后一个时）
+    //   这个即将消失的窗口自身，因此它正是"用户看到的最后画面"。
+    //    旧实现跳过这一步，导致「单窗口（或最后关掉主窗口）关掉应用」后磁盘上仍是
+    //    上一次会话的旧数据——用户重开软件看到的是过期的标签集合，甚至一片空白
+    //    （用户反馈：关闭时选择"不保存"后重开，所有标签都被关闭了）。
+    persist_session(&app, ever_multi, &snapshot);
     eprintln!(
         "[LightMD] confirm close: {} primary={} everMulti={} live_after={} snapshot={}",
         label,
@@ -283,11 +292,17 @@ pub fn confirm_close(
     window.destroy().map_err(|e| format!("销毁窗口失败: {}", e))
 }
 
-/// 会话落盘规则：只有出现过 ≥2 窗口的会话才写；否则删除（纯单窗口用户回到 v0.8.5 路径）
+/// 会话落盘规则（v0.9.0 第二轮修订）：
+///
+/// - **出现过 ≥2 窗口的本会话**，或**磁盘上已有上一次会话**（回访的多窗口用户即便
+///   这次只开了主窗口，也应继续按会话快照精确恢复标签，而不是退回 v0.8.5 的「最近
+///   文件」近似恢复）→ 写入快照；
+/// - 其余情况（纯单窗口用户，从未有过会话文件）→ 删除会话文件，保持 v0.8.5 语义
+///   （REG-1：最近文件 + 临时标签恢复）；
+/// - 空快照永不写盘：宁可保留上一次有效会话，也不要把「会话记录」清成空。
 pub(crate) fn persist_session(app: &AppHandle, ever_multi: bool, snapshot: &SessionSnapshot) {
-    if ever_multi {
-        // 空快照不写盘：宁可保留上一次有效会话，也不要把「会话记录」清成空
-        // （逐个关窗到最后一个时，用户希望主窗口的标签仍能恢复）
+    let had_session = matches!(session::read_session(app), Ok(Some(_)));
+    if ever_multi || had_session {
         if snapshot.windows.is_empty() {
             return;
         }
@@ -379,4 +394,26 @@ pub async fn restore_windows(app: AppHandle) -> Result<Vec<String>, String> {
 pub fn discard_session(app: AppHandle) -> Result<(), String> {
     open_files::clear_file_watchers();
     session::remove_session(&app)
+}
+
+/// 只保留主窗口条目的会话快照（「启动时恢复其他窗口」关闭时的收敛动作）。
+///
+/// v0.9.0 第二轮修复：旧实现在这里直接 `discard_session`（整份丢弃），结果是主窗口
+/// 下次启动退回 v0.8.5 的「最近文件」近似恢复——默认只回 1 个文件，用户感知为
+/// "标签丢了/被关闭了"。改为只裁掉辅助窗口条目：既保证不再复活已关闭的辅助窗口，
+/// 又让主窗口继续按会话快照精确恢复全部标签与文件夹。
+///
+/// 快照里若没有主窗口条目（旧版本写坏的残缺快照），保持原文件不动——主窗口本次关闭时
+/// `confirm_close` 会把它的最新状态写进去，下一次启动即自愈。
+#[tauri::command]
+pub fn prune_session_secondaries(app: AppHandle) -> Result<(), String> {
+    let Some(mut snapshot) = session::read_session(&app).ok().flatten() else {
+        return Ok(());
+    };
+    let before = snapshot.windows.len();
+    snapshot.windows.retain(|w| w.label == PRIMARY_LABEL);
+    if snapshot.windows.is_empty() || snapshot.windows.len() == before {
+        return Ok(());
+    }
+    session::write_session(&app, &snapshot)
 }

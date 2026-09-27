@@ -215,6 +215,24 @@ label.settings-switch {
   line-height: 1.4;
 }
 
+/* v0.9.0 第二轮修复（问题5）：开关按钮 + 行内功能描述。
+   功能描述改为小字号灰色提示，紧跟在按钮后面（同一行，长文本自动换行）。 */
+.settings-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-hint-inline {
+  margin-top: 0;
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary, #888);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .settings-hint-warning {
   color: #d19a0a;
 }
