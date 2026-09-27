@@ -44,7 +44,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 🔗 **Smart URL Paste** — pasting a URL creates `[link](URL)`, or turns selected text into a hyperlink (0.5.0)
 - 🖱 **Table Context Menu** — right-click a table in preview mode to insert/delete rows and columns (0.2.0)
 
-### 🗂 Tabs & File Management (strengthened in 0.8.0)
+### 🗂 Tabs & File Management (strengthened throughout 0.8.0 ~ 0.8.5)
 - 🆕 **Untitled scratch tabs** — create with `Ctrl+N` or by double-clicking the empty tab-bar area; nothing is written to disk until the first save, and unsaved scratch tabs are restored on restart
 - 📌 **Tab bar upgrades** — left/right scroll buttons plus smooth wheel scrolling when tabs overflow; pin a tab (pin icon shown); 9-item context menu (Rename / Pin / Print / Save As / Close Others / Close Others Except Pinned / Close to the Left / Close to the Right / Close Unmodified)
 - 📋 **File tree copy / cut / paste / drag** — copy or cut from the context menu or with `Ctrl+C` / `Ctrl+V`; drag onto a folder to copy, hold `Shift` to move (tab paths follow automatically); name clashes get a " - Copy" suffix
@@ -52,6 +52,19 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 🧭 **Open containing folder as workspace** — from the tab/file/recent-item context menu
 - 🖱 **Redesigned sidebar layout** — drag a section header to resize (neighbouring sections trade height, and the last one can be dragged all the way down); floating scroll arrows and a slimmer, subtler scrollbar
 - 🖱 **File tree drag & ordering upgrades (0.8.4)** — drag a file/folder onto a folder to copy, hold `Shift` to move (cross-drive supported); drag within the same folder to reorder (manual order survives restart); copy/cut in the node context menu, and new file / new folder / refresh / paste on the empty-area menu; per-folder sort button in the folder header (name / modified / created × ascending / descending, remembered per folder); external changes sync into the tree automatically (`Ctrl+R` as a fallback refresh)
+- 🗑 **Delete goes to the Recycle Bin (0.8.5)** — deleting files / folders no longer removes them permanently; they land in the system Recycle Bin and can be restored anytime
+- 🕐 **"Recent" upgrades (0.8.3 / 0.8.5)** — shows the full list (capped at 66 entries) with in-panel scrolling, files and folders interleaved by time; hovering reveals the full path and the open date; kept as a **pure history** that is only flagged ⚠ when a path goes stale, never deleted automatically
+- 🪟 **Window size & position memory (0.8.3)** — maximized on first install; afterwards the app opens with the size and position it was closed in, including on a second monitor
+- 📍 **Reading position survives restarts (0.8.3)** — a document restored at startup returns to where you stopped reading, unsaved scratch documents included
+- 📐 **Cursor position in the status bar (0.8.3)** — shows `Line N, Col M` live, plus `N selected` while text is selected
+
+### 🪟 Window & Motion (0.8.1 ~ 0.8.5)
+
+- 🪟 **Frameless window (0.8.1)** — the native title bar is gone; minimize / maximize / close moved next to the settings button (macOS traffic-light colors, symbols on hover)
+- 🗔 **Everything in-app (0.8.1 / 0.8.4)** — file properties and the New File / New Folder dialogs no longer use native system popups: no system beep, and paths can be selected and copied
+- 🎞 **Transitions (0.8.2 ~ 0.8.5)** — folder panels and "Open Files" rows open by sliding in and close with a strictly serial three-beat (slide out → pause → collapse height); file-tree nodes expand/collapse; the search box, sort dropdown, new-item dialog and the status-bar search panel (grows out of / retracts into its button) are all animated
+- 🌿 **Reduced-motion support** — all motion degrades to a plain show/hide when the system "reduce motion" preference is on, and uses only compositor properties (transform / opacity)
+- 📏 **Slimmer scrollbars, wider default panels (0.8.1)** — both sidebars use a 2px scrollbar (transparent at rest, visible on hover), and each default sidebar is 0.5cm wider
 
 ### ✍️ Editing Experience (strengthened in 0.8.0)
 - ↩️ **Line-break fidelity** — `Shift+Enter` inside table cells, multi-paragraph list items, nested lists and indented code blocks survive saving intact
@@ -200,7 +213,7 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ### v0.8.5 (2026-09-26)
 
-**Safer deletion / UI motion polish** (baseline 0.8.4; 8 requirements)
+**Safer deletion / UI motion polish** (baseline 0.8.4; 8 additions and fixes)
 
 **New Features**
 
@@ -209,19 +222,21 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 **UI Improvements**
 
-- **Refreshed Markdown file icons** — Markdown files in the tree now use a light blue-grey pencil-style SVG icon that follows the theme colors
-- **File tree search box animation** — the search box now expands / collapses with a smooth slide-down animation
-- **Sort dropdown animation** — the sort menu in folder headers now expands / collapses smoothly
+- **File icons** — Markdown files keep the 📝 icon; entries in the "Open Files" panel now use a hand-drawn open-book icon (blue for real files, yellow for unsaved scratch files) so the two kinds of entries are distinguishable at a glance
+- **File tree search box animation** — the search box slides in from the left (220ms) and collapses back to the left (180ms); clicks during the collapse are ignored
+- **Sort dropdown animation** — the sort menu in folder headers now expands / collapses smoothly, with all three close paths (click outside / click an item / click the button again) running the collapse animation
 - **New-item dialog transition** — the New Folder / New File dialogs rise and settle with a slight scale; the dialog is fully opaque from the very first frame, so the background can never flicker through it
 - **Status-bar search panel open / close animation** — the search window grows smoothly out of the status-bar search button (it starts flush against the button, squashed and narrowed towards it, then expands into the middle of the screen); closing flattens it back into the same button. The direction follows the panel's current position, and it degrades to a plain show/hide when the system "reduce motion" preference is on
 
 **Interaction Changes**
 
 - **Global refresh button removed from the file-management toolbar** — refresh is now available via the right-click "Refresh" menu and the `Ctrl+R` shortcut; external changes still sync into the tree automatically, with `Ctrl+R` as a fallback
+- **"Recent" is now a pure history list** — closing a file or folder no longer removes its entry; an entry is only marked with ⚠ when the file was moved or deleted (including external changes) and is **never removed automatically**. Folders restored at startup now use a separate session snapshot, fully decoupled from the Recent history (older data migrates automatically)
+- **New-item dialog background flicker fixed** — the dialog's entrance is carried by `transform` alone (opaque from the first frame) and the overlay fade moved to its own pseudo-element layer, so the background no longer flickers through the dialog and the whole-screen brightness jump is gone
 
 ### v0.8.4 (2026-09-24)
 
-**Sidebar file tree milestone: drag system / manual ordering / live refresh** (baseline 0.8.3; 11 requirements)
+**Sidebar file tree milestone: drag system / manual ordering / live refresh** (baseline 0.8.3; 11 additions and fixes)
 
 **New Features**
 
@@ -251,7 +266,7 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ### v0.8.3 (2026-09-22)
 
-**Interaction polish, bug fixes & small features** (baseline 0.8.2; 7 requirements)
+**Interaction polish, bug fixes & small features** (baseline 0.8.2; 7 additions and fixes)
 
 **New features**
 
@@ -278,7 +293,7 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ### v0.8.2 (2026-09-21)
 
-**Sidebar open/close animations, ordering & follow-up fixes** (baseline 0.8.1; 3 animation requirements + 2 ordering changes + 9 fixes)
+**Sidebar open/close animations, ordering & follow-up fixes** (baseline 0.8.1; 3 animation improvements + 2 ordering changes + 9 fixes)
 
 **Animation**
 
