@@ -8,7 +8,7 @@
 
 ## ✨ 为什么选择 LightMD？
 
-LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器，融合了传统 Markdown 的简洁和现代 WYSIWYG 编辑器的直观。安装包仅 **~5MB**，启动毫秒级，深度集成 Windows 桌面体验。
+LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器，融合了传统 Markdown 的简洁和现代 WYSIWYG 编辑器的直观。安装包仅 **~7MB**，启动毫秒级，深度集成 Windows 桌面体验。
 
 ## 🎯 核心特性
 

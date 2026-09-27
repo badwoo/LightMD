@@ -8,7 +8,7 @@
 
 ## ✨ Why LightMD?
 
-LightMD is a **lightweight Markdown editor** purpose-built for Windows, combining the simplicity of traditional Markdown with the intuitiveness of modern WYSIWYG editors. With a tiny ~5MB installer and millisecond-fast startup, it delivers a deeply integrated Windows desktop experience.
+LightMD is a **lightweight Markdown editor** purpose-built for Windows, combining the simplicity of traditional Markdown with the intuitiveness of modern WYSIWYG editors. With a tiny ~7MB installer and millisecond-fast startup, it delivers a deeply integrated Windows desktop experience.
 
 ## 🎯 Core Features
 
