@@ -101,15 +101,17 @@
 
 | 文件 | 大小 | 说明 |
 | --- | --- | --- |
-| `LightMD_0.9.0_x64_en-US.msi` | 10.64 MB | MSI 安装包，支持标准卸载（推荐） |
+| `LightMD_0.9.0_x64_en-US.msi` | 10.61 MB | MSI 安装包，支持标准卸载（推荐） |
 | `LightMD_0.9.0_x64-setup.exe` | 7.34 MB | NSIS 自解压安装包，单文件安装，免管理员权限 |
 
 校验值见同目录 `SHA256SUMS.txt`：
 
 ```
-96ddc06737190227153046bcbd932da6820d0018a6191ba037d0a2ad461b3663  LightMD_0.9.0_x64_en-US.msi
-58b7119da74754cc2c2f742a2d32f24e1d3dbc901e8f68fcbb4c31563574233d  LightMD_0.9.0_x64-setup.exe
+277fa755187e563b4909dd57f26bf6480dd78616105170d9cd5718b91d07c066  LightMD_0.9.0_x64_en-US.msi
+6c3edc8f29a327777b4fb042fdb66549605d6ffd5ba776bc260c1b02ce4153e0  LightMD_0.9.0_x64-setup.exe
 ```
+
+打包时间 **2026-09-27 22:40**——在用户反馈的三个问题修复并实机复测通过之后重新打包，产物与当前源码一致。
 
 系统要求：Windows 10 / 11（64 位），无需额外运行库。
 
