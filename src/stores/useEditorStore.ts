@@ -28,6 +28,21 @@ export interface TabInfo {
    * 而不是按"优先右侧否则左侧"跳到相邻标签。
    */
   returnToId?: string;
+  /**
+   * v0.9.0 WP9：只读打开标记。
+   *
+   * 同一文件已在其他窗口以未保存修改（dirty）状态打开时，本窗口可选择「只读打开」：
+   * ProseMirror `editable() => false`、源码 textarea readOnly、标题栏显示 `[只读]`。
+   * 标签级（非全局）——同一窗口内其他标签不受影响。
+   */
+  isReadonly?: boolean;
+  /**
+   * v0.9.0 WP9：该标签在**脏**状态下被外部修改过（`lightmd:fileChanged` 检测到）。
+   *
+   * 此时磁盘内容已不是本标签编辑所基于的版本，保存会静默覆盖外部改动。
+   * 保存前弹「覆盖 / 另存为 / 取消」三选一（N22）。
+   */
+  isExternallyChanged?: boolean;
 }
 
 /**
@@ -159,6 +174,13 @@ interface EditorState {
   togglePin: (idx: number) => void;
   /** v0.8.0 WP3 需求8：重命名未落盘（untitled）标签，仅改 name 不落盘 */
   renameUntitledTab: (idx: number, name: string) => void;
+  /**
+   * v0.9.0 WP9：设置标签的只读标记（「只读打开」冲突处理选项）。
+   * 只读标签禁止编辑，但仍可阅读/复制/导出。
+   */
+  setTabReadonly: (idx: number, isReadonly: boolean) => void;
+  /** v0.9.0 WP9：标记/清除「脏状态下被外部修改」（保存前的竞态确认） */
+  setTabExternallyChanged: (idx: number, changed: boolean) => void;
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -376,4 +398,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         openTabs: s.openTabs.map((t, i) => (i === idx ? { ...t, name } : t)),
       };
     }),
+  // v0.9.0 WP9：只读标记（仅改目标标签，其余标签不受影响）
+  setTabReadonly: (idx, isReadonly) =>
+    set((s) => ({
+      openTabs: s.openTabs.map((t, i) => (i === idx ? { ...t, isReadonly } : t)),
+    })),
+  // v0.9.0 WP9：外部修改标记（保存前的「覆盖 / 另存为 / 取消」确认依据）
+  setTabExternallyChanged: (idx, changed) =>
+    set((s) => ({
+      openTabs: s.openTabs.map((t, i) => (i === idx ? { ...t, isExternallyChanged: changed } : t)),
+    })),
 }));

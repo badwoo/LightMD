@@ -81,7 +81,8 @@ pub(crate) async fn read_api_key(provider: &str) -> Result<String, String> {
 
 /// 选中翻译（流式）：text 为 markdown 片段（edit/split）或纯文本（preview）
 ///
-/// 单任务模型：新任务自动取消旧任务。
+/// 单任务模型（v0.9.0 起按窗口分桶）：**同一窗口内**新任务自动取消旧任务，
+/// 不同窗口的任务互不影响。
 /// on_chunk 推送增量译文（含 {{N}} 占位符原样透传）。
 ///
 /// v0.7.3 改进9(P4-2)：新增 concurrent_id 参数——全文翻译并发批量调用时传入，
@@ -99,6 +100,8 @@ pub async fn translate_text(
     custom_prompt: Option<String>,
     // v0.7.3：采样温度（由设置透传；kimi 等厂商仅允许 1）
     temperature: f32,
+    // v0.9.0：调用方窗口 label（单任务槽/并发槽按窗口分桶）
+    window_label: String,
     // v0.7.3 改进9：全文翻译并发槽位标识（None = 单任务互斥）
     concurrent_id: Option<String>,
     on_chunk: Channel<String>,
@@ -113,8 +116,8 @@ pub async fn translate_text(
 
     // v0.7.3 改进9：按 concurrent_id 区分「并发任务槽位」与「单任务互斥」
     let cancel_flag = match &concurrent_id {
-        Some(id) => state.begin_concurrent_task(id),
-        None => state.begin_task(),
+        Some(id) => state.begin_concurrent_task(id, &window_label),
+        None => state.begin_task(&window_label),
     };
     let task_id = concurrent_id;
 
@@ -137,7 +140,7 @@ pub async fn translate_text(
     // 完成/失败统一清理对应槽位
     match (&task_id, &result) {
         (Some(id), _) => state.end_concurrent_task(id, &cancel_flag),
-        (None, _) => state.end_task(&cancel_flag),
+        (None, _) => state.end_task(&window_label, &cancel_flag),
     }
 
     match result {
@@ -146,16 +149,22 @@ pub async fn translate_text(
     }
 }
 
-/// 中断进行中的翻译任务（v0.6.0 单任务模型，无需 task_id）。
-/// v0.7.3 改进9：concurrent_ids=None 取消全部任务（单任务槽 + 所有并发槽），
-/// concurrent_ids=Some(ids) 仅取消指定并发任务（全文翻译定向取消）。
+/// 中断进行中的翻译任务。
+///
+/// v0.9.0 起按窗口分桶，三种粒度：
+/// - `concurrent_ids = Some(ids)`：仅取消指定并发批次（全文翻译定向取消）；
+/// - `concurrent_ids = None` + `window_label = Some(label)`：取消**该窗口**的
+///   单任务槽与全部并发批次（划词翻译/AI 助手的「取消」按钮走这条）；
+/// - 两者皆为 None：取消全部窗口的全部任务（仅应用退出等全局场景使用）。
 #[tauri::command]
 pub async fn cancel_translate(
     state: State<'_, TranslateState>,
     concurrent_ids: Option<Vec<String>>,
+    window_label: Option<String>,
 ) -> Result<(), String> {
-    match concurrent_ids {
-        Some(ids) if !ids.is_empty() => state.cancel_concurrent_ids(&ids),
+    match (concurrent_ids, window_label) {
+        (Some(ids), _) if !ids.is_empty() => state.cancel_concurrent_ids(&ids),
+        (_, Some(label)) => state.cancel_window_tasks(&label),
         _ => state.cancel_all(),
     }
     Ok(())

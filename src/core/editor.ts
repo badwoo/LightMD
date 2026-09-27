@@ -173,13 +173,22 @@ export interface EditorOptions {
   onSlashStateChange?: (s: import("./plugins/slash-command").SlashState | null) => void;
   /** v0.7.3 改进8(D5)：AI 续写 ghost 的采纳提示文案（i18n 注入，硬编码中文穿帮清理） */
   aiGhostHint?: string;
+  /**
+   * v0.9.0 WP9：只读 getter。
+   *
+   * 返回 false 时 ProseMirror 关闭 contenteditable（`editable() => false`），
+   * 仍可选中/复制/导出，但无法编辑。运行期由 EditorContainer 在只读标记变化时
+   * 调用 `view.updateState(view.state)` 触发重新求值（PM 在 updateStateInner 内
+   * 重新计算 `this.editable`）。
+   */
+  editableGetter?: () => boolean;
 }
 
 /**
  * 创建配置完整的 ProseMirror EditorView
  */
 export function createEditor(options: EditorOptions): EditorView | null {
-  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, aiGhostHint } = options;
+  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, aiGhostHint, editableGetter } = options;
 
   if (!parent) return null;
 
@@ -251,6 +260,8 @@ export function createEditor(options: EditorOptions): EditorView | null {
     // 阻止 ProseMirror 在 "to selection" 模式下主动调用 scrollToSelection()
     // 滚动由 EditorContainer 的 keyup/click 监听统一处理，避免编辑时屏幕跳动
     handleScrollToSelection: () => true,
+    // v0.9.0 WP9：只读标签关闭 contenteditable（仍可选中/复制/导出）
+    editable: () => editableGetter?.() ?? true,
     dispatchTransaction(tr) {
       const isFileSwitch = tr.getMeta("fileSwitch");
       const newState = view.state.apply(tr);

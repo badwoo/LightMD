@@ -14,9 +14,18 @@
  */
 
 import { safeSetItem } from "./safeStorage";
+import { withWindowSuffix } from "./windowLabel";
 import type { TabInfo } from "../stores/useEditorStore";
 
 export const LAST_ACTIVE_TAB_KEY = "lightmd-last-active-tab";
+
+/**
+ * v0.9.0：上次活跃标签是**窗口级**数据（每个窗口有自己的活跃标签）。
+ * main 沿用无后缀旧 key，sec-* 加 `-{label}` 后缀。
+ */
+function lastActiveKey(): string {
+  return withWindowSuffix(LAST_ACTIVE_TAB_KEY);
+}
 
 /** 持久化的上次活跃标签记录 */
 export type StoredLastActiveTab =
@@ -41,14 +50,14 @@ export function saveLastActiveTab(tab: TabInfo | null | undefined): void {
         clearLastActiveTab();
         return;
       }
-      safeSetItem(LAST_ACTIVE_TAB_KEY, JSON.stringify({ kind: "untitled", id: tab.id }));
+      safeSetItem(lastActiveKey(), JSON.stringify({ kind: "untitled", id: tab.id }));
       return;
     }
     if (!tab.path) {
       clearLastActiveTab();
       return;
     }
-    safeSetItem(LAST_ACTIVE_TAB_KEY, JSON.stringify({ kind: "file", path: tab.path }));
+    safeSetItem(lastActiveKey(), JSON.stringify({ kind: "file", path: tab.path }));
   } catch (err) {
     console.warn("[lastActiveTab] 保存失败（忽略）:", err);
   }
@@ -57,7 +66,7 @@ export function saveLastActiveTab(tab: TabInfo | null | undefined): void {
 /** 读取上次活跃标签记录；无记录 / 数据损坏时返回 null */
 export function loadLastActiveTab(): StoredLastActiveTab | null {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(LAST_ACTIVE_TAB_KEY) : null;
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(lastActiveKey()) : null;
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
@@ -76,7 +85,18 @@ export function loadLastActiveTab(): StoredLastActiveTab | null {
 /** 清除上次活跃标签记录（关闭"载入上次打开的文件"开关时调用） */
 export function clearLastActiveTab(): void {
   try {
-    if (typeof localStorage !== "undefined") localStorage.removeItem(LAST_ACTIVE_TAB_KEY);
+    if (typeof localStorage !== "undefined") localStorage.removeItem(lastActiveKey());
+  } catch {
+    // 忽略
+  }
+}
+
+/** v0.9.0：清理指定槽位的残留（槽位复用时避免读取上一轮数据） */
+export function clearLastActiveTabForLabel(label: string): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const key = label === "main" ? LAST_ACTIVE_TAB_KEY : `${LAST_ACTIVE_TAB_KEY}-${label}`;
+    localStorage.removeItem(key);
   } catch {
     // 忽略
   }

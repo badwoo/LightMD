@@ -360,6 +360,48 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               )}
             </div>
 
+            {/* v0.9.0 WP7：外部文件（双击关联文件）打开方式 */}
+            <div className="settings-field">
+              <label>{t("settings.general.openExternalFileIn")}</label>
+              <select
+                className="settings-select"
+                data-testid="settings-open-external-file-in"
+                value={settings.openExternalFileIn}
+                onChange={(e) =>
+                  settings.setOpenExternalFileIn(
+                    e.target.value as "currentWindow" | "newWindow" | "ask",
+                  )
+                }
+              >
+                <option value="currentWindow">
+                  {t("settings.general.openExternalFileIn.current")}
+                </option>
+                <option value="newWindow">
+                  {t("settings.general.openExternalFileIn.new")}
+                </option>
+                <option value="ask">{t("settings.general.openExternalFileIn.ask")}</option>
+              </select>
+              <span className="settings-hint">{t("settings.general.openExternalFileInHint")}</span>
+            </div>
+
+            {/* v0.9.0：启动时是否恢复其他窗口（放在「外部文件打开方式」下方） */}
+            <div className="settings-field">
+              <label>{t("settings.general.restoreOtherWindows")}</label>
+              <label className="settings-switch">
+                <input
+                  type="checkbox"
+                  data-testid="settings-restore-other-windows"
+                  checked={settings.restoreOtherWindows}
+                  onChange={(e) => settings.setRestoreOtherWindows(e.target.checked)}
+                />
+                <span className="settings-switch-slider"></span>
+                <span className="settings-switch-label">
+                  {settings.restoreOtherWindows ? t("settings.on") : t("settings.off")}
+                </span>
+              </label>
+              <span className="settings-hint">{t("settings.general.restoreOtherWindowsHint")}</span>
+            </div>
+
             {/* G9：显示代码行号（实时生效） */}
             <div className="settings-field">
               <label>{t("settings.showCodeLineNumbers")}</label>

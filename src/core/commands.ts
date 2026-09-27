@@ -14,7 +14,7 @@
  */
 
 /** 命令分组 */
-export type CommandGroup = "file" | "edit" | "view" | "format" | "insert" | "export";
+export type CommandGroup = "file" | "edit" | "view" | "format" | "insert" | "export" | "window";
 
 /** 命令定义 */
 export interface Command {
@@ -336,10 +336,51 @@ export const commands: Command[] = [
     keywords: ["导出pdf", "export pdf"],
     action: () => dispatchCommand("export.pdf"),
   },
+  // ─── v0.9.0 窗口分组 ──────────────────────────────
+  {
+    id: "window.new",
+    titleKey: "command.window.new",
+    shortcut: "Ctrl+Shift+N",
+    group: "window",
+    keywords: ["新建窗口", "new window", "窗口"],
+    action: () => dispatchCommand("window.new"),
+  },
+  {
+    id: "window.close",
+    titleKey: "command.window.close",
+    shortcut: "Ctrl+Shift+W",
+    group: "window",
+    keywords: ["关闭窗口", "close window", "窗口"],
+    action: () => dispatchCommand("window.close"),
+  },
+  {
+    id: "window.openInNew",
+    titleKey: "command.window.openInNew",
+    // 已核实空闲：Ctrl+Shift+O 被「切换大纲栏」占用（App.tsx 快捷键表）
+    shortcut: "Ctrl+Alt+O",
+    group: "window",
+    keywords: ["新窗口打开", "open in new window", "窗口", "打开"],
+    action: () => dispatchCommand("window.openInNew"),
+  },
+  {
+    id: "window.mergeToPrimary",
+    titleKey: "command.window.mergeToPrimary",
+    group: "window",
+    keywords: ["合并到主窗口", "merge", "主窗口", "窗口"],
+    action: () => dispatchCommand("window.mergeToPrimary"),
+  },
+  {
+    id: "window.quit",
+    titleKey: "command.window.quit",
+    shortcut: "Ctrl+Q",
+    group: "window",
+    keywords: ["退出", "quit", "exit", "关闭软件"],
+    action: () => dispatchCommand("window.quit"),
+  },
 ];
 
 /** 分组顺序（用于命令面板的分组显示顺序） */
-export const GROUP_ORDER: CommandGroup[] = ["file", "edit", "view", "format", "insert", "export"];
+export const GROUP_ORDER: CommandGroup[] = ["file", "edit", "view", "window", "format", "insert", "export"];
 
 /** 分组的 i18n key 映射 */
 export const GROUP_TITLE_KEYS: Record<CommandGroup, string> = {
@@ -349,6 +390,8 @@ export const GROUP_TITLE_KEYS: Record<CommandGroup, string> = {
   format: "command.group.format",
   insert: "command.group.insert",
   export: "command.group.export",
+  // v0.9.0
+  window: "command.group.window",
 };
 
 /**

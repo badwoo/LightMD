@@ -11,6 +11,7 @@
  */
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { isTauri } from "./fileService";
+import { getWindowLabel } from "../utils/windowLabel";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import type { TranslateResultData } from "../stores/translateStore";
 
@@ -107,6 +108,8 @@ export const translateService = {
         customPrompt: cfg.translateCustomPrompt || null,
         // v0.7.3：采样温度由设置透传（kimi 等厂商仅允许 1）
         temperature: cfg.translateTemperature,
+        // v0.9.0：单任务槽按窗口分桶（窗口 A 的翻译不顶掉窗口 B 的任务）
+        windowLabel: getWindowLabel(),
         onChunk: channel,
       });
       return result;
@@ -153,6 +156,8 @@ export const translateService = {
         customPrompt: cfg.translateCustomPrompt || null,
         temperature: cfg.translateTemperature,
         concurrentId,
+        // v0.9.0：并发批次槽位同时记录所属窗口，取消本窗口任务时不误杀其他窗口
+        windowLabel: getWindowLabel(),
         onChunk: channel,
       });
     } catch (e) {
@@ -160,11 +165,14 @@ export const translateService = {
     }
   },
 
-  /** 中断进行中的任务（幂等；静默失败） */
+  /**
+   * 中断进行中的任务（幂等；静默失败）。
+   * v0.9.0：按窗口分桶——只取消**本窗口**的单任务槽与并发批次（AC-14）。
+   */
   async cancel(): Promise<void> {
     if (!isTauri()) return;
     try {
-      await invoke("cancel_translate");
+      await invoke("cancel_translate", { windowLabel: getWindowLabel() });
     } catch {
       // 静默：取消失败不影响主流程
     }

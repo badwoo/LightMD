@@ -369,6 +369,25 @@ export function FileEntryNode({
               {t("filetree.openWorkspace")}
             </button>
           )}
+          {/* v0.9.0 WP2：在当前窗口旁再开一个窗口打开该文件（仅文件） */}
+          {!node.isDir && (
+            <button
+              className="context-menu-item"
+              data-testid="filetree-open-in-new-window"
+              onClick={() => {
+                // 走命令事件由 App 统一处理（避免为单个菜单项在 3440 行的 FileTree 里
+                // 逐层透传回调）
+                window.dispatchEvent(
+                  new CustomEvent("lightmd:command", {
+                    detail: { id: "filetree.openInNewWindow", path: node.path },
+                  }),
+                );
+                setContextMenu(null);
+              }}
+            >
+              {t("multiwindow.openInNewWindow")}
+            </button>
+          )}
           {/* N5：在资源管理器中显示并选中该文件（仅文件） */}
           {!node.isDir && (
             <button

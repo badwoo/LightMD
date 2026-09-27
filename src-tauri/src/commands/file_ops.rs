@@ -73,7 +73,12 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
             .map_err(|e| format!("无法创建父目录 \"{}\": {}", parent.display(), e))?;
     }
     std::fs::write(&path, &content)
-        .map_err(|e| format!("写入文件失败 \"{}\": {}", path.display(), e))
+        .map_err(|e| format!("写入文件失败 \"{}\": {}", path.display(), e))?;
+    // v0.9.0 修复：记录本次自身写入的 mtime，抑制紧随其后的 watcher 事件。
+    // 否则「应用自己保存」会被前端误判为「文件被外部修改」——保存即弹
+    // 「覆盖 / 另存为」、覆盖后再触发，形成无限黄色提示循环。
+    super::super::window::open_files::note_file_written(&path.to_string_lossy());
+    Ok(())
 }
 
 /// 获取文件大小（字节），用于前端大文件检测

@@ -21,8 +21,20 @@
  */
 
 import { safeSetItem } from "../utils/safeStorage";
+import { withWindowSuffix } from "../utils/windowLabel";
 
 export const SCROLL_PROGRESS_KEY = "lightmd-scroll-progress";
+
+/**
+ * v0.9.0：浏览进度是**窗口级**数据。
+ *
+ * 产品决策（PRD §3.2.4）：同一文件在不同窗口打开时滚动位置相互独立——
+ * 这正符合"对照阅读"场景（窗口 A 看开头、窗口 B 看结尾）。
+ * main 沿用无后缀旧 key（v0.8.5 数据原地可用，零迁移），sec-* 加 `-{label}` 后缀。
+ */
+function progressKey(): string {
+  return withWindowSuffix(SCROLL_PROGRESS_KEY);
+}
 
 const progressMap = new Map<string, number>();
 const MAX_ENTRIES = 60;
@@ -78,11 +90,11 @@ function saveSnapshot(keys: readonly string[]): void {
     }
     if (count === 0) {
       // 无任何可写条目：清掉历史键，避免"关闭开关/关闭全部标签后仍有残留"
-      if (typeof localStorage !== "undefined") localStorage.removeItem(SCROLL_PROGRESS_KEY);
+      if (typeof localStorage !== "undefined") localStorage.removeItem(progressKey());
       savedRevision = revision;
       return;
     }
-    safeSetItem(SCROLL_PROGRESS_KEY, JSON.stringify(payload));
+    safeSetItem(progressKey(), JSON.stringify(payload));
     savedRevision = revision;
   } catch (err) {
     console.warn("[fileScrollProgress] 快照写入失败（忽略）:", err);
@@ -92,7 +104,7 @@ function saveSnapshot(keys: readonly string[]): void {
 /** v0.8.3 需求6：启动时读回快照并注入 Map（数据损坏时静默忽略） */
 function loadSnapshot(): void {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(SCROLL_PROGRESS_KEY) : null;
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(progressKey()) : null;
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return;
@@ -118,7 +130,7 @@ function clearAll(): void {
   revision++;
   savedRevision = revision;
   try {
-    if (typeof localStorage !== "undefined") localStorage.removeItem(SCROLL_PROGRESS_KEY);
+    if (typeof localStorage !== "undefined") localStorage.removeItem(progressKey());
   } catch {
     // 忽略
   }
@@ -159,3 +171,17 @@ export const fileScrollProgress = {
   /** 测试用：当前内存条目数 */
   size: () => progressMap.size,
 };
+
+/**
+ * v0.9.0：清理**指定槽位**的落盘快照（Rust 侧槽位复用时调用，避免上一轮
+ * 该槽位的滚动进度混入新窗口）。内存 Map 属于当前窗口，无需处理。
+ */
+export function clearScrollProgressForLabel(label: string): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const key = label === "main" ? SCROLL_PROGRESS_KEY : `${SCROLL_PROGRESS_KEY}-${label}`;
+    localStorage.removeItem(key);
+  } catch {
+    // 忽略
+  }
+}

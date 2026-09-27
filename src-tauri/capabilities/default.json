@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "LightMD default capability",
-  "windows": ["main"],
+  "windows": ["main", "sec-*"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

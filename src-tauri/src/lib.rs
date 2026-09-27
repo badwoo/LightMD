@@ -2,11 +2,13 @@ pub mod commands;
 pub mod db;
 pub mod translate;
 pub mod utils;
+pub mod window;
 
-use commands::{config, file_ops, image, export, watcher};
-use translate::TranslateState;
+use commands::{config, export, file_ops, image, watcher, window_cmds};
 use std::io::Cursor;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, WindowEvent};
+use translate::TranslateState;
+use window::{AppWindowManager, PRIMARY_LABEL};
 
 /// 判断给定路径是否为支持的文本/代码文件（按扩展名匹配）
 /// v0.4.0：扩展为支持所有常见代码文件，使双击 .js/.py 等文件也能启动应用
@@ -40,22 +42,70 @@ fn extract_file_arg(args: &[String]) -> Option<String> {
     None
 }
 
+/// 把文件路径路由给当前 Primary 窗口（外部双击 / 命令行参数）。
+///
+/// v0.9.0：不再写死 `"main"` —— 主窗口可能已关闭并由最老辅助窗口晋升，
+/// Primary 由 [`AppWindowManager`] 实时给出。
+/// 策略判断（当前窗口 / 新窗口 / 询问）在前端完成：设置存在 WebView 的
+/// localStorage 里，Rust 读不到（实施计划 F14）。
+///
+/// ⚠️ 载荷必须携带 `target`：Tauri v2 的 `emit_to` 只过滤监听器注册目标，
+/// JS 侧 `listen(name)`（target = Any）会让**所有**窗口都收到定向事件，
+/// 前端据此字段判断是否应由自己处理（否则每个窗口都会打开同一个文件）。
+fn route_file_to_primary(app: &tauri::AppHandle, path: String) {
+    let primary = app
+        .state::<AppWindowManager>()
+        .lock()
+        .primary_label()
+        .to_string();
+    let _ = app.emit_to(
+        &primary,
+        "lightmd:openFileArgv",
+        serde_json::json!({ "target": primary, "path": path }),
+    );
+    if let Some(window) = app.get_webview_window(&primary) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// 应用退出前收尾：落盘会话快照 + 释放文件 watcher + 取消全部在途 AI 任务。
+///
+/// 会话规则（v0.9.0 用户反馈后的口径）：
+/// - 只在**还有存活窗口**时重写快照——「逐个关闭窗口直到最后」的路径不能把上一次
+///   有效会话覆盖成空，否则主窗口的标签恢复也会丢；
+/// - 显式退出（`quit_app`）时窗口仍存活，此处会写完整窗口集合；
+/// - 纯单窗口会话（`ever_multi_window == false`）删除会话文件，保持 v0.8.5 语义（REG-1）。
+fn finalize_session(app: &tauri::AppHandle) {
+    let state = app.state::<AppWindowManager>();
+    let (ever_multi, live, snapshot) = {
+        let mgr = state.lock();
+        (
+            mgr.ever_multi_window(),
+            mgr.window_count(),
+            mgr.snapshot_with(window::now_ms()),
+        )
+    };
+    if live > 0 {
+        window_cmds::persist_session(app, ever_multi, &snapshot);
+    } else if !ever_multi {
+        // 单窗口会话：删掉可能遗留的会话文件
+        let _ = window::session::remove_session(app);
+    }
+    window::open_files::clear_file_watchers();
+    app.state::<TranslateState>().cancel_all();
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         // 单实例插件：后续启动时不再创建新窗口，而是将 argv 转发给主实例
         // 主实例收到事件后以新标签方式打开文件，实现"双击支持的文件以标签打开"的体验
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // 后续实例启动时触发：提取文件参数并转发给前端
             // v0.4.0：支持所有代码/文本文件，不仅限于 md
             if let Some(path) = extract_file_arg(&argv) {
-                // 使用 emit_to 主窗口，确保事件能被前端接收
-                let _ = app.emit_to("main", "lightmd:openFileArgv", path);
-                // 将主窗口提到前台，避免用户感知不到打开动作
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
+                route_file_to_primary(app, path);
             }
         }))
         .plugin(tauri_plugin_fs::init())
@@ -65,6 +115,9 @@ pub fn run() {
         // v0.8.3 需求4：窗口状态记忆（大小/位置/最大化标志）。
         // 显式收窄 StateFlags：不记忆 FULLSCREEN / DECORATIONS / VISIBLE 等状态，
         // 避免"用户偶发全屏一次，之后每次启动都全屏"之类的怪行为。
+        // v0.9.0：插件对 `on_window_ready` 触发的**运行时创建窗口**同样自动
+        // restore/save，故辅助窗口按固定槽位 label 天然获得几何跨会话恢复，
+        // session.json 不需要（也不应该）再存一份几何。
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(
@@ -74,11 +127,48 @@ pub fn run() {
                 )
                 .build(),
         )
-        // v0.6.0 AI 翻译：单任务状态托管（取消标志）
+        // v0.6.0 AI 翻译：单任务状态托管（v0.9.0 起按窗口分桶）
         .manage(TranslateState::default())
+        // v0.9.0 多窗口：窗口管理器
+        .manage(AppWindowManager::default())
+        // v0.9.0 多窗口：关闭请求统一走前端确认流程（dirty 检查 → 应用内对话框）
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let label = window.label().to_string();
+                let state = window.app_handle().state::<AppWindowManager>();
+                let mut mgr = state.lock();
+                // 已确认关闭（destroy 路径）→ 直接放行
+                let approved = mgr.take_approved_close(&label);
+                // 已有未决确认流程（连点关闭按钮）→ 继续拦截但不重复派发
+                let first = if approved { false } else { mgr.mark_close_pending(&label) };
+                let live = mgr.window_count();
+                drop(mgr);
+                // 诊断：窗口关闭链路的关键状态（release 构建无控制台，无副作用）
+                eprintln!(
+                    "[LightMD] CloseRequested label={} approved={} first={} live_windows={}",
+                    label, approved, first, live
+                );
+                if approved {
+                    return;
+                }
+                api.prevent_close();
+                if first {
+                    let _ = window.app_handle().emit_to(
+                        &label,
+                        "lightmd:closeRequested",
+                        serde_json::json!({ "label": label }),
+                    );
+                }
+            }
+        })
         .setup(|app| {
+            // v0.9.0：登记主窗口（tauri.conf.json 默认 label = "main"）
+            app.state::<AppWindowManager>()
+                .lock()
+                .register(PRIMARY_LABEL, window::now_ms());
+
             // 设置窗口图标
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_webview_window(PRIMARY_LABEL) {
                 let icon_bytes = include_bytes!("../icons/icon.ico");
                 if let Ok(ico_dir) = ico::IconDir::read(Cursor::new(icon_bytes)) {
                     if let Some(entry) = ico_dir.entries().into_iter().next() {
@@ -98,6 +188,7 @@ pub fn run() {
             // 双击支持的代码/文本文件首次启动应用时，系统以命令行参数形式传入文件路径
             // 后续双击由 single-instance 插件回调处理（见上方 init）
             // v0.4.0：扩展为支持所有代码/文本文件
+            // v0.9.0：策略判断在前端（App.tsx 的 lightmd:openFileArgv 监听处）
             let args: Vec<String> = std::env::args().collect();
             if let Some(path) = extract_file_arg(&args) {
                 // 延迟发送事件，确保前端已就绪
@@ -105,7 +196,7 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(500));
-                    let _ = app_handle.emit("lightmd:openFileArgv", path);
+                    route_file_to_primary(&app_handle, path);
                 });
             }
 
@@ -126,6 +217,7 @@ pub fn run() {
             // v0.8.4 需求1：移动文件/目录（同盘 rename，跨盘降级复制+删除）
             file_ops::move_file,
             // v0.8.4 需求10：目录实时监听（notify）与注销
+            // v0.9.0：加 windowLabel 引用计数（多窗口共享同一 watcher）
             watcher::watch_folder,
             watcher::unwatch_folder,
             file_ops::exists,
@@ -147,7 +239,32 @@ pub fn run() {
             commands::ai_assist::ai_chat,
             export::export_pdf,
             export::export_html_to_pdf,
+            // ─── v0.9.0 多窗口 ───
+            window_cmds::create_window,
+            window_cmds::create_window_with_files,
+            window_cmds::take_window_boot,
+            window_cmds::sync_window_state,
+            window_cmds::query_file_open,
+            window_cmds::list_windows,
+            window_cmds::focus_window,
+            window_cmds::request_close_window,
+            window_cmds::emit_to_window,
+            window_cmds::abort_close,
+            window_cmds::confirm_close,
+            window_cmds::has_session,
+            window_cmds::get_window_session,
+            window_cmds::restore_windows,
+            window_cmds::discard_session,
+            // v0.9.0：显式退出（写完整窗口集合后退出，供「恢复其他窗口」下次还原）
+            window_cmds::quit_app,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running LightMD");
+
+    app.run(|app_handle, event| {
+        // 退出前收尾：会话落盘 + watcher/AI 任务清理
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            finalize_session(app_handle);
+        }
+    });
 }

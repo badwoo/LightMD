@@ -46,6 +46,10 @@ interface TabBarProps {
    * 否则新标签既不会跳转也无法编辑。
    */
   onNewUntitled?: () => void;
+  /**
+   * v0.9.0 WP2：把该标签移动到新窗口（真实文件带 dirty 时由 App 负责先提示保存）。
+   */
+  onMoveToNewWindow?: (tab: TabInfo, idx: number) => void;
 }
 
 export function TabBar({
@@ -54,6 +58,7 @@ export function TabBar({
   onSaveAs,
   onCloseMany,
   onNewUntitled,
+  onMoveToNewWindow,
 }: TabBarProps) {
   const t = useT();
   const openTabs = useEditorStore((s) => s.openTabs);
@@ -455,6 +460,26 @@ export function TabBar({
           <button className="context-menu-item" onClick={() => onSaveAsClick(ctxMenu.tab)}>
             {t("tabbar.saveAs")}
           </button>
+          {/* v0.9.0 WP2：移动到新窗口 */}
+          {onMoveToNewWindow && (
+            <>
+              <div className="context-menu-sep" />
+              <button
+                className="context-menu-item"
+                data-testid="tab-context-move-to-new-window"
+                onClick={() => {
+                  const tab = ctxMenu.tab;
+                  const idx = useEditorStore.getState().openTabs.findIndex((x) =>
+                    tab.isUntitled && tab.id ? x.id === tab.id : x.path === tab.path,
+                  );
+                  setCtxMenu(null);
+                  onMoveToNewWindow(tab, idx === -1 ? useEditorStore.getState().activeTabIdx : idx);
+                }}
+              >
+                {t("multiwindow.moveToNewWindow")}
+              </button>
+            </>
+          )}
           <div className="context-menu-sep" />
           <button
             className="context-menu-item"

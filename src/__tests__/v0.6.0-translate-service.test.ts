@@ -288,10 +288,10 @@ describe("v0.6.0 translateService", () => {
 
   // ─── cancel ────────────────────────────────────────────
   describe("cancel", () => {
-    it("调用 cancel_translate 命令", async () => {
+    it("调用 cancel_translate 命令（v0.9.0：带 windowLabel 分桶，只取消本窗口任务）", async () => {
       mockInvoke.mockResolvedValue(undefined);
       await translateService.cancel();
-      expect(mockInvoke).toHaveBeenCalledWith("cancel_translate");
+      expect(mockInvoke).toHaveBeenCalledWith("cancel_translate", { windowLabel: "main" });
     });
 
     it("非 Tauri 环境直接返回（不发 invoke）", async () => {

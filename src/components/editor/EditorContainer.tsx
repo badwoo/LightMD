@@ -671,6 +671,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       },
       // v0.6.0：PM 选区「译」浮动按钮触发（ref 转发最新闭包，编辑器只创建一次）
       onTranslateTrigger: () => startTranslateRef.current(),
+      // v0.9.0 WP9：只读标签（同一文件在其他窗口有未保存修改时选择「只读打开」）
+      // getter 动态读当前活跃标签，标记变化时由下方 effect 触发 PM 重新求值
+      editableGetter: () => {
+        const st = useEditorStore.getState();
+        return !st.openTabs[st.activeTabIdx]?.isReadonly;
+      },
       // v0.6.0：总开关关闭时不显示选区浮动按钮（动态读取设置）
       // v0.7.0：隐藏翻译小气泡时选区「译」按钮也不显示（气泡已隐藏，触发无反馈）
       // v0.7.0 修复1：双开关语义——全局 AI 总开关 + 翻译子开关都开启才显示
@@ -740,6 +746,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ─── v0.9.0 WP9：只读标记变化时刷新 ProseMirror 的 contenteditable ──────────
+  // PM 在 updateStateInner 内重新计算 `this.editable`，故用同一 state 调一次
+  // updateState 即可（不产生事务、不触发 onDocChange）。
+  const activeIsReadonly = useEditorStore((s) => !!s.openTabs[s.activeTabIdx]?.isReadonly);
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.updateState(view.state);
+  }, [activeIsReadonly]);
 
   // ─── 持续追踪 ProseMirror 滚动百分比 ──────────
   // 编辑器创建后设置监听，在滚动时实时记录百分比
@@ -4564,6 +4580,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             onPaste={handleSourcePaste}
             onContextMenu={handleTextareaContextMenu}
             spellCheck={spellcheckEnabled}
+            /* v0.9.0 WP9：只读标签的源码模式同样禁止编辑 */
+            readOnly={activeIsReadonly}
+            aria-readonly={activeIsReadonly || undefined}
             style={{
               flex: isSourceMode ? 1 : 0,
               display: isSourceMode ? "block" : "none",

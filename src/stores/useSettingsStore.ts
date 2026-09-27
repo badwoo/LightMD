@@ -169,6 +169,14 @@ export const ALL_AI_BUBBLE_TASKS: readonly AiAssistBubbleTask[] = Object.freeze(
   "chat",
 ]);
 
+/**
+ * v0.9.0 WP7：外部文件（双击 .md / 命令行参数）的打开策略。
+ * - currentWindow：在当前（Primary）窗口新标签打开（默认，与 v0.8.5 行为一致）
+ * - newWindow：新建辅助窗口打开
+ * - ask：弹应用内对话框让用户选择
+ */
+export type OpenExternalFileIn = "currentWindow" | "newWindow" | "ask";
+
 interface SettingsState {
   theme: Theme;
   fontSize: number;
@@ -217,6 +225,28 @@ interface SettingsState {
    * key 不存在 = 该文件夹未激活排序（回退手动顺序/默认排序）。
    */
   fileTreeSort: Record<string, SortMode>;
+  /**
+   * v0.9.0 WP7：外部文件打开策略（默认 currentWindow，向后兼容 v0.8.5 行为）。
+   * 策略判断放在前端：设置存在 WebView 的 localStorage 里，Rust 读不到（F14）。
+   */
+  openExternalFileIn: OpenExternalFileIn;
+  /**
+   * v0.9.0（用户反馈新增）：启动时是否连同**其他窗口**一起恢复。
+   *
+   * - `false`（默认）：只恢复主窗口（主窗口的标签/打开文件夹仍按会话精确恢复）；
+   * - `true`：把上次**退出时仍存活**的全部窗口一并恢复。
+   *
+   * 注意语义边界：**用户主动关闭的窗口永远不会复活**——它在关闭的那一刻就已从
+   * 会话快照移除。只有「退出 LightMD」（窗口仍存活时退出的显式动作）才会把完整
+   * 窗口集合写入快照，此时本开关才决定是否全部还原。
+   */
+  restoreOtherWindows: boolean;
+
+  /** v0.9.0：设置「恢复其他窗口」开关 */
+  setRestoreOtherWindows: (v: boolean) => void;
+
+  /** v0.9.0 WP7：设置外部文件打开策略 */
+  setOpenExternalFileIn: (v: OpenExternalFileIn) => void;
 
   /** v0.7.0：设置全局 AI 总开关（关闭时联动关闭翻译子开关） */
   setAiEnabled: (v: boolean) => void;
@@ -356,6 +386,16 @@ export const useSettingsStore = create<SettingsState>()(
       aiChatWindow: null,
       // v0.8.4 需求7：无文件夹激活排序（key 不存在 = 未排序，回退手动/默认顺序）
       fileTreeSort: {},
+      // v0.9.0 WP7：外部文件默认在当前窗口打开（与 v0.8.5 行为一致）
+      openExternalFileIn: "currentWindow",
+      // v0.9.0：默认只恢复主窗口（用户主动关闭的窗口不复活）
+      restoreOtherWindows: false,
+
+      // v0.9.0：恢复其他窗口开关
+      setRestoreOtherWindows: (v) => set({ restoreOtherWindows: v }),
+
+      // v0.9.0 WP7：外部文件打开策略
+      setOpenExternalFileIn: (v) => set({ openExternalFileIn: v }),
 
       // v0.7.0：关闭总开关时联动关闭翻译子开关（所有翻译入口静默）
       setAiEnabled: (v) =>

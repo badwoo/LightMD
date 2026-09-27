@@ -37,6 +37,8 @@ pub async fn ai_assist_text(
     model: String,
     // v0.7.3：采样温度（由设置透传；kimi 等厂商仅允许 1）
     temperature: f32,
+    // v0.9.0：调用方窗口 label（单任务槽按窗口分桶，跨窗口互不取消）
+    window_label: String,
     on_chunk: Channel<String>,
 ) -> Result<TranslateResult, String> {
     let text = text.trim().to_string();
@@ -50,8 +52,8 @@ pub async fn ai_assist_text(
     // 读 Key（仅 Rust 侧内存，不回传前端；与翻译共用，v0.7.2 P1 起按厂商独立条目）
     let api_key = read_api_key(&provider).await?;
 
-    // 单任务互斥：取消旧任务（可能是翻译或另一次 AI 助手），注册新取消标志
-    let cancel_flag = state.begin_task();
+    // 单任务互斥（按窗口）：取消该窗口旧任务，注册新取消标志
+    let cancel_flag = state.begin_task(&window_label);
 
     let provider = OpenAiCompatibleProvider {
         base_url,
@@ -68,18 +70,9 @@ pub async fn ai_assist_text(
         }, &cancel_flag)
         .await;
 
-    match result {
-        Ok(r) => {
-            // 任务完成，清理标志（单次 lock，避免同线程重复 lock 死锁）
-            state.end_task(&cancel_flag);
-            Ok(r)
-        }
-        Err(e) => {
-            // 失败/取消路径同样清理标志（v0.6.3 P2-5 同源问题）
-            state.end_task(&cancel_flag);
-            Err(e.to_code_string())
-        }
-    }
+    // 完成/失败路径统一清理本窗口的标志
+    state.end_task(&window_label, &cancel_flag);
+    result.map_err(|e| e.to_code_string())
 }
 
 /// 角色白名单清洗（纯函数，便于单测）
@@ -120,6 +113,8 @@ pub async fn ai_chat(
     model: String,
     // v0.7.3：采样温度（由设置透传）；对话侧再抬到 ≥0.3（见 chat_temperature）
     temperature: f32,
+    // v0.9.0：调用方窗口 label（单任务槽按窗口分桶，跨窗口互不取消）
+    window_label: String,
     on_chunk: Channel<String>,
 ) -> Result<TranslateResult, String> {
     let history = normalize_chat_messages(messages);
@@ -132,8 +127,9 @@ pub async fn ai_chat(
     // 读 Key（与翻译/助手共用同一 keyring 条目）
     let api_key = read_api_key(&provider).await?;
 
-    // 单任务互斥：对话与翻译/续写/润色/摘要共享同一任务槽，新任务取消旧任务
-    let cancel_flag = state.begin_task();
+    // 单任务互斥（按窗口）：对话与同窗口的翻译/续写/润色/摘要共享任务槽，
+    // 新任务取消该窗口的旧任务；**不影响其他窗口**（AC-14）
+    let cancel_flag = state.begin_task(&window_label);
 
     let provider_impl = OpenAiCompatibleProvider {
         base_url,
@@ -156,17 +152,9 @@ pub async fn ai_chat(
         }, &cancel_flag)
         .await;
 
-    match result {
-        Ok(r) => {
-            state.end_task(&cancel_flag);
-            Ok(r)
-        }
-        Err(e) => {
-            // 失败/取消路径同样清理标志
-            state.end_task(&cancel_flag);
-            Err(e.to_code_string())
-        }
-    }
+    // 完成/失败路径统一清理本窗口的标志
+    state.end_task(&window_label, &cancel_flag);
+    result.map_err(|e| e.to_code_string())
 }
 
 #[cfg(test)]

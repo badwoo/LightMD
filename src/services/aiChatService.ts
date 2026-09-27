@@ -14,6 +14,7 @@
  */
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { isTauri } from "./fileService";
+import { getWindowLabel } from "../utils/windowLabel";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import {
   translateService,
@@ -153,6 +154,8 @@ export const aiChatService = {
         model: cfg.translateModel,
         // v0.7.3：采样温度由设置透传（Rust 侧对话再抬到 ≥0.3）
         temperature: cfg.translateTemperature,
+        // v0.9.0：单任务槽按窗口分桶（AC-14：窗口 A 全文翻译时 B 仍可对话）
+        windowLabel: getWindowLabel(),
         onChunk: channel,
       });
     } catch (e) {

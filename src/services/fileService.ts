@@ -6,6 +6,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { notifyError } from "./notificationService";
+import { getWindowLabel } from "../utils/windowLabel";
 
 export interface FileEntry {
   name: string;
@@ -144,11 +145,15 @@ export const fileService = {
     }
   },
 
-  /** v0.8.4 需求10：监听文件夹变更（Rust notify 递归监听，200ms 聚合后 emit 事件）。
-   * 调用方需 catch 失败场景（网络盘/权限等），走手动刷新兜底，不阻断流程 */
+  /**
+   * v0.8.4 需求10：监听文件夹变更（Rust notify 递归监听，200ms 聚合后 emit 事件）。
+   * v0.9.0：带窗口 label 做**引用计数**——多个窗口打开同一目录只注册一个 watcher，
+   * 只有最后一个使用该目录的窗口关闭时才真正注销。
+   * 调用方需 catch 失败场景（网络盘/权限等），走手动刷新兜底，不阻断流程。
+   */
   async watchFolder(path: string): Promise<void> {
     try {
-      await invoke("watch_folder", { path });
+      await invoke("watch_folder", { path, windowLabel: getWindowLabel() });
     } catch (err) {
       const msg = wrapError("监听文件夹失败", err);
       notifyError(msg);
@@ -156,10 +161,13 @@ export const fileService = {
     }
   },
 
-  /** v0.8.4 需求10：取消监听文件夹变更（未注册路径时 Rust 端 no-op） */
+  /**
+   * v0.8.4 需求10 / v0.9.0：取消监听文件夹变更。
+   * 只释放**本窗口**对该目录的引用；其他窗口仍在用时 watcher 保留（未注册时 no-op）。
+   */
   async unwatchFolder(path: string): Promise<void> {
     try {
-      await invoke("unwatch_folder", { path });
+      await invoke("unwatch_folder", { path, windowLabel: getWindowLabel() });
     } catch (err) {
       const msg = wrapError("取消监听文件夹失败", err);
       notifyError(msg);

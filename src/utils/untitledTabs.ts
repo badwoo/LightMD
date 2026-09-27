@@ -14,9 +14,19 @@
  */
 
 import { safeSetItem } from "./safeStorage";
+import { withWindowSuffix } from "./windowLabel";
 import type { TabInfo } from "../stores/useEditorStore";
 
 export const UNTITLED_TABS_KEY = "lightmd-untitled-tabs";
+
+/**
+ * v0.9.0：临时标签是**窗口级**数据（窗口 A 的临时标签不应出现在窗口 B）。
+ * main 窗口沿用无后缀旧 key（v0.8.5 数据原地可用，零迁移）；
+ * sec-* 窗口加 `-{label}` 后缀。
+ */
+function untitledKey(): string {
+  return withWindowSuffix(UNTITLED_TABS_KEY);
+}
 
 /** 持久化的临时标签条目 */
 export interface StoredUntitledTab {
@@ -42,7 +52,7 @@ export function saveUntitledTabs(tabs: TabInfo[]): void {
       clearUntitledTabs();
       return;
     }
-    safeSetItem(UNTITLED_TABS_KEY, JSON.stringify(payload));
+    safeSetItem(untitledKey(), JSON.stringify(payload));
   } catch (err) {
     console.warn("[untitledTabs] 保存失败（忽略）:", err);
   }
@@ -51,7 +61,7 @@ export function saveUntitledTabs(tabs: TabInfo[]): void {
 /** 读取上次会话的临时标签（数据损坏时返回空数组） */
 export function loadUntitledTabs(): StoredUntitledTab[] {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(UNTITLED_TABS_KEY) : null;
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(untitledKey()) : null;
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -71,7 +81,24 @@ export function loadUntitledTabs(): StoredUntitledTab[] {
 /** 清除持久化的临时标签 */
 export function clearUntitledTabs(): void {
   try {
-    if (typeof localStorage !== "undefined") localStorage.removeItem(UNTITLED_TABS_KEY);
+    if (typeof localStorage !== "undefined") localStorage.removeItem(untitledKey());
+  } catch {
+    // 忽略
+  }
+}
+
+/**
+ * v0.9.0：清理**指定槽位**的窗口级临时标签残留。
+ *
+ * 场景：Rust 侧槽位复用（sec-1 关闭后再新建窗口仍分配 sec-1），若不清理，
+ * 上一轮该槽位的临时标签内容会混入新窗口的启动恢复。
+ * 只在「全新分配的槽位」上调用（`WindowBoot.fresh === true`）。
+ */
+export function clearUntitledTabsForLabel(label: string): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const key = label === "main" ? UNTITLED_TABS_KEY : `${UNTITLED_TABS_KEY}-${label}`;
+    localStorage.removeItem(key);
   } catch {
     // 忽略
   }

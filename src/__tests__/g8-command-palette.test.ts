@@ -108,11 +108,36 @@ const tEn = (key: string): string => {
 };
 
 describe("G8: 命令注册中心", () => {
-  it("命令注册数量 ≥ 20（覆盖五大分组）", () => {
+  it("命令注册数量 ≥ 20（覆盖全部分组）", () => {
     expect(commands.length).toBeGreaterThanOrEqual(20);
-    // 实际注册 36 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument；
-    // v0.7.5 新增 ai.chat）
-    expect(commands.length).toBe(36);
+    // 实际注册 41 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument；
+    // v0.7.5 新增 ai.chat；v0.9.0 新增 5 条 window.*）
+    expect(commands.length).toBe(41);
+  });
+
+  // v0.9.0 WP2：窗口分组命令（命令面板可达，与标题栏菜单/快捷键同源）
+  it("v0.9.0：注册 5 条窗口命令且分组为 window", () => {
+    const ids = [
+      "window.new",
+      "window.close",
+      "window.openInNew",
+      "window.mergeToPrimary",
+      "window.quit",
+    ];
+    for (const id of ids) {
+      const cmd = commands.find((c) => c.id === id);
+      expect(cmd, `${id} 未注册`).toBeTruthy();
+      expect(cmd?.group).toBe("window");
+      expect(cmd?.titleKey.startsWith("command.window.")).toBe(true);
+    }
+  });
+
+  it("v0.9.0：窗口快捷键不与既有绑定冲突（Ctrl+Shift+N / Ctrl+Shift+W / Ctrl+Alt+O）", () => {
+    expect(commands.find((c) => c.id === "window.new")?.shortcut).toBe("Ctrl+Shift+N");
+    expect(commands.find((c) => c.id === "window.close")?.shortcut).toBe("Ctrl+Shift+W");
+    // Ctrl+Shift+O 已被「切换大纲栏」占用，故改用 Ctrl+Alt+O
+    expect(commands.find((c) => c.id === "window.openInNew")?.shortcut).toBe("Ctrl+Alt+O");
+    expect(commands.find((c) => c.id === "view.toggleOutline")?.shortcut).toBe("Ctrl+Shift+O");
   });
 
   it("ai.chat 命令快捷键为 Ctrl+K（v0.7.5 AI 对话，保持所有 AI 入口命令面板可达）", () => {
@@ -153,7 +178,7 @@ describe("G8: 命令注册中心", () => {
     expect(unique.size).toBe(ids.length);
   });
 
-  it("命令分组覆盖 file/edit/view/format/insert/export", () => {
+  it("命令分组覆盖 file/edit/view/format/insert/export/window", () => {
     const groups = new Set(commands.map((c) => c.group));
     expect(groups.has("file")).toBe(true);
     expect(groups.has("edit")).toBe(true);
@@ -161,14 +186,17 @@ describe("G8: 命令注册中心", () => {
     expect(groups.has("format")).toBe(true);
     expect(groups.has("insert")).toBe(true);
     expect(groups.has("export")).toBe(true);
-    expect(groups.size).toBe(6);
+    // v0.9.0：窗口分组
+    expect(groups.has("window")).toBe(true);
+    expect(groups.size).toBe(7);
   });
 
-  it("GROUP_ORDER 包含全部 6 个分组且顺序正确", () => {
+  it("GROUP_ORDER 包含全部 7 个分组且顺序正确", () => {
     expect(GROUP_ORDER).toEqual([
       "file",
       "edit",
       "view",
+      "window",
       "format",
       "insert",
       "export",
@@ -176,7 +204,7 @@ describe("G8: 命令注册中心", () => {
   });
 
   it("GROUP_TITLE_KEYS 为每个分组提供 i18n key", () => {
-    const groups: CommandGroup[] = ["file", "edit", "view", "format", "insert", "export"];
+    const groups: CommandGroup[] = ["file", "edit", "view", "window", "format", "insert", "export"];
     for (const g of groups) {
       expect(GROUP_TITLE_KEYS[g]).toBeDefined();
       expect(GROUP_TITLE_KEYS[g]).toBe(`command.group.${g}`);
