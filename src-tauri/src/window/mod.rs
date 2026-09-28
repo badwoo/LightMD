@@ -151,6 +151,14 @@ pub struct WindowManager {
     window_state: HashMap<String, ReportedState>,
     /// 已被「合并到主窗口」除名的窗口（迟到的状态上报一律忽略，防止复活）
     forgotten: HashSet<String>,
+    /// 本会话是否由「退出 LightMD」（窗口菜单 / `Ctrl+Q`）发起退出。
+    ///
+    /// v0.9.0 第四轮（问题3）：语义修订——显式退出时**不**记录其他窗口，下次启动
+    /// 只恢复主窗口。用户诉求：「如果其他窗口通过『窗口 > 退出 LightMD』或 `Ctrl+Q`
+    /// 关闭，则下次重新打开软件后不恢复窗口」；而逐个点右上角关闭（= 自然退出）
+    /// 仍按会话整体还原。`finalize_session` 据此改写会话快照，避免它用「全部存活
+    /// 窗口」覆盖 `quit_app` 刚写好的「仅主窗口」快照。
+    quit_action: bool,
     /// 是否已就「文件监听超限」提示过（只在上升沿 emit，避免反复 toast）
     watch_limit_warned: bool,
 }
@@ -192,6 +200,7 @@ impl WindowManager {
             open_files: OpenFiles::default(),
             window_state: HashMap::new(),
             forgotten: HashSet::new(),
+            quit_action: false,
             watch_limit_warned: false,
         }
     }
@@ -497,6 +506,46 @@ impl WindowManager {
             b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.label.cmp(&b.2.label))
         });
         SessionSnapshot::new(timestamp, entries.into_iter().map(|(_, _, s)| s).collect())
+    }
+
+    // ───────────── 显式退出（「退出 LightMD」/ Ctrl+Q） ─────────────
+
+    /// 标记「本次退出由『退出 LightMD』/`Ctrl+Q` 发起」。
+    ///
+    /// v0.9.0 第四轮（问题3）：显式退出后下次启动**不**恢复其他窗口。
+    pub fn mark_quit_action(&mut self) {
+        self.quit_action = true;
+    }
+
+    /// 本次退出是否由显式退出动作发起
+    pub fn quit_action_requested(&self) -> bool {
+        self.quit_action
+    }
+
+    /// 显式退出时应当落盘的会话快照：**只保留主窗口条目**。
+    ///
+    /// v0.9.0 第四轮（问题3）语义修订：
+    /// - 逐个点右上角关闭（关掉最后一个 = 自然退出）→ 仍走
+    ///   [`Self::snapshot_after_close`]，本会话全部窗口随会话还原（第三轮行为）；
+    /// - 「窗口 > 退出 LightMD」/ `Ctrl+Q` → 用户明确表示"别再回来了"，
+    ///   只写主窗口条目的最后状态（主窗口的标签/文件夹/浏览进度照常恢复，
+    ///   其他窗口下次启动不出现）。
+    ///
+    /// 若主窗口已被关闭、Primary 已晋升给某个辅助窗口，则把**当前 Primary** 的状态
+    /// 以 `main` 标签写入——启动时 `main` 槽位由配置创建，其标签应落在主窗口里。
+    /// 完全没有上报记录（刚启动就退出）时返回空快照，调用方据此裁剪旧会话文件。
+    pub fn snapshot_for_quit(&self, timestamp: u64) -> SessionSnapshot {
+        let primary = self.primary_label.clone();
+        let entry = self
+            .window_state
+            .get(&primary)
+            .or_else(|| self.window_state.get(PRIMARY_LABEL));
+        let Some(state) = entry else {
+            return SessionSnapshot::new(timestamp, Vec::new());
+        };
+        let mut session = state.session.clone();
+        session.label = PRIMARY_LABEL.to_string();
+        SessionSnapshot::new(timestamp, vec![session])
     }
 
     /// 窗口菜单列表（Primary 在前，其余按创建时间升序）
@@ -927,6 +976,69 @@ mod tests {
             exit.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
             vec!["main"]
         );
+    }
+
+    // ─── v0.9.0 第四轮（问题3）：显式退出（Ctrl+Q）后不再恢复其他窗口 ───
+
+    /// 默认不是显式退出；标记后为真（`finalize_session` 据此改写快照）
+    #[test]
+    fn quit_action_flag_is_off_by_default_and_marks() {
+        let mut mgr = WindowManager::new();
+        assert!(!mgr.quit_action_requested());
+        mgr.mark_quit_action();
+        assert!(mgr.quit_action_requested());
+    }
+
+    /// 显式退出的快照只保留主窗口条目——其他窗口下次启动不出现
+    /// （用户诉求：「通过『窗口 > 退出 LightMD』或 Ctrl+Q 关闭的，下次不恢复窗口」）
+    #[test]
+    fn quit_snapshot_keeps_only_primary() {
+        let mut mgr = WindowManager::new();
+        mgr.register(PRIMARY_LABEL, 1);
+        mgr.sync_window(PRIMARY_LABEL, report(PRIMARY_LABEL, &["D:/a.md", "D:/b.md"]));
+        mgr.register("sec-1", 2);
+        mgr.sync_window("sec-1", report("sec-1", &["D:/c.md"]));
+        mgr.register("sec-2", 3);
+        mgr.sync_window("sec-2", report("sec-2", &["D:/d.md"]));
+
+        let snap = mgr.snapshot_for_quit(40);
+        assert_eq!(
+            snap.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            vec!["main"],
+            "显式退出只写主窗口"
+        );
+        assert_eq!(snap.windows[0].tabs.len(), 2);
+        assert_eq!(snap.windows[0].active_tab_idx, 0);
+    }
+
+    /// 主窗口已被关闭、Primary 晋升给辅助窗口时：把当前 Primary 的状态以 `main`
+    /// 标签写入（启动时 main 槽位由配置创建，这些标签应落在主窗口里）
+    #[test]
+    fn quit_snapshot_relabels_promoted_primary_as_main() {
+        let mut mgr = WindowManager::new();
+        mgr.register(PRIMARY_LABEL, 1);
+        mgr.sync_window(PRIMARY_LABEL, report(PRIMARY_LABEL, &["D:/a.md"]));
+        mgr.register("sec-1", 2);
+        mgr.sync_window("sec-1", report("sec-1", &["D:/b.md", "D:/c.md"]));
+
+        mgr.remove_window(PRIMARY_LABEL);
+        assert_eq!(mgr.promote_primary().as_deref(), Some("sec-1"));
+
+        let snap = mgr.snapshot_for_quit(50);
+        assert_eq!(snap.windows.len(), 1);
+        assert_eq!(snap.windows[0].label, PRIMARY_LABEL, "以 main 标签写入");
+        assert_eq!(snap.windows[0].tabs.len(), 2);
+    }
+
+    /// 尚无任何窗口状态上报（刚启动就退出）→ 空快照，调用方据此裁剪旧会话文件
+    #[test]
+    fn quit_snapshot_is_empty_without_reported_state() {
+        let mgr = WindowManager::new();
+        mgr_assert_empty(mgr.snapshot_for_quit(60));
+    }
+
+    fn mgr_assert_empty(snap: SessionSnapshot) {
+        assert!(snap.windows.is_empty(), "无状态时不得写出任何窗口条目");
     }
 
     /// 槽位复用：新窗口在该 label 上的上报数据从零开始（不带上一轮残留）

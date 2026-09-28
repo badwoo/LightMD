@@ -66,7 +66,11 @@ pub async fn read_file(app: tauri::AppHandle, path: String) -> Result<String, St
 }
 
 #[tauri::command]
-pub async fn write_file(path: String, content: String) -> Result<(), String> {
+pub async fn write_file(
+    window: tauri::WebviewWindow,
+    path: String,
+    content: String,
+) -> Result<(), String> {
     let path = resolve_path(&path)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -74,10 +78,13 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
     }
     std::fs::write(&path, &content)
         .map_err(|e| format!("写入文件失败 \"{}\": {}", path.display(), e))?;
-    // v0.9.0 修复：记录本次自身写入的 mtime，抑制紧随其后的 watcher 事件。
-    // 否则「应用自己保存」会被前端误判为「文件被外部修改」——保存即弹
-    // 「覆盖 / 另存为」、覆盖后再触发，形成无限黄色提示循环。
-    super::super::window::open_files::note_file_written(&path.to_string_lossy());
+    // v0.9.0 修复：记录本次自身写入（带写入窗口 label），watcher 事件据此把
+    // 「写入窗口的回声」与「其他窗口需要刷新」区分开：
+    // - 写入窗口：事件带 source=自己 → 前端忽略，不会误报「文件已被外部修改」
+    //   （否则保存即弹「覆盖 / 另存为」、覆盖后再触发，形成无限黄色提示循环）；
+    // - 其他窗口（同文件多开）：事件照常处理 → 标签内容立即刷新
+    //   （v0.9.0 第四轮问题1：主窗口打开 a，新窗口保存 a，主窗口没刷新）。
+    super::super::window::open_files::note_file_written(&path.to_string_lossy(), window.label());
     Ok(())
 }
 

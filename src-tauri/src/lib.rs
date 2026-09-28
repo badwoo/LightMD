@@ -72,23 +72,26 @@ fn route_file_to_primary(app: &tauri::AppHandle, path: String) {
 
 /// 应用退出前收尾：落盘会话快照 + 释放文件 watcher + 取消全部在途 AI 任务。
 ///
-/// 会话规则（v0.9.0 第三轮修订）：
-/// - **仅在本刻仍有存活窗口时**落盘一次（`quit_app` 走 `app.exit()` 时全部窗口
-///   仍存活，此处快照与它自己刚写的相同，写两次无害）；
-/// - **存活窗口为 0 时绝不落盘**：最后一个窗口的 `confirm_close` 已写出「完整
-///   退出快照」（含本会话全部窗口的最后状态），此处此刻再写只会用只剩 main
-///   的存活快照把它覆盖掉——上一轮引入的回归正是「重开后其他窗口不再恢复」
-///   （v0.9.0 第三轮用户反馈：多窗口逐个关闭后重开，其他窗口没有恢复）；
+/// 会话规则（v0.9.0 第四轮修订）：
+/// - **显式退出**（「退出 LightMD」/ `Ctrl+Q`，`quit_app` 已置位并写过「仅主窗口」
+///   快照）→ 此处同样只写仅主窗口快照，避免用「全部存活窗口」把它覆盖回去
+///   （用户诉求：显式退出后下次启动不恢复其他窗口）；
+/// - **自然退出**（关闭最后一个窗口）→ 存活窗口为 0，**绝不落盘**：此刻
+///   `confirm_close` 已写出「完整退出快照」（含本会话全部窗口的最后状态），
+///   再写只会用只剩 main 的存活快照把它覆盖掉——第二轮引入的回归正是
+///   「重开后其他窗口不再恢复」（v0.9.0 第三轮用户反馈）；
+/// - 仍有其他窗口存活的异常退出路径 → 写「存活窗口」快照（崩溃安全）；
 /// - 纯单窗口且从未有过会话文件的用户：删除会话文件，保持 v0.8.5 语义（REG-1）。
 fn finalize_session(app: &tauri::AppHandle) {
     let state = app.state::<AppWindowManager>();
     let (ever_multi, live, snapshot) = {
         let mgr = state.lock();
-        (
-            mgr.ever_multi_window(),
-            mgr.window_count(),
-            mgr.snapshot_with(window::now_ms()),
-        )
+        let snapshot = if mgr.quit_action_requested() {
+            mgr.snapshot_for_quit(window::now_ms())
+        } else {
+            mgr.snapshot_with(window::now_ms())
+        };
+        (mgr.ever_multi_window(), mgr.window_count(), snapshot)
     };
     if live > 0 {
         window_cmds::persist_session(app, ever_multi, &snapshot);
@@ -271,7 +274,9 @@ pub fn run() {
             window_cmds::prune_session_secondaries,
             // v0.9.0 第三轮修复：「合并到主窗口」后把自身从会话最后状态中除名
             window_cmds::forget_window_state,
-            // v0.9.0：显式退出（写完整窗口集合后退出，供「恢复其他窗口」下次还原）
+            // v0.9.0 第四轮（问题2）：标签拖到另一窗口标签栏时的落点判定
+            window_cmds::merge_tab_drop_target,
+            // v0.9.0：显式退出（v0.9.0 第四轮起只写主窗口条目 → 下次启动不恢复其他窗口）
             window_cmds::quit_app,
         ])
         .build(tauri::generate_context!())

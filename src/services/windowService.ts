@@ -65,6 +65,13 @@ export interface WindowSummary {
   tabs: TabBrief[];
 }
 
+/** 标签拖拽松手时的落点窗口（v0.9.0 第四轮问题2） */
+export interface MergeDropTarget {
+  label: string;
+  /** 是否为主窗口（是 → 弹「合并回主窗口」询问） */
+  isPrimary: boolean;
+}
+
 /** 会话恢复窗口数上限（与 Rust 侧一致：main + sec-1~sec-7） */
 export const WINDOW_BOOT_FALLBACK: WindowBoot = {
   label: "main",
@@ -269,10 +276,29 @@ export const windowService = {
   },
 
   /**
+   * v0.9.0 第四轮（问题2）：标签拖拽松手时，光标是否落在**其他窗口的标签栏**上。
+   *
+   * 标签拖拽由源窗口捕获鼠标，其 DOM 无法得知指针在屏幕上的位置，因此由 Rust 读
+   * 全局光标坐标判断。返回 null 表示没有落在别的窗口标签栏上（调用方回退到
+   * 「移动到新窗口」的原行为）。
+   */
+  async mergeTabDropTarget(): Promise<MergeDropTarget | null> {
+    if (!isTauri()) return null;
+    try {
+      return await invoke<MergeDropTarget | null>("merge_tab_drop_target");
+    } catch (err) {
+      console.error("检测标签拖拽落点失败:", err);
+      return null;
+    }
+  },
+
+  /**
    * v0.9.0：显式退出应用（窗口菜单 / 命令面板 `Ctrl+Q`）。
    *
-   * 与「逐个关闭窗口」的关键差异：此刻全部窗口仍存活，Rust 会把**完整窗口集合**
-   * 写入会话快照，供下次启动按「恢复其他窗口」开关还原；用户主动关闭过的窗口不会复活。
+   * v0.9.0 第四轮（问题3）语义修订：显式退出表示"这次会话到此为止"——Rust 只把
+   * **主窗口**的最后状态写入会话快照（下次启动主窗口的标签/文件夹/浏览进度照常
+   * 恢复），其他窗口不再出现。若希望下次整体还原多个窗口，请逐个点右上角关闭
+   * （关掉最后一个窗口即自然退出，本会话全部窗口都会写入快照）。
    */
   async quitApp(): Promise<void> {
     if (!isTauri()) return;

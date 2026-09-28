@@ -50,6 +50,12 @@ interface TabBarProps {
    * v0.9.0 WP2：把该标签移动到新窗口（真实文件带 dirty 时由 App 负责先提示保存）。
    */
   onMoveToNewWindow?: (tab: TabInfo, idx: number) => void;
+  /**
+   * v0.9.0 第四轮（问题2）：标签被拖出标签栏松手时的入口（优先于
+   * `onMoveToNewWindow`）。App 据此判断落点是否在**另一个窗口的标签栏**上：
+   * 是主窗口 → 询问「是否合并回主窗口」；否则回退到「移动到新窗口」。
+   */
+  onTabDropOutside?: (tab: TabInfo, idx: number) => void;
 }
 
 export function TabBar({
@@ -59,6 +65,7 @@ export function TabBar({
   onCloseMany,
   onNewUntitled,
   onMoveToNewWindow,
+  onTabDropOutside,
 }: TabBarProps) {
   const t = useT();
   const openTabs = useEditorStore((s) => s.openTabs);
@@ -398,12 +405,17 @@ export function TabBar({
                 },
                 // 拖出标签栏松手 → 把该标签移动到新窗口（落点时重新定位下标）
                 onDropOutsideSource: () => {
-                  if (!onMoveToNewWindow) return;
+                  if (!onTabDropOutside && !onMoveToNewWindow) return;
                   const st = useEditorStore.getState();
                   const i = st.openTabs.findIndex((x) =>
                     tab.isUntitled && tab.id ? x.id === tab.id : x.path === tab.path,
                   );
-                  onMoveToNewWindow(tab, i === -1 ? st.activeTabIdx : i);
+                  const targetIdx = i === -1 ? st.activeTabIdx : i;
+                  // v0.9.0 第四轮（问题2）：交由 App 判定落点——若松手时标签压在
+                  // 另一个窗口（尤其是主窗口）的标签栏上 → 询问「合并回主窗口」；
+                  // 否则维持「移动到新窗口」。
+                  if (onTabDropOutside) onTabDropOutside(tab, targetIdx);
+                  else onMoveToNewWindow?.(tab, targetIdx);
                 },
               });
             }}

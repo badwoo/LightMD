@@ -132,8 +132,17 @@ static FILE_MTIMES: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 /// ——代价远小于"每次保存都误报外部修改"。
 const SELF_WRITE_SUPPRESS_MS: u64 = 1500;
 
-/// path → 本应用最近一次写入的时刻（用于上面的抑制窗口）
-static SELF_WRITES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+/// path → { 写入它的窗口 label → 写入时刻 }。
+///
+/// v0.9.0 第四轮修复（问题1）：必须**按窗口**记录，而不是全局一条「本应用刚写过」。
+/// 全局抑制的后果：窗口 B 保存文件后事件被整体吞掉，**同样打开了该文件的窗口 A
+/// 永远收不到 `fileChanged`**，标签内容停留在旧版本——用户反馈「在新窗口编辑 a
+/// 文件并保存后，主窗口打开的 a 文件没有立即刷新」。
+///
+/// 现在的语义：写入窗口自己不需要这次回声（按 `source` 过滤掉），其他窗口照常收到
+/// 通知并重载。回调里若记录尚未写入（调度竞态，见 [`SELF_WRITE_SUPPRESS_MS`]），
+/// 事件不带 source 照常广播，写入窗口由前端的「自身写盘内容指纹」兜底识别为回声。
+static SELF_WRITES: OnceLock<Mutex<HashMap<String, HashMap<String, Instant>>>> = OnceLock::new();
 
 fn file_watchers() -> &'static Mutex<HashMap<String, notify::RecommendedWatcher>> {
     FILE_WATCHERS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -143,7 +152,7 @@ fn file_mtimes() -> &'static Mutex<HashMap<String, u64>> {
     FILE_MTIMES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn self_writes() -> &'static Mutex<HashMap<String, Instant>> {
+fn self_writes() -> &'static Mutex<HashMap<String, HashMap<String, Instant>>> {
     SELF_WRITES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -165,41 +174,42 @@ fn mtime_ms(path: &std::path::Path) -> u64 {
         .unwrap_or(0)
 }
 
-/// 记录「某路径刚被本应用写入」的时间戳，使紧随其后的 watcher 事件被去重掉。
+/// 记录「某窗口刚写过某路径」，使紧随其后的 watcher 事件对该窗口被标记为回声。
 ///
 /// **为什么必需**：`notify` 会把应用自己保存文件产生的 `Modify` 事件也报回来。
-/// 若不抑制，前端会把它当成「文件被外部修改」——表现为：Ctrl+S 保存后弹
+/// 若不标记，写入窗口会把它当成「文件被外部修改」——表现为：Ctrl+S 保存后弹
 /// 「文件已被外部修改，覆盖 / 另存为」、覆盖保存后再次触发，形成**无限循环**的
 /// 黄色提示（v0.9.0 用户反馈的缺陷）。
 ///
-/// 由 `commands::file_ops::write_file` 在写盘成功后调用，因此**任何**调用点
-/// （手动保存 / 自动保存 / 版本回滚 / 另存为）都自动被覆盖，无需前端逐处适配。
+/// 由 `commands::file_ops::write_file` 在写盘成功后调用（带调用者窗口 label），因此
+/// **任何**调用点（手动保存 / 自动保存 / 版本回滚 / 另存为）都自动被覆盖。
 ///
-/// v0.9.0 第二轮修复：除 mtime 外再登记一个 [`SELF_WRITE_SUPPRESS_MS`] 抑制窗口，
-/// 覆盖「事件先于本函数到达」的调度竞态（见常量注释）。
-pub fn note_file_written(path: &str) {
+/// v0.9.0 第四轮修复（问题1）：抑制范围从「整个应用」收窄到「写入窗口」——事件照常
+/// 广播给其他窗口，只是带上了 `source`（写入者集合），写入窗口据此忽略；否则
+/// 「B 窗口保存 → A 窗口同文件标签不刷新」。
+pub fn note_file_written(path: &str, window_label: &str) {
     let key = normalize_path(path);
-    let mtime = mtime_ms(std::path::Path::new(path));
     let now = Instant::now();
-    // mtime 读不到（罕见）时仍登记抑制窗口：仅靠时间也能挡掉紧随其后的事件
-    if mtime != 0 {
-        lock_or_recover(file_mtimes()).insert(key.clone(), mtime);
-    }
     let mut writes = lock_or_recover(self_writes());
     // 顺手丢弃已过期的抑制记录（窗口仅 1.5s，表大小天然很小）
-    writes.retain(|_, at| {
-        now.checked_duration_since(*at)
-            .map(|d| d < Duration::from_millis(SELF_WRITE_SUPPRESS_MS))
-            .unwrap_or(true)
+    writes.retain(|_, owners| {
+        owners.retain(|_, at| {
+            now.checked_duration_since(*at)
+                .map(|d| d < Duration::from_millis(SELF_WRITE_SUPPRESS_MS))
+                .unwrap_or(true)
+        });
+        !owners.is_empty()
     });
-    writes.insert(key, now);
+    writes
+        .entry(key)
+        .or_default()
+        .insert(window_label.to_string(), now);
 }
 
-/// 事件去重判定：该路径当前 mtime 是否等于**已知的最近 mtime**（本应用自己刚写过，
-/// 或同一个 mtime 已上报过）。为真时调用方应直接忽略这次事件。
+/// 该路径当前的 mtime 是否等于**已上报过**的最近 mtime（同一变更只上报一次）。
 ///
 /// mtime 为 0（读取失败/文件已不存在）时一律返回 false，交由上层按真实事件处理。
-fn is_known_mtime(path: &str, mtime: u64) -> bool {
+fn is_reported_mtime(path: &str, mtime: u64) -> bool {
     if mtime == 0 {
         return false;
     }
@@ -207,28 +217,31 @@ fn is_known_mtime(path: &str, mtime: u64) -> bool {
     mtimes.get(path).copied() == Some(mtime)
 }
 
-/// 该路径是否处在「本应用刚写入」的抑制窗口内。
+/// 仍在「刚写过」抑制窗口内写过该路径的窗口 label 列表（写入者）。
 ///
-/// 与 [`is_known_mtime`] 互补：后者依赖 mtime 登记的先后顺序，前者只看时间，
-/// 因此不怕「watcher 回调抢在登记之前执行」的竞态。
-fn is_recent_self_write(path: &str) -> bool {
-    is_recent_self_write_at(path, Instant::now())
+/// 事件载荷带上它，写入窗口自身忽略这次回声；**其他窗口照常处理**——这正是
+/// v0.9.0 第四轮问题1（多窗口同文件保存后不刷新）的修复点。
+fn recent_writers(path: &str) -> Vec<String> {
+    recent_writers_at(path, Instant::now())
 }
 
-/// [`is_recent_self_write`] 的可注入时钟版本（单测用）
-fn is_recent_self_write_at(path: &str, now: Instant) -> bool {
+/// [`recent_writers`] 的可注入时钟版本（单测用）
+fn recent_writers_at(path: &str, now: Instant) -> Vec<String> {
     let mut writes = lock_or_recover(self_writes());
-    let Some(written_at) = writes.get(path).copied() else {
-        return false;
+    let Some(owners) = writes.get_mut(path) else {
+        return Vec::new();
     };
-    let elapsed = now.checked_duration_since(written_at);
-    let recent = elapsed
-        .map(|d| d < Duration::from_millis(SELF_WRITE_SUPPRESS_MS))
-        .unwrap_or(true); // now 早于记录时刻（理论不可能）→ 保守按"刚写过"处理
-    if !recent {
+    owners.retain(|_, at| {
+        now.checked_duration_since(*at)
+            .map(|d| d < Duration::from_millis(SELF_WRITE_SUPPRESS_MS))
+            .unwrap_or(true) // now 早于记录时刻（理论不可能）→ 保守按"刚写过"处理
+    });
+    let mut labels: Vec<String> = owners.keys().cloned().collect();
+    labels.sort();
+    if owners.is_empty() {
         writes.remove(path);
     }
-    recent
+    labels
 }
 
 /// 记录「已按该 mtime 上报过」，避免同一变更重复通知前端
@@ -297,23 +310,30 @@ fn build_file_watcher(app: &tauri::AppHandle, path: &str) -> Option<notify::Reco
                 return;
             }
             let mtime = mtime_ms(std::path::Path::new(&path_owned));
-            if !removed {
-                // 幂等去重（三重）：
-                // 1. mtime 与本应用刚写入 / 已上报过的一致 → 忽略（覆盖「自己保存」与
-                //    「目录 watcher + 文件 watcher 双路到达」两种场景）；
-                // 2. v0.9.0 第二轮修复：仍在「刚写过」抑制窗口内 → 忽略（覆盖 watcher
-                //    回调抢在 mtime 登记之前执行的竞态）。
-                // 两种情况都顺带登记当前 mtime，避免抑制窗口过期后同一次写入被再次上报。
-                let suppress =
-                    is_known_mtime(&path_owned, mtime) || is_recent_self_write(&path_owned);
-                remember_reported_mtime(&path_owned, mtime);
-                if suppress {
+            // v0.9.0 第四轮修复（问题1）：不再全局抑制「自己写入」——那会让**其他**
+            // 打开了同一文件的窗口（多窗口同文件场景）永远收不到变更通知。
+            // 现在只做「同一 mtime 只上报一次」的幂等去重，并把写入者 label 列表
+            // 放进载荷 `source`：写入窗口据此忽略自己的回声，其他窗口照常重载。
+            // 若写入登记尚未落表（调度竞态），source 为空、事件照常广播，写入窗口
+            // 由前端的「自身写盘内容指纹」兜底（见 selfWriteGuard）。
+            let source: Vec<String> = if removed {
+                Vec::new()
+            } else {
+                if is_reported_mtime(&path_owned, mtime) {
                     return;
                 }
-            }
+                let writers = recent_writers(&path_owned);
+                remember_reported_mtime(&path_owned, mtime);
+                writers
+            };
             let _ = app_handle.emit(
                 "lightmd:fileChanged",
-                serde_json::json!({ "path": path_owned, "mtime": mtime, "removed": removed }),
+                serde_json::json!({
+                    "path": path_owned,
+                    "mtime": mtime,
+                    "removed": removed,
+                    "source": source,
+                }),
             );
         },
     )
@@ -449,7 +469,7 @@ mod tests {
 
     // ─── v0.9.0 用户反馈：应用自身写盘不得被当成「外部修改」 ───
 
-    /// 自己刚写过的文件，其 watcher 事件必须被去重掉。
+    /// 写入窗口自身：其 mtime 会被记为「已上报」，该窗口据此忽略自己的回声。
     ///
     /// 回归的是「Ctrl+S 保存后弹『文件已被外部修改，覆盖 / 另存为』→ 覆盖后再次
     /// 触发 → 无限黄色提示」这一缺陷。
@@ -461,14 +481,18 @@ mod tests {
         std::fs::write(&file, "v1").unwrap();
         let path = file.to_string_lossy().to_string();
 
-        // 写盘后登记（write_file 的成功路径会调用它）
-        note_file_written(&path);
+        // 写盘后登记（write_file 的成功路径会调用它，带写入窗口 label）
+        note_file_written(&path, "main");
         let mtime = mtime_ms(&file);
         assert!(mtime > 0);
+        // 事件按「已上报 mtime」去重后，写入窗口不会收到回声
+        remember_reported_mtime(&normalize_path(&path), mtime);
         assert!(
-            is_known_mtime(&normalize_path(&path), mtime),
-            "自身写入的 mtime 必须被识别，watcher 事件应被忽略"
+            is_reported_mtime(&normalize_path(&path), mtime),
+            "自身写入后同一 mtime 不得再次上报"
         );
+        // 写入者被识别出来（前端据此过滤自身回声）
+        assert_eq!(recent_writers(&normalize_path(&path)), vec!["main".to_string()]);
 
         // 等待文件系统时间戳推进后由「外部」改写 → 不再是已知 mtime，必须上报
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -476,7 +500,7 @@ mod tests {
         let new_mtime = mtime_ms(&file);
         if new_mtime != mtime {
             assert!(
-                !is_known_mtime(&normalize_path(&path), new_mtime),
+                !is_reported_mtime(&normalize_path(&path), new_mtime),
                 "外部修改必须能触发上报"
             );
         }
@@ -491,55 +515,83 @@ mod tests {
         let file = dir.join("s.md");
         std::fs::write(&file, "x").unwrap();
 
-        note_file_written(&file.to_string_lossy());
+        note_file_written(&file.to_string_lossy(), "sec-1");
         // 用正斜杠形式的 key 查询（模拟 watcher 侧的 path_key 归一）
         let forward = normalize_path(&file.to_string_lossy());
-        assert!(is_known_mtime(&forward, mtime_ms(&file)));
+        assert_eq!(recent_writers(&forward), vec!["sec-1".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// mtime 为 0（读取失败/文件不存在）时不参与去重，交由上层按真实事件处理
     #[test]
     fn zero_mtime_is_never_treated_as_known() {
-        assert!(!is_known_mtime("D:/nonexistent-xyz.md", 0));
-        note_file_written("D:/nonexistent-xyz.md");
-        assert!(!is_known_mtime("D:/nonexistent-xyz.md", 0));
+        assert!(!is_reported_mtime("D:/nonexistent-xyz.md", 0));
+        remember_reported_mtime("D:/nonexistent-xyz.md", 0);
+        assert!(!is_reported_mtime("D:/nonexistent-xyz.md", 0));
     }
 
     /// 已上报过的 mtime 再次到达（目录 watcher + 文件 watcher 双路）只算一次
     #[test]
     fn repeated_same_mtime_is_deduplicated() {
         let path = "D:/dedup-test.md";
-        assert!(!is_known_mtime(path, 12345));
+        assert!(!is_reported_mtime(path, 12345));
         remember_reported_mtime(path, 12345);
-        assert!(is_known_mtime(path, 12345));
-        assert!(!is_known_mtime(path, 12346));
+        assert!(is_reported_mtime(path, 12345));
+        assert!(!is_reported_mtime(path, 12346));
     }
 
     // ─── v0.9.0 第二轮修复（问题3）：抑制窗口覆盖「事件抢在登记之前」的竞态 ───
 
     /// 即便 mtime 尚未登记（watcher 回调抢在 `note_file_written` 之前执行），
-    /// 「刚写过」的时间窗口也必须把这次事件挡掉——否则前端会把自身保存误报为
-    /// 「文件已被外部修改，保存前请确认」。
+    /// 「刚写过」的时间窗口也必须把这次事件标记出来——否则写入窗口会把自身保存
+    /// 误报为「文件已被外部修改，保存前请确认」。
     #[test]
     fn self_write_window_suppresses_race_event() {
         let path = "D:/lightmd-race-nonexistent.md";
         let key = normalize_path(path);
-        // 文件不存在 → mtime 读不到（0），只有时间窗口生效
-        note_file_written(path);
-        assert!(!is_known_mtime(&key, 0), "mtime 未知时不参与 mtime 去重");
-        assert!(is_recent_self_write(&key), "刚写过的路径应落在抑制窗口内");
+        note_file_written(path, "main");
+        assert!(!is_reported_mtime(&key, 0), "mtime 未知时不参与 mtime 去重");
+        assert_eq!(recent_writers(&key), vec!["main".to_string()], "刚写过的窗口应被识别");
 
-        // 窗口过期后不再抑制（外部修改必须能被上报）
+        // 窗口过期后不再标记（外部修改必须能被上报）
         let later = Instant::now() + Duration::from_millis(SELF_WRITE_SUPPRESS_MS + 50);
-        assert!(!is_recent_self_write_at(&key, later));
-        // 过期记录已被清理，后续查询也是 false
-        assert!(!is_recent_self_write(&key));
+        assert!(recent_writers_at(&key, later).is_empty());
+        // 过期记录已被清理，后续查询也是空
+        assert!(recent_writers(&key).is_empty());
     }
 
     /// 从未写过的路径不在抑制窗口内（外部修改照常上报）
     #[test]
     fn unknown_path_is_not_suppressed() {
-        assert!(!is_recent_self_write("D:/lightmd-never-written.md"));
+        assert!(recent_writers("D:/lightmd-never-written.md").is_empty());
+    }
+
+    // ─── v0.9.0 第四轮修复（问题1）：同文件多窗口，保存后其他窗口必须刷新 ───
+
+    /// B 窗口保存后，**A 窗口不在写入者名单里**——事件照常广播给 A，A 据此重载。
+    ///
+    /// 回归的是用户反馈：「主窗口打开了 a 文件，在新建窗口编辑并保存后，主窗口的
+    /// a 文件没有立即刷新」。旧实现把「自己写入」抑制成全局的，事件被整体吞掉。
+    #[test]
+    fn other_window_is_not_suppressed_after_peer_saves() {
+        let path = normalize_path("D:/shared/doc.md");
+        note_file_written(&path, "sec-1");
+        let writers = recent_writers(&path);
+        assert_eq!(writers, vec!["sec-1".to_string()]);
+        // 写入窗口过滤自身回声；其他窗口不受影响
+        assert!(writers.contains(&"sec-1".to_string()), "写入窗口需被标记");
+        assert!(!writers.contains(&"main".to_string()), "其他窗口不得被吞掉事件");
+    }
+
+    /// 两个窗口先后写入同一文件：两者都在名单里，谁都不会误报，第三方窗口照常收到
+    #[test]
+    fn multiple_writers_are_all_reported() {
+        let path = normalize_path("D:/shared/multi.md");
+        note_file_written(&path, "sec-2");
+        note_file_written(&path, "main");
+        assert_eq!(
+            recent_writers(&path),
+            vec!["main".to_string(), "sec-2".to_string()]
+        );
     }
 }

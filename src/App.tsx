@@ -1271,11 +1271,20 @@ function App() {
     let cancelled = false;
     (async () => {
       const { listen } = await import("@tauri-apps/api/event");
-      const un = await listen<{ path: string; mtime: number; removed?: boolean }>(
-        "lightmd:fileChanged",
-        (ev) => {
-        const { path, mtime, removed } = ev.payload || { path: "", mtime: 0, removed: false };
+      const un = await listen<{
+        path: string;
+        mtime: number;
+        removed?: boolean;
+        /** v0.9.0 第四轮：刚写过该文件的窗口 label 列表（本窗口在此列时视为自身回声） */
+        source?: string[];
+      }>("lightmd:fileChanged", (ev) => {
+        const { path, mtime, removed, source } = ev.payload || { path: "", mtime: 0, removed: false };
         if (!path) return;
+        // v0.9.0 第四轮修复（问题1）：Rust 侧按「写入窗口」标记来源——本窗口是写入者
+        // 时这次事件是自身保存的回声，直接忽略（另一窗口则必须处理并重载，
+        // 这正是「新窗口保存后主窗口不刷新」的修复点）。若写入登记尚未落表
+        // （调度竞态）source 为空，下面仍会按内容指纹识别回声。
+        if (!removed && Array.isArray(source) && source.includes(getWindowLabel())) return;
         // 本窗口保存自己触发的变更：mtime 已记录，跳过
         const seen = lastFileChangedMtimeRef.current.get(path);
         if (mtime && seen === mtime) return;
@@ -1537,6 +1546,34 @@ function App() {
     }, 300);
     return () => clearTimeout(timer);
   }, [openTabs, activeTabIdxForSync, folderPathsMirror]);
+
+  /**
+   * v0.9.0 第四轮（问题3）：**立即**上报本窗口状态（绕过 300ms 防抖与指纹跳过）。
+   *
+   * 退出前调用：`quit_app` 的「仅主窗口」会话快照取自 Rust 侧的窗口最后状态，
+   * 若刚打开/关闭了标签就立刻退出，防抖窗口内可能还没上报——冲刷一次确保
+   * 下次启动恢复的是"退出那一刻"的标签集合。
+   */
+  const flushWindowState = useCallback(async () => {
+    if (!isTauri()) return;
+    const st = useEditorStore.getState();
+    const folders = useWindowStore.getState().folderPaths;
+    const report = {
+      label: getWindowLabel(),
+      activeTabIdx: st.activeTabIdx,
+      tabs: st.openTabs.map((t) => ({
+        kind: (t.isUntitled ? "untitled" : "file") as "file" | "untitled",
+        path: t.isUntitled ? null : t.path || null,
+        untitledId: t.isUntitled ? t.id ?? null : null,
+        name: t.name,
+        pinned: !!t.pinned,
+        isDirty: !!t.isDirty,
+      })),
+      folderPaths: folders,
+    };
+    windowStateFingerprintRef.current = JSON.stringify(report);
+    await windowService.syncWindowState(report);
+  }, []);
 
   // ─── 打开文件（Ctrl+O）──────────────────────
   const handleOpenFile = useCallback(async () => {
@@ -2163,6 +2200,32 @@ function App() {
   }, [askChoice, t, handleMergeToPrimary]);
 
   /**
+   * v0.9.0 第四轮（问题2）：标签被拖出本窗口标签栏后松手。
+   *
+   * 落点判定：若松手时光标压在**主窗口的标签栏**上 → 询问「是否合并回主窗口」
+   * （确认后复用 [`handleMergeToPrimary`]：全部标签并入主窗口并关闭本窗口）；
+   * 落在其他位置（桌面、编辑区、非主窗口）→ 维持原有「移动到新窗口」行为。
+   */
+  const handleTabDropOutsideTabBar = useCallback(
+    async (tab: TabInfo, idx: number) => {
+      const target = await windowService.mergeTabDropTarget();
+      if (target?.isPrimary) {
+        const choice = await askChoice(
+          "mergeOffer",
+          t("multiwindow.mergeOffer.message"),
+          "",
+          [{ id: "merge", label: t("multiwindow.mergeOffer.confirm") }],
+        );
+        if (choice !== "merge") return;
+        await handleMergeToPrimary();
+        return;
+      }
+      await handleMoveTabToNewWindow(tab, idx);
+    },
+    [askChoice, t, handleMergeToPrimary, handleMoveTabToNewWindow],
+  );
+
+  /**
    * v0.9.0 WP1 N2：关闭当前窗口（Ctrl+Shift+W / 窗口菜单）。
    * 复用原生 CloseRequested 流程（Rust 拦截 → 前端 dirty 确认 → confirm_close）。
    */
@@ -2219,10 +2282,12 @@ function App() {
     } catch (err) {
       console.warn("[退出应用] 持久化冲刷失败（忽略）:", err);
     }
+    // v0.9.0 第四轮（问题3）：立即上报本窗口状态，确保「仅主窗口」快照是退出那一刻的画面
+    await flushWindowState().catch(() => undefined);
     await windowService.quitApp().catch((err) => {
       console.error("[退出应用] 失败:", err);
     });
-  }, [askChoice, t]);
+  }, [askChoice, t, flushWindowState]);
 
   /**
    * 为指定标签走一次「另存为」（保存成功返回 true；用户取消返回 false）。
@@ -2942,6 +3007,8 @@ function App() {
         onNewUntitled={handleNewUntitled}
         // v0.9.0 WP2：「移动到新窗口」右键项
         onMoveToNewWindow={handleMoveTabToNewWindow}
+        // v0.9.0 第四轮（问题2）：标签拖出标签栏松手（落点是主窗口标签栏 → 询问合并）
+        onTabDropOutside={handleTabDropOutsideTabBar}
       />
       <AppShell
         sidebar={<FileTree />}

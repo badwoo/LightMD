@@ -72,6 +72,68 @@ pub fn overlaps_tab_strip(moved: Rect, primary: Rect, scale: f64) -> bool {
     rects_intersect(moved, tab_strip(primary, STRIP_LOGICAL_PX, scale))
 }
 
+/// 点（物理像素）是否落在窗口的标签栏条带内（左闭右开，宽度与窗口一致）
+pub fn point_in_tab_strip(win: Rect, x: f64, y: f64, scale: f64) -> bool {
+    let strip = tab_strip(win, STRIP_LOGICAL_PX, scale);
+    x >= strip.x as f64
+        && x < strip.x as f64 + strip.width as f64
+        && y >= strip.y as f64
+        && y < strip.y as f64 + strip.height as f64
+}
+
+/// 光标此刻压在哪个**其他**窗口的标签栏条带上（「把标签拖到别的窗口标签栏」用）。
+///
+/// v0.9.0 第四轮（问题2）：用户要的是「把新窗口的**标签**拖到主窗口标签栏 → 松开
+/// 询问是否合并」，而第三轮实现的是「拖**窗口标题栏**」（靠 Moved 事件判定）。
+/// 标签拖拽全程发生在源窗口内（鼠标被源窗口隐式捕获），源窗口的 DOM 无从得知指针
+/// 在屏幕上的位置，因此由 Rust 读全局光标坐标，再与其他窗口的几何比对。
+///
+/// 返回命中窗口的 label（排除 `caller` 自身）；坐标不可用时返回 None——调用方回退到
+/// 「移动到新窗口」的原行为，不会卡住手势。窗口重叠时优先返回主窗口（合并的目标）。
+pub fn tab_strip_target(app: &AppHandle, caller: &tauri::WebviewWindow) -> Option<String> {
+    // 全局光标位置（物理像素）——与 outer_position / outer_size 同一坐标系
+    let cursor = caller.cursor_position().ok()?;
+    let caller_label = caller.label().to_string();
+    // 光标仍在本窗口矩形内 → 落点就是本窗口自己的可见区域，主窗口标签栏不可能在此处
+    // 可见（活动窗口在最上层）。这一步排除「本窗口压在主窗口顶部条带之上」时的误判。
+    if let (Ok(pos), Ok(size)) = (caller.outer_position(), caller.outer_size()) {
+        let own = Rect::new(pos.x, pos.y, size.width, size.height);
+        if own.width > 0
+            && own.height > 0
+            && cursor.x >= own.x as f64
+            && cursor.x < own.x as f64 + own.width as f64
+            && cursor.y >= own.y as f64
+            && cursor.y < own.y as f64 + own.height as f64
+        {
+            return None;
+        }
+    }
+    let mut hit: Option<(bool, String)> = None;
+    for (label, win) in app.webview_windows() {
+        if label == caller_label {
+            continue;
+        }
+        let (Ok(pos), Ok(size), Ok(scale)) =
+            (win.outer_position(), win.outer_size(), win.scale_factor())
+        else {
+            continue;
+        };
+        if !point_in_tab_strip(Rect::new(pos.x, pos.y, size.width, size.height), cursor.x, cursor.y, scale)
+        {
+            continue;
+        }
+        let is_primary = app.state::<AppWindowManager>().lock().primary_label() == label;
+        // 已命中主窗口就不再被非主窗口覆盖；否则按遍历顺序记录第一个
+        if is_primary {
+            return Some(label.clone());
+        }
+        if hit.is_none() {
+            hit = Some((false, label.clone()));
+        }
+    }
+    hit.map(|(_, label)| label)
+}
+
 /// 候选表：label → 最近一次「压在条带上」的 Moved 时间
 fn pending() -> &'static Mutex<HashMap<String, Instant>> {
     static PENDING: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
@@ -293,5 +355,35 @@ mod tests {
         let moved = Rect::new(600, 100, 1800, 1300);
         assert!(overlaps_tab_strip(moved, primary, 2.0));
         assert!(!overlaps_tab_strip(moved, primary, 1.0));
+    }
+
+    // ─── v0.9.0 第四轮（问题2）：标签拖到别的窗口标签栏 → 光标命中判定 ───
+
+    #[test]
+    fn point_inside_tab_strip_hits() {
+        let win = Rect::new(100, 200, 1200, 800);
+        // 条带 = (100,200)-(1300,290)
+        assert!(point_in_tab_strip(win, 500.0, 240.0, 1.0));
+        assert!(point_in_tab_strip(win, 100.0, 200.0, 1.0), "左上角包含");
+        assert!(point_in_tab_strip(win, 1299.0, 289.0, 1.0), "右下角内侧包含");
+    }
+
+    #[test]
+    fn point_outside_tab_strip_misses() {
+        let win = Rect::new(100, 200, 1200, 800);
+        assert!(!point_in_tab_strip(win, 500.0, 60.0, 1.0), "窗口上方");
+        assert!(!point_in_tab_strip(win, 500.0, 400.0, 1.0), "编辑区（条带下方）");
+        assert!(!point_in_tab_strip(win, 60.0, 240.0, 1.0), "窗口左侧");
+        assert!(!point_in_tab_strip(win, 1400.0, 240.0, 1.0), "窗口右侧");
+        assert!(!point_in_tab_strip(win, 1300.0, 240.0, 1.0), "右边界（左闭右开）");
+        assert!(!point_in_tab_strip(win, 500.0, 290.0, 1.0), "条带下边界（左闭右开）");
+    }
+
+    #[test]
+    fn point_hit_respects_dpi_scale() {
+        let win = Rect::new(0, 0, 2400, 1600);
+        // 2x 缩放时条带高 180：y=150 命中；1x 时条带只到 90 → 不命中
+        assert!(point_in_tab_strip(win, 600.0, 150.0, 2.0));
+        assert!(!point_in_tab_strip(win, 600.0, 150.0, 1.0));
     }
 }

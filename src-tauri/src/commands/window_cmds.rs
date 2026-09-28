@@ -212,6 +212,32 @@ pub fn emit_to_window(
 
 // ───────────────────────── 关闭流程 ─────────────────────────
 
+/// 「标签拖到别的窗口标签栏」的落点信息（v0.9.0 第四轮问题2）。
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeDropTarget {
+    /// 光标下方那个窗口的 label
+    pub label: String,
+    /// 是否为主窗口（是 → 前端弹「合并回主窗口」询问）
+    pub is_primary: bool,
+}
+
+/// 判断松手时光标是否落在**另一个窗口**的标签栏上（供标签拖拽的「合并回主窗口」）。
+///
+/// 标签拖拽全程由源窗口捕获鼠标，源窗口 DOM 无从得知指针在屏幕上的位置，因此这里
+/// 读全局光标坐标（物理像素）与其他窗口几何比对。返回 None 时前端回退到
+/// 「移动到新窗口」的原行为（例如拖到空白桌面/编辑区）。
+#[tauri::command]
+pub fn merge_tab_drop_target(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AppWindowManager>,
+) -> Option<MergeDropTarget> {
+    let label = window::merge_detect::tab_strip_target(&app, &window)?;
+    let is_primary = state.lock().primary_label() == label;
+    Some(MergeDropTarget { label, is_primary })
+}
+
 /// 前端取消关闭（dirty 确认框点「取消」）
 #[tauri::command]
 pub fn abort_close(window: WebviewWindow, state: State<'_, AppWindowManager>) {
@@ -311,19 +337,35 @@ pub(crate) fn persist_session(app: &AppHandle, ever_multi: bool, snapshot: &Sess
 
 /// 显式退出应用（窗口菜单 / 命令面板 `Ctrl+Q`）。
 ///
-/// 与「逐个关闭窗口」的关键差异：此刻所有窗口仍存活，因此会话快照记录的是
-/// **完整的窗口集合**；下次启动若开启「恢复其他窗口」即可全部还原。
-/// 反之，用户主动关掉的窗口不会出现在快照里，也就不会在下次启动时复活。
+/// v0.9.0 第四轮（问题3）语义修订：显式退出表示"这次会话到此为止"，因此会话快照
+/// **只保留主窗口条目**——下次启动恢复主窗口的标签/文件夹/浏览进度，其他窗口不再
+/// 出现；主窗口的「启动时恢复其他窗口」开关保持原样。
+///
+/// 与「逐个点右上角关闭」的差异（那条路径走 `confirm_close`）：
+/// - 逐个关闭直到最后一个窗口 → 本会话出现过的全部窗口都写入快照，下次整体还原
+///   （第三轮修复，用户明确要求保留）；
+/// - 本命令 → 只写主窗口，且通过 [`WindowManager::mark_quit_action`] 置位，
+///   使 `finalize_session` 不再用「全部存活窗口」覆盖这份快照。
 #[tauri::command]
 pub fn quit_app(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppWindowManager>();
     let (ever_multi, snapshot) = {
-        let mgr = state.lock();
-        (mgr.ever_multi_window(), mgr.snapshot_with(window::now_ms()))
+        let mut mgr = state.lock();
+        mgr.mark_quit_action();
+        (
+            mgr.ever_multi_window(),
+            mgr.snapshot_for_quit(window::now_ms()),
+        )
     };
-    persist_session(&app, ever_multi, &snapshot);
+    if snapshot.windows.is_empty() {
+        // 刚启动就退出（尚无窗口状态上报）：至少裁掉旧会话里的辅助窗口条目，
+        // 否则「退出 LightMD」后会恢复出上一次会话的窗口
+        let _ = prune_session_secondaries(app.clone());
+    } else {
+        persist_session(&app, ever_multi, &snapshot);
+    }
     eprintln!(
-        "[LightMD] quit app: everMulti={} windows={}",
+        "[LightMD] quit app（显式退出，不恢复其他窗口）: everMulti={} windows={}",
         ever_multi,
         snapshot.windows.len()
     );
