@@ -15,6 +15,7 @@ import { mathPlugin } from "./katex-plugin";
 import { taskListPlugin } from "./task-list-plugin";
 import { headingAnchorPlugin, collectHeadings, type TocHeading } from "./heading-anchor";
 import { tocPlugin } from "./toc-plugin";
+import { setBlockSource } from "./blockSourceMap";
 
 // Token 类型兼容 markdown-it
 interface Token {
@@ -61,7 +62,9 @@ const md = new MarkdownIt("commonmark", {
   html: false,
   breaks: true,
   linkify: true,
-  typographer: true,
+  // v0.9.0 C5：关闭 typographer——智能引号会在解析层把直引号改写为弯引号，
+  // 文档内容被静默改字（git diff 噪音）。保真优先；预览不再自动排版弯引号。
+  typographer: false,
 });
 
 md.enable(["table", "strikethrough"]);
@@ -143,6 +146,12 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
   let prevEndLine: number | null = null;
   // v0.7.0 修复1b：源码行缓存，供 map 尾部空行收缩判断
   const sourceLines: string[] | null = source !== undefined ? source.split("\n") : null;
+  // v0.9.0 B6：顶层块原文行号记录（仅顶层调用传入 source 时启用）。
+  // serializer 对命中记录的块直接输出原文切片，实现未编辑块零重排。
+  const totalLines = source !== undefined ? countSourceLines(source) : 0;
+  const recordBlock = (node: Node, blockStart: number, blockEnd: number) => {
+    if (source !== undefined) setBlockSource(node, { start: blockStart, end: blockEnd, source });
+  };
 
   while (i < end) {
     const token = tokens[i];
@@ -164,15 +173,59 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
       anchorMap = [token.map[0], endLine];
       if (prevEndLine === null) {
         for (let k = 0; k < token.map[0]; k++) {
-          nodes.push(schema.nodes.paragraph.create());
+          const p = schema.nodes.paragraph.create();
+          recordBlock(p, k, k + 1); // B6：头部空段落记录（每个对应 1 个空行）
+          nodes.push(p);
         }
       } else {
         const gap = token.map[0] - prevEndLine;
         for (let k = 1; k < gap; k++) {
-          nodes.push(schema.nodes.paragraph.create());
+          const p = schema.nodes.paragraph.create();
+          recordBlock(p, prevEndLine + k, prevEndLine + k + 1); // B6：块间空段落记录
+          nodes.push(p);
         }
       }
     }
+
+    // v0.9.0 D3：脚注块特殊处理。footnote_block_open 不带 map，若走通用路径
+    // prevEndLine 停留在脚注块之前，尾部空行还原会把脚注定义占的行数当空行
+    // 还原（每往返一次尾部多 2 空行，永不收敛）。这里从源码行扫描脚注定义
+    // 的起始行，更新 prevEndLine，并为每个定义节点记录 B6 原文区间。
+    if (sourceLines && token.type === "footnote_block_open") {
+      const result = parseBlockToken(tokens, i, end, headings);
+      if (result) {
+        const defs = [result.node, ...(result.extraNodes || [])];
+        const scanFrom = prevEndLine ?? 0;
+        const defStarts: number[] = [];
+        for (let ln = scanFrom; ln < sourceLines.length; ln++) {
+          if (/^\[\^[^\]]+\]:/.test(sourceLines[ln])) defStarts.push(ln);
+        }
+        defs.forEach((n, j) => {
+          if (defStarts[j] !== undefined) {
+            setBlockSource(n, {
+              start: defStarts[j],
+              end: defStarts[j + 1] ?? totalLines,
+              source: source as string,
+            });
+          }
+        });
+        nodes.push(...defs);
+        i = result.nextIndex;
+        const lastStart = defStarts[defStarts.length - 1];
+        if (lastStart !== undefined) {
+          // 脚注块内容结束行 = 文档尾（尾部空行留给 tail 还原）
+          prevEndLine = totalLines;
+          // 收缩尾随空行（与通用路径同规则），保证 tail 语义一致
+          let e = totalLines;
+          while (e > lastStart + 1 && e <= sourceLines.length && !sourceLines[e - 1].trim()) {
+            e--;
+          }
+          prevEndLine = e;
+        }
+        continue;
+      }
+    }
+
     const result = parseBlockToken(tokens, i, end, headings);
     if (result) {
       // 支持返回多个节点（如脚注块包含多个脚注定义）
@@ -181,6 +234,7 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
       } else {
         nodes.push(result.node);
       }
+      if (anchorMap) recordBlock(result.node, token.map![0], anchorMap[1]); // B6：内容块记录
       i = result.nextIndex;
     } else {
       i++;
@@ -190,7 +244,6 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
 
   // 尾部/全空白文档的空行还原
   if (source !== undefined) {
-    const totalLines = countSourceLines(source);
     if (prevEndLine !== null) {
       // v0.7.0 修复5：末尾 t 个换行 → t 个空段落（原 t-1）
       // 旧规则与旧序列化编码（首空段 2 换行）互逆；新序列化末尾空段每段单换行
@@ -199,12 +252,16 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
       // 注：首个换行是最后一块的行终止符（"abc\n" → 0 空段，标准结尾无空行）。
       const tail = totalLines - prevEndLine;
       for (let k = 0; k < tail; k++) {
-        nodes.push(schema.nodes.paragraph.create());
+        const p = schema.nodes.paragraph.create();
+        setBlockSource(p, { start: prevEndLine + k, end: prevEndLine + k + 1, source });
+        nodes.push(p);
       }
     } else if (totalLines > 0) {
       // 无任何块 token：全空白文档，空行数 = 空段落数
       for (let k = 0; k < totalLines; k++) {
-        nodes.push(schema.nodes.paragraph.create());
+        const p = schema.nodes.paragraph.create();
+        setBlockSource(p, { start: k, end: k + 1, source });
+        nodes.push(p);
       }
     }
   }
@@ -363,7 +420,12 @@ function parseList(tokens: Token[], index: number, listType: "bullet_list" | "or
     items.push(schema.nodes.list_item.create(null, blocks));
   }
 
-  const attrs = listType === "ordered_list" ? { order: 1 } : {};
+  // v0.9.0 D4：读取 markdown-it 的 start 属性（"5. x" → start=5），
+  // 旧实现固定 order:1 导致起始号被改写为 1
+  const attrs =
+    listType === "ordered_list"
+      ? { order: Number(getAttr(tokens[index], "start")) || 1 }
+      : {};
   return { node: listNodeType.create(attrs, items), nextIndex: i };
 }
 
@@ -421,11 +483,25 @@ function parseBlockquote(tokens: Token[], index: number, headings?: TocHeading[]
   const innerTokens: Token[] = [];
   let i = index;
 
+  // v0.9.0 D1：嵌套引用内容保留。
+  // 旧实现在 depth 变 2 后 `if (depth === 1)` 恒假，内层块的全部 token
+  // （含内层 open/close）都不进 innerTokens，递归解析拿不到内层块 → 内层
+  // 引用整体丢失。现在：内层 blockquote_open 起整体收集（含边界 token 与
+  // 匹配的 close），交给现有递归 parseBlockquote 解析。
   for (; i < tokens.length; i++) {
     const t = tokens[i];
-    if (t.type === "blockquote_open") { depth++; if (depth === 1) continue; }
-    if (t.type === "blockquote_close") { depth--; if (depth === 0) break; continue; }
-    if (depth === 1) innerTokens.push(t);
+    if (t.type === "blockquote_open") {
+      depth++;
+      if (depth >= 2) innerTokens.push(t);
+      continue;
+    }
+    if (t.type === "blockquote_close") {
+      depth--;
+      if (depth === 0) break; // 外层 close：结束
+      innerTokens.push(t); // 内层 close：收集（供递归配对）
+      continue;
+    }
+    if (depth >= 1) innerTokens.push(t);
   }
 
   const content = parseBlockTokens(innerTokens, 0, innerTokens.length, headings);
@@ -436,7 +512,10 @@ function parseBlockquote(tokens: Token[], index: number, headings?: TocHeading[]
 
 function parseFence(tokens: Token[], index: number): ParseResult {
   const token = tokens[index];
-  const language = token.info?.trim().split(/\s+/)[0] || "";
+  const info = token.info || "";
+  // 高亮语言仍取 info 首词
+  const language = info.trim().split(/\s+/)[0] || "";
+  // v0.9.0 D11：attrs.info 保留完整信息串（如 "js {highlight}"），序列化原样输出
   // v0.7.0 修复1b：markdown-it 的 fence content 含最后行的换行符（"x\n"），
   // 若不去掉，序列化时 close 标记前会多出一个空行（"```js\nx\n\n```"）。
   // 只去一个尾随换行，块内末尾空行（"a\n\n" → "a\n"）仍完整保留。
@@ -446,7 +525,7 @@ function parseFence(tokens: Token[], index: number): ParseResult {
   if (language === "mermaid") {
     return {
       node: schema.nodes.mermaid_block.create(
-        { language: "mermaid" },
+        { language: "mermaid", info },
         [schema.text(textContent)]
       ),
       nextIndex: index + 1,
@@ -455,7 +534,7 @@ function parseFence(tokens: Token[], index: number): ParseResult {
 
   return {
     node: schema.nodes.code_block.create(
-      { language },
+      { language, info },
       [schema.text(textContent)]
     ),
     nextIndex: index + 1,
@@ -597,7 +676,7 @@ function buildTableRow(cells: Token[][], aligns: string[], isHeader: boolean): N
 // ─── 脚注块 ────────────────────────────────────────────
 // 解析 footnote_block_open 到 footnote_block_close 之间的内容
 // 每个 footnote_open/footnote_close 对应一个 footnote_definition 节点
-// 简化处理：取 footnote 内第一个段落的 inline 内容作为脚注定义内容
+// 简化处理：取 footnote 内各段落 inline 内容（空格连接）作为脚注定义内容
 
 function parseFootnoteBlock(tokens: Token[], index: number): ParseResult {
   const defs: Node[] = [];
@@ -612,13 +691,29 @@ function parseFootnoteBlock(tokens: Token[], index: number): ParseResult {
     if (t.type === "footnote_open") {
       // 从 meta 读取 label
       const label = (t.meta as { label?: string })?.label ?? "";
-      // 收集 footnote_open 到 footnote_close 之间的 inline 内容
+      // 收集 footnote_open 到 footnote_close 之间的内容
       let content = "";
       i++;
       while (i < tokens.length && tokens[i].type !== "footnote_close") {
         // 跳过 footnote_anchor（这是 markdown-it 内部的回链标记）
         if (tokens[i].type === "inline") {
+          if (content && !content.endsWith(" ")) content += " ";
           content += tokens[i].content;
+        } else if (
+          tokens[i].type !== "footnote_anchor" &&
+          tokens[i].type !== "paragraph_open" &&
+          tokens[i].type !== "paragraph_close"
+        ) {
+          // v0.9.0 D6：脚注内非段落类的块级内容（代码块等）递归解析取文本
+          // 拼接，防止内容整体丢失（接受结构扁平化，先保证不丢）。
+          // 注意段落仍走 inline 收集（保留 inline 格式），多段落以空格连接。
+          const sub = parseBlockToken(tokens, i, tokens.length);
+          if (sub && sub.nextIndex > i) {
+            if (content && !content.endsWith(" ")) content += " ";
+            content += sub.node.textContent;
+            i = sub.nextIndex;
+            continue;
+          }
         }
         i++;
       }
@@ -668,11 +763,28 @@ function parseDefinitionList(tokens: Token[], index: number): ParseResult {
       if (i < tokens.length && tokens[i].type === "dt_close") i++;
       items.push(schema.nodes.definition_term.create(null, parseInline(content)));
     } else if (t.type === "dd_open") {
-      // 收集 dd_open 到 dd_close 之间的段落内容（简化：取所有 inline 拼接）
+      // 收集 dd_open 到 dd_close 之间的内容
       let content = "";
       i++;
       while (i < tokens.length && tokens[i].type !== "dd_close") {
-        if (tokens[i].type === "inline") content += tokens[i].content;
+        if (tokens[i].type === "inline") {
+          if (content && !content.endsWith(" ")) content += " ";
+          content += tokens[i].content;
+        } else if (
+          tokens[i].type !== "paragraph_open" &&
+          tokens[i].type !== "paragraph_close"
+        ) {
+          // v0.9.0 D6：dd 内非段落类的块级内容（代码块/嵌套块等）递归解析
+          // 取文本拼接，防止内容整体丢失（接受结构扁平化，先保证不丢）。
+          // 段落仍走 inline 收集（保留 inline 格式），多段落以空格连接。
+          const sub = parseBlockToken(tokens, i, tokens.length);
+          if (sub && sub.nextIndex > i) {
+            if (content && !content.endsWith(" ")) content += " ";
+            content += sub.node.textContent;
+            i = sub.nextIndex;
+            continue;
+          }
+        }
         i++;
       }
       if (i < tokens.length && tokens[i].type === "dd_close") i++;
@@ -736,8 +848,13 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
       i++; continue;
     }
     if (t.type === "emoji") {
-      // markdown-it-emoji 输出的 emoji token，content 已是 unicode 字符
-      if (t.content) nodes.push(schema.text(t.content));
+      // v0.9.0 D9：保留 shortcode 原文（:smile:），doc 层不做 unicode 转换——
+      // 旧实现存 unicode 字符导致源码写法丢失且不可逆。分屏预览走 md.render
+      // 仍由 emoji 插件渲染为图形。
+      // 注意 markdown-it-emoji 的 markup 是不含冒号的短码（"smile"）
+      const raw = (t.markup as string) || "";
+      const shortcode = raw ? (raw.startsWith(":") ? raw : `:${raw}:`) : t.content;
+      if (shortcode) nodes.push(schema.text(shortcode));
       i++; continue;
     }
     if (t.type === "hardbreak") { nodes.push(schema.nodes.hard_break.create()); i++; continue; }

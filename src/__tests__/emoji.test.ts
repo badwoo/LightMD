@@ -20,7 +20,9 @@ describe("Emoji :smile:", () => {
     const doc = markdownToDoc(":smile:\n");
     const para = doc.firstChild!;
     const text = para.textContent;
-    expect(text).toContain("😄");
+    // v0.9.0 D9：doc 层保留 shortcode 原文（:smile:），不再转 unicode，
+    // 分屏预览 md.render 仍显示图形 emoji（见上方 render 用例）
+    expect(text).toBe(":smile:");
   });
 
   it("序列化时 emoji unicode 保持原样", () => {

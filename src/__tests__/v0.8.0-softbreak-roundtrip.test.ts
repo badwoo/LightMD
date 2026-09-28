@@ -15,7 +15,13 @@ import { describe, it, expect } from "vitest";
 import { markdownToDoc } from "../core/markdown/parser";
 import { docToMarkdown } from "../core/markdown/serializer";
 import { lightMDSchema as schema } from "../core/schema";
+import { Node as PMNodeCtor } from "prosemirror-model";
 import type { Node as PMNode } from "prosemirror-model";
+
+/** 深拷贝重建 doc → 全部节点丢失原文记录（模拟 v0.9.0 miss / 编辑后路径） */
+function missCopy(doc: PMNode): PMNode {
+  return PMNodeCtor.fromJSON(schema, doc.toJSON());
+}
 
 /** 统计 doc 中各类节点数量 */
 function countNodes(doc: PMNode): Record<string, number> {
@@ -50,8 +56,12 @@ describe("v0.8.0 修复6：段内单换行往返保真", () => {
     expect(firstParagraphText(doc1)).toBe("a⏎b⏎c");
 
     const md = docToMarkdown(doc1);
-    // hard_break 序列化为 CommonMark 两空格硬换行
-    expect(md).toBe("a  \nb  \nc\n");
+    // v0.9.0 B6：未编辑 doc 走快路径逐字节返回原文（保真优先）
+    expect(md).toBe(src);
+    // v0.9.0：miss 路径（编辑过的块）仍按 CommonMark 规范输出两空格硬换行，
+    // 与 parser 的 softbreak→hard_break 互逆（结构往返验证）
+    const mdMiss = docToMarkdown(missCopy(doc1));
+    expect(mdMiss).toBe("a  \nb  \nc\n");
 
     const doc2 = markdownToDoc(md);
     expect(doc1.eq(doc2)).toBe(true);

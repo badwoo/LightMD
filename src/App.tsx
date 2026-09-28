@@ -47,6 +47,7 @@ import { saveLastActiveTab, loadLastActiveTab, resolveLastActiveIndex, clearLast
 import { tabsProgressKeys, untitledProgressKey } from "./utils/tabKey";
 // v0.8.0 WP2 修复2：删除文件后按路径关闭匹配标签
 import { collectTabsToClose } from "./utils/tabCleanup";
+import { preserveEol } from "./utils/eolPreserve";
 import { setCurrentDocPath } from "./utils/imagePath";
 import { isSupportedTextFile, isMarkdownFile, ALL_SUPPORTED_EXTENSIONS, HUGE_FILE_THRESHOLD, getFileLanguage } from "./utils/constants";
 import { evalDoublePress } from "./utils/modeSwitch";
@@ -1672,7 +1673,11 @@ function App() {
     const isSourceMode = currentMode === "edit" || currentMode === "split";
     // 编辑/分屏模式直接用 content state（已是最新的 textarea 内容）
     // 阅读模式从 ProseMirror doc 序列化
-    const markdown = isSourceMode ? contentRef.current : getMarkdownFromDoc(view.state.doc);
+    // v0.9.0 D7：CRLF 文档的序列化输出统一转回 CRLF（B6 快路径已逐字节
+    // 返回原文不受影响，此处兜底重新序列化的块）
+    const markdown = isSourceMode
+      ? contentRef.current
+      : preserveEol(getMarkdownFromDoc(view.state.doc), contentRef.current);
 
     if (isTauri() && filePath) {
       // v0.9.0 WP9 N22：脏状态下磁盘已被外部修改 → 保存会静默覆盖别人的改动，

@@ -17,6 +17,7 @@ import { versionSnapshotService } from "../services/versionSnapshotService";
 import { safeSetItem } from "../utils/safeStorage";
 import { getMarkdownFromDoc } from "../core/editor";
 import { isMarkdownFile } from "../utils/constants";
+import { preserveEol } from "../utils/eolPreserve";
 import type { EditorView } from "prosemirror-view";
 
 export function useAutoSave(
@@ -54,6 +55,11 @@ export function useAutoSave(
     } else {
       // 优先使用缓存的序列化结果，避免重复计算
       markdown = getMarkdownFromDoc(view.state.doc);
+      // v0.9.0 D7：CRLF 文档的序列化输出统一转回 CRLF（B6 快路径已逐字节
+      // 返回原文不受影响，此处兜底重新序列化的块）
+      if (sourceContentRef?.current) {
+        markdown = preserveEol(markdown, sourceContentRef.current);
+      }
     }
 
     try {

@@ -220,6 +220,8 @@ const nodeSpecs: Record<string, NodeSpec> = {
     defining: true,
     attrs: {
       language: { default: "" },
+      // v0.9.0 D11：保留 fence 完整信息串（如 "js {highlight}"），language 仍取首词
+      info: { default: "" },
     },
     parseDOM: [
       {
@@ -252,6 +254,8 @@ const nodeSpecs: Record<string, NodeSpec> = {
     defining: true,
     attrs: {
       language: { default: "mermaid" },
+      // v0.9.0 D11：同 code_block，保留完整 fence info
+      info: { default: "" },
     },
     parseDOM: [
       {
