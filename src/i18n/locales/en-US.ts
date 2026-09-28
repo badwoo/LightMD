@@ -332,6 +332,8 @@ export const enUS: Record<string, string> = {
   "multiwindow.externalSave.saveAs": "Save as…",
   "multiwindow.fileChanged.reloaded": "\"{name}\" changed on disk; reloaded automatically",
   "multiwindow.fileChanged.dirtyHint": "\"{name}\" changed on disk; review before saving",
+  // v0.9.0 round 5: this window has unsaved edits and the file was saved by another window → auto-save paused (never overwrite silently)
+  "multiwindow.autoSavePaused": "\"{name}\" was saved in another window; auto-save is paused. Press Ctrl+S and choose \"Overwrite\" or \"Save as\".",
   "multiwindow.fileChanged.missing": "\"{name}\" no longer exists; the tab was closed",
   "multiwindow.watchLimit": "More than {limit} files are open; extra files are not watched for external changes",
   "settings.general.openExternalFileIn": "External files open in",

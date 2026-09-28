@@ -18,7 +18,14 @@ import { safeSetItem } from "../utils/safeStorage";
 import { getMarkdownFromDoc } from "../core/editor";
 import { isMarkdownFile } from "../utils/constants";
 import { preserveEol } from "../utils/eolPreserve";
+import { useT } from "../i18n";
 import type { EditorView } from "prosemirror-view";
+
+/** 从路径取文件名（用于提示文案；与 App.tsx 的同名工具保持一致行为） */
+function fileNameOf(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
 
 export function useAutoSave(
   viewRef: React.MutableRefObject<EditorView | null>,
@@ -33,7 +40,22 @@ export function useAutoSave(
   const updateTabDirty = useEditorStore((s) => s.updateTabDirty);
   const viewMode = useEditorStore((s) => s.viewMode);
   const autoSaveInterval = useSettingsStore((s) => s.autoSaveIntervalMs);
+  const t = useT();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * v0.9.0 第五轮（问题1）：当前标签是否「已被**其他**窗口保存过而未处理」。
+   *
+   * 多窗口同文件同时编辑时，后台定时自动保存**静默覆盖**另一个窗口刚保存的内容
+   * 是最真实的数据丢失点（用户完全不知情）。因此此处暂停自动保存，并要求用户
+   * 手动 `Ctrl+S`——手动保存会走「覆盖 / 另存为 / 取消」确认，知情后才会覆盖。
+   *
+   * 磁盘内容始终以「最后一次成功保存」为准；暂停只保证**没有哪一次覆盖是静默的**。
+   */
+  const externallyChanged = useEditorStore(
+    (s) => s.openTabs[s.activeTabIdx]?.isExternallyChanged === true,
+  );
+  /** 暂停提示只弹一次（同一轮外部变更内），用户手动保存清除标记后重新武装 */
+  const pausedNotifiedRef = useRef(false);
   // 用 ref 追踪 viewMode，避免 save 函数频繁重建
   const viewModeRef = useRef(viewMode);
   viewModeRef.current = viewMode;
@@ -80,15 +102,35 @@ export function useAutoSave(
   }, [filePath, setDirty, updateTabDirty, sourceContentRef]);
 
   // 定时自动保存（仅在 isDirty 且有 filePath 时触发；
-  // v0.6.1 问题3：翻译回写后的 suppressAutoSave 期间不启动定时器）
+  // v0.6.1 问题3：翻译回写后的 suppressAutoSave 期间不启动定时器；
+  // v0.9.0 第五轮：外部变更未处理（externallyChanged）时同样不启动——不静默覆盖）
   useEffect(() => {
     if (!isDirty || !filePath || autoSaveInterval <= 0 || suppressAutoSave) return;
+    if (externallyChanged) return;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(save, autoSaveInterval);
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isDirty, autoSaveInterval, save, filePath, suppressAutoSave]);
+  }, [isDirty, autoSaveInterval, save, filePath, suppressAutoSave, externallyChanged]);
+
+  /**
+   * v0.9.0 第五轮：自动保存暂停的一次性提示。
+   *
+   * 只在「确实开着自动保存 + 本窗口有未保存修改」时提示——否则用户本就该收到
+   * App 侧那条 `fileChanged.dirtyHint`，不必重复打扰。
+   */
+  useEffect(() => {
+    if (!externallyChanged) {
+      pausedNotifiedRef.current = false;
+      return;
+    }
+    if (autoSaveInterval <= 0 || !isDirty || pausedNotifiedRef.current) return;
+    pausedNotifiedRef.current = true;
+    void import("../services/notificationService").then(({ notify }) =>
+      notify(t("multiwindow.autoSavePaused", { name: fileNameOf(filePath ?? "") }), "warning"),
+    );
+  }, [externallyChanged, autoSaveInterval, isDirty, filePath, t]);
 
   return { save };
 }

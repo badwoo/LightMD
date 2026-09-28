@@ -338,6 +338,8 @@ export const zhCN: Record<string, string> = {
   /// 外部变更提示
   "multiwindow.fileChanged.reloaded": "\"{name}\" 已被外部修改，已自动重新载入",
   "multiwindow.fileChanged.dirtyHint": "\"{name}\" 已被外部修改，保存前请确认",
+  // v0.9.0 第五轮：本窗口有未保存修改、文件又被其他窗口保存过 → 暂停自动保存（绝不静默覆盖）
+  "multiwindow.autoSavePaused": "\"{name}\" 已在其他窗口保存，自动保存已暂停：请按 Ctrl+S 手动保存并选择「覆盖」或「另存为」",
   "multiwindow.fileChanged.missing": "\"{name}\" 已不存在，标签已自动关闭",
   "multiwindow.watchLimit": "已打开文件超过 {limit} 个，超出部分不再监听外部修改",
   /// 设置项

@@ -2337,9 +2337,35 @@ function App() {
           const ok = await saveAsForTab(current);
           if (!ok) return false;
         } else {
+          // v0.9.0 第五轮（问题1）：该文件已被**其他窗口**保存过 → 批量保存同样不得
+          // 静默覆盖。磁盘以「最后一次成功保存」为准，但覆盖必须是用户知情后的选择：
+          // 覆盖 / 另存为 /（取消 = 中止整个关闭或退出流程）。
+          if (current.isExternallyChanged) {
+            const choice = await askChoice(
+              "externalSave",
+              t("multiwindow.externalSave.title"),
+              t("multiwindow.externalSave.message", { name: getFileName(current.path) }),
+              [
+                {
+                  id: "overwrite",
+                  label: t("multiwindow.externalSave.overwrite"),
+                  tone: "danger" as const,
+                },
+                { id: "saveAs", label: t("multiwindow.externalSave.saveAs") },
+              ],
+            );
+            if (choice === "saveAs") {
+              const ok = await saveAsForTab(current);
+              if (!ok) return false;
+              continue; // 已写入新路径
+            }
+            if (choice !== "overwrite") return false; // 取消 → 中止，不强推用户选择
+          }
           try {
             await fileService.writeFile(current.path, current.content ?? "");
             updateTabDirty(idx, false);
+            // v0.9.0 第五轮：覆盖后本标签不再处于「外部修改未处理」状态
+            useEditorStore.getState().setTabExternallyChanged(idx, false);
             versionSnapshotService.recordSnapshot(current.path, current.content ?? "").catch(() => {});
           } catch {
             return false;
@@ -2348,7 +2374,7 @@ function App() {
       }
       return true;
     },
-    [updateTabDirty, saveAsForTab],
+    [updateTabDirty, saveAsForTab, askChoice, t],
   );
   const saveDirtyTabsRef = useRef(saveDirtyTabs);
   useEffect(() => {
