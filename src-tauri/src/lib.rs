@@ -72,19 +72,27 @@ fn route_file_to_primary(app: &tauri::AppHandle, path: String) {
 
 /// 应用退出前收尾：落盘会话快照 + 释放文件 watcher + 取消全部在途 AI 任务。
 ///
-/// 会话规则（v0.9.0 第二轮修订）：
-/// - 快照 = 此刻仍存活的窗口 + 主窗口的最后状态副本（`WindowManager::main_state`），
-///   因此**无论此刻是否还有存活窗口都写一次**——「逐个关闭窗口直到最后」是最常见的
-///   退出方式，主窗口的标签/文件夹必须留在文件里，否则下次启动主窗口空白
-///   （用户反馈：关闭窗口选"不保存"后重开，所有标签都被关闭了）；
+/// 会话规则（v0.9.0 第三轮修订）：
+/// - **仅在本刻仍有存活窗口时**落盘一次（`quit_app` 走 `app.exit()` 时全部窗口
+///   仍存活，此处快照与它自己刚写的相同，写两次无害）；
+/// - **存活窗口为 0 时绝不落盘**：最后一个窗口的 `confirm_close` 已写出「完整
+///   退出快照」（含本会话全部窗口的最后状态），此处此刻再写只会用只剩 main
+///   的存活快照把它覆盖掉——上一轮引入的回归正是「重开后其他窗口不再恢复」
+///   （v0.9.0 第三轮用户反馈：多窗口逐个关闭后重开，其他窗口没有恢复）；
 /// - 纯单窗口且从未有过会话文件的用户：删除会话文件，保持 v0.8.5 语义（REG-1）。
 fn finalize_session(app: &tauri::AppHandle) {
     let state = app.state::<AppWindowManager>();
-    let (ever_multi, snapshot) = {
+    let (ever_multi, live, snapshot) = {
         let mgr = state.lock();
-        (mgr.ever_multi_window(), mgr.snapshot_with(window::now_ms()))
+        (
+            mgr.ever_multi_window(),
+            mgr.window_count(),
+            mgr.snapshot_with(window::now_ms()),
+        )
     };
-    window_cmds::persist_session(app, ever_multi, &snapshot);
+    if live > 0 {
+        window_cmds::persist_session(app, ever_multi, &snapshot);
+    }
     window::open_files::clear_file_watchers();
     app.state::<TranslateState>().cancel_all();
 }
@@ -125,32 +133,44 @@ pub fn run() {
         .manage(AppWindowManager::default())
         // v0.9.0 多窗口：关闭请求统一走前端确认流程（dirty 检查 → 应用内对话框）
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let label = window.label().to_string();
-                let state = window.app_handle().state::<AppWindowManager>();
-                let mut mgr = state.lock();
-                // 已确认关闭（destroy 路径）→ 直接放行
-                let approved = mgr.take_approved_close(&label);
-                // 已有未决确认流程（连点关闭按钮）→ 继续拦截但不重复派发
-                let first = if approved { false } else { mgr.mark_close_pending(&label) };
-                let live = mgr.window_count();
-                drop(mgr);
-                // 诊断：窗口关闭链路的关键状态（release 构建无控制台，无副作用）
-                eprintln!(
-                    "[LightMD] CloseRequested label={} approved={} first={} live_windows={}",
-                    label, approved, first, live
-                );
-                if approved {
-                    return;
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    let label = window.label().to_string();
+                    let state = window.app_handle().state::<AppWindowManager>();
+                    let mut mgr = state.lock();
+                    // 已确认关闭（destroy 路径）→ 直接放行
+                    let approved = mgr.take_approved_close(&label);
+                    // 已有未决确认流程（连点关闭按钮）→ 继续拦截但不重复派发
+                    let first = if approved { false } else { mgr.mark_close_pending(&label) };
+                    let live = mgr.window_count();
+                    drop(mgr);
+                    // 诊断：窗口关闭链路的关键状态（release 构建无控制台，无副作用）
+                    eprintln!(
+                        "[LightMD] CloseRequested label={} approved={} first={} live_windows={}",
+                        label, approved, first, live
+                    );
+                    if approved {
+                        return;
+                    }
+                    api.prevent_close();
+                    if first {
+                        let _ = window.app_handle().emit_to(
+                            &label,
+                            "lightmd:closeRequested",
+                            serde_json::json!({ "label": label }),
+                        );
+                    }
                 }
-                api.prevent_close();
-                if first {
-                    let _ = window.app_handle().emit_to(
-                        &label,
-                        "lightmd:closeRequested",
-                        serde_json::json!({ "label": label }),
+                // v0.9.0 第三轮（需求2）：辅助窗口拖到主窗口标签栏 → 检测并询问合并。
+                // Moved 高频触发，检测内部自带头部闸门（焦点/建窗忽略期/静止去抖）。
+                WindowEvent::Moved(pos) => {
+                    window::merge_detect::note_window_moved(
+                        window.app_handle(),
+                        window.label(),
+                        *pos,
                     );
                 }
+                _ => {}
             }
         })
         .setup(|app| {
@@ -249,6 +269,8 @@ pub fn run() {
             window_cmds::discard_session,
             // v0.9.0 第二轮修复：只裁掉会话里的辅助窗口条目（保留主窗口标签/文件夹）
             window_cmds::prune_session_secondaries,
+            // v0.9.0 第三轮修复：「合并到主窗口」后把自身从会话最后状态中除名
+            window_cmds::forget_window_state,
             // v0.9.0：显式退出（写完整窗口集合后退出，供「恢复其他窗口」下次还原）
             window_cmds::quit_app,
         ])

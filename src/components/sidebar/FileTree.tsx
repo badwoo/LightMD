@@ -2945,6 +2945,22 @@ export function FileTree() {
               {t("sidebar.addToFavorites")}
             </button>
           )}
+          {/* v0.9.0 第三轮（需求1）：在新窗口中打开（与文件树右键同一命令，
+              由 App 统一处理：新窗口打开该文件，本窗口标签保持不变） */}
+          <button
+            className="context-menu-item"
+            data-testid="temp-open-in-new-window"
+            onClick={() => {
+              window.dispatchEvent(
+                new CustomEvent("lightmd:command", {
+                  detail: { id: "filetree.openInNewWindow", path: tempContextMenu.file.path },
+                }),
+              );
+              setTempContextMenu(null);
+            }}
+          >
+            {t("multiwindow.openInNewWindow")}
+          </button>
           <button
             className="context-menu-item danger"
             onClick={() => {

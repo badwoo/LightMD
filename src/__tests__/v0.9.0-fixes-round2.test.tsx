@@ -242,7 +242,9 @@ describe("v0.9.0 修复问题5：设置项功能描述样式", () => {
 
   it("描述与开关按钮处于同一行容器（在按钮后面）", () => {
     render(<SettingsDialog onClose={() => {}} />);
-    const hint = screen.getByText("开启后，上次退出时仍打开的辅助窗口会一并恢复；已在退出前手动关闭的窗口不会恢复");
+    const hint = screen.getByText(
+      "开启后，下次启动恢复上次会话的全部窗口（含退出时逐个关闭的）；关闭则只恢复主窗口",
+    );
     expect(hint.className).toContain("settings-hint-inline");
     const row = hint.closest(".settings-switch-row");
     expect(row).not.toBeNull();

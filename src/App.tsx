@@ -297,7 +297,7 @@ function App() {
    * 避免为每处交互各写一套 state + effect 通道。
    */
   type PendingDialog = {
-    kind: "conflict" | "askOpen" | "closeConfirm" | "externalSave";
+    kind: "conflict" | "askOpen" | "closeConfirm" | "externalSave" | "mergeOffer";
     name: string;
     detail: string;
     options: ChoiceOption[];
@@ -2119,9 +2119,48 @@ function App() {
           untitledId: tb.id ?? null,
         })),
     });
+    // v0.9.0 第三轮：把自己从会话「最后状态」中除名——合并意味着标签已全部转移到
+    // 目标窗口，若不除名，「逐个关窗退出」生成的完整快照会把这个窗口原样复活，
+    // 同一批标签在两个窗口重复出现。
+    await windowService.forgetWindowState();
     // 请求关闭自身（走 CloseRequested → 此处已处理过脏确认，直接确认关闭）
     await windowService.confirmClose().catch(() => undefined);
   }, [askChoice, t]);
+
+  // ─── v0.9.0 第三轮（需求2）：辅助窗口拖到主窗口标签栏 → 询问是否合并 ─────────
+  //
+  // Rust 侧持续检测窗口几何（WindowEvent::Moved + 建窗忽略期 + 焦点闸门 + 静止
+  // 去抖，见 src-tauri/src/window/merge_detect.rs），把窗口拖到主窗口顶部并松手后
+  // emit 本事件。前端按 `target` 过滤（emit_to 的广播语义要求自行过滤，见
+  // window_cmds::emit_to_window 注释），确认后复用既有「合并到主窗口」流程。
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const un = await listen<unknown>("lightmd:mergeOffer", async (ev) => {
+        const payload = unwrapTargetedEvent<Record<string, never>>(ev.payload);
+        if (!payload) return;
+        // 空窗口没有可合并的标签，不打扰
+        if (useEditorStore.getState().openTabs.length === 0) return;
+        const choice = await askChoice(
+          "mergeOffer",
+          t("multiwindow.mergeOffer.message"),
+          "",
+          [{ id: "merge", label: t("multiwindow.mergeOffer.confirm") }],
+        );
+        if (choice !== "merge") return;
+        await handleMergeToPrimary();
+      });
+      if (cancelled) un();
+      else unlisten = un;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [askChoice, t, handleMergeToPrimary]);
 
   /**
    * v0.9.0 WP1 N2：关闭当前窗口（Ctrl+Shift+W / 窗口菜单）。
@@ -2987,7 +3026,9 @@ function App() {
 }
 
 /** v0.9.0：决策对话框类型 → i18n 标题 key */
-function dialogTitleKey(kind: "conflict" | "askOpen" | "closeConfirm" | "externalSave"): string {
+function dialogTitleKey(
+  kind: "conflict" | "askOpen" | "closeConfirm" | "externalSave" | "mergeOffer",
+): string {
   switch (kind) {
     case "conflict":
       return "multiwindow.conflict.title";
@@ -2995,6 +3036,8 @@ function dialogTitleKey(kind: "conflict" | "askOpen" | "closeConfirm" | "externa
       return "multiwindow.askOpen.title";
     case "closeConfirm":
       return "multiwindow.closeConfirm.title";
+    case "mergeOffer":
+      return "multiwindow.mergeOffer.title";
     default:
       return "multiwindow.externalSave.title";
   }

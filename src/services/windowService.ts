@@ -253,6 +253,22 @@ export const windowService = {
   },
 
   /**
+   * v0.9.0 第三轮修复：把本窗口从会话「最后状态」中除名。
+   *
+   * 「合并到主窗口」后、关闭自身前调用：合并窗口的标签已全部转移，若不除名，
+   * 「逐个关窗退出」生成的完整退出快照会把它原样复活（同一批标签在两个窗口
+   * 重复出现）。调用后迟到的状态上报也会被 Rust 侧忽略。
+   */
+  async forgetWindowState(): Promise<void> {
+    if (!isTauri()) return;
+    try {
+      await invoke("forget_window_state");
+    } catch (err) {
+      console.error("清除窗口会话状态失败:", err);
+    }
+  },
+
+  /**
    * v0.9.0：显式退出应用（窗口菜单 / 命令面板 `Ctrl+Q`）。
    *
    * 与「逐个关闭窗口」的关键差异：此刻全部窗口仍存活，Rust 会把**完整窗口集合**

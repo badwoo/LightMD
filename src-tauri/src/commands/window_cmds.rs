@@ -245,8 +245,6 @@ pub fn confirm_close(
     // 3+4. 登记清理与 Primary 晋升
     let (new_primary, was_primary, ever_multi, window_count_after, snapshot) = {
         let mut mgr = state.lock();
-        // 关闭前的最后上报：关掉最后一个窗口（= 退出应用）时要把它一并写进快照
-        let closing_state = mgr.window_session_of(&label);
         let (_, was_primary) = mgr.remove_window(&label);
         if was_primary {
             mgr.promote_primary();
@@ -254,13 +252,11 @@ pub fn confirm_close(
         let new_primary = mgr.primary_label().to_string();
         let ever_multi = mgr.ever_multi_window();
         let window_count_after = mgr.window_count();
-        // 关闭的这个窗口已从注册表移除，故快照天然只含存活窗口（+ 主窗口最后状态）；
-        // 关掉最后一个时额外补上它自己（见 `snapshot_after_close`）
-        let snapshot = mgr.snapshot_after_close(
-            closing_state.as_ref(),
-            window_count_after == 0,
-            window::now_ms(),
-        );
+        // v0.9.0 第三轮：关闭的窗口从注册表摘除但其「最后状态」保留在
+        // window_state 中——关掉最后一个窗口（= 退出应用）时据此生成**完整退出
+        // 快照**（本会话出现过的全部窗口），供「启动时恢复其他窗口」整体还原；
+        // 仍有窗口存活时则维持「存活窗口 + 主窗口」的运行中口径。
+        let snapshot = mgr.snapshot_after_close(window_count_after == 0, window::now_ms());
         // 放行标记最后设置（`remove_window` 会清除它）：万一某平台 destroy 也会
         // 触发 CloseRequested，此处兜底放行，避免形成「拦截 → 再确认」死循环
         mgr.approve_close(&label);
@@ -268,8 +264,7 @@ pub fn confirm_close(
     };
 
     // 5. 会话落盘：v0.9.0 第二轮修复——**关掉最后一个窗口时也必须重写**。
-    //    快照 = 仍存活的窗口 + 主窗口最后状态（`main_state`）+（关掉最后一个时）
-    //   这个即将消失的窗口自身，因此它正是"用户看到的最后画面"。
+    //    快照即"用户退出时看到的完整画面"（关最后一个时还含本会话其他已关窗口）。
     //    旧实现跳过这一步，导致「单窗口（或最后关掉主窗口）关掉应用」后磁盘上仍是
     //    上一次会话的旧数据——用户重开软件看到的是过期的标签集合，甚至一片空白
     //    （用户反馈：关闭时选择"不保存"后重开，所有标签都被关闭了）。
@@ -416,4 +411,14 @@ pub fn prune_session_secondaries(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     session::write_session(&app, &snapshot)
+}
+
+/// 把调用者自身窗口从会话「最后状态」中除名（「合并到主窗口」后、关闭自身前调用）。
+///
+/// v0.9.0 第三轮：合并意味着该窗口的标签已全部转移到目标窗口——若不除名，
+/// 「逐个关窗退出」生成的完整退出快照会把它原样复活，同一批标签在两个窗口
+/// 重复出现。调用后迟到的状态上报也会被忽略（见 `WindowManager::forget_window`）。
+#[tauri::command]
+pub fn forget_window_state(window: WebviewWindow, state: State<'_, AppWindowManager>) {
+    state.lock().forget_window(window.label());
 }

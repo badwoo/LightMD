@@ -17,6 +17,8 @@
  * - 落点三分流（v0.8.4 D5）：命中 drop-dir 后——canDrop 拒绝 → 取消；
  *   落点为源所在目录 → onReorder（同目录重排）；其他目录 → onDrop（复制/移动）；
  *   未命中 drop-dir → 取消（现状不变）；
+ * - 拖出源区域（v0.9.0 第三轮）：未命中 drop-dir 且指针在 `isOutsideSourceArea`
+ *   判定的源区域之外 → onDropOutsideSource（标签拖出标签栏 = 移动到新窗口）；
  * - Esc 取消；拖拽结束后抑制一次 click，避免误触发源元素的点击行为。
  */
 import { getParentDir } from "./path";
@@ -39,6 +41,16 @@ export interface FileDragHandlers {
    * ev 为松手的 mouseup 事件（供调用方做 elementFromPoint 计算插入位置）。
    */
   onReorder?: (payload: FileDragPayload, ev: MouseEvent) => void;
+  /**
+   * v0.9.0 第三轮（需求2）：可选「源区域」判定——返回 false 表示指针已离开源区域
+   * （如标签栏及其下方侧栏之外）。松手时若未命中任何投放文件夹且已在源区域外，
+   * 触发 `onDropOutsideSource`（把标签拖出标签栏 → 移动到新窗口的"撕下标签"手势）。
+   */
+  isOutsideSourceArea?: (x: number, y: number) => boolean;
+  /** 指针在源区域外松手（且未命中文件夹）时回调 */
+  onDropOutsideSource?: (payload: FileDragPayload, ev: MouseEvent) => void;
+  /** 拖拽期间指针处于源区域外时浮层的提示文案（如「松开以移动到新窗口」） */
+  outsideHint?: string;
 }
 
 /** 可投放文件夹的标记属性 */
@@ -205,6 +217,16 @@ export function beginFileDrag(
         activeDropEl = nextHolder;
       }
     }
+    // v0.9.0 第三轮（需求2）：指针已在源区域外 → 浮层切换为「拖出」提示样式与文案
+    const outside = handlers.isOutsideSourceArea
+      ? handlers.isOutsideSourceArea(ev.clientX, ev.clientY)
+      : false;
+    if (ghost) {
+      ghost.classList.toggle("file-drag-ghost-outside", outside);
+      const hint = outside ? handlers.outsideHint : "";
+      const text = hint ? `${payload.name} · ${hint}` : payload.name;
+      if (ghost.textContent !== text) ghost.textContent = text;
+    }
   };
 
   const onKey = (ev: KeyboardEvent) => {
@@ -229,7 +251,15 @@ export function beginFileDrag(
     cleanup();
     if (!wasDragging) return;
     suppressNextClick();
-    if (!targetDir) return; // 未命中 drop-dir → 取消（现状不变）
+    if (!targetDir) {
+      // v0.9.0 第三轮（需求2）：未命中投放文件夹、且指针在源区域之外 →
+      // 视为「拖出」动作（如把标签拖出标签栏 → 移动到新窗口）；
+      // 其余情况保持原语义：未命中 drop-dir → 取消（现状不变）。
+      if (handlers.isOutsideSourceArea?.(ev.clientX, ev.clientY)) {
+        handlers.onDropOutsideSource?.(payload, ev);
+      }
+      return;
+    }
     // v0.8.4 D5 落点三分流：
     // ① canDrop 准入拒绝 → 静默取消（高亮阶段已给"不可投放"反馈）；
     // ③ 落点即源所在目录 → 同目录重排（需求 3；复制/移动语义均不适用，

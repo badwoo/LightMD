@@ -24,6 +24,7 @@
 //! 在 `CloseRequested` 回调里取同一把锁，持锁阻塞主线程会造成死锁。
 //! 因此创建窗口采用「先 reserve 槽位 → 释放锁 → build → 再取锁登记」的两段式。
 
+pub mod merge_detect;
 pub mod open_files;
 pub mod session;
 
@@ -137,21 +138,19 @@ pub struct WindowManager {
     close_pending: HashSet<String>,
     /// 跨窗口文件打开登记（冲突检测 + 文件级监听）
     open_files: OpenFiles,
-    /// label → 该窗口最新上报的标签/文件夹/活跃下标。
+    /// label → 该窗口最后一次上报的状态（v0.9.0 第三轮修复）。
     ///
-    /// 只保留**存活窗口**的条目：会话快照据此生成，用户主动关闭的窗口必须从快照中
-    /// 消失（否则下次启动会把已关闭的窗口复活）。
-    window_state: HashMap<String, WindowSession>,
-    /// 主窗口（`main`）的**最后状态**副本（v0.9.0 第二轮修复）。
+    /// 条目在窗口关闭后**保留**，成为该窗口在本会话内的「最后状态」，供
+    /// 「关掉最后一个窗口 = 退出应用」时生成完整退出快照（用户逐个点关闭按钮
+    /// 退出，开启「启动时恢复其他窗口」后应整体还原，而不是只剩主窗口）。
+    /// 两条清除路径：槽位被新窗口复用（`register`）；被「合并到主窗口」的窗口
+    /// 显式除名（`forget_window`）——合并的标签已转移，不得原样复活。
     ///
-    /// 与 `window_state` 的「只留存活窗口」语义刻意分开：`main` 下次启动必定由
-    /// `tauri.conf.json` 重建，所以它被关闭后其标签/文件夹仍必须留在会话快照里。
-    /// 否则最常见的退出顺序「先关主窗口 → 再关辅助窗口」会让下次启动的主窗口一片
-    /// 空白（用户反馈：多窗口全关再打开，主窗口所有标签与文件夹都没了）。
-    ///
-    /// 辅助窗口（`sec-*`）**不保留**：用户主动关掉的辅助窗口下次不得复活
-    /// （见 `snapshot_with` / `restore_windows` 均跳过 `PRIMARY_LABEL` 之外的口径）。
-    main_state: Option<WindowSession>,
+    /// 注意：「存活窗口」的判定始终以 `windows`（注册表）为准，本表可能含有
+    /// 本会话已关闭窗口的条目；`snapshot_with` 等只按注册表过滤。
+    window_state: HashMap<String, ReportedState>,
+    /// 已被「合并到主窗口」除名的窗口（迟到的状态上报一律忽略，防止复活）
+    forgotten: HashSet<String>,
     /// 是否已就「文件监听超限」提示过（只在上升沿 emit，避免反复 toast）
     watch_limit_warned: bool,
 }
@@ -161,6 +160,16 @@ struct PendingBoot {
     files: Vec<String>,
     restore: bool,
     moved_tabs: Vec<MovedTab>,
+}
+
+/// 某窗口最后一次上报的状态（含上报时窗口的创建时间，退出快照按它稳定排序）。
+///
+/// v0.9.0 第三轮修复：`main_state`（第二轮）与本表合并——所有窗口的最后状态
+/// 在本会话内统一保留，见 [`WindowManager::window_state`] 的说明。
+#[derive(Clone, Debug)]
+pub struct ReportedState {
+    pub created_at: u64,
+    pub session: WindowSession,
 }
 
 impl Default for WindowManager {
@@ -182,7 +191,7 @@ impl WindowManager {
             close_pending: HashSet::new(),
             open_files: OpenFiles::default(),
             window_state: HashMap::new(),
-            main_state: None,
+            forgotten: HashSet::new(),
             watch_limit_warned: false,
         }
     }
@@ -191,14 +200,12 @@ impl WindowManager {
 
     /// 登记一个已存在的窗口。
     ///
-    /// 槽位复用时会丢弃上一轮该槽位残留的上报数据——新窗口从零开始。
+    /// 槽位复用时会丢弃上一轮该槽位残留的上报数据——新窗口从零开始
+    /// （同时清掉「合并除名」标记，新窗口不受上一轮同槽位窗口的影响）。
     pub fn register(&mut self, label: &str, created_at: u64) {
         self.reserved.remove(label);
         self.window_state.remove(label);
-        // 主窗口重新登记（进程启动）→ 上一轮的「最后状态」副本作废
-        if label == PRIMARY_LABEL {
-            self.main_state = None;
-        }
+        self.forgotten.remove(label);
         // 槽位复用：清掉上一轮的关闭标记，避免新窗口首次关闭被静默放行
         self.approved_close.remove(label);
         self.close_pending.remove(label);
@@ -313,25 +320,44 @@ impl WindowManager {
 
     // ───────────── 窗口状态上报 ─────────────
 
-    /// 更新某窗口上报的标签/文件夹（同时刷新 OPEN_FILES 登记）
+    /// 更新某窗口上报的标签/文件夹（同时刷新 OPEN_FILES 登记）。
+    ///
+    /// v0.9.0 第三轮：条目在窗口关闭后仍保留（退出快照的数据源）；
+    /// 已被「合并到主窗口」除名（`forget_window`）的窗口迟到上报一律忽略。
     pub fn sync_window(&mut self, label: &str, report: WindowSession) {
         self.open_files.sync_window(label, &report.tabs);
-        // 主窗口状态额外留一份副本：它被关闭后仍要进入会话快照（见 `main_state`）
-        if label == PRIMARY_LABEL {
-            self.main_state = Some(report.clone());
+        if self.forgotten.contains(label) {
+            return;
         }
-        self.window_state.insert(label.to_string(), report);
+        let created_at = self
+            .windows
+            .get(label)
+            .map(|m| m.created_at)
+            .or_else(|| self.window_state.get(label).map(|r| r.created_at))
+            .unwrap_or_else(now_ms);
+        self.window_state.insert(
+            label.to_string(),
+            ReportedState { created_at, session: report },
+        );
     }
 
-    /// 主窗口的最后状态（测试/诊断用）
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn main_state(&self) -> Option<&WindowSession> {
-        self.main_state.as_ref()
-    }
-
-    /// 取某窗口最新上报的状态（会话快照要包含即将关闭的窗口）
+    /// 取某窗口最后一次上报的状态（含本会话已关闭的窗口）
     pub fn window_session_of(&self, label: &str) -> Option<WindowSession> {
-        self.window_state.get(label).cloned()
+        self.window_state.get(label).map(|r| r.session.clone())
+    }
+
+    /// 把某窗口从「本会话最后状态」中除名（「合并到主窗口」后、关闭自身前调用）。
+    ///
+    /// 合并意味着该窗口的标签已全部转移到目标窗口：若保留其最后状态，「逐个关窗
+    /// 退出」生成的完整快照会把它原样复活，同一批标签在两个窗口重复出现。
+    pub fn forget_window(&mut self, label: &str) {
+        self.window_state.remove(label);
+        self.forgotten.insert(label.to_string());
+    }
+
+    /// 某窗口的创建时间（未登记返回 None）
+    pub fn created_at_of(&self, label: &str) -> Option<u64> {
+        self.windows.get(label).map(|m| m.created_at)
     }
 
     /// 「文件监听超限」是否应当提示：只在从「正常」进入「超限」时返回 true（上升沿）
@@ -355,7 +381,7 @@ impl WindowManager {
     pub fn folder_paths_of(&self, label: &str) -> Vec<String> {
         self.window_state
             .get(label)
-            .map(|s| s.folder_paths.clone())
+            .map(|r| r.session.folder_paths.clone())
             .unwrap_or_default()
     }
 
@@ -363,13 +389,9 @@ impl WindowManager {
 
     /// 移除窗口；返回其元数据与「是否原为 Primary」。
     ///
-    /// **同时删除该 label 的上报数据**：会话快照只记录「退出时仍存活的窗口」，
-    /// 用户主动关闭的窗口不得在下次启动时复活（v0.9.0 用户反馈修正 —— 早先为满足
-    /// 「多窗口会话恢复」保留了已关闭窗口的状态，导致「新窗口打开文档 → 关掉新窗口
-    /// → 重启」后那个已关闭的窗口又冒出来）。
-    ///
-    /// v0.9.0 第二轮修复：`main` 除外——它的状态副本由 `main_state` 单独持有
-    /// （`window_state` 仍是"只含存活窗口"），会话快照据此保留主窗口的标签/文件夹。
+    /// v0.9.0 第三轮修复：**不再删除**该 label 的上报数据（它成为本会话的「最后
+    /// 状态」，退出快照要用）；仅从注册表摘除。真正的清除只有两条路径：
+    /// 槽位复用（`register`）与「合并到主窗口」（`forget_window`）。
     pub fn remove_window(&mut self, label: &str) -> (Option<WindowMeta>, bool) {
         let was_primary = self.primary_label == label;
         let meta = self.windows.remove(label);
@@ -377,14 +399,15 @@ impl WindowManager {
         self.pending_boot.remove(label);
         self.approved_close.remove(label);
         self.close_pending.remove(label);
-        self.window_state.remove(label);
         self.open_files.remove_window(label);
         (meta, was_primary)
     }
 
-    /// 彻底遗忘某槽位（窗口创建失败回滚用）
+    /// 彻底遗忘某槽位（窗口创建失败回滚用）：连保留的「最后状态」一起清掉
     pub fn discard(&mut self, label: &str) {
         self.remove_window(label);
+        self.window_state.remove(label);
+        self.forgotten.remove(label);
     }
 
     /// Primary 晋升：取现有窗口中最老的一个（created_at 最小）。
@@ -406,20 +429,17 @@ impl WindowManager {
 
     // ───────────── 会话快照 ─────────────
 
-    /// 生成会话快照：**只包含此刻仍存活的窗口**（外加主窗口的最后状态，见下）。
+    /// 生成「存活窗口」快照：只包含此刻仍存活的窗口（外加主窗口的最后状态）。
     ///
-    /// 「用户主动关闭的窗口下次不复活」是 v0.9.0 用户反馈的硬要求：早先版本为满足
-    /// 「多窗口会话恢复」把已关闭窗口也写进快照，导致「在新窗口打开文档 → 关掉新窗口
-    /// → 重启」后那个窗口又冒出来。
+    /// 这是**运行中**的会话口径：用户中途主动关掉的辅助窗口不进入快照
+    /// （v0.9.0 第一轮用户反馈：关掉的窗口不得在下次启动复活）。注意与
+    /// [`Self::snapshot_after_close`] 的**退出**口径区分——退出（关掉最后一个
+    /// 窗口）时本会话出现过的全部窗口都入表。
     ///
-    /// v0.9.0 第二轮修复：**主窗口（`main`）例外**。它由 `tauri.conf.json` 在每次启动
-    /// 时必定重建，因此「被用户关掉」与「下次不复活」无关——反过来，若把它从快照里
-    /// 剔除，"先关主窗口 → 再关辅助窗口"这一最常见的退出顺序就会让下次启动的主窗口
-    /// 空白（用户反馈：主窗口所有标签和文件夹都没了）。故 `main_state` 在有值时始终
-    /// 入表，且 `restore_windows` 明确跳过 `PRIMARY_LABEL`，不会多建窗口。
-    ///
-    /// 想连同多个窗口一起恢复的用户，应使用「退出 LightMD」动作退出（该路径在窗口
-    /// 仍存活时落盘）；按窗口逐个关闭时，已关闭的**辅助**窗口不再记录。
+    /// 主窗口（`main`）例外：它由 `tauri.conf.json` 在每次启动时必定重建，
+    /// `restore_windows` 也明确跳过它，保留其最后状态不会多建窗口——但若剔除，
+    /// "先关主窗口 → 再关辅助窗口"这一最常见的退出顺序会让下次启动的主窗口空白
+    /// （v0.9.0 第二轮用户反馈）。
     ///
     /// Primary 排最前，其余按创建时间升序（恢复顺序稳定可预期）。
     pub fn snapshot_with(&self, timestamp: u64) -> SessionSnapshot {
@@ -430,13 +450,13 @@ impl WindowManager {
             .filter_map(|meta| {
                 self.window_state
                     .get(&meta.label)
-                    .map(|session| (meta.label == primary, meta.created_at, session.clone()))
+                    .map(|r| (meta.label == primary, r.created_at, r.session.clone()))
             })
             .collect();
-        // 主窗口已关闭 → 补入它的最后状态（created_at 取 0，保证排在 Primary 位最前）
+        // 主窗口已关闭（未存活）→ 补入它保留的最后状态
         if !self.windows.contains_key(PRIMARY_LABEL) {
-            if let Some(session) = &self.main_state {
-                entries.push((true, 0, session.clone()));
+            if let Some(r) = self.window_state.get(PRIMARY_LABEL) {
+                entries.push((true, r.created_at, r.session.clone()));
             }
         }
         entries.sort_by(|a, b| {
@@ -447,29 +467,36 @@ impl WindowManager {
 
     /// 关闭某个窗口后应当落盘的会话快照。
     ///
-    /// - `closing_state`：**关闭前**取到的该窗口最后上报（调用方先 `window_session_of`）。
-    /// - `is_last_window`：关掉它之后应用就退出了（`window_count_after == 0`）。
-    ///
-    /// `is_last_window` 为真时把即将消失的这一个窗口也写进快照：关闭最后一个窗口
-    /// 等价于"退出应用"，此刻用户看到的画面就是下次启动该恢复的画面——否则
-    /// 「逐个关窗退出」后重开只会看到更早一次会话的标签集合（用户反馈：多窗口全关
-    /// 再打开，标签/文件夹都没了）。仍存活其他窗口时不写（`false`）：用户主动关掉的
-    /// 辅助窗口下次不得复活。
-    pub fn snapshot_after_close(
-        &self,
-        closing_state: Option<&WindowSession>,
-        is_last_window: bool,
-        timestamp: u64,
-    ) -> SessionSnapshot {
-        let mut snapshot = self.snapshot_with(timestamp);
-        if is_last_window {
-            if let Some(state) = closing_state {
-                if !snapshot.windows.iter().any(|w| w.label == state.label) {
-                    snapshot.windows.push(state.clone());
-                }
-            }
+    /// - `is_last_window = false`（还有窗口存活）：走 [`Self::snapshot_with`]，
+    ///   即「存活窗口 + 主窗口最后状态」——中途主动关掉的辅助窗口不复活
+    ///   （第一轮用户反馈的口径不变）。
+    /// - `is_last_window = true`（关掉它应用就退出）：**退出快照**——本会话
+    ///   出现过的**全部**窗口（各取最后上报状态）都入表。用户「逐个点右上角
+    ///   关闭」正是在退出，开启「启动时恢复其他窗口」后应整体还原，而不是只剩
+    ///   主窗口（v0.9.0 第三轮用户反馈：多窗口逐个关闭后重开，其他窗口没有恢复）。
+    ///   空窗口（无标签且无文件夹）不入表：恢复它只会多弹一个空壳。
+    ///   已被「合并到主窗口」除名的窗口不入表（其标签已转移到目标窗口）。
+    pub fn snapshot_after_close(&self, is_last_window: bool, timestamp: u64) -> SessionSnapshot {
+        if !is_last_window {
+            return self.snapshot_with(timestamp);
         }
-        snapshot
+        let primary = self.primary_label.clone();
+        let mut entries: Vec<(bool, u64, WindowSession)> = self
+            .window_state
+            .values()
+            .filter(|r| !r.session.tabs.is_empty() || !r.session.folder_paths.is_empty())
+            .map(|r| {
+                (
+                    r.session.label == PRIMARY_LABEL || r.session.label == primary,
+                    r.created_at,
+                    r.session.clone(),
+                )
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.label.cmp(&b.2.label))
+        });
+        SessionSnapshot::new(timestamp, entries.into_iter().map(|(_, _, s)| s).collect())
     }
 
     /// 窗口菜单列表（Primary 在前，其余按创建时间升序）
@@ -489,8 +516,8 @@ impl WindowManager {
                     is_primary: meta.label == primary,
                     label: meta.label.clone(),
                     created_at: meta.created_at,
-                    active_tab_idx: state.map(|s| s.active_tab_idx).unwrap_or(0),
-                    tabs: state.map(|s| s.tabs.clone()).unwrap_or_default(),
+                    active_tab_idx: state.map(|r| r.session.active_tab_idx).unwrap_or(0),
+                    tabs: state.map(|r| r.session.tabs.clone()).unwrap_or_default(),
                 }
             })
             .collect()
@@ -722,7 +749,7 @@ mod tests {
         // 主窗口已不在存活集合里
         assert!(!mgr.contains(PRIMARY_LABEL));
         // 但其最后状态必须保留可供快照使用
-        assert!(mgr.main_state().is_some());
+        assert!(mgr.window_session_of(PRIMARY_LABEL).is_some());
 
         let snap = mgr.snapshot_with(10);
         let labels: Vec<&str> = snap.windows.iter().map(|w| w.label.as_str()).collect();
@@ -745,23 +772,23 @@ mod tests {
         mgr.register(PRIMARY_LABEL, 1);
         mgr.sync_window(PRIMARY_LABEL, report(PRIMARY_LABEL, &["D:/a.md", "D:/b.md"]));
         mgr.remove_window(PRIMARY_LABEL);
-        let snap = mgr.snapshot_with(7);
+        let snap = mgr.snapshot_after_close(true, 7);
         assert_eq!(snap.windows.len(), 1);
         assert_eq!(snap.windows[0].label, PRIMARY_LABEL);
         assert_eq!(snap.windows[0].tabs.len(), 2);
     }
 
-    /// 主窗口重新登记（进程启动）时清掉上一轮的副本，避免串数据
+    /// 窗口重新登记（进程启动/槽位复用）时清掉上一轮残留的最后状态，避免串数据
     #[test]
-    fn register_clears_previous_main_state() {
+    fn register_clears_previous_reported_state() {
         let mut mgr = WindowManager::new();
         mgr.register(PRIMARY_LABEL, 1);
         mgr.sync_window(PRIMARY_LABEL, report(PRIMARY_LABEL, &["D:/a.md"]));
         mgr.register(PRIMARY_LABEL, 2);
-        assert!(mgr.main_state().is_none());
+        assert!(mgr.window_session_of(PRIMARY_LABEL).is_none());
     }
 
-    /// 关掉**最后一个**窗口时，即将消失的窗口自身也要进快照。
+    /// 关掉**最后一个**窗口时，本次会话出现过的全部窗口都进入退出快照。
     ///
     /// 回归场景：主窗口先被关、sec-1 晋升为 Primary，用户再关掉 sec-1（应用退出）。
     /// 若只保留 main，重开软件会凭空少一个窗口——而用户只是"逐个关窗退出"。
@@ -773,20 +800,18 @@ mod tests {
         mgr.register("sec-1", 2);
         mgr.sync_window("sec-1", report("sec-1", &["D:/b.md"]));
 
-        // 关主窗口（此时 sec-1 仍存活 → 不额外补入）
-        let closing = mgr.window_session_of(PRIMARY_LABEL);
+        // 关主窗口（此时 sec-1 仍存活 → 运行中口径：只含存活窗口 + main）
         mgr.remove_window(PRIMARY_LABEL);
         mgr.promote_primary();
-        let snap1 = mgr.snapshot_after_close(closing.as_ref(), false, 1);
+        let snap1 = mgr.snapshot_after_close(false, 1);
         assert_eq!(
             snap1.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
             vec!["main", "sec-1"]
         );
 
-        // 关 sec-1（最后一个窗口 = 退出应用）→ 它自身必须保留
-        let closing2 = mgr.window_session_of("sec-1");
+        // 关 sec-1（最后一个窗口 = 退出应用）→ 本会话全部窗口都保留
         mgr.remove_window("sec-1");
-        let snap2 = mgr.snapshot_after_close(closing2.as_ref(), true, 2);
+        let snap2 = mgr.snapshot_after_close(true, 2);
         let labels: Vec<&str> = snap2.windows.iter().map(|w| w.label.as_str()).collect();
         assert_eq!(labels, vec!["main", "sec-1"]);
         let sec = snap2.windows.iter().find(|w| w.label == "sec-1").unwrap();
@@ -803,11 +828,103 @@ mod tests {
         mgr.sync_window(PRIMARY_LABEL, report(PRIMARY_LABEL, &["D:/a.md"]));
         mgr.sync_window("sec-1", report("sec-1", &["D:/b.md"]));
 
-        let closing = mgr.window_session_of("sec-1");
         mgr.remove_window("sec-1");
-        let snap = mgr.snapshot_after_close(closing.as_ref(), false, 3);
+        let snap = mgr.snapshot_after_close(false, 3);
         assert_eq!(
             snap.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            vec!["main"]
+        );
+    }
+
+    // ─── v0.9.0 第三轮修复（问题3）：逐个关窗退出 → 全部窗口随会话恢复 ───
+
+    /// 用户反馈场景：多窗口 → 逐个点右上角关闭（先关辅助窗口、最后关主窗口）→
+    /// 重开软件后其他窗口没有恢复。退出快照必须包含本会话出现过的**全部**窗口。
+    #[test]
+    fn exit_snapshot_restores_windows_closed_before_the_last_one() {
+        let mut mgr = WindowManager::new();
+        mgr.register(PRIMARY_LABEL, 1);
+        mgr.sync_window(PRIMARY_LABEL, report(PRIMARY_LABEL, &["D:/a.md"]));
+        mgr.register("sec-1", 2);
+        mgr.sync_window("sec-1", report("sec-1", &["D:/b.md"]));
+        mgr.register("sec-2", 3);
+        mgr.sync_window("sec-2", report("sec-2", &["D:/c.md"]));
+
+        // 先关 sec-1（还有窗口存活 → 运行中口径，sec-1 不入表）
+        mgr.remove_window("sec-1");
+        let running = mgr.snapshot_after_close(false, 10);
+        assert_eq!(
+            running.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            vec!["main", "sec-2"]
+        );
+
+        // 再关 sec-2、最后关 main（每关一个都重新判定 is_last_window）
+        mgr.remove_window("sec-2");
+        let running2 = mgr.snapshot_after_close(false, 11);
+        assert_eq!(
+            running2.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            vec!["main"]
+        );
+        mgr.remove_window(PRIMARY_LABEL);
+        let exit = mgr.snapshot_after_close(true, 12);
+        // 退出快照：本会话全部窗口（含中途关掉的 sec-1 / sec-2），main 最前
+        assert_eq!(
+            exit.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            vec!["main", "sec-1", "sec-2"]
+        );
+    }
+
+    /// 「合并到主窗口」的窗口从退出快照中除名（标签已转移，原样复活会重复），
+    /// 且合并后迟到的状态上报一律忽略。
+    #[test]
+    fn forgotten_window_is_excluded_from_exit_snapshot() {
+        let mut mgr = WindowManager::new();
+        mgr.register(PRIMARY_LABEL, 1);
+        mgr.sync_window(PRIMARY_LABEL, report(PRIMARY_LABEL, &["D:/a.md"]));
+        mgr.register("sec-1", 2);
+        mgr.sync_window("sec-1", report("sec-1", &["D:/b.md"]));
+
+        // 合并到主窗口：先除名，再（可能迟到地）上报一次状态
+        mgr.forget_window("sec-1");
+        mgr.sync_window("sec-1", report("sec-1", &["D:/b.md", "D:/late.md"]));
+        assert!(mgr.window_session_of("sec-1").is_none(), "迟到的上报不得复活已除名的窗口");
+
+        mgr.remove_window("sec-1");
+        mgr.remove_window(PRIMARY_LABEL);
+        let exit = mgr.snapshot_after_close(true, 20);
+        assert_eq!(
+            exit.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            vec!["main"]
+        );
+    }
+
+    /// 槽位复用后新窗口从零开始：被除名（合并）的槽位再次分配时，除名标记清空
+    #[test]
+    fn forgotten_flag_is_cleared_on_slot_reuse() {
+        let mut mgr = WindowManager::new();
+        mgr.register(PRIMARY_LABEL, 1);
+        mgr.register("sec-1", 2);
+        mgr.forget_window("sec-1");
+        // 同槽位新窗口：上报应正常入表
+        mgr.register("sec-1", 3);
+        mgr.sync_window("sec-1", report("sec-1", &["D:/new.md"]));
+        assert_eq!(mgr.window_session_of("sec-1").map(|s| s.tabs.len()), Some(1));
+    }
+
+    /// 空窗口（无标签且无文件夹）不进入退出快照：恢复它只会多弹一个空壳
+    #[test]
+    fn exit_snapshot_skips_empty_windows() {
+        let mut mgr = WindowManager::new();
+        mgr.register(PRIMARY_LABEL, 1);
+        mgr.sync_window(PRIMARY_LABEL, report(PRIMARY_LABEL, &["D:/a.md"]));
+        mgr.register("sec-1", 2);
+        mgr.sync_window("sec-1", report("sec-1", &[])); // 空窗口
+
+        mgr.remove_window("sec-1");
+        mgr.remove_window(PRIMARY_LABEL);
+        let exit = mgr.snapshot_after_close(true, 30);
+        assert_eq!(
+            exit.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
             vec!["main"]
         );
     }

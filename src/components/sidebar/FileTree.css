@@ -1026,6 +1026,14 @@
   opacity: 0.92;
 }
 
+/* v0.9.0 第三轮：拖出源区域（如标签拖出标签栏）时，浮层加白色描边提示
+   「松开 = 移动到新窗口」 */
+.file-drag-ghost.file-drag-ghost-outside {
+  outline: 1px solid rgba(255, 255, 255, 0.9);
+  outline-offset: -1px;
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.4);
+}
+
 /* 拖拽期间禁止文本选中，避免鼠标划过时选中侧栏文字 */
 body.file-dragging {
   user-select: none;

@@ -345,6 +345,23 @@ export function TabBar({
     }
   }, [openTabs, activeTabIdx]);
 
+  /**
+   * v0.9.0 第三轮（需求2）：拖拽指针是否已离开「标签栏 + 侧栏」区域。
+   * 在标签栏内松手 = 取消（避免与"拖到文件夹"手势歧义）；在侧栏内松手保持
+   * 原语义（命中文件夹 = 复制/移动文件，落不到文件夹 = 取消）；只有拖到
+   * 标签栏与侧栏之外（编辑区/大纲/窗口外）松手才构成「撕下标签 → 新窗口」。
+   */
+  const isOutsideTabArea = useCallback((x: number, y: number) => {
+    const bar = scrollRef.current?.getBoundingClientRect();
+    if (!bar) return false;
+    if (x >= bar.left && x <= bar.right && y >= bar.top && y <= bar.bottom) return false;
+    const hit =
+      typeof document !== "undefined" && typeof document.elementFromPoint === "function"
+        ? document.elementFromPoint(x, y)
+        : null;
+    return !(hit && typeof hit.closest === "function" && hit.closest(".app-sidebar"));
+  }, []);
+
   if (openTabs.length === 0) return null;
 
   return (
@@ -362,9 +379,15 @@ export function TabBar({
             onClick={() => handleTabClick(idx)}
             onContextMenu={(e) => handleContextMenu(e, tab)}
             // v0.8.0 修复 P3：按下标签即启动自制拖拽（拖到左侧已打开文件夹；默认复制 / Shift 移动）
+            // v0.9.0 第三轮（需求2）：所有标签（含未落盘临时标签）都支持「拖出标签栏 →
+            // 移动到新窗口」（浏览器式"撕下标签"手势）；临时标签无磁盘路径，
+            // 不能投放文件夹（canDrop 恒拒），只走拖出分支。
             onMouseDown={(e) => {
-              if (!tab.path) return;
-              beginFileDrag({ path: tab.path, name: tab.name }, e, {
+              const isUntitled = !tab.path;
+              beginFileDrag({ path: tab.path ?? "", name: tab.name }, e, {
+                canDrop: isUntitled ? () => false : undefined,
+                isOutsideSourceArea: isOutsideTabArea,
+                outsideHint: t("multiwindow.dragOutsideHint"),
                 onDrop: (payload, targetDir, mode) => {
                   // 跨组件解耦：由 FileTree 监听并执行真实文件传输
                   window.dispatchEvent(
@@ -372,6 +395,15 @@ export function TabBar({
                       detail: { srcPath: payload.path, targetDir, mode },
                     }),
                   );
+                },
+                // 拖出标签栏松手 → 把该标签移动到新窗口（落点时重新定位下标）
+                onDropOutsideSource: () => {
+                  if (!onMoveToNewWindow) return;
+                  const st = useEditorStore.getState();
+                  const i = st.openTabs.findIndex((x) =>
+                    tab.isUntitled && tab.id ? x.id === tab.id : x.path === tab.path,
+                  );
+                  onMoveToNewWindow(tab, i === -1 ? st.activeTabIdx : i);
                 },
               });
             }}
