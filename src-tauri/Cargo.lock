@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "lightmd"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "base64 0.22.1",
  "ico 0.3.0",
@@ -2354,6 +2354,9 @@ dependencies = [
  "tauri-plugin-sql",
  "tauri-plugin-window-state",
  "trash",
+ "webview2-com",
+ "windows 0.61.3",
+ "windows-core 0.61.2",
 ]
 
 [[package]]

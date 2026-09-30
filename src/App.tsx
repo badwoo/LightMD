@@ -25,7 +25,13 @@ import { TabBar } from "./components/layout/TabBar";
 import { EditorContainer } from "./components/editor/EditorContainer";
 import { FileTree, isFocusInEditable } from "./components/sidebar/FileTree";
 // v0.9.0 自定义快捷键：全局键位查表派发（默认表 + 用户覆盖，见 core/shortcuts.ts）
-import { matchShortcut, isShortcutOverridden } from "./core/shortcuts";
+import {
+  matchShortcut,
+  isShortcutOverridden,
+  getShortcutDef,
+  effectiveCombo,
+  normalizeCombo,
+} from "./core/shortcuts";
 import { Outline } from "./components/editor/Outline";
 import { SyntaxHelper } from "./components/editor/SyntaxHelper";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
@@ -54,7 +60,8 @@ import { setCurrentDocPath } from "./utils/imagePath";
 import { isSupportedTextFile, isMarkdownFile, ALL_SUPPORTED_EXTENSIONS, HUGE_FILE_THRESHOLD, getFileLanguage } from "./utils/constants";
 import { evalDoublePress, DOUBLE_PRESS_THRESHOLD } from "./utils/modeSwitch";
 // v0.9.0：F11 窗口全屏（Tauri 窗口 API + DOM 回退，见 util 内 P8 探针结论）
-import { toggleWindowFullscreen } from "./utils/windowFullscreen";
+// v0.9.1 需求6：改为「沉浸式全屏」——大字提示 → 全屏 + 收起四周面板，显式 set
+import { setWindowFullscreen } from "./utils/windowFullscreen";
 import { pathCompareKey } from "./utils/path";
 import { unwrapTargetedEvent } from "./utils/targetedEvent";
 import { markListenerReady, markListenerFailed, noteEventReceived } from "./utils/e2eProbe";
@@ -66,6 +73,12 @@ import {
 import { useT } from "./i18n";
 import type { EditorView } from "prosemirror-view";
 import "./App.css";
+
+// ─── v0.9.1 需求6：沉浸式全屏的字幕节奏（单源，便于测试与调参） ──────────
+/** 大字「全屏模式」完整展示时长（ms） */
+const FULLSCREEN_HINT_HOLD_MS = 900;
+/** 大字淡出时长（ms）——淡出结束后才切系统全屏 */
+const FULLSCREEN_HINT_FADE_MS = 260;
 
 // ─── v0.9.0：窗口级 key 与窗口身份常量 ──────────────────────────
 /** 本窗口的「当前内容」scratch key（main 无后缀 = v0.8.5 旧 key） */
@@ -239,6 +252,14 @@ function App() {
   const [snapshotFilePath, setSnapshotFilePath] = useState<string | null>(null);
   const [imageFiles, setImageFiles] = useState<File[] | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+
+  // ─── v0.9.1 需求6：F11 沉浸式全屏 ─────────────────────────────────────────
+  /** 「全屏模式」大字阶段：null=不显示，"in"=淡入展示，"out"=淡出消失 */
+  const [fullscreenHint, setFullscreenHint] = useState<"in" | "out" | null>(null);
+  /** 四周面板（上/左/右/下栏）是否已收起（真正进入沉浸态） */
+  const [immersive, setImmersive] = useState(false);
+  /** 立即态（state 滞后一帧，连按 F11 需要按「当前是否已发起进入」判断） */
+  const immersiveRef = useRef(false);
 
   /**
    * v0.8.3 WP4 需求6：会话恢复期标志。
@@ -2572,8 +2593,8 @@ function App() {
       if (id === "window.openInNew") { windowCommandsRef.current.openInNewWindow(); return; }
       if (id === "window.mergeToPrimary") { windowCommandsRef.current.mergeToPrimary(); return; }
       if (id === "window.quit") { windowCommandsRef.current.quitApp(); return; }
-      // 🔒 F11 全屏（命令面板 / 鼠标入口；快捷键在 keydown 里单独处理）
-      if (id === "window.full") { void toggleWindowFullscreen(); return; }
+      // 🔒 F11 沉浸式全屏（命令面板 / 鼠标入口；快捷键在 keydown 里单独处理）
+      if (id === "window.full") { toggleImmersiveRef.current(); return; }
 
       // 格式/插入命令：通过 sourceInsertHandler（源码模式）或 editorView（阅读模式）处理
       const syntaxEntry = COMMAND_SYNTAX[id];
@@ -2601,9 +2622,114 @@ function App() {
     setShowSettings, setShowExport, sourceInsertHandler,
   ]);
 
+  // ─── v0.9.1 需求1：原生层回收的快捷键（被输入法抢走的 Ctrl+,） ─────────────
+  /**
+   * 中文输入法（微软拼音等）把 `Ctrl+,` 作为 TSF 保留键，在消息进入应用之前就消费掉了：
+   * 实测页面只收到 `Control` 的 keydown，逗号那一下根本不存在，WebView2 的
+   * 浏览器加速键开关也管不到这一层。因此 Rust 侧用低级键盘钩子把它抢回来
+   * （见 src-tauri/src/hotkey.rs），再以 `lightmd:accelerator` 事件交给前端。
+   *
+   * 这里仍按**当前生效键位**校验一次：若用户把「打开设置」改绑到别的键，
+   * `Ctrl+,` 就不再触发设置（与自定义快捷键语义一致）。
+   */
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const un = await listen<{ id?: string }>("lightmd:accelerator", (event) => {
+          if (event.payload?.id !== "view.settings") return;
+          const def = getShortcutDef("view.settings");
+          if (!def) return;
+          if (normalizeCombo(effectiveCombo(def)) !== normalizeCombo("Ctrl+,")) return;
+          setShowSettings(true);
+        });
+        if (disposed) un();
+        else unlisten = un;
+      } catch {
+        // 非 Tauri 环境（vitest / 浏览器预览）没有事件通道：静默跳过
+      }
+    })();
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // ─── v0.9.1 需求6：F11 沉浸式全屏（大字提示 → 全屏 + 收起四周面板） ─────────
+  /**
+   * 交互序列（严格对齐需求）：
+   *   按下 F11 → 屏幕中间出现大字「全屏模式」→ 大字淡出消失 →
+   *   窗口进入系统全屏，上栏（标题栏/标签栏）、左栏（文件树）、右栏（大纲）、
+   *   下栏（状态栏）同时收起，整个窗口只剩中间的文档内容。
+   *   再按 F11 或 Esc → 立即退出（恢复四周面板 + 退出系统全屏）。
+   *
+   * 为什么要「先提示再全屏」：全屏是系统级窗口切换，瞬间跳变会让用户失去空间感；
+   * 先给一帧清晰的文字反馈，再把「全屏 + 收起面板」一次落定，动作边界明确。
+   * 四周面板用根节点 class 收起（而非改写各组件内部折叠 state）：
+   * 退出时一键复原，不会污染用户原有的「侧栏已折叠 / 标签栏已折叠」偏好。
+   */
+  const hintTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const clearHintTimers = useCallback(() => {
+    hintTimersRef.current.forEach((id) => clearTimeout(id));
+    hintTimersRef.current = [];
+  }, []);
+  // 卸载时清掉在途定时器，避免对已卸载组件 setState
+  useEffect(() => () => clearHintTimers(), [clearHintTimers]);
+
+  const enterImmersive = useCallback(() => {
+    if (immersiveRef.current) return;
+    clearHintTimers();
+    immersiveRef.current = true; // 立即置位：连按 F11 不会重复排队
+    // 沉浸态下不允许任何模态窗口留在屏幕上（「只有中间文档内容」）
+    setShowSettings(false);
+    setShowExport(false);
+    setShowSnapshotDialog(false);
+    setShowCommandPalette(false);
+    setFullscreenHint("in");
+    hintTimersRef.current.push(
+      setTimeout(() => {
+        setFullscreenHint("out");
+        hintTimersRef.current.push(
+          setTimeout(() => {
+            setFullscreenHint(null);
+            setImmersive(true);
+            void setWindowFullscreen(true);
+          }, FULLSCREEN_HINT_FADE_MS),
+        );
+      }, FULLSCREEN_HINT_HOLD_MS),
+    );
+  }, [clearHintTimers]);
+
+  const exitImmersive = useCallback(() => {
+    if (!immersiveRef.current) return;
+    clearHintTimers();
+    immersiveRef.current = false;
+    setFullscreenHint(null);
+    setImmersive(false);
+    void setWindowFullscreen(false);
+  }, [clearHintTimers]);
+
+  const toggleImmersive = useCallback(() => {
+    if (immersiveRef.current) exitImmersive();
+    else enterImmersive();
+  }, [enterImmersive, exitImmersive]);
+  /** 供 keydown / 命令总线两处入口共用（命令总线 effect 依赖数组保持稳定） */
+  const toggleImmersiveRef = useRef(toggleImmersive);
+  toggleImmersiveRef.current = toggleImmersive;
+
   // ─── 快捷键 ────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // v0.9.1 需求6：沉浸式全屏下 Esc 直接退出该模式。
+      // 必须排在所有对话框/原生行为之前——模式切换优先于任何局部 Esc 语义，
+      // 且沉浸态下模态窗口已在 enterImmersive 里关闭，不存在"Esc 关两层"的歧义。
+      if (immersiveRef.current && e.key === "Escape") {
+        e.preventDefault();
+        exitImmersive();
+        return;
+      }
       // 双击 Ctrl 切换阅读/编辑模式
       // v0.6.1 修复：长按 Ctrl 时浏览器持续派发 repeat keydown 导致模式连续切换，
       // 使用 evalDoublePress 三态判定（skip 时完全忽略，不刷新时间戳）
@@ -2647,12 +2773,14 @@ function App() {
         return;
       }
 
-      // F11 窗口全屏（🔒 保留键，不入自定义表；v0.9.0 新增类浏览器沉浸式阅读）
-      // 优先走 Tauri 窗口全屏（WebView2 下 DOM Fullscreen API 只让元素铺满 webview，
-      // 不会让系统窗口全屏，P8 探针结论），非 Tauri 环境回退 DOM Fullscreen API
+      // F11 沉浸式全屏（🔒 保留键，不入自定义表）。
+      // v0.9.1 需求6：不再直接切系统全屏，而是走「大字提示 → 全屏 + 收起四周面板」，
+      // 再按一次 F11（或 Esc）退出。系统全屏仍走 Tauri 窗口 API（WebView2 下 DOM
+      // Fullscreen API 只让元素铺满 webview，不会让系统窗口全屏，P8 探针结论），
+      // 非 Tauri 环境由 setWindowFullscreen 内部回退 DOM Fullscreen API。
       if (e.key === "F11") {
         e.preventDefault();
-        void toggleWindowFullscreen();
+        toggleImmersiveRef.current();
         return;
       }
 
@@ -2955,7 +3083,19 @@ function App() {
   }, [handleTabSwitch, handleTabClose, closeTabsByPath, handleOpenFileInNewWindow]);
 
   return (
-    <div className="app" data-theme={theme}>
+    <div className={`app${immersive ? " app-immersive" : ""}`} data-theme={theme}>
+      {/* v0.9.1 需求6：F11 进入沉浸式全屏前的居中大字提示。
+          「大字消失后屏幕自动全屏」——全屏与面板收起在淡出结束的回调里落定（见 enterImmersive）。 */}
+      {fullscreenHint && (
+        <div
+          className={`fullscreen-hint fullscreen-hint-${fullscreenHint}`}
+          data-testid="fullscreen-hint"
+          role="status"
+          aria-live="polite"
+        >
+          <span className="fullscreen-hint-text">{t("view.fullscreen.entering")}</span>
+        </div>
+      )}
       <TitleBar
         // v0.9.0 WP9：只读标签在标题上显式标记，避免用户误以为可以编辑
         fileName={`${activeIsReadonly ? `${t("multiwindow.readonlyBadge")} ` : ""}${fileName}${isDirty ? " ●" : ""}`}

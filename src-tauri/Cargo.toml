@@ -1,6 +1,6 @@
 [package]
 name = "lightmd"
-version = "0.9.0"
+version = "0.9.1"
 description = "LightMD - 轻量级 Markdown 编辑器"
 authors = ["LightMD"]
 edition = "2021"
@@ -42,3 +42,23 @@ notify = "6"
 # ─── v0.8.5 需求2：删除 = 移到系统回收站 ───
 # 跨平台回收站删除（Windows 走 IFileOperation，文件/目录进入回收站而非永久删除，可还原）
 trash = "5"
+
+# ─── v0.9.1 需求1 + 需求6：把按键完整地交给页面 ───
+# WebView2 的浏览器加速键开关 `AreBrowserAcceleratorKeysEnabled` 默认是 **true**：
+# Ctrl+P / Ctrl+F / F5 / Ctrl+, / F11 这类「浏览器加速键」会在到达页面前被就地消费。
+# 实测（真实硬件级 SendInput 注入）：按 Ctrl+, 页面只收到 Control keydown，
+# 逗号的 keydown 根本不存在 → 「打开设置」必然失效；真实 F11 也一样，
+# 触发的是 WebView2 自带全屏（用户看到的"类浏览器全屏"），页面里的 F11 处理跑不到。
+# wry 0.55 有 `with_browser_accelerator_keys(false)`，但 Tauri 2.11 未透出该开关，
+# 因此这里取 WebView2 控制器自行关闭（见 window::disable_browser_accelerator_keys）。
+# 版本必须与 tauri-runtime-wry 使用的 windows-core 同版（0.61），否则 COM 接口类型不互通。
+[target."cfg(windows)".dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
+# v0.9.1 需求1：低级键盘钩子（WH_KEYBOARD_LL）——把被中文输入法（TSF 保留键）
+# 抢走的 Ctrl+, 从输入管线最前端回收，再转成应用内事件（见 src/hotkey.rs）。
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }

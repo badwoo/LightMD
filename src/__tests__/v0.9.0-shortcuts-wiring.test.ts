@@ -35,11 +35,17 @@ describe("v0.9.0 自定义快捷键：源码接线", () => {
   it("App.tsx：F11 全屏（🔒 保留键）走 Tauri 窗口 API + DOM 回退", () => {
     // v0.9.0 review：WebView2 下 DOM Fullscreen API 不会让系统窗口全屏（P8 探针结论），
     // 改为优先 Tauri setFullscreen，非 Tauri 环境回退 DOM API
+    // v0.9.1 需求6：F11 改为「沉浸式全屏」——大字提示 → 显式 setFullscreen(true) + 收起四周面板，
+    // 因此 App 侧入口是 setWindowFullscreen（不再是 toggle），并新增 Esc 退出分支
     expect(read("App.tsx")).toContain('"F11"');
-    expect(read("App.tsx")).toContain("toggleWindowFullscreen");
+    expect(read("App.tsx")).toContain("setWindowFullscreen");
+    expect(read("App.tsx")).toContain("app-immersive");
+    const app = read("App.tsx");
+    expect(app).toContain("immersiveRef.current && e.key === \"Escape\"");
     const util = read("utils/windowFullscreen.ts");
     expect(util).toContain("setFullscreen");
     expect(util).toContain("requestFullscreen");
+    expect(util).toContain("isFullscreen");
   });
 
   it("FileTree.tsx：关闭临时文件等效键为 Backspace，Ctrl+2 分支已移除", () => {

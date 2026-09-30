@@ -21,6 +21,7 @@ vi.mock("../services/translateService", () => ({
 }));
 
 import { SettingsDialog } from "../components/dialogs/SettingsDialog";
+import { SHORTCUT_COLUMN_LAYOUT } from "../components/dialogs/ShortcutSettingsDialog";
 import { useSettingsStore } from "../stores/useSettingsStore";
 
 afterEach(() => {
@@ -48,12 +49,27 @@ describe("v0.9.0 A1：设置弹窗内的自定义快捷键入口", () => {
     expect(document.querySelector(".shortcut-settings-search")).toBeTruthy();
   });
 
-  it("弹窗分组顺序为 文件→编辑→格式→视图→标签→窗口→插入", () => {
+  it("弹窗按横向 3×3 分列渲染：7 个分类各出现一次，每列不超过 3 张分类卡片（v0.9.1 需求4）", () => {
     render(<SettingsDialog onClose={() => {}} />);
     fireEvent.click(screen.getByTestId("shortcuts-entry"));
+    const categoryLabel: Record<string, string> = {
+      file: "文件", edit: "编辑", format: "格式", view: "视图",
+      tab: "标签", window: "窗口", insert: "插入",
+    };
+    const expectedOrder = SHORTCUT_COLUMN_LAYOUT.flat().map((c) => categoryLabel[c]);
     const groups = [...document.querySelectorAll(".shortcut-settings-group h3")].map(
       (el) => el.textContent,
     );
-    expect(groups).toEqual(["文件", "编辑", "格式", "视图", "标签", "窗口", "插入"]);
+    // DOM 顺序 = 分列方案的自左而右、列内自上而下（视觉阅读顺序）
+    expect(groups).toEqual(expectedOrder);
+    expect(new Set(groups).size).toBe(7);
+
+    const columns = [...document.querySelectorAll(".shortcut-settings-column")];
+    expect(columns.length).toBe(3);
+    for (const col of columns) {
+      const cards = col.querySelectorAll(".shortcut-settings-group").length;
+      expect(cards).toBeGreaterThan(0);
+      expect(cards).toBeLessThanOrEqual(3); // 3×3 的"3 层"上限
+    }
   });
 });

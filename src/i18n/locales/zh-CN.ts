@@ -637,6 +637,8 @@ export const zhCN: Record<string, string> = {
   "command.window.mergeToPrimary": "合并到主窗口",
   "command.window.quit": "退出 LightMD",
   "command.window.full": "窗口全屏",
+  // v0.9.1 需求6：F11 沉浸式全屏的居中大字提示
+  "view.fullscreen.entering": "全屏模式",
   // 文件分组命令
   "command.file.new": "新建文件",
   "command.file.open": "打开文件",

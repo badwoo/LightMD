@@ -7,7 +7,7 @@
  * v0.6.0：AI 翻译分组（Provider 预设/API Key（keyring）/测试连接/目标语言/语体/结果模式/自定义 Prompt，实时生效）
  * 其他字段（fontSize/fontFamily/autoSaveInterval/customCss）点击"保存设置"才提交
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSettingsStore, THEMES, type Theme, type TranslateSettings } from "../../stores/useSettingsStore";
 import { translateService } from "../../services/translateService";
 import { useT } from "../../i18n";
@@ -79,9 +79,43 @@ interface SettingsDialogProps {
   onClose: () => void;
 }
 
+/**
+ * v0.9.1 需求3：关闭动画时长（与 SettingsDialog.css 的 dialog-out 一致，留 20ms 余量）。
+ * 关闭请求先切到 closing 播放淡出，动画结束后才真正 onClose() 卸载。
+ */
+const SETTINGS_CLOSE_MS = 180;
+
 export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const settings = useSettingsStore();
   const t = useT();
+
+  // ─── v0.9.1 需求3：打开/关闭淡入淡出（关闭走延迟卸载） ──────────────────
+  /** 关闭动画播放中：overlay 切换为 closing 类，动画结束后才真正卸载 */
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * 统一的关闭入口：所有关闭路径（✕ / 取消 / 保存 / 点击遮罩 / Esc）都必须走这里，
+   * 否则会因为直接 onClose() 卸载而看不到淡出动画。
+   */
+  const requestClose = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    closeTimerRef.current = setTimeout(() => {
+      closeTimerRef.current = null;
+      onClose();
+    }, SETTINGS_CLOSE_MS);
+  }, [onClose]);
+
+  // 卸载时清掉在途定时器（父组件也可能直接卸载本弹窗）
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    },
+    [],
+  );
 
   // 这些字段保持"保存后生效"行为
   const [fontSize, setFontSize] = useState(settings.fontSize);
@@ -199,19 +233,41 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     settings.setFontFamily(fontFamily);
     settings.setAutoSaveInterval(autoSaveInterval * 1000);
     settings.setCustomCss(customCss);
-    onClose();
+    requestClose();
   };
 
   // v0.9.0 自定义快捷键弹窗开关
   const [showShortcuts, setShowShortcuts] = useState(false);
 
+  // v0.9.1 需求3：Esc 关闭设置弹窗（此前只能点 ✕ / 取消）。
+  // 快捷键子弹窗打开时让位——它自己是顶层，Esc 由它处理（取消录制或关闭子窗）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || showShortcuts) return;
+      e.preventDefault();
+      requestClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showShortcuts, requestClose]);
+
   return (
-    <div className="settings-overlay" onClick={onClose}>
+    <div
+      className={`settings-overlay${closing ? " closing" : ""}`}
+      onClick={requestClose}
+      data-testid="settings-overlay"
+    >
+      {/*
+        v0.9.1 布局要点：自定义快捷键弹窗是 `position: fixed` 的全屏覆盖层，
+        而 `.settings-dialog` 带 transform/will-change:transform —— 那会让它成为
+        fixed 后代的**包含块**，把覆盖层压成 520px 宽的设置弹窗尺寸（实测 bug）。
+        因此它渲染在本 overlay 下、与 `.settings-dialog` **平级**，不放进弹窗内部。
+      */}
+      {showShortcuts && <ShortcutSettingsDialog onClose={() => setShowShortcuts(false)} />}
       <div className="settings-dialog" onClick={(e) => e.stopPropagation()}>
-        {showShortcuts && <ShortcutSettingsDialog onClose={() => setShowShortcuts(false)} />}
         <div className="settings-header">
           <h2>{t("settings.title")}</h2>
-          <button className="settings-close" onClick={onClose}>
+          <button className="settings-close" onClick={requestClose} aria-label={t("common.close")}>
             ✕
           </button>
         </div>
@@ -852,7 +908,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
         </div>
 
         <div className="settings-footer">
-          <button className="settings-btn secondary" onClick={onClose}>
+          <button className="settings-btn secondary" onClick={requestClose}>
             {t("settings.cancel")}
           </button>
           <button className="settings-btn primary" onClick={handleSave}>

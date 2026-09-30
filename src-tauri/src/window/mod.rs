@@ -619,9 +619,66 @@ pub fn build_secondary_window(app: &AppHandle, label: &str) -> Result<WebviewWin
     if let Some((x, y)) = cascade_position(app, label) {
         builder = builder.position(x, y);
     }
-    builder
+    let window = builder
         .build()
-        .map_err(|e| format!("创建窗口失败: {}", e))
+        .map_err(|e| format!("创建窗口失败: {}", e))?;
+    // v0.9.1：辅助窗口同样要拿到全部按键（Ctrl+, 打开设置、F11 沉浸式全屏在任意窗口都要成立）
+    disable_browser_accelerator_keys(&window);
+    Ok(window)
+}
+
+/// v0.9.1 需求1 + 需求6：关闭 WebView2 的**浏览器加速键**，让 Ctrl+, / F11 等按键
+/// 原样到达页面。
+///
+/// 背景（真实硬件级注入实测）：WebView2 的 `AreBrowserAcceleratorKeysEnabled` 默认为 true，
+/// 且 wry 0.55 的 `with_browser_accelerator_keys` 默认也是 true，而 Tauri 2.11 没有透出
+/// 这个开关。结果是按 Ctrl+, 时页面**只收到 Control keydown**（逗号 keydown 被吞），
+/// 「打开设置」永远进不到 JS；真实 F11 也到不了页面，走的是 WebView2 自带全屏。
+///
+/// 这里通过 Tauri 的 `with_webview` 拿到 `ICoreWebView2Controller`，把设置项关掉。
+/// 关闭后：页面自己实现的快捷键（含 F11 沉浸式全屏）才是唯一事实来源。
+/// 失败只记一行日志——最坏情况退化为 v0.9.0 的行为，不影响其它功能。
+pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
+    #[cfg(windows)]
+    {
+        let label = window.label().to_string();
+        let label_for_closure = label.clone();
+        let result = window.with_webview(move |webview| {
+            let label = label_for_closure;
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+            use windows_core::Interface;
+            unsafe {
+                let Ok(core) = webview.controller().CoreWebView2() else {
+                    eprintln!("[LightMD] 关闭浏览器加速键失败 label={label}：取 CoreWebView2 失败");
+                    return;
+                };
+                let Ok(settings) = core.Settings() else {
+                    eprintln!("[LightMD] 关闭浏览器加速键失败 label={label}：取 Settings 失败");
+                    return;
+                };
+                match settings.cast::<ICoreWebView2Settings3>() {
+                    Ok(s3) => match s3.SetAreBrowserAcceleratorKeysEnabled(false) {
+                        Ok(()) => eprintln!(
+                            "[LightMD] 已关闭 WebView2 浏览器加速键 label={label}（Ctrl+, / F11 交给页面）"
+                        ),
+                        Err(e) => eprintln!(
+                            "[LightMD] 关闭浏览器加速键失败 label={label}：SetAreBrowserAcceleratorKeysEnabled {e}"
+                        ),
+                    },
+                    Err(e) => eprintln!(
+                        "[LightMD] 关闭浏览器加速键失败 label={label}：ICoreWebView2Settings3 不可用 {e}"
+                    ),
+                }
+            }
+        });
+        if let Err(e) = result {
+            eprintln!("[LightMD] 提交浏览器加速键设置失败 label={label}：{e}");
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+    }
 }
 
 /// 把 Primary 变更通知给晋升后的窗口（前端据此更新 UI 提示）

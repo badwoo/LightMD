@@ -1,13 +1,52 @@
 /* ─── 设置对话框 ──────────────────────────── */
+/* v0.9.1 需求2 + 需求3：弹窗出现瞬间「背景杂乱、不平滑」的根因与修法
+   ─────────────────────────────────────────────────────────────────
+   根因（与 v0.8.5 修复 NewFolderDialog/NewFileDialog 时用逐帧定格确认的完全同源）：
+   ① 遮罩挂在 overlay 本体上（`background: rgba(0,0,0,.4)` + `animation: fadeIn`）。
+      元素上的 opacity 会**把整棵子树作为一组**做合成，于是弹窗本体也被叠了一层
+      透明度 —— 淡入前半程编辑器/文件树文字是**透过弹窗**显形的，且弹窗同时还在
+      translateY(20px) 位移，透出来的背景逐帧移动 = 观感上的"背景杂乱闪动"。
+      遮罩自身又从全透明起步，动画第一帧整屏还是亮的，随后才压暗 → 一次全屏明暗跳变。
+   ② 弹窗本体 `slideUp` 里又带了一次 opacity，与①的分组透明度相乘，淡入曲线更抖。
+
+   → 修法：
+   · 遮罩移到 overlay 的 `::before` 独立层，只动这一层纯色的 opacity，
+     overlay 本体不再有透明度，弹窗不会被"分组淡化"（背景不再透出来）；
+   · 遮罩淡入比弹窗更快（140ms vs 200ms），弹窗淡入时背景已基本压暗；
+   · 弹窗本体的透明度动画只保留一次、且位移/缩放幅度很小，全部是合成层属性
+     （opacity/transform），不触发重排重绘；
+   · 关闭走 `.closing`：遮罩与弹窗各自淡出，动画放完由 JS 延迟卸载（需求3）。 */
+
 .settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
   z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
-  animation: fadeIn 0.15s ease;
+}
+
+/* 遮罩（独立层，仅 opacity 参与动画） */
+.settings-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  will-change: opacity;
+  animation: settings-scrim-in 140ms ease-out both;
+}
+
+.settings-overlay.closing::before {
+  animation: settings-scrim-out 160ms ease-in both;
+}
+
+@keyframes settings-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes settings-scrim-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
 }
 
 .settings-dialog {
@@ -19,9 +58,49 @@
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  animation: slideUp 0.2s ease;
+  /* 保证弹窗绘制在遮罩伪元素（absolute）之上 */
+  position: relative;
+  will-change: opacity, transform;
+  animation: settings-dialog-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+.settings-overlay.closing .settings-dialog {
+  animation: settings-dialog-out 160ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+/* 打开：淡入 + 轻微上浮（位移仅 8px，避免"背后的内容在弹窗里走"的观感）。
+   注意：带 transform / will-change: transform 的元素会成为 **fixed 后代的包含块**，
+   所以「自定义快捷键」弹窗（fixed 覆盖层）**不能**挂在本弹窗内部——它由
+   SettingsDialog.tsx 渲染在 `.settings-overlay` 下、与本弹窗平级（见该文件注释）。 */
+@keyframes settings-dialog-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* 关闭：淡出 + 轻微下沉；总时长与 SettingsDialog.tsx 的 SETTINGS_CLOSE_MS(180ms) 对齐 */
+@keyframes settings-dialog-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(6px); }
+}
+
+/* 尊重系统减弱动效：不做位移，仅极短的透明度过渡（视觉上等同直接出现/消失） */
+@media (prefers-reduced-motion: reduce) {
+  .settings-overlay::before,
+  .settings-overlay.closing::before,
+  .settings-dialog,
+  .settings-overlay.closing .settings-dialog {
+    animation-duration: 1ms;
+  }
+  .settings-dialog,
+  .settings-overlay.closing .settings-dialog {
+    transform: none;
+  }
+}
+
+/* ⚠️ 历史遗留的**全局共享** keyframes：本弹窗已不再使用 slideUp，
+   但 CommandPalette / ExportDialog / ImageEditDialog / ImagePasteDialog /
+   LinkDialog / ImageInsertDialog / PdfExportDialog / TableDialog 的 CSS 都在引用它，
+   而它们各自没有定义。删除会让这些弹窗失去入场动画，故原样保留。 */
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(20px); }
   to   { opacity: 1; transform: translateY(0); }

@@ -7,6 +7,108 @@
   background-color: var(--bg-primary);
 }
 
+/* ─── v0.9.1 需求6：沉浸式全屏 ──────────────────────────────────────
+   进入后只保留中间文档内容：上栏（标题栏 + 标签栏）、左栏（文件树）、
+   右栏（大纲）、下栏（状态栏）连同分割条/折叠按钮一并隐藏。
+   用根节点 class 控制而非改写各组件内部折叠 state：退出时一键复原，
+   不会污染用户原有的「侧栏已折叠 / 标签栏已折叠」偏好。
+   （面板清单与 global.css 的 @media print 保持一致，便于维护。） */
+.app-immersive .titlebar,
+.app-immersive .tab-bar,
+.app-immersive .app-sidebar,
+.app-immersive .app-outline,
+.app-immersive .statusbar,
+.app-immersive .app-resizer,
+.app-immersive .sidebar-toggle-btn {
+  display: none !important;
+}
+
+/* 沉浸态下文档区域铺满整个窗口（两侧栏已 display:none，此处只兜底宽度约束） */
+.app-immersive .app-shell,
+.app-immersive .app-main {
+  width: 100%;
+  max-width: none;
+}
+
+/* 进入全屏前的居中大字「全屏模式」：先淡入展示，再淡出，随后才切系统全屏。
+   半透明压暗层放在 ::before 独立层，文本自身只做 opacity/transform（合成层属性），
+   避免动画期间整屏重绘。 */
+.fullscreen-hint {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.fullscreen-hint::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(0, 0, 0, 0.22) 0%,
+    rgba(0, 0, 0, 0.38) 100%
+  );
+  will-change: opacity;
+}
+
+.fullscreen-hint-text {
+  position: relative;
+  font-size: 64px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #fff;
+  text-shadow: 0 4px 32px rgba(0, 0, 0, 0.45);
+  will-change: opacity, transform;
+}
+
+.fullscreen-hint-in::before {
+  animation: fullscreen-scrim-in 300ms ease-out both;
+}
+.fullscreen-hint-in .fullscreen-hint-text {
+  animation: fullscreen-text-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.fullscreen-hint-out::before {
+  animation: fullscreen-scrim-out 260ms ease-in both;
+}
+.fullscreen-hint-out .fullscreen-hint-text {
+  animation: fullscreen-text-out 260ms ease-in both;
+}
+
+@keyframes fullscreen-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes fullscreen-scrim-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes fullscreen-text-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes fullscreen-text-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(1.04); }
+}
+
+/* 尊重系统减弱动效：大字直接显示/消失，不缩放 */
+@media (prefers-reduced-motion: reduce) {
+  .fullscreen-hint-in::before,
+  .fullscreen-hint-out::before,
+  .fullscreen-hint-in .fullscreen-hint-text,
+  .fullscreen-hint-out .fullscreen-hint-text {
+    animation-duration: 1ms;
+  }
+  .fullscreen-hint-in .fullscreen-hint-text,
+  .fullscreen-hint-out .fullscreen-hint-text {
+    transform: none;
+  }
+}
+
 /* ─── 通知 Toast ──────────────────────────────────── */
 
 .notification-toast-container {

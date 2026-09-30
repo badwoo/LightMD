@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod db;
+pub mod hotkey;
 pub mod translate;
 pub mod utils;
 pub mod window;
@@ -173,10 +174,18 @@ pub fn run() {
                         *pos,
                     );
                 }
+                // v0.9.1 需求1：Ctrl+, 只在**本应用处于前台**期间占用
+                //（输入法把它当 TSF 保留键吞掉，RegisterHotKey 位于输入法之前，能把键抢回来）
+                WindowEvent::Focused(focused) => {
+                    hotkey::set_foreground(*focused);
+                }
                 _ => {}
             }
         })
         .setup(|app| {
+            // v0.9.1 需求1：安装 Ctrl+, 热键回收（被中文输入法抢走的组合键）
+            hotkey::install(app.handle());
+
             // v0.9.0：登记主窗口（tauri.conf.json 默认 label = "main"）
             app.state::<AppWindowManager>()
                 .lock()
@@ -184,6 +193,9 @@ pub fn run() {
 
             // 设置窗口图标
             if let Some(window) = app.get_webview_window(PRIMARY_LABEL) {
+                // v0.9.1 需求1 + 需求6：关闭 WebView2 浏览器加速键，
+                // 让 Ctrl+,（打开设置）与 F11（沉浸式全屏）等按键原样交给页面
+                window::disable_browser_accelerator_keys(&window);
                 let icon_bytes = include_bytes!("../icons/icon.ico");
                 if let Ok(ico_dir) = ico::IconDir::read(Cursor::new(icon_bytes)) {
                     if let Some(entry) = ico_dir.entries().into_iter().next() {

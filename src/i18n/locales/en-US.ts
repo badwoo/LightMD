@@ -630,6 +630,8 @@ export const enUS: Record<string, string> = {
   "command.window.mergeToPrimary": "Merge into Main Window",
   "command.window.quit": "Quit LightMD",
   "command.window.full": "Toggle Full Screen",
+  // v0.9.1 requirement 6: centered hint before entering immersive full screen
+  "view.fullscreen.entering": "Fullscreen mode",
   // File group commands
   "command.file.new": "New File",
   "command.file.open": "Open File",
