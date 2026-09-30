@@ -167,7 +167,40 @@
 
 ---
 
-## 七、兼容性
+## 七、自定义快捷键代码评审与修复（第六轮）
+
+> 依据 `.trae/documents/lightmd-v0.9.0-custom-shortcuts-plan.md` 与 `lightmd-v0.9.0-default-shortcuts-baseline.md`，对自定义快捷键实现（commit `1bb4a69`）做了逐工作面代码评审（全局派发链 / 存储与迁移 / 编辑器链路 / 设置弹窗 / 伴随新功能），共确认并修复 **14 项缺陷与优化**，另补齐 6 项测试缺口。评审明细见 `.trae/documents/lightmd-v0.9.0-custom-shortcuts-review.md`。
+
+**修复清单（按严重度）**
+
+| # | 严重度 | 问题 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 高 | 冲突提示文案用了 `{{name}}`，而 `t()` 只替换单花括号 → 界面渲染成「该快捷键已被『{保存文件}』占用」 | 4 条文案改为单花括号，并加断言锁死渲染结果 |
+| 2 | 高 | 弹窗样式全部硬编码浅色（`#2b2f36` 等），暗色/夜间主题下正文与 48 条功能名对比度约 1.2:1，几乎不可见 | 改为主题变量 + 原设计色回退，浅色视觉零变化 |
+| 3 | 高 | 「恢复单项默认键位」不查重：A 改绑后 B 占用其默认键位，再恢复 A 会造出两条同键位绑定，其中一条永远按不出来 | 新增 `findResetCollision`，被占用时拒绝恢复并提示占用人 |
+| 4 | 高 | `editableGate` 无条件门控，导致编辑器一有焦点 `Ctrl+Alt+←/→`、`Ctrl+Shift+B` 三个新功能全部失效 | 改为**仅用户改绑后**门控（保留 P7 防吞词跳转的原意），默认键位在编辑器内可用 |
+| 5 | 中 | 已是 v4 的脏覆盖表只过 `merge` 不清洗：手改 localStorage 写入 `{"format.bold":"B"}` 后，编辑器中每个 `b` 键都会被吞掉 | 抽出 `sanitizeShortcutOverrides`，`migrate` 与 `merge` 双路径清洗（未登记 id / D5 违规 / 保留键 / 互占 / 冗余项） |
+| 6 | 中 | AltGr 布局（德语 `AltGr+S`→`ß`、波兰语 `AltGr+O`→`ó`）下 `Ctrl+Alt+S/O` 会吞掉正在输入的字符并误触快捷键 | `eventKeyName` 检测 `getModifierState("AltGraph")` 直接放行；非拉丁布局（俄语 `Ctrl+S`→`с`）则以 `e.code` 还原物理键，`Ctrl+S` 仍可保存 |
+| 7 | 中 | F11 用 DOM Fullscreen API：WebView2 下不会让系统窗口全屏（P8 待验证项），且失败被静默吞掉 | 改为优先 Tauri `setFullscreen`（补 `allow-is-fullscreen` / `allow-set-fullscreen` 权限）+ DOM 回退；`window.full` 进入命令面板，鼠标可达 |
+| 8 | 中 | 右键菜单键位用 `useMemo` 缓存但依赖里没有键位表 → 改键后菜单仍显示旧键位（A8 部分不达标） | 订阅 `shortcuts` 并加入依赖；命令面板同样订阅（跨窗广播后已打开面板即时刷新） |
+| 9 | 中 | 双击阈值双份定义（App 220 / `modeSwitch` 300，注释还称"一致"），且只有源码字符串断言、没有边界行为测试 | 阈值单源到 `DOUBLE_PRESS_THRESHOLD = 220`，App 直接导入；补 210/219/220/230 边界用例 |
+| 10 | 中 | 保留键清单只覆盖静态 keymap，漏了 PM `baseKeymap`/原生编辑键（`Ctrl+A` 全选、`Ctrl+Enter`、`Ctrl+Backspace/Delete`、`Ctrl+←/→` 词跳转、`Ctrl+Home/End`）→ 可被绑成自定义键并抢掉原生行为 | 全部登记进 `RESERVED_COMBOS` |
+| 11 | 低 | 冲突红描边是死代码（录制时键帽被药丸替换）+ 录制态看不到当前键位 | 录制中同时保留旧键位键帽并给药丸加红描边 |
+| 12 | 低 | `NumpadAdd`/`Shift+=` 的 `"+"` 归一化后变成修饰键组合 `Ctrl+Shift`，能被写入但永远触发不了 | `"+"` 归一为 `Plus`，`isLegalCombo` 拒绝只剩修饰键的空绑定；功能键大小写统一（`alt+f4`≡`Alt+F4`） |
+| 13 | 低 | 弹窗缺无障碍与可用性：行不可键盘操作、无 `role/aria`、录制中点击搜索框无法输入、非录制态 Esc 无响应、恢复全部默认无二次确认、`setShortcut` 拒绝写入时静默退出录制态 | 补齐 `role/aria/aria-label/role=alert`、行可 Tab+Enter、搜索框获焦退出录制、Esc 关闭弹窗、恢复全部默认二次确认、写入被拒时保持录制态并提示 |
+| 14 | 低 | 恢复默认的 `resetShortcut` 返回 `void`、`setShortcut` 回写与默认值相同的冗余覆盖（多出无效覆盖与 ↺ 图标）、系统级组合键（`Alt+F4`）静默接受（计划 §2.3 要求"允许但提示"） | 返回布尔并加守卫；与默认值相同即删除覆盖；新增 `SYSTEM_COMBOS` + 黄色提示条 |
+
+**测试与门禁补齐**
+
+- 新增 `v0.9.0-shortcuts-review.test.ts`（21 项：基线表 48 条逐行一致性、i18n 占位符、AltGr/俄语/AZERTY 布局、`+` 与空绑定、持久化清洗、恢复占用守卫、220ms 边界、系统键）
+- 新增 `v0.9.0-shortcuts-persist.test.tsx`（4 项：真实 `localStorage` + `rehydrate`，覆盖 v4 `merge` 与 v3 `migrate` 双路径清洗、生效表注入）
+- 新增 `v0.9.0-shortcuts-entry.test.tsx`（2 项：A1 入口存在且为编辑器分区最后一栏、分组顺序）
+- 还原被误删的「命令面板无重复快捷键」用例；弹窗用例补精确文案、红描边、保持录制态、恢复全部确认/取消、恢复占用提示
+- 修复测试环境噪音：为 `v0.9.0-app-smoke` / `v0.9.0-fixes-round5` 补齐 `__TAURI_EVENT_PLUGIN_INTERNALS__` 与 `IntersectionObserver` 桩并结算在途 Promise，**103 条 unhandled rejection 归零，`vitest run` 退出码首次为 0**（此前"全过但退出码 1"会影响 CI 判定）
+
+---
+
+## 八、兼容性
 
 - **向后兼容**：不创建辅助窗口时，v0.8.5 的全部行为（标签、AI、导出、快照、搜索、实时刷新、启动恢复）完全一致。
 - **数据迁移**：`lightmd-settings` / `lightmd-file-store` 结构不变；新增字段缺省即默认值。v0.8.5 的临时标签、上次活跃标签、滚动进度等主窗口数据**原地可用**。
@@ -176,7 +209,7 @@
 
 ---
 
-## 八、安装包
+## 九、安装包
 
 | 文件 | 大小 | 说明 |
 | --- | --- | --- |
@@ -195,9 +228,21 @@
 
 ---
 
-## 九、验证情况
+## 十、验证情况
 
-**第五轮修复（本次）**
+**第六轮修复（本次：自定义快捷键代码评审）**
+
+- **前端单测**：**186 个文件 / 3250 个用例全绿，退出码 0**（此前 103 条 Tauri-in-jsdom unhandled rejection 已归零）。本轮新增/改写：
+    - `v0.9.0-shortcuts-review.test.ts` **21 个**：基线表 48 条逐行一致性（id/分类/键位双向比对）、i18n 单花括号占位、AltGr/俄语/AZERTY 布局、`+` 键与空绑定、持久化清洗、恢复占用守卫、220ms 双击边界、系统键识别
+    - `v0.9.0-shortcuts-persist.test.tsx` **4 个**：真实 `localStorage` + `persist.rehydrate()` 走 v4 `merge` 与 v3 `migrate` 两条真实路径，验证脏覆盖被清洗且生效表注入正确
+    - `v0.9.0-shortcuts-entry.test.tsx` **2 个**：设置入口存在且为编辑器分区最后一栏、点击打开弹窗、分组顺序
+    - `v0.9.0-shortcuts-dialog.test.tsx` 扩到 **11 个**：精确冲突文案、红描边、保持录制态、恢复全部默认的确认/取消、恢复被占用时拒绝并提示
+- **Rust 单测**：161 个用例全绿（本轮无 Rust 改动，回归确认）
+- **类型检查**：`npx tsc --noEmit` 通过
+- **打包校验**：`tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第九节）
+- **实机冒烟测试（打包产物，WebView2 CDP 驱动，21 项全部通过）**：在 `target/release/lightmd.exe` 上以 `--remote-debugging-port` 驱动真实实例，验证外壳渲染与监听无错、设置入口与 48 条分类列表、`Ctrl+J` 录入后**真实落盘 localStorage**、`Ctrl+S` 冲突红字「该快捷键已被「保存文件」占用」且不写入/保持录制态、单项恢复默认无残留、`Ctrl+Shift+B` 折叠标签栏、`Ctrl+Alt+←` 折叠左侧栏，以及 **F11 从 900×600 真实进入 1440×900 全屏再返回**（`document.fullscreenElement === false`，证明走的是 Tauri 窗口 API 而非 DOM API）。脚本已固化：`pnpm smoke:real` / `pnpm smoke:real:close`
+
+**第五轮修复**
 
 - **前端单测**：181 个文件 / 3179 个用例全绿，其中新增 `v0.9.0-fixes-round5.test.tsx` **10 个**回归用例
     - 双向即时刷新 6 个：以 `main` / `sec-1` 两种窗口身份分别断言「对方保存 → 本窗口立即重载并提示」、连续多次保存逐次刷新、自身回声（`source` 含本窗口）不重载不提示、写入登记竞态（`source` 为空）由内容指纹兜底、无关文件不受影响
@@ -205,28 +250,28 @@
     - 测试手法升级：App.tsx 用动态 `import("@tauri-apps/api/event")`，`vi.mock` 拦不住（既有冒烟用例里那批 `transformCallback is not a function` 噪声即由此而来）。本轮改为**桩化 Tauri IPC 层**（`__TAURI_INTERNALS__.transformCallback / invoke`）让真实 `listen()` 注册成功，从而真正驱动 App 的事件处理链路——不再只断言源码字符串
 - **Rust 单测**：161 个用例全绿（本轮无 Rust 改动，回归确认）
 - **类型检查**：`npx tsc --noEmit` 通过
-- **打包校验**：`npx tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第八节），安装包内含本轮全部修复
+- **打包校验**：`npx tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第九节），安装包内含本轮全部修复
 
 **第四轮修复**
 
 - **Rust 单测**：161 个用例全绿（第四轮新增 9 个：写入者按窗口识别 / 同文件多窗口互不吞事件 / 多写入者并存；标签栏条带命中 3 个几何用例；`snapshot_for_quit` 仅主窗口、晋升后重标 `main`、无状态空快照、标记默认关）
 - **前端单测**：180 个文件 / 3169 个用例全绿，其中新增 `v0.9.0-fixes-round4.test.tsx` 13 个回归用例（`source` 回声过滤 / TabBar 拖出分流 / `merge_tab_drop_target` IPC 接线 / `quit_app` 与 `finalize_session` 源码断言 / 退出前状态冲刷）
 - **类型检查**：`npx tsc --noEmit` 通过
-- **打包校验**：`npx tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第八节），安装包内含本轮全部修复
+- **打包校验**：`npx tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第九节），安装包内含本轮全部修复
 
 **第三轮修复**
 
 - **前端单测**：179 个文件 / 3156 个用例全绿，其中新增 `v0.9.0-fixes-round3.test.tsx` 17 个回归用例（拖出源区域三分支 / 标签拖出 → 移动到新窗口 / 临时标签不可投放 / forgetWindowState IPC / mergeOffer 前端接线 / Rust 侧 finalize 守卫源码断言）；另含用户提交 `689dcee` 带来的序列化往返 51 个用例
 - **Rust 单测**：152 个用例全绿（新增退出快照收录中途已关窗口、合并除名 + 迟到上报忽略、槽位复用清除除名、空窗口剔除，及 `merge_detect` 几何 6 个用例）
 - **类型检查**：`npx tsc --noEmit` 通过
-- **打包校验**：`npx tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第八节），安装包内含本轮全部修复
+- **打包校验**：`npx tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第九节），安装包内含本轮全部修复
 
 **第二轮修复**
 
 - **前端单测**：177 个文件 / 3088 个用例全绿，其中新增 `v0.9.0-fixes-round2.test.tsx` 23 个回归用例（自身写盘指纹 / 恢复期时机 / 会话裁剪与回退 / 设置项样式）
 - **Rust 单测**：142 个用例全绿（新增主窗口状态保留、最后窗口快照、抑制窗口竞态 6 个用例）
 - **类型检查**：`npx tsc --noEmit` 通过
-- **打包校验**：`npx tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第八节），安装包内含本轮全部修复
+- **打包校验**：`npx tauri build` 成功产出 MSI + NSIS；产物 SHA256 已写入 `SHA256SUMS.txt`（见第九节），安装包内含本轮全部修复
 
 **第一轮交付（基线）**
 
@@ -245,7 +290,7 @@
 
 ---
 
-## 十、升级提示
+## 十一、升级提示
 
 - 从 v0.8.5 / v0.9.0（第一、二轮）覆盖安装即可，无需卸载；设置、最近打开、收藏夹、临时标签全部保留。
 - 若第一轮版本曾留下残缺的 `session.json`（主窗口条目缺失），第二轮版本会自动回退到最近文件恢复并在下次关闭时写回，无需手动删除。

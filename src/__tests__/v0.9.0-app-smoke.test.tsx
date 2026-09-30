@@ -9,7 +9,7 @@
  */
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, act } from "@testing-library/react";
 
 /**
  * `invoke` 桩：返回值随命令变化，故用宽松签名（`Promise<unknown>`），
@@ -100,6 +100,22 @@ import App from "../App";
 import { __setWindowLabelForTest } from "../utils/windowLabel";
 import { useEditorStore } from "../stores/useEditorStore";
 
+/**
+ * 让 App 启动期的动态 import / 事件注册链在**模块 mock 仍然生效时**全部结算。
+ *
+ * App 的每个 useEffect 都会 `await import("@tauri-apps/api/event")` 后注册监听；
+ * 这些 Promise 若在测试结束后才 resolve，就会落到**真实** Tauri 模块上，
+ * 抛 `transformCallback is not a function` 的 unhandled rejection，
+ * 使 `vitest run` 即使全部用例通过也以非 0 退出（v0.9.0 review 修复）。
+ */
+async function flushStartupMicrotasks(): Promise<void> {
+  for (let i = 0; i < 12; i++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, i < 4 ? 0 : 5));
+    });
+  }
+}
+
 beforeEach(() => {
   localStorage.clear();
   invokeMock.mockClear();
@@ -107,9 +123,55 @@ beforeEach(() => {
   __setWindowLabelForTest(null);
 });
 
-afterEach(() => {
+/**
+ * 完整 Tauri 运行时桩：真实 `@tauri-apps/api/event` 的 listen/unlisten 会读写
+ * `window.__TAURI_INTERNALS__`（transformCallback / invoke / unregisterListener），
+ * 桩不完整时会在挂载/卸载期间抛 unhandled rejection（v0.9.0 review 修复）。
+ */
+function installTauriStub(label: string): void {
+  (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label } },
+    transformCallback: () => 0,
+    invoke: async () => 0,
+    unregisterListener: async () => {},
+    convertFileSrc: (p: string) => p,
+    plugins: {},
+  };
+}
+
+function removeTauriStub(): void {
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+}
+
+/**
+ * 真实 `@tauri-apps/api/event` 的 unlisten 依赖
+ * `window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener`（由 Tauri 事件插件注入）。
+ * jsdom 下该全局缺失 → 每次卸载期 unlisten 都抛 unhandled rejection，
+ * 使 `vitest run` 即使全部用例通过也以非 0 退出（v0.9.0 review 修复）。
+ */
+beforeAll(() => {
+  (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener: () => {},
+  };
+  // jsdom 未实现 IntersectionObserver；大纲组件在其 rAF 回调里构造，缺失会抛
+  // ReferenceError（同样是「用例通过但 unhandled error」的来源）
+  (window as unknown as { IntersectionObserver: unknown }).IntersectionObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  };
+});
+
+afterEach(async () => {
+  // 先让启动期的动态 import / 事件注册结算完（此时桩仍在），再卸载、再删桩
+  await flushStartupMicrotasks();
   cleanup();
+  await flushStartupMicrotasks();
   __setWindowLabelForTest(null);
+  removeTauriStub();
   vi.restoreAllMocks();
 });
 
@@ -122,10 +184,8 @@ describe("v0.9.0 冒烟：App 挂载", () => {
 
   it("主窗口挂载后调用一次窗口引导（take_window_boot）", async () => {
     // jsdom 下 isTauri() 为 false → windowService 走非 Tauri 短路，不 invoke。
-    // 这里注入 __TAURI_INTERNALS__ 让 Tauri 分支生效。
-    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
-      metadata: { currentWebview: { label: "main" } },
-    };
+    // 这里注入 __TAURI_INTERNALS__ 让 Tauri 分支生效（桩必须完整，见 installTauriStub）。
+    installTauriStub("main");
     __setWindowLabelForTest(null);
     render(<App />);
     await waitFor(() =>
@@ -136,13 +196,10 @@ describe("v0.9.0 冒烟：App 挂载", () => {
       () => expect(invokeMock.mock.calls.map(([c]) => c)).toContain("sync_window_state"),
       { timeout: 2000 },
     );
-    delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it("窗口引导返回 fresh 时清理该槽位残留（不清理 main）", async () => {
-    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
-      metadata: { currentWebview: { label: "sec-1" } },
-    };
+    installTauriStub("sec-1");
     __setWindowLabelForTest("sec-1");
     localStorage.setItem("lightmd-untitled-tabs-sec-1", JSON.stringify([{ id: "untitled-1", name: "x", content: "stale" }]));
     invokeMock.mockImplementation(async (cmd: string) => {
@@ -158,13 +215,10 @@ describe("v0.9.0 冒烟：App 挂载", () => {
     await waitFor(() =>
       expect(localStorage.getItem("lightmd-untitled-tabs-sec-1")).toBeNull(),
     );
-    delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it("窗口引导返回 files 时打开该文件（右键「在新窗口中打开」链路）", async () => {
-    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
-      metadata: { currentWebview: { label: "sec-1" } },
-    };
+    installTauriStub("sec-1");
     __setWindowLabelForTest("sec-1");
     invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "take_window_boot") {
@@ -189,7 +243,6 @@ describe("v0.9.0 冒烟：App 挂载", () => {
     await waitFor(() =>
       expect(useEditorStore.getState().openTabs.some((tb) => tb.path === "D:/docs/new.md")).toBe(true),
     );
-    delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it("辅助窗口不继承主窗口 scratch 内容（初始为空）", () => {

@@ -7,15 +7,19 @@
  * 修复语义：
  * - "skip"：长按产生的 repeat 事件，完全忽略（不刷新时间戳，
  *   避免长按结束后紧接着的单击被误判为双击）
- * - "toggle"：真实的 300ms 内第二次按下，触发模式切换
+ * - "toggle"：真实的阈值内第二次按下，触发模式切换
  * - "record"：第一次按下，记录时间戳
  */
 
 /** 双击判定三态结果 */
 export type DoublePressResult = "skip" | "toggle" | "record";
 
-/** 双击阈值（ms），与 App.tsx 的 DOUBLE_CLICK_THRESHOLD 一致 */
-export const DOUBLE_PRESS_THRESHOLD = 300;
+/**
+ * 双击阈值（ms）——**单源**：App.tsx 双击 Ctrl（切阅读/编辑）与双击 Shift（切分屏）
+ * 都从这里取，不要再各自定义常量。
+ * v0.9.0 D2：300 → 220（防与编辑中快速复制粘贴/连续 Shift 键入误触）。
+ */
+export const DOUBLE_PRESS_THRESHOLD = 220;
 
 /**
  * 判定一次修饰键按下应如何处理（纯函数）。

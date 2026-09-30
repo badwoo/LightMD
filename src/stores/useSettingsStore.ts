@@ -5,12 +5,14 @@ import { _setCurrentLanguage } from "../i18n/state";
 import type { Language } from "../i18n/types";
 // v0.8.4 需求7：文件树排序模式（纯类型导入，运行时零依赖）
 import type { SortMode } from "../utils/fileSort";
-// v0.9.0 自定义快捷键：冲突检测/归一化（core 不反向依赖本 store，无循环）
+// v0.9.0 自定义快捷键：冲突检测/归一化/持久化清洗（core 不反向依赖本 store，无循环）
 import {
+  findResetCollision,
   findShortcutConflict,
+  getShortcutDef,
   normalizeCombo,
+  sanitizeShortcutOverrides,
   setShortcutOverrides,
-  SHORTCUT_DEFS,
 } from "../core/shortcuts";
 
 /**
@@ -258,8 +260,9 @@ interface SettingsState {
 
   /** v0.9.0：设置单项快捷键（冲突返回 false，不写入） */
   setShortcut: (id: string, combo: string) => boolean;
-  /** v0.9.0：恢复单项默认键位（删除覆盖项） */
-  resetShortcut: (id: string) => void;
+  /** v0.9.0：恢复单项默认键位（删除覆盖项）。
+   * 若该默认键位已被别的条目改绑占用，则拒绝恢复并返回 false（防产生同键位死绑定）。 */
+  resetShortcut: (id: string) => boolean;
   /** v0.9.0：恢复全部默认键位（清空覆盖表） */
   resetAllShortcuts: () => void;
 
@@ -342,19 +345,29 @@ export function migrateSettings(persisted: unknown, version: number): Partial<Se
     if (p.loadLastFolderOnStartup === false) p.loadLastFolderOnStartup = true;
     if (p.loadLastFolderCount === 1) p.loadLastFolderCount = 5;
   }
-  // v0.9.0（version < 4）：自定义快捷键覆盖表。缺字段/非法类型一律归一为 {}，
-  // 并过滤掉不在 SHORTCUT_DEFS 登记的 id（防手改 localStorage 注入垃圾键）
-  if (!p.shortcuts || typeof p.shortcuts !== "object" || Array.isArray(p.shortcuts)) {
-    p.shortcuts = {};
-  } else {
-    const validIds = new Set(SHORTCUT_DEFS.map((d) => d.id));
-    const cleaned: Record<string, string> = {};
-    for (const [id, combo] of Object.entries(p.shortcuts as Record<string, unknown>)) {
-      if (validIds.has(id) && typeof combo === "string" && combo) cleaned[id] = combo;
-    }
-    p.shortcuts = cleaned;
-  }
+  // v0.9.0（version < 4）：自定义快捷键覆盖表。缺字段/非法类型一律归一为 {}；
+  // 其余脏数据（未登记 id、非法键位、保留占用、互相冲突、与默认值相同的冗余覆盖）
+  // 统一交给 sanitizeShortcutOverrides 清洗——见 core/shortcuts.ts
+  p.shortcuts = sanitizeShortcutOverrides(p.shortcuts);
   return p;
+}
+
+/**
+ * v0.9.0：两份快捷键覆盖表是否等价（顺序无关）。
+ * 用于 persist.merge —— 清洗后内容未变时保留原对象引用，
+ * 避免每次 rehydrate 都产生新对象而触发无意义的跨窗广播。
+ */
+function sameShortcutMap(
+  a: unknown,
+  b: Record<string, string>,
+): boolean {
+  if (!a || typeof a !== "object" || Array.isArray(a)) return false;
+  const entries = Object.entries(a as Record<string, unknown>);
+  if (entries.length !== Object.keys(b).length) return false;
+  for (const [id, combo] of entries) {
+    if (b[id] !== combo) return false;
+  }
+  return true;
 }
 
 /**
@@ -426,22 +439,34 @@ export const useSettingsStore = create<SettingsState>()(
       // v0.9.0 自定义快捷键：默认无覆盖（全部走 SHORTCUT_DEFS 默认值）
       shortcuts: {},
 
-      // v0.9.0 自定义快捷键：归一化 + 查重后写入；冲突/非法返回 false
+      // v0.9.0 自定义快捷键：归一化 + 查重后写入；冲突/非法返回 false。
+      // 录入与默认值相同的键位 = 用户想「恢复默认」，直接删除覆盖项，
+      // 保持覆盖表只存「与默认值不同」的条目（否则会多出无效覆盖与恢复图标）。
       setShortcut: (id, combo) => {
-        const def = SHORTCUT_DEFS.find((d) => d.id === id);
+        const def = getShortcutDef(id);
         if (!def) return false;
         if (findShortcutConflict(id, combo) !== null) return false;
         const normalized = normalizeCombo(combo);
-        set((s) => ({ shortcuts: { ...s.shortcuts, [id]: normalized } }));
+        set((s) => {
+          const next = { ...s.shortcuts };
+          if (normalized === normalizeCombo(def.defaultCombo)) delete next[id];
+          else next[id] = normalized;
+          return { shortcuts: next };
+        });
         return true;
       },
-      resetShortcut: (id) =>
+      resetShortcut: (id) => {
+        // 恢复默认 = 删覆盖项回落默认值；若默认键位已被别的条目占用则拒绝，
+        // 否则会产生两条同键位绑定（表内靠前者独占，另一条永远按不出来）
+        if (findResetCollision(id)) return false;
         set((s) => {
           if (!(id in s.shortcuts)) return s;
           const next = { ...s.shortcuts };
           delete next[id];
           return { shortcuts: next };
-        }),
+        });
+        return true;
+      },
       resetAllShortcuts: () => set({ shortcuts: {} }),
 
       // v0.9.0：恢复其他窗口开关
@@ -552,9 +577,20 @@ export const useSettingsStore = create<SettingsState>()(
         } else {
           mergedTranslate.aiAssistBubbleHiddenTasks = [];
         }
+        // v0.9.0 自定义快捷键：持久化数据一律经清洗后再合并。
+        // migrate 只在 version<4 时被 zustand 调用，已是 v4 的脏数据（手改 localStorage /
+        // 旧版本写坏 / 多窗口并发）会走 merge —— 这里必须同样过滤，
+        // 否则 {"format.bold":"B"} 之类非法覆盖会让每个 b 键都被当成快捷键吞掉。
+        // 内容未变时保留原引用：避免 rehydrate 产生新对象触发无意义的跨窗广播。
+        const rawShortcuts = (p as { shortcuts?: unknown }).shortcuts;
+        const cleanedShortcuts = sanitizeShortcutOverrides(rawShortcuts);
+        const shortcuts = sameShortcutMap(rawShortcuts, cleanedShortcuts)
+          ? (rawShortcuts as Record<string, string>)
+          : cleanedShortcuts;
         return {
           ...current,
           ...p,
+          shortcuts,
           aiEnabled: legacyAiEnabled ? true : (p.aiEnabled ?? current.aiEnabled),
           translate: mergedTranslate,
           // v0.7.5 功能6：窗口记忆字段缺失/非法时回退 null（回落默认居中）

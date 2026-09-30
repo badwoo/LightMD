@@ -2,13 +2,13 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.8.5**
+**Current Version: v0.9.0**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
 ## ✨ Why LightMD?
 
-LightMD is a **lightweight Markdown editor** purpose-built for Windows, combining the simplicity of traditional Markdown with the intuitiveness of modern WYSIWYG editors. With a tiny ~7MB installer and millisecond-fast startup, it delivers a deeply integrated Windows desktop experience.
+LightMD is a **lightweight Markdown editor** purpose-built for Windows, combining the simplicity of traditional Markdown with the intuitiveness of modern WYSIWYG editors. With a tiny ~9MB installer and millisecond-fast startup, it delivers a deeply integrated Windows desktop experience.
 
 ## 🎯 Core Features
 
@@ -118,7 +118,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 | **File** | `Ctrl+N` | New scratch (untitled) tab — writes to disk only on first save |
 | | `Ctrl+O` | Open file |
 | | `Ctrl+S` | Save |
-| | `Ctrl+Shift+S` | Save as (strikethrough inside editor, see below) |
+| | `Ctrl+Shift+S` | Save as |
 | | `Ctrl+Shift+E` | Open the export dialog |
 | **Edit** | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 | | `Ctrl+F` | Search |
@@ -131,7 +131,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 | | `Ctrl+Shift+M` | Block math `$$...$$` (0.2.0) |
 | | `Ctrl+1` ~ `Ctrl+6` | Set heading level H1 ~ H6 (0.2.0) |
 | | `Ctrl+0` | Remove heading (to paragraph) (0.2.0) |
-| **Format (Preview Mode / ProseMirror)** | `Ctrl+Shift+S` | Strikethrough (0.2.0) |
+| **Format (Preview Mode / ProseMirror)** | `Ctrl+Alt+S` | Strikethrough (unified with source mode in 0.9.0; the old `Ctrl+Shift+S` is gone) |
 | **Lists** | `Tab` | Increase indent |
 | | `Shift+Tab` | Decrease indent |
 | | `Ctrl+Shift+8` | Bullet list |
@@ -146,20 +146,26 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 | | `Ctrl+R` | Refresh the file tree (fallback when external changes are not synced, added in 0.8.4) |
 | **View** | `Ctrl+Shift+T` | Toggle theme |
 | | `Ctrl+Shift+O` | Toggle outline / syntax helper |
+| | `Ctrl+Shift+P` | Command palette |
+| | `Ctrl+Alt+←` / `Ctrl+Alt+→` | Collapse / expand the sidebar / outline (0.9.0) |
+| | `Ctrl+Shift+B` | Collapse / expand the tab bar (0.9.0) |
+| | `F11` | Full screen (0.9.0; the command palette entry is the mouse path) |
 | | `F8` | Focus mode |
 | | `F9` | Typewriter mode |
 | | `Ctrl+,` | Open settings |
-| **Mode** | Double `Ctrl` | Toggle preview / edit |
+| **Mode** | Double `Ctrl` | Toggle preview / edit (double-press threshold 220 ms as of 0.9.0) |
 | | Double `Shift` | Toggle split mode |
+
+> **Custom shortcuts (0.9.0)**: every customizable shortcut listed above is shown by category (File / Edit / Format / View / Tabs / Window / Insert) under **Settings → Editor → Customize Shortcuts**. Click an entry and press the new combination; conflicts report the current owner and are not written. Per-entry and global reset are supported, and the shortcut labels in the command palette, context menu and toolbar tooltips follow your changes (synced across windows). Reserved keys such as `F11`, the file-tree keys and editor behaviour keys are not customizable.
 
 ## 📥 Installation
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.8.5 installers:
+Visit the [Releases](../../releases) page to download the 0.9.0 installers:
 
-- **`LightMD_0.8.5_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.8.5_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.9.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.9.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -210,6 +216,40 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.9.0 (2026-09-30)
+
+**Peer multi-window + custom keyboard shortcuts** (baseline 0.8.5)
+
+**Multi-window**
+
+- **Peer windows (up to 8)** — `Ctrl+Shift+N` / the title-bar "Window" menu / the command palette create a window; each window owns its tab set, editor state, scroll progress and AI chat window, while theme, font, sidebar width, AI config, recent files and favourites sync live across all windows
+- **Open in a new window** — file-tree / sidebar context menu, tab "Move to New Window" (scratch tabs migrate with their content), `Ctrl+Alt+O`, and external double-click routing (current window / new window / ask, default current window)
+- **Title-bar "Window" menu** — dynamic window list with each window's tabs (unsaved dot), "New Window", "Close Window", "Merge into Main Window"
+- **Conflict detection** — opening a file already open with unsaved changes elsewhere offers read-only / force-edit / switch-to-that-window / cancel; read-only tabs show `[read-only]`
+- **External changes & deletion** — clean tabs reload automatically with a notice; dirty tabs are flagged and confirmed on save; deleting a file closes its tab
+- **Session restore** — windows, tabs, active tab and opened folders are restored precisely after a restart
+
+**Custom keyboard shortcuts**
+
+- **Settings → Editor → Customize Shortcuts** — 48 customizable commands grouped by File / Edit / Format / View / Tabs / Window / Insert, with search. Click an entry and press the new combination; `Esc` cancels and `Backspace` clears a single binding
+- **Conflict protection** — a conflict with another command or a reserved key reports "Already used by X" and is not written; letters/digits require `Ctrl` or `Alt` (`F1`~`F12` may be bound bare); system keys such as `Alt+F4` are accepted with a warning
+- **Restore** — per-entry ↺ restore (refused with the current owner if that default key is taken, which used to create a permanently unreachable duplicate) and "Restore All Defaults" with confirmation
+- **Immediate effect + cross-window sync** — shortcut labels in the command palette, context menu, title-bar window menu and toolbar tooltips follow your changes
+- **Reserved keys are not customizable** — `F11`, the file-tree keys, editor behaviour keys and clipboard shortcuts
+- **Companion features** — `Ctrl+Alt+←` / `Ctrl+Alt+→` sidebar & outline, `Ctrl+Shift+B` tab bar, `F11` full screen (also in the command palette), `Ctrl+Alt+T` table, `Ctrl+T` task list, `Ctrl+Shift+C` merge into main window
+- **Interaction changes** — the double-`Ctrl` / double-`Shift` threshold is now **220 ms** (was 300 ms); the file-tree "close temporary file" key is `Backspace` (was `Ctrl+2`); strikethrough in preview mode is now `Ctrl+Alt+S` (the old `Ctrl+Shift+S` is gone)
+
+**Code review fixes (round 6)**
+
+- Conflict messages no longer render stray braces (i18n placeholder syntax)
+- The shortcuts dialog now follows the active theme (it was unreadable in dark/night themes)
+- Restoring a single binding can no longer create a duplicate, unreachable shortcut
+- `Ctrl+Alt+←/→` and `Ctrl+Shift+B` now work while the editor has focus
+- Corrupted persisted shortcut tables are sanitized on both the migrate and merge paths
+- `AltGr` layouts no longer treat `AltGr+S` as `Ctrl+Alt+S`; non-Latin layouts keep `Ctrl+S` for save
+- `F11` uses the Tauri window API (the DOM Fullscreen API does not fullscreen the window under WebView2)
+- The editor context menu and command palette now relabel shortcuts immediately after a rebind
 
 ### v0.8.5 (2026-09-26)
 

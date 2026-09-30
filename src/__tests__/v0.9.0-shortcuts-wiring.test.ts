@@ -16,8 +16,14 @@ const read = (p: string) =>
   readFileSync(fileURLToPath(new URL(`../${p}`, import.meta.url)), "utf-8");
 
 describe("v0.9.0 自定义快捷键：源码接线", () => {
-  it("App.tsx：双击阈值 220ms（D2）", () => {
-    expect(read("App.tsx")).toContain("DOUBLE_CLICK_THRESHOLD = 220");
+  it("App.tsx：双击阈值取自 modeSwitch 单源常量（D2 = 220ms）", () => {
+    // v0.9.0 review：阈值此前在 App.tsx 与 utils/modeSwitch.ts 各存一份（220/300 不一致），
+    // 现在只保留 modeSwitch 的 DOUBLE_PRESS_THRESHOLD，App 直接导入
+    expect(read("utils/modeSwitch.ts")).toContain("DOUBLE_PRESS_THRESHOLD = 220");
+    const app = read("App.tsx");
+    expect(app).toContain("DOUBLE_PRESS_THRESHOLD");
+    expect(app).not.toContain("DOUBLE_CLICK_THRESHOLD");
+    expect(app).toContain("isShortcutOverridden");
   });
 
   it("App.tsx：全局 keydown 查生效键位表派发", () => {
@@ -26,8 +32,14 @@ describe("v0.9.0 自定义快捷键：源码接线", () => {
     expect(src).toContain('from "./core/shortcuts"');
   });
 
-  it("App.tsx：F11 全屏（🔒 保留键）已实现", () => {
+  it("App.tsx：F11 全屏（🔒 保留键）走 Tauri 窗口 API + DOM 回退", () => {
+    // v0.9.0 review：WebView2 下 DOM Fullscreen API 不会让系统窗口全屏（P8 探针结论），
+    // 改为优先 Tauri setFullscreen，非 Tauri 环境回退 DOM API
     expect(read("App.tsx")).toContain('"F11"');
+    expect(read("App.tsx")).toContain("toggleWindowFullscreen");
+    const util = read("utils/windowFullscreen.ts");
+    expect(util).toContain("setFullscreen");
+    expect(util).toContain("requestFullscreen");
   });
 
   it("FileTree.tsx：关闭临时文件等效键为 Backspace，Ctrl+2 分支已移除", () => {

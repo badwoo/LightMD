@@ -16,6 +16,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { useT } from "../../i18n";
 // v0.9.0 自定义快捷键：命令键位展示读生效键位表
 import { getShortcutLabel } from "../../core/shortcuts";
+import { useSettingsStore } from "../../stores/useSettingsStore";
 import {
   commands,
   searchCommands,
@@ -32,6 +33,9 @@ interface CommandPaletteProps {
 
 export function CommandPalette({ onClose }: CommandPaletteProps) {
   const t = useT();
+  // v0.9.0 自定义快捷键：订阅覆盖表——改键（含跨窗口广播）后，已打开的命令面板
+  // 键位展示立即跟随刷新（键位来自 core/shortcuts 模块级表，不订阅不会重渲染）
+  const shortcuts = useSettingsStore((s) => s.shortcuts);
   const [query, setQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -40,7 +44,7 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
   // 计算匹配的命令列表（按搜索结果排序）
   const matchedCommands = useMemo(() => {
     return searchCommands(query, t);
-  }, [query, t]);
+  }, [query, t, shortcuts]);
 
   // 按分组组织命令（保持搜索排序，仅用于分组显示）
   const groupedCommands = useMemo(() => {

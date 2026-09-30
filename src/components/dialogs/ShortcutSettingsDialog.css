@@ -1,6 +1,11 @@
 /* ShortcutSettingsDialog —— 自定义快捷键弹窗（v0.9.0）
  * 视觉规范对齐 Ardot 731114443999638：主蓝 #4B7CE8、正文 #2B2F36、
- * 标签灰 #8A919C、描边 #D9DDE3、键帽底 #F5F6F8、录制底 #EDF3FE。 */
+ * 标签灰 #8A919C、描边 #D9DDE3、键帽底 #F5F6F8、录制底 #EDF3FE。
+ *
+ * v0.9.0 review 修复：全部颜色改为**主题变量 + Ardot 回退值**。
+ * 此前硬编码 #2b2f36 等在 dark/night 主题下与 --bg-primary(#1e2028/#0f1b2d)
+ * 对比度约 1.2:1，弹窗正文（标题 + 48 条功能名）几乎不可见。
+ * 浅色主题下 var() 未定义时回退到原设计色，视觉零变化。 */
 
 .shortcut-settings-overlay {
   position: fixed;
@@ -14,7 +19,7 @@
 
 .shortcut-settings-dialog {
   background: var(--bg-primary, #fff);
-  color: #2b2f36;
+  color: var(--text-primary, #2b2f36);
   border-radius: 12px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
   width: 560px;
@@ -41,15 +46,15 @@
 .shortcut-settings-close {
   border: none;
   background: transparent;
-  color: #8a919c;
+  color: var(--text-secondary, #8a919c);
   font-size: 14px;
   cursor: pointer;
   padding: 4px 6px;
   border-radius: 6px;
 }
 .shortcut-settings-close:hover {
-  background: #f5f6f8;
-  color: #2b2f36;
+  background: var(--bg-hover, #f5f6f8);
+  color: var(--text-primary, #2b2f36);
 }
 
 .shortcut-settings-body {
@@ -63,23 +68,23 @@
   box-sizing: border-box;
   padding: 8px 12px;
   margin-bottom: 10px;
-  border: 1px solid #d9dde3;
+  border: 1px solid var(--border-color, #d9dde3);
   border-radius: 8px;
   font-size: 13px;
-  color: #2b2f36;
-  background: #fafbfc;
+  color: var(--text-primary, #2b2f36);
+  background: var(--bg-secondary, #fafbfc);
   outline: none;
 }
 .shortcut-settings-search:focus {
-  border-color: #4b7ce8;
-  background: #fff;
+  border-color: var(--accent-color, #4b7ce8);
+  background: var(--bg-primary, #fff);
 }
 
 .shortcut-settings-group h3 {
   margin: 10px 0 6px;
   font-size: 12px;
   font-weight: 600;
-  color: #8a919c;
+  color: var(--text-secondary, #8a919c);
   text-transform: none;
 }
 
@@ -93,16 +98,17 @@
   min-height: 32px;
 }
 .shortcut-settings-row:hover {
-  background: #f5f6f8;
+  background: var(--bg-hover, #f5f6f8);
 }
+/* 录制态：半透明主蓝（浅/深主题下都成立，不写死 #edf3fe） */
 .shortcut-settings-row.recording {
-  background: #edf3fe;
+  background: rgba(75, 124, 232, 0.12);
 }
 
 .shortcut-settings-label {
   flex: 1;
   font-size: 13px;
-  color: #2b2f36;
+  color: var(--text-primary, #2b2f36);
 }
 
 .shortcut-settings-keys {
@@ -118,13 +124,14 @@
   font-size: 11px;
   font-family: inherit;
   text-align: center;
-  color: #2b2f36;
-  background: #f5f6f8;
-  border: 1px solid #d9dde3;
+  color: var(--text-primary, #2b2f36);
+  background: var(--bg-secondary, #f5f6f8);
+  border: 1px solid var(--border-color, #d9dde3);
   border-bottom-width: 2px;
   border-radius: 5px;
   line-height: 16px;
 }
+/* 冲突键帽红描边（录制中显示的旧键位键帽 + 冲突提示共用） */
 .shortcut-keycap.conflict {
   border-color: #e05656;
   color: #e05656;
@@ -134,32 +141,38 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  background: #edf3fe;
-  border: 1px solid #4b7ce8;
-  color: #4b7ce8;
+  background: rgba(75, 124, 232, 0.12);
+  border: 1px solid var(--accent-color, #4b7ce8);
+  color: var(--accent-color, #4b7ce8);
   font-size: 12px;
   padding: 3px 10px;
   border-radius: 999px;
   white-space: nowrap;
 }
+/* 冲突时药丸红描边（录制中键帽被药丸替换，红描边落在药丸上） */
+.shortcut-settings-recording-pill.conflict {
+  border-color: #e05656;
+  color: #e05656;
+  background: rgba(224, 86, 86, 0.12);
+}
 
 .shortcut-settings-record-hint {
-  color: #8a919c;
+  color: var(--text-secondary, #8a919c);
   font-size: 11px;
 }
 
 .shortcut-settings-reset {
   border: none;
   background: transparent;
-  color: #8a919c;
+  color: var(--text-secondary, #8a919c);
   font-size: 14px;
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 6px;
 }
 .shortcut-settings-reset:hover {
-  color: #4b7ce8;
-  background: #edf3fe;
+  color: var(--accent-color, #4b7ce8);
+  background: rgba(75, 124, 232, 0.12);
 }
 
 .shortcut-settings-error {
@@ -167,8 +180,21 @@
   padding: 4px 10px;
   font-size: 12px;
   color: #e05656;
-  background: #fdf0f0;
+  background: rgba(224, 86, 86, 0.12);
   border-radius: 6px;
+}
+/* 系统级组合键：已写入，仅提示（黄条） */
+.shortcut-settings-error.warn {
+  color: #b7791f;
+  background: rgba(183, 121, 31, 0.14);
+}
+
+/* 搜索无结果空状态 */
+.shortcut-settings-empty {
+  padding: 22px 4px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary, #8a919c);
 }
 
 .shortcut-settings-footer {
@@ -176,35 +202,35 @@
   align-items: center;
   gap: 10px;
   padding: 12px 18px;
-  border-top: 1px solid #d9dde3;
+  border-top: 1px solid var(--border-color, #d9dde3);
 }
 
 .shortcut-settings-count {
   flex: 1;
   font-size: 12px;
-  color: #8a919c;
+  color: var(--text-secondary, #8a919c);
 }
 
 .shortcut-settings-btn {
   padding: 6px 14px;
   font-size: 13px;
   border-radius: 8px;
-  border: 1px solid #d9dde3;
-  background: #fff;
-  color: #2b2f36;
+  border: 1px solid var(--border-color, #d9dde3);
+  background: var(--bg-primary, #fff);
+  color: var(--text-primary, #2b2f36);
   cursor: pointer;
 }
 .shortcut-settings-btn:hover {
-  border-color: #4b7ce8;
-  color: #4b7ce8;
+  border-color: var(--accent-color, #4b7ce8);
+  color: var(--accent-color, #4b7ce8);
 }
 .shortcut-settings-btn.primary {
-  background: #4b7ce8;
-  border-color: #4b7ce8;
+  background: var(--accent-color, #4b7ce8);
+  border-color: var(--accent-color, #4b7ce8);
   color: #fff;
 }
 .shortcut-settings-btn.primary:hover {
-  background: #3d6bd6;
+  background: var(--accent-hover, #3d6bd6);
   color: #fff;
 }
 
@@ -216,9 +242,9 @@
   padding: 6px 16px;
   font-size: 13px;
   border-radius: 8px;
-  border: 1px solid #d9dde3;
-  background: #f5f8fd;
-  color: #4b7ce8;
+  border: 1px solid var(--border-color, #d9dde3);
+  background: rgba(75, 124, 232, 0.08);
+  color: var(--accent-color, #4b7ce8);
   cursor: pointer;
 }
 .settings-shortcuts-entry::after {
@@ -227,6 +253,6 @@
   line-height: 1;
 }
 .settings-shortcuts-entry:hover {
-  border-color: #4b7ce8;
-  background: #edf3fe;
+  border-color: var(--accent-color, #4b7ce8);
+  background: rgba(75, 124, 232, 0.14);
 }

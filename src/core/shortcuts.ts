@@ -56,9 +56,11 @@ export function normalizeCombo(combo: string): string {
       MODIFIER_ORDER.indexOf(a as (typeof MODIFIER_ORDER)[number]) -
       MODIFIER_ORDER.indexOf(b as (typeof MODIFIER_ORDER)[number]),
   );
-  // 单字符键（字母/符号）大写归一：Ctrl+n 与 Ctrl+N 视为同一绑定
+  // 单字符键（字母/符号）大写归一：Ctrl+n 与 Ctrl+N 视为同一绑定；
+  // 功能键同样大小写归一（"f4"/"alt+f4" 与 "F4"/"Alt+F4" 是同一条，否则
+  // 保留清单和冲突检测会被手写/外部来源的小写写法绕过）
   const key = keys
-    .map((k) => (k.length === 1 ? k.toUpperCase() : k))
+    .map((k) => (k.length === 1 || /^f([1-9]|1[0-2])$/i.test(k) ? k.toUpperCase() : k))
     .sort()
     .join("+");
   return [...mods, key].filter(Boolean).join("+");
@@ -157,6 +159,10 @@ export const SHORTCUT_DEFS: readonly ShortcutDef[] = Object.freeze([
   { id: "window.quit", category: "window", labelKey: "command.window.quit", defaultCombo: "Ctrl+Q", scope: "global", command: "window.quit" },
   { id: "window.mergeToPrimary", category: "window", labelKey: "command.window.mergeToPrimary", defaultCombo: "Ctrl+Shift+C", scope: "global", command: "window.mergeToPrimary" },
   // ─── 插入（v0.9.0 转正，命令面板既有命令补默认键位） ───
+  // 说明：基线表把这两条标为「富文本+源码」作用域。实现上它们是**命令面板既有命令**，
+  // 唯一派发路径是 App.tsx 的 lightmd:command 路由器（INSERT 类命令由 COMMAND_SYNTAX
+  // 处理），因此这里只能登记为 global 才能同时覆盖源码/富文本两种编辑面；
+  // 为消除副作用，App.tsx 侧已加「仅可编辑面才派发」守卫（只读标签不再被写入）。
   { id: "insert.table", category: "insert", labelKey: "command.insert.table", defaultCombo: "Ctrl+Alt+T", scope: "global", command: "insert.table" },
   { id: "insert.taskList", category: "insert", labelKey: "command.insert.taskList", defaultCombo: "Ctrl+T", scope: "global", command: "insert.taskList" },
 ]);
@@ -169,19 +175,68 @@ export const RESERVED_COMBOS: readonly string[] = Object.freeze([
   "Backspace", // 文件树关闭临时文件（v0.9.0 由 Ctrl+2 改来）
   "Ctrl+R", // 文件树刷新
   "Ctrl+C", "Ctrl+X", "Ctrl+V", // 文本剪贴板 + 侧栏文件复制/粘贴
-  "Esc",
+  "Esc", "Escape", // 各对话框取消/关闭（e.key 实际值为 "Escape"，两种写法都登记）
   "Enter", "Shift+Enter",
   "Tab", "Shift+Tab",
   "Alt+ArrowUp", "Alt+ArrowDown", // PM 移动块
+  // ── 编辑器/浏览器原生行为键（不在静态 keymap，而在 PM baseKeymap 与原生编辑上）──
+  // 用户若把这些绑成自定义键，会「抢掉」选区/词跳转/删词等原生行为（v0.9.0 review 补充）
+  "Ctrl+A", // PM baseKeymap: selectAll
+  "Ctrl+Enter", // PM baseKeymap: exitCode
+  "Ctrl+Backspace", "Ctrl+Delete", // PM baseKeymap / 原生删词
+  "Ctrl+ArrowLeft", "Ctrl+ArrowRight", // 原生按词跳转（P7 关注的正是这类键）
+  "Ctrl+Home", "Ctrl+End",
 ]);
+
+/** 浏览器/系统级组合键：**允许绑定但提示可能被系统拦截**（计划 §2.3 冲突策略第 3 行）。
+ * 这些键在 WebView 里未必到得了页面，故不做硬拒绝，只在录入成功后给出黄色提示。 */
+export const SYSTEM_COMBOS: readonly string[] = Object.freeze([
+  "Alt+F4", "Alt+Tab", "Ctrl+Alt+Delete", "Ctrl+Shift+Esc",
+  "Meta+Tab", "Meta+Space", "Meta+D", "Meta+L",
+]);
+
+/** 是否为系统级组合键（单纯提示，不阻止写入） */
+export function isSystemCombo(combo: string): boolean {
+  const norm = normalizeCombo(combo);
+  return SYSTEM_COMBOS.some((c) => normalizeCombo(c) === norm);
+}
 
 // ─── 运行时（用户自定义覆盖） ─────────────────────────
 
 /** 用户自定义覆盖表：id → 归一化键位。由 useSettingsStore 订阅注入。 */
 let overrides: Record<string, string> = {};
+/** 上一次注入的引用，避免 store 任意字段变化都重建索引 */
+let lastOverrides: Record<string, string> | undefined;
+
+/** id → def 索引（避免展示点每次渲染线性查找） */
+const DEF_BY_ID: Map<string, ShortcutDef> = new Map(SHORTCUT_DEFS.map((d) => [d.id, d]));
+
+/** 归一化生效键位 → defs（同键位多 def 时保持 SHORTCUT_DEFS 顺序）。
+ * 注意：这是 keydown 热路径（每键一次），必须 O(1)；故用索引而非线性归一化比较。 */
+let comboIndex: Map<string, ShortcutDef[]> | null = null;
+
+function rebuildComboIndex(): void {
+  const idx = new Map<string, ShortcutDef[]>();
+  for (const def of SHORTCUT_DEFS) {
+    const combo = normalizeCombo(effectiveCombo(def));
+    const list = idx.get(combo);
+    if (list) list.push(def);
+    else idx.set(combo, [def]);
+  }
+  comboIndex = idx;
+}
+
+function getComboIndex(): Map<string, ShortcutDef[]> {
+  if (!comboIndex) rebuildComboIndex();
+  return comboIndex as Map<string, ShortcutDef[]>;
+}
 
 export function setShortcutOverrides(o: Record<string, string> | undefined): void {
-  overrides = o && typeof o === "object" ? o : {};
+  const next = o && typeof o === "object" ? o : {};
+  if (next === lastOverrides) return; // 引用未变：索引无需重建
+  lastOverrides = next;
+  overrides = next;
+  rebuildComboIndex();
 }
 
 /** 生效键位 = 用户覆盖 ?? 默认值 */
@@ -189,10 +244,60 @@ export function effectiveCombo(def: ShortcutDef): string {
   return overrides[def.id] ?? def.defaultCombo;
 }
 
-/** 展示用生效键位（未登记 id 返回 undefined；供命令面板/菜单等展示点动态读取） */
+/** 按 id 取条目（未登记返回 undefined） */
+export function getShortcutDef(id: string): ShortcutDef | undefined {
+  return DEF_BY_ID.get(id);
+}
+
+/** 键名展示美化：方向键用箭头符号（与基线表「Ctrl+Alt+←」写法一致）。 */
+const DISPLAY_KEY: Record<string, string> = {
+  ArrowLeft: "←", ArrowRight: "→", ArrowUp: "↑", ArrowDown: "↓",
+  Escape: "Esc", Space: "Space", Backquote: "`", Plus: "+",
+};
+
+export function formatComboForDisplay(combo: string): string {
+  if (!combo) return combo;
+  return combo
+    .split("+")
+    .map((part) => DISPLAY_KEY[part] ?? part)
+    .join("+");
+}
+
+/** 展示用生效键位（未登记 id 回退到覆盖表；供命令面板/菜单/工具栏 tooltip 动态读取） */
 export function getShortcutLabel(id: string): string | undefined {
-  const def = SHORTCUT_DEFS.find((d) => d.id === id);
-  return def ? effectiveCombo(def) : overrides[id];
+  const def = DEF_BY_ID.get(id);
+  if (def) return formatComboForDisplay(effectiveCombo(def));
+  const override = overrides[id];
+  return override ? formatComboForDisplay(override) : undefined;
+}
+
+/** 该条目是否被用户改绑过。
+ *
+ * 用于 editableGate 的**条件门控**：计划 P7 的原意是「用户把折叠键改回 Ctrl+← 类
+ * 编辑器原生键后，不要吞掉词跳转」。默认键位（Ctrl+Alt+←/→、Ctrl+Shift+B）本身
+ * 与编辑器原生行为无冲突，若无条件门控，编辑器一有焦点这三个功能就整体失效。 */
+export function isShortcutOverridden(id: string): boolean {
+  return overrides[id] !== undefined;
+}
+
+/** 恢复单项默认键位是否会与别的条目撞车。
+ *
+ * `setShortcut` 会拦住冲突写入，但 `resetShortcut` 是「删掉覆盖项、回落到默认值」——
+ * 若那个默认键位已被别的条目改绑占用（先 A→Ctrl+I，再 B→Ctrl+Shift+I，再恢复 A），
+ * 就会产生两条同键位绑定：表内靠前的条目独占该键，另一条永远按不出来。
+ * 返回占用者；null 表示可以安全恢复。
+ */
+export function findResetCollision(id: string): { id: string; combo: string } | null {
+  const def = DEF_BY_ID.get(id);
+  if (!def) return null;
+  const target = normalizeCombo(def.defaultCombo);
+  for (const other of SHORTCUT_DEFS) {
+    if (other.id === id) continue;
+    if (normalizeCombo(effectiveCombo(other)) === target) {
+      return { id: other.id, combo: effectiveCombo(other) };
+    }
+  }
+  return null;
 }
 
 // ─── 事件组合键解析 ───────────────────────────────────
@@ -205,16 +310,42 @@ const CODE_KEY_FALLBACK: Record<string, string> = {
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
 
-/** 从键盘事件取主键名；修饰键自身按下返回 null（不构成组合） */
+/** 规范修饰键名集合（用于识别「只剩修饰键」的非法绑定） */
+const MODIFIER_SET: ReadonlySet<string> = new Set<string>(MODIFIER_ORDER);
+
+/** 单字符 ASCII 字母/数字（这类 e.key 可信；其余一律以 e.code 还原物理键） */
+const ASCII_ALNUM = /^[A-Za-z0-9]$/;
+
+/** e.code → 键名（KeyA→A / Digit8→8 / 标点表） */
+function codeKeyName(code: string): string | null {
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return letter[1];
+  const digit = /^Digit([0-9])$/.exec(code);
+  if (digit) return digit[1];
+  return CODE_KEY_FALLBACK[code] ?? null;
+}
+
+/** 从键盘事件取主键名；修饰键自身按下返回 null（不构成组合）。
+ *
+ * 带修饰键时 `e.key` 不总是可信：Shift+8 产出 "*"、AltGr（右 Alt = Ctrl+Alt）
+ * 在德语/波兰语等布局产出第三层字符（ß / ś），俄语等非拉丁布局产出西里尔字母。
+ * 这些情况下以 `e.code` 还原物理键，保证 Ctrl+Alt+S(T/O/V/←/→) 等默认键位
+ * 在非美式布局下同样可用；`e.key` 是 ASCII 字母/数字时仍沿用（尊重 AZERTY 等
+ * 字母重排布局，不把用户按的 A 记成 Q）。
+ */
 function eventKeyName(e: {
   key: string; code?: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean;
+  getModifierState?: (k: string) => boolean;
 }): string | null {
   if (MODIFIER_KEYS.has(e.key)) return null;
+  // AltGr（右 Alt / 布局第三层）：**绝不参与快捷键匹配**。
+  // Windows 把 AltGr 报成 ctrlKey+altKey，若继续匹配，德语 AltGr+S("ß")、
+  // 波兰语 AltGr+O("ó") 会被当成 Ctrl+Alt+S/O——既吞掉用户正在输入的字符，
+  // 又误触「删除线」「打开到新窗口」。AltGr 布局下 Ctrl+Alt+X 类键位需用户改绑。
+  if (typeof e.getModifierState === "function" && e.getModifierState("AltGraph")) return null;
   if (e.ctrlKey || e.altKey || e.metaKey) {
-    const digit = /^Digit([0-9])$/.exec(e.code || "");
-    if (digit) return digit[1];
-    const fallback = CODE_KEY_FALLBACK[e.code || ""];
-    if (fallback) return fallback;
+    const byCode = codeKeyName(e.code || "");
+    if (byCode && !ASCII_ALNUM.test(e.key)) return byCode;
   }
   return e.key === " " ? "Space" : e.key;
 }
@@ -223,14 +354,18 @@ function eventKeyName(e: {
  * Ctrl 与 Meta 等价（Windows Ctrl / macOS Cmd，与 PM "Mod-" 语义一致）。 */
 export function comboFromEvent(e: {
   key: string; code?: string; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean;
+  getModifierState?: (k: string) => boolean;
 }): string | null {
   const name = eventKeyName(e);
   if (!name) return null;
+  // "+" 键不能用字面量：normalizeCombo 以 "+" 分隔，(NumpadAdd / Shift+=) 会产出
+  // "Ctrl+Shift++"，归一化后变成修饰键组合 "Ctrl+Shift"，成为永远触发不了的空绑定。
+  const key = name === "+" ? "Plus" : name;
   const mods: string[] = [];
   if (e.ctrlKey || e.metaKey) mods.push("Ctrl");
   if (e.altKey) mods.push("Alt");
   if (e.shiftKey) mods.push("Shift");
-  return [...mods, name.length === 1 ? name.toUpperCase() : name].join("+");
+  return [...mods, key.length === 1 ? key.toUpperCase() : key].join("+");
 }
 
 // ─── 匹配与冲突检测 ───────────────────────────────────
@@ -251,17 +386,20 @@ function scopeMatches(defScope: ShortcutScope, kind: ScopeKind): boolean {
   }
 }
 
-/** 按生效表匹配键盘事件（完全相等匹配，非「至少包含」——Ctrl+S 与 Ctrl+Alt+S 互不误触） */
+/** 按生效表匹配键盘事件（完全相等匹配，非「至少包含」——Ctrl+S 与 Ctrl+Alt+S 互不误触）。
+ *
+ * 走归一化键位索引（O(1)）：keydown 是热路径，每键都要查一次，
+ * 不能在 48 条默认表上做线性 normalizeCombo 比较。 */
 export function matchShortcut(
   e: { key: string; code?: string; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean },
   kinds: ScopeKind[],
 ): ShortcutDef | undefined {
   const combo = comboFromEvent(e);
   if (!combo) return undefined;
-  const norm = normalizeCombo(combo);
-  for (const def of SHORTCUT_DEFS) {
-    if (!kinds.some((k) => scopeMatches(def.scope, k))) continue;
-    if (normalizeCombo(effectiveCombo(def)) === norm) return def;
+  const candidates = getComboIndex().get(normalizeCombo(combo));
+  if (!candidates) return undefined;
+  for (const def of candidates) {
+    if (kinds.some((k) => scopeMatches(def.scope, k))) return def;
   }
   return undefined;
 }
@@ -269,12 +407,15 @@ export function matchShortcut(
 /**
  * D5 录入校验：仅 F1~F12 可裸绑；字母/数字/符号必须带 Ctrl 或 Alt（Meta 亦计入）。
  * Shift 单独不构成有效修饰——Shift+t ≡ 输入大写 T，会吞正常输入。
+ * 同时拒绝「只剩修饰键」的空绑定（如 "Ctrl+Shift"——键名被 "+" 分隔吃掉的产物），
+ * 这类绑定能存进表但永远触发不了。
  */
 export function isLegalCombo(combo: string): boolean {
   const norm = normalizeCombo(combo);
   if (!norm) return false;
   const parts = norm.split("+");
   const key = parts[parts.length - 1];
+  if (!key || MODIFIER_SET.has(key)) return false;
   const hasQualifier = parts.slice(0, -1).some((m) => m === "Ctrl" || m === "Alt" || m === "Meta");
   if (hasQualifier) return true;
   return /^F([1-9]|1[0-2])$/.test(key);
@@ -311,4 +452,38 @@ export function findDuplicateCombos(): string[] {
     seen.add(c);
   }
   return [...dup];
+}
+
+/**
+ * 清洗**持久化**的覆盖表（migrateSettings / 手改 localStorage 的防线）。
+ *
+ * `setShortcut` 只在写入时查重，无法约束已经落盘的脏数据（旧版本写坏、
+ * 用户手改 localStorage、两个窗口并发写同一 key）。这里按 SHORTCUT_DEFS
+ * 顺序逐条重放「落盘前本该通过的校验」：
+ * 未登记 id / 非字符串 / 非法键位（D5）/ 保留占用 / 与他人冲突 → 丢弃；
+ * 与自身默认值相同 → 视为未自定义（不写入覆盖表）。
+ * 结果与「按顺序调用 setShortcut」等价，保证生效表不会出现两个条目同键位。
+ */
+export function sanitizeShortcutOverrides(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const input = raw as Record<string, unknown>;
+  const result: Record<string, string> = {};
+  /** 归一化键位 → 当前占用者 id（初始为各条默认键位） */
+  const taken = new Map<string, string>();
+  for (const def of SHORTCUT_DEFS) taken.set(normalizeCombo(def.defaultCombo), def.id);
+
+  for (const def of SHORTCUT_DEFS) {
+    const combo = input[def.id];
+    if (typeof combo !== "string" || !combo) continue;
+    const norm = normalizeCombo(combo);
+    if (!norm || !isLegalCombo(norm)) continue;
+    if (RESERVED_COMBOS.some((c) => normalizeCombo(c) === norm)) continue;
+    if (norm === normalizeCombo(def.defaultCombo)) continue; // 与默认值相同：无需覆盖
+    const owner = taken.get(norm);
+    if (owner && owner !== def.id) continue; // 已被默认值或先应用的覆盖占用
+    taken.delete(normalizeCombo(def.defaultCombo)); // 让出自身默认键位
+    taken.set(norm, def.id);
+    result[def.id] = norm;
+  }
+  return result;
 }

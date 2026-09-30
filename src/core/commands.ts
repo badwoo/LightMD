@@ -399,6 +399,15 @@ export const commands: Command[] = [
     keywords: ["退出", "quit", "exit", "关闭软件"],
     action: () => dispatchCommand("window.quit"),
   },
+  {
+    // 🔒 保留键 F11：不进自定义表（基线表第六节），但要有鼠标/命令面板可达入口
+    id: "window.full",
+    titleKey: "command.window.full",
+    shortcut: "F11",
+    group: "window",
+    keywords: ["全屏", "fullscreen", "沉浸"],
+    action: () => dispatchCommand("window.full"),
+  },
 ];
 
 /** 分组顺序（用于命令面板的分组显示顺序） */

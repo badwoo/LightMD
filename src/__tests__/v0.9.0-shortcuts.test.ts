@@ -105,8 +105,16 @@ describe("v0.9.0 自定义快捷键：默认表完整性", () => {
     expect(normalizeCombo("Ctrl+Shift+Tab")).toBe("Ctrl+Shift+Tab");
   });
 
-  it("命令面板中的窗口命令快捷键与默认表一致", () => {
-    for (const [id, combo] of [
+  it("命令面板中不存在重复快捷键（跨分组）", () => {
+    // v0.9.0 review：此用例在快捷键改造中被误删，恢复——
+    // 命令面板的静态 shortcut 是展示回退值，重复会让用户看到两个不同命令同键位
+    const normalized = commands
+      .map((c) => normalizeCombo(c.shortcut ?? ""))
+      .filter((c) => c.length > 0);
+    expect(new Set(normalized).size).toBe(normalized.length);
+  });
+
+  it("命令面板中的窗口命令快捷键与默认表一致", () => {    for (const [id, combo] of [
       ["window.new", "Ctrl+Shift+N"],
       ["window.close", "Ctrl+Shift+W"],
       ["window.openInNew", "Ctrl+Alt+O"],

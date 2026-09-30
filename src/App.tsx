@@ -25,7 +25,7 @@ import { TabBar } from "./components/layout/TabBar";
 import { EditorContainer } from "./components/editor/EditorContainer";
 import { FileTree, isFocusInEditable } from "./components/sidebar/FileTree";
 // v0.9.0 自定义快捷键：全局键位查表派发（默认表 + 用户覆盖，见 core/shortcuts.ts）
-import { matchShortcut } from "./core/shortcuts";
+import { matchShortcut, isShortcutOverridden } from "./core/shortcuts";
 import { Outline } from "./components/editor/Outline";
 import { SyntaxHelper } from "./components/editor/SyntaxHelper";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
@@ -52,7 +52,9 @@ import { collectTabsToClose } from "./utils/tabCleanup";
 import { preserveEol } from "./utils/eolPreserve";
 import { setCurrentDocPath } from "./utils/imagePath";
 import { isSupportedTextFile, isMarkdownFile, ALL_SUPPORTED_EXTENSIONS, HUGE_FILE_THRESHOLD, getFileLanguage } from "./utils/constants";
-import { evalDoublePress } from "./utils/modeSwitch";
+import { evalDoublePress, DOUBLE_PRESS_THRESHOLD } from "./utils/modeSwitch";
+// v0.9.0：F11 窗口全屏（Tauri 窗口 API + DOM 回退，见 util 内 P8 探针结论）
+import { toggleWindowFullscreen } from "./utils/windowFullscreen";
 import { pathCompareKey } from "./utils/path";
 import { unwrapTargetedEvent } from "./utils/targetedEvent";
 import { markListenerReady, markListenerFailed, noteEventReceived } from "./utils/e2eProbe";
@@ -219,8 +221,8 @@ function App() {
   const lastCtrlTimeRef = useRef(0);
   // 双击 Shift 检测用 ref
   const lastShiftTimeRef = useRef(0);
-  // v0.9.0 D2：双击判定阈值 300ms → 220ms（防与编辑中快速复制粘贴误触）
-  const DOUBLE_CLICK_THRESHOLD = 220;
+  // v0.9.0 D2：双击判定阈值 300ms → 220ms（防与编辑中快速复制粘贴误触）。
+  // 阈值单源在 utils/modeSwitch.ts（DOUBLE_PRESS_THRESHOLD），此处不再另存常量。
   const handleEditorReady = useCallback((v: EditorView) => {
     editorViewRef.current = v;
     setEditorView(v);
@@ -2570,6 +2572,8 @@ function App() {
       if (id === "window.openInNew") { windowCommandsRef.current.openInNewWindow(); return; }
       if (id === "window.mergeToPrimary") { windowCommandsRef.current.mergeToPrimary(); return; }
       if (id === "window.quit") { windowCommandsRef.current.quitApp(); return; }
+      // 🔒 F11 全屏（命令面板 / 鼠标入口；快捷键在 keydown 里单独处理）
+      if (id === "window.full") { void toggleWindowFullscreen(); return; }
 
       // 格式/插入命令：通过 sourceInsertHandler（源码模式）或 editorView（阅读模式）处理
       const syntaxEntry = COMMAND_SYNTAX[id];
@@ -2605,7 +2609,7 @@ function App() {
       // 使用 evalDoublePress 三态判定（skip 时完全忽略，不刷新时间戳）
       if (e.key === "Control") {
         const now = Date.now();
-        const r = evalDoublePress(now, lastCtrlTimeRef.current, DOUBLE_CLICK_THRESHOLD, e.repeat);
+        const r = evalDoublePress(now, lastCtrlTimeRef.current, DOUBLE_PRESS_THRESHOLD, e.repeat);
         if (r === "toggle") {
           e.preventDefault();
           // 在阅读和编辑之间切换
@@ -2627,7 +2631,7 @@ function App() {
       // 双击 Shift 切换分屏模式（同样过滤长按 repeat 事件）
       if (e.key === "Shift" && !e.ctrlKey && !e.altKey && !e.metaKey) {
         const now = Date.now();
-        const r = evalDoublePress(now, lastShiftTimeRef.current, DOUBLE_CLICK_THRESHOLD, e.repeat);
+        const r = evalDoublePress(now, lastShiftTimeRef.current, DOUBLE_PRESS_THRESHOLD, e.repeat);
         if (r === "toggle") {
           e.preventDefault();
           // 如果当前是分屏模式，切回上一个模式；否则切到分屏
@@ -2644,13 +2648,11 @@ function App() {
       }
 
       // F11 窗口全屏（🔒 保留键，不入自定义表；v0.9.0 新增类浏览器沉浸式阅读）
+      // 优先走 Tauri 窗口全屏（WebView2 下 DOM Fullscreen API 只让元素铺满 webview，
+      // 不会让系统窗口全屏，P8 探针结论），非 Tauri 环境回退 DOM Fullscreen API
       if (e.key === "F11") {
         e.preventDefault();
-        if (document.fullscreenElement) {
-          void document.exitFullscreen();
-        } else {
-          void document.documentElement.requestFullscreen().catch(() => undefined);
-        }
+        void toggleWindowFullscreen();
         return;
       }
 
@@ -2661,8 +2663,17 @@ function App() {
       const target = e.target as HTMLElement;
       const def = matchShortcut(e, ["global", "editor"]);
       if (!def) return;
-      // editableGate：焦点在可编辑元素内不拦截（防改绑后吞词跳转等原生行为）
-      if (def.editableGate && isFocusInEditable(document.activeElement)) return;
+      // editableGate：**仅在该条目被用户改绑后**启用。
+      // 计划 P7 的原意是「用户把折叠键改回 Ctrl+← 类编辑器原生键后，别吞掉词跳转」；
+      // 默认键位（Ctrl+Alt+←/→、Ctrl+Shift+B）与原生行为本无冲突，若无条件门控，
+      // 编辑器一有焦点这三个新功能就整体失效（A11 不达标）。
+      if (
+        def.editableGate &&
+        isShortcutOverridden(def.id) &&
+        isFocusInEditable(document.activeElement)
+      ) {
+        return;
+      }
       // 撤销/恢复（global-editor）：仅 textarea 内接管（自定义撤销栈）；
       // ProseMirror 中由其 keymap 处理，不拦截
       if (def.scope === "global-editor" && target.tagName !== "TEXTAREA") return;
@@ -2690,10 +2701,19 @@ function App() {
         case "view.toggleLeft":
         case "view.toggleRight":
         case "view.toggleTag":
-        case "insert.table":
-        case "insert.taskList":
           window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: def.id } }));
           return;
+        // 插入表格/任务列表：只在**可编辑面**写入（源码 textarea 或 ProseMirror 可编辑），
+        // 否则会往只读标签的文档里塞字（v0.9.0 review 修复）
+        case "insert.table":
+        case "insert.taskList": {
+          const mode = useEditorStore.getState().viewMode;
+          const isSource = mode === "edit" || mode === "split";
+          const pmEditable = editorViewRef.current?.editable === true;
+          if (!isSource && !pmEditable) return;
+          window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: def.id } }));
+          return;
+        }
         // ─── 视图 ───
         case "view.toggleTheme": {
           // G6：循环切换 6 个主题（light → dark → github → newsprint → night → solarized → light）

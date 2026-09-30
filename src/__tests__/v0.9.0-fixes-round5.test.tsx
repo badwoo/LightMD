@@ -142,6 +142,20 @@ beforeAll(() => {
     addListener() {},
     removeListener() {},
   });
+  // 真实 @tauri-apps/api/event 的 unlisten 依赖事件插件注入的该全局；jsdom 下缺失会让
+  // 卸载期 unlisten 抛 unhandled rejection（用例全过但 vitest 退出码非 0）——v0.9.0 review 修复
+  (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener: () => {},
+  };
+  // jsdom 未实现 IntersectionObserver（App 挂载时大纲组件会用到）
+  (window as unknown as { IntersectionObserver: unknown }).IntersectionObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  };
 });
 
 import App from "../App";
@@ -171,10 +185,28 @@ beforeEach(() => {
   useSettingsStore.setState({ autoSaveIntervalMs: 60000 });
 });
 
-afterEach(() => {
+/**
+ * 让 App 启动期的动态 import / 事件注册链在**模块 mock 仍然生效时**全部结算，
+ * 否则它们会在模块注册表拆除后才 resolve，落到真实 @tauri-apps/api 上抛
+ * `transformCallback is not a function`（unhandled rejection），
+ * 使 `vitest run` 即使全部用例通过也以非 0 退出（v0.9.0 review 修复）。
+ */
+async function flushStartupMicrotasks(): Promise<void> {
+  for (let i = 0; i < 12; i++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, i < 4 ? 0 : 5));
+    });
+  }
+}
+
+afterEach(async () => {
+  await flushStartupMicrotasks();
   cleanup();
+  await flushStartupMicrotasks();
   __setWindowLabelForTest(null);
-  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  // 不删除 __TAURI_INTERNALS__：卸载期仍有在途的 unlisten 需要它（真实 event.js 内部
+  // 直接读该全局，vi.mock 无法拦截 node_modules 依赖的内部引用）。每个用例进入前
+  // 由 enterTauri() 覆盖为完整桩，因此保留不会污染下一个用例。
   vi.restoreAllMocks();
 });
 

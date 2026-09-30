@@ -1917,15 +1917,16 @@ export function FileTree() {
       if (isFocusInEditable(document.activeElement)) {
         return;
       }
-      // Delete 键关闭选中的临时文件
-      if (e.key === "Delete" && selectedTempIdx >= 0 && selectedTempIdx < tempFiles.length) {
+      // Delete 键关闭选中的临时文件（带修饰键的组合不在此语义内，
+      // 避免与用户自定义的 Ctrl+Delete / Ctrl+Backspace 等绑定同时触发）
+      if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && selectedTempIdx >= 0 && selectedTempIdx < tempFiles.length) {
         e.preventDefault();
         closeTempFile(tempFiles[selectedTempIdx]);
         setSelectedTempIdx(-1);
         return;
       }
       // Backspace 关闭选中的临时文件（v0.9.0）
-      if (e.key === "Backspace" && selectedTempIdx >= 0 && selectedTempIdx < tempFiles.length) {
+      if (e.key === "Backspace" && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && selectedTempIdx >= 0 && selectedTempIdx < tempFiles.length) {
         e.preventDefault();
         closeTempFile(tempFiles[selectedTempIdx]);
         setSelectedTempIdx(-1);

@@ -17,6 +17,7 @@ import { createPortal } from "react-dom";
 import { useT } from "../../i18n";
 // v0.9.0 自定义快捷键：菜单键位展示读生效键位表（改键后跟随变化）
 import { getShortcutLabel } from "../../core/shortcuts";
+import { useSettingsStore } from "../../stores/useSettingsStore";
 import "./EditorContextMenu.css";
 
 /** 菜单项类型 */
@@ -133,10 +134,14 @@ export function EditorContextMenu({
   onClose,
 }: EditorContextMenuProps) {
   const t = useT();
-  // 缓存菜单项配置，仅当上下文状态变化时重建
+  // v0.9.0 自定义快捷键：订阅覆盖表，改键/跨窗口广播后菜单键位立即跟随刷新
+  // （buildMenuItems 读的是 core/shortcuts 模块级生效表，不是 React state，
+  //  不订阅的话 useMemo 永远不会因改键而重算，菜单会一直显示旧键位）
+  const shortcuts = useSettingsStore((s) => s.shortcuts);
+  // 缓存菜单项配置，仅当上下文状态或键位表变化时重建
   const menuItems = useMemo(
     () => buildMenuItems(hasSelection, canUndo, canRedo, isMdFile, translateEnabled),
-    [hasSelection, canUndo, canRedo, isMdFile, translateEnabled],
+    [hasSelection, canUndo, canRedo, isMdFile, translateEnabled, shortcuts],
   );
 
   // 计算菜单显示位置，避免溢出视口边界

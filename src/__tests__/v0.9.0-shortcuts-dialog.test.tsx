@@ -74,14 +74,19 @@ describe("v0.9.0 ShortcutSettingsDialog：录制与冲突（A3/A4）", () => {
     expect(getShortcutLabel("file.new")).toBe("Ctrl+J");
   });
 
-  it("冲突：绑定到其他条目键位显示占用提示且不写入", () => {
+  it("冲突：绑定到其他条目键位显示占用提示且不写入（含精确文案与保持录制态）", () => {
     openDialog();
     fireEvent.click(rowByLabel("新建文件"));
     pressKey({ key: "s", ctrlKey: true }); // Ctrl+S 已被「保存文件」占用
     const errors = document.querySelectorAll(".shortcut-settings-error");
     expect(errors.length).toBe(1);
-    expect(errors[0].textContent).toContain("保存文件");
+    // 精确文案（此前 i18n 用了双花括号，会渲染出多余的 { }）
+    expect(errors[0].textContent).toBe("该快捷键已被「保存文件」占用");
     expect(useSettingsStore.getState().shortcuts["file.new"]).toBeUndefined();
+    // 仍在录制态 + 冲突红描边落在键帽/药丸上（此前 .shortcut-keycap.conflict 是死代码）
+    expect(document.querySelector(".shortcut-settings-recording-pill")).toBeTruthy();
+    expect(document.querySelector(".shortcut-settings-recording-pill.conflict")).toBeTruthy();
+    expect(document.querySelector(".shortcut-keycap.conflict")).toBeTruthy();
   });
 
   it("保留键（Backspace 录入场景之外如 Ctrl+R）提示系统保留", () => {
@@ -116,15 +121,52 @@ describe("v0.9.0 ShortcutSettingsDialog：录制与冲突（A3/A4）", () => {
   });
 });
 
-describe("v0.9.0 ShortcutSettingsDialog：恢复默认（A6）", () => {
-  it("恢复全部默认设置清空全部自定义", () => {
+describe("v0.9.0 ShortcutSettingsDialog：恢复默认（A6）", () => {  it("恢复全部默认设置需二次确认，确认后清空全部自定义", () => {
     useSettingsStore.getState().setShortcut("file.new", "Ctrl+J");
     useSettingsStore.getState().setShortcut("file.save", "Ctrl+Shift+J");
     expect(Object.keys(useSettingsStore.getState().shortcuts).length).toBe(2);
     openDialog();
     fireEvent.click(screen.getByText("恢复全部默认设置"));
+    // 破坏性操作先弹确认，未确认前不清空
+    expect(Object.keys(useSettingsStore.getState().shortcuts).length).toBe(2);
+    fireEvent.click(screen.getByTestId("choice-option-reset"));
     expect(useSettingsStore.getState().shortcuts).toEqual({});
     expect(getShortcutLabel("file.new")).toBe("Ctrl+N");
     expect(getShortcutLabel("file.save")).toBe("Ctrl+S");
+  });
+
+  it("恢复全部默认设置确认框可取消，取消后不影响自定义", () => {
+    useSettingsStore.getState().setShortcut("file.new", "Ctrl+J");
+    openDialog();
+    fireEvent.click(screen.getByText("恢复全部默认设置"));
+    fireEvent.click(screen.getByText("取消"));
+    expect(useSettingsStore.getState().shortcuts["file.new"]).toBe("Ctrl+J");
+  });
+
+  it("录入与默认值相同的键位视为恢复默认（不产生覆盖项）", () => {
+    expect(useSettingsStore.getState().setShortcut("file.new", "Ctrl+J")).toBe(true);
+    expect(useSettingsStore.getState().shortcuts["file.new"]).toBe("Ctrl+J");
+    expect(useSettingsStore.getState().setShortcut("file.new", "Ctrl+N")).toBe(true);
+    expect(useSettingsStore.getState().shortcuts["file.new"]).toBeUndefined();
+  });
+
+  it("恢复单项默认被他人占用时拒绝并给出提示（不再造出重复死绑定）", () => {
+    const store = useSettingsStore.getState();
+    expect(store.setShortcut("format.italic", "Ctrl+Shift+I")).toBe(true);
+    expect(store.setShortcut("format.bold", "Ctrl+I")).toBe(true);
+    openDialog();
+
+    const italicRow = rowByLabel("斜体");
+    const resetBtn = italicRow.querySelector(".shortcut-settings-reset") as HTMLButtonElement;
+    expect(resetBtn).toBeTruthy();
+    fireEvent.click(resetBtn);
+
+    // 拒绝恢复：覆盖项仍在，并提示占位者
+    expect(useSettingsStore.getState().shortcuts["format.italic"]).toBe("Ctrl+Shift+I");
+    const error = document.querySelector(".shortcut-settings-error");
+    expect(error?.textContent).toBe("无法恢复默认：Ctrl+I 已被「加粗」占用");
+    // 表内无重复键位
+    expect(getShortcutLabel("format.bold")).toBe("Ctrl+I");
+    expect(getShortcutLabel("format.italic")).toBe("Ctrl+Shift+I");
   });
 });
