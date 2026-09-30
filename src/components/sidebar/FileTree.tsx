@@ -1907,7 +1907,8 @@ export function FileTree() {
     setSelectedTempIdx(-1);
   }, [activeItemKey]);
 
-  // Delete键/Ctrl+2 快捷键关闭临时文件
+  // Delete键/Backspace 快捷键关闭临时文件（v0.9.0：等效键由 Ctrl+2 改为 Backspace，
+  // 释放 Ctrl+2 给编辑器「标题 2」，消除跨场景共存）
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       // v0.6.6 问题3修复：焦点在可编辑元素（源码 textarea / ProseMirror / 输入框）时
@@ -1923,8 +1924,8 @@ export function FileTree() {
         setSelectedTempIdx(-1);
         return;
       }
-      // Ctrl+2 关闭选中的临时文件
-      if (e.ctrlKey && e.key === "2" && selectedTempIdx >= 0 && selectedTempIdx < tempFiles.length) {
+      // Backspace 关闭选中的临时文件（v0.9.0）
+      if (e.key === "Backspace" && selectedTempIdx >= 0 && selectedTempIdx < tempFiles.length) {
         e.preventDefault();
         closeTempFile(tempFiles[selectedTempIdx]);
         setSelectedTempIdx(-1);

@@ -404,11 +404,11 @@ describe("问题9：阅读模式搜索跳转", () => {
 // ─── 问题 10：Ctrl+H 弹出搜索和替换框 ──────────────────────
 
 describe("问题10：Ctrl+H 弹出替换框", () => {
-  it("App.tsx 包含 Ctrl+H 快捷键监听调用 setShowSearchReplace", () => {
+  it("App.tsx 经生效键位表派发 edit.replace 调用 setShowSearchReplace（v0.9.0 查表化）", () => {
     const src = readSrc("../App.tsx");
-    const keydownSection = src.match(/e\.key === ["']h["'][\s\S]*?\}/);
-    expect(keydownSection).not.toBeNull();
-    expect(keydownSection![0]).toMatch(/setShowSearchReplace\(true\)/);
+    // v0.9.0 自定义快捷键：硬编码 Ctrl+H if 链已替换为查表派发，edit.replace 命中即弹替换框
+    expect(src).toContain('matchShortcut(e, ["global", "editor"])');
+    expect(src).toContain('case "edit.replace": setShowSearchReplace(true); return;');
   });
 
   it("SearchReplace.tsx 包含 initialShowReplace prop", () => {

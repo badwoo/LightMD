@@ -43,6 +43,7 @@ import {
   removeLinePrefix as removeLinePrefixFn,
   MERMAID_TEMPLATES,
   FORMAT_BUTTONS as formatButtons,
+  formatButtonTitle,
 } from "./sourceFormat";
 import { md } from "../../core/markdown/parser";
 import { highlightCodeBlocksInHtml, getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
@@ -4385,7 +4386,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
                 <div key={btn.action} className="mermaid-dropdown-wrap">
                   <button
                     className="format-btn"
-                    title={btn.title}
+                    title={formatButtonTitle(btn)}
                     onClick={() => onFormatBtnClick(btn.action)}
                     aria-expanded={mermaidMenuOpen}
                     aria-haspopup="menu"
@@ -4413,7 +4414,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               <button
                 key={btn.action}
                 className={`format-btn ${btn.isUndoRedo ? "format-btn-undo-redo" : ""}`}
-                title={btn.title}
+                title={formatButtonTitle(btn)}
                 onClick={() => onFormatBtnClick(btn.action)}
               >
                 {btn.label}

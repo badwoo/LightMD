@@ -14,6 +14,8 @@
  */
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useT } from "../../i18n";
+// v0.9.0 自定义快捷键：命令键位展示读生效键位表
+import { getShortcutLabel } from "../../core/shortcuts";
 import {
   commands,
   searchCommands,
@@ -169,9 +171,10 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
                       <span className="command-palette-item-title">
                         {t(cmd.titleKey)}
                       </span>
-                      {cmd.shortcut && (
+                      {/* v0.9.0 自定义快捷键：优先显示生效键位（改键后跟随），无登记时回退静态值 */}
+                      {(getShortcutLabel(cmd.id) ?? cmd.shortcut) && (
                         <span className="command-palette-shortcut">
-                          {cmd.shortcut}
+                          {getShortcutLabel(cmd.id) ?? cmd.shortcut}
                         </span>
                       )}
                     </div>

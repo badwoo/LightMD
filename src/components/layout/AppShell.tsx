@@ -32,6 +32,18 @@ export function AppShell({ sidebar, outline, children }: AppShellProps) {
   const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
   const toggleOutline = useCallback(() => setOutlineCollapsed((v) => !v), []);
 
+  // v0.9.0 自定义快捷键：Ctrl+Alt+←/→ 折叠侧栏/大纲栏（App keydown 匹配后派发命令总线）。
+  // 折叠状态保持 AppShell 本地 state，不提升——命令总线解耦，避免把 UI 态塞进全局 store。
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent).detail?.id;
+      if (id === "view.toggleLeft") setSidebarCollapsed((v) => !v);
+      if (id === "view.toggleRight") setOutlineCollapsed((v) => !v);
+    };
+    window.addEventListener("lightmd:command", handler);
+    return () => window.removeEventListener("lightmd:command", handler);
+  }, []);
+
   // v0.4.0：侧边栏分割条（左侧栏，拖右移→宽度增加）
   const sidebarResizer = useResizable({
     initialWidth: sidebarWidth,

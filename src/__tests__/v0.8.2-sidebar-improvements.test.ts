@@ -403,8 +403,8 @@ describe("v0.8.2 功能7：migrateSettings 一次性迁移", () => {
     expect(() => migrateSettings({}, 2)).not.toThrow();
   });
 
-  it("persist options version 已升到 3（v0.8.4 新增 fileTreeSort）", () => {
-    expect((useSettingsStore.persist as unknown as { getOptions: () => { version: number } }).getOptions().version).toBe(3);
+  it("persist options version 已升到 4（v0.9.0 新增自定义快捷键）", () => {
+    expect((useSettingsStore.persist as unknown as { getOptions: () => { version: number } }).getOptions().version).toBe(4);
   });
 });
 

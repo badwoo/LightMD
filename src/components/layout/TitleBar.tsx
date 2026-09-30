@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useEditorStore, type ViewMode } from "../../stores/useEditorStore";
 import { useT } from "../../i18n";
+// v0.9.0 自定义快捷键：菜单键位展示读生效键位表
+import { getShortcutLabel } from "../../core/shortcuts";
 // v0.8.1 需求6：无边框窗口下自绘的最小化/最大化/关闭三键
 import { WindowControls } from "./WindowControls";
 // v0.9.0 WP2：窗口菜单（新建/关闭/列表/合并到主窗口）
@@ -216,14 +218,14 @@ export function TitleBar({
                   onClick={() => { setShowWindowMenu(false); onNewWindow?.(); }}
                 >
                   {t("multiwindow.newWindow")}
-                  <span className="titlebar-dropdown-shortcut">Ctrl+Shift+N</span>
+                  <span className="titlebar-dropdown-shortcut">{getShortcutLabel("window.new")}</span>
                 </button>
                 <button
                   className="titlebar-dropdown-item"
                   onClick={() => { setShowWindowMenu(false); onCloseWindow?.(); }}
                 >
                   {t("multiwindow.closeWindow")}
-                  <span className="titlebar-dropdown-shortcut">Ctrl+Shift+W</span>
+                  <span className="titlebar-dropdown-shortcut">{getShortcutLabel("window.close")}</span>
                 </button>
                 <div className="titlebar-dropdown-sep" />
                 <div className="titlebar-dropdown-label">{t("multiwindow.list")}</div>
@@ -294,7 +296,7 @@ export function TitleBar({
                   onClick={() => { setShowWindowMenu(false); onQuitApp?.(); }}
                 >
                   {t("multiwindow.quit")}
-                  <span className="titlebar-dropdown-shortcut">Ctrl+Q</span>
+                  <span className="titlebar-dropdown-shortcut">{getShortcutLabel("window.quit")}</span>
                 </button>
               </div>
             )}

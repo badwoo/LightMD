@@ -23,7 +23,9 @@ import { TitleBar } from "./components/layout/TitleBar";
 import { StatusBar } from "./components/layout/StatusBar";
 import { TabBar } from "./components/layout/TabBar";
 import { EditorContainer } from "./components/editor/EditorContainer";
-import { FileTree } from "./components/sidebar/FileTree";
+import { FileTree, isFocusInEditable } from "./components/sidebar/FileTree";
+// v0.9.0 自定义快捷键：全局键位查表派发（默认表 + 用户覆盖，见 core/shortcuts.ts）
+import { matchShortcut } from "./core/shortcuts";
 import { Outline } from "./components/editor/Outline";
 import { SyntaxHelper } from "./components/editor/SyntaxHelper";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
@@ -217,7 +219,8 @@ function App() {
   const lastCtrlTimeRef = useRef(0);
   // 双击 Shift 检测用 ref
   const lastShiftTimeRef = useRef(0);
-  const DOUBLE_CLICK_THRESHOLD = 300;
+  // v0.9.0 D2：双击判定阈值 300ms → 220ms（防与编辑中快速复制粘贴误触）
+  const DOUBLE_CLICK_THRESHOLD = 220;
   const handleEditorReady = useCallback((v: EditorView) => {
     editorViewRef.current = v;
     setEditorView(v);
@@ -227,6 +230,8 @@ function App() {
   const [showOutline, setShowOutline] = useState(true);
   // G8：命令面板开关
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  // v0.9.0 自定义快捷键：标签栏折叠（Ctrl+Shift+B / 命令面板 view.toggleTag；会话级，不持久化）
+  const [tabBarCollapsed, setTabBarCollapsed] = useState(false);
   // v0.4.0 功能4：版本快照窗口开关 + 目标文件路径
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
   const [snapshotFilePath, setSnapshotFilePath] = useState<string | null>(null);
@@ -2552,6 +2557,8 @@ function App() {
       if (id === "view.toggleFocusMode") { toggleFocusMode(); return; }
       if (id === "view.toggleTypewriter") { toggleTypewriter(); return; }
       if (id === "view.toggleOutline") { setShowOutline((v) => !v); return; }
+      // v0.9.0 自定义快捷键：标签栏折叠（Ctrl+Shift+B / 命令面板共用）
+      if (id === "view.toggleTag") { setTabBarCollapsed((v) => !v); return; }
       if (id === "view.settings") { setShowSettings(true); return; }
 
       // 导出命令
@@ -2636,188 +2643,112 @@ function App() {
         return;
       }
 
-      // 应用级快捷键（Ctrl+O/S/N 等）需要在任何地方都能触发，
-      // 不能因为编辑器 contentEditable 而被拦截。
-      // 只对 INPUT/TEXTAREA 中的普通按键放行，不拦截带 Ctrl 的组合键。
+      // F11 窗口全屏（🔒 保留键，不入自定义表；v0.9.0 新增类浏览器沉浸式阅读）
+      if (e.key === "F11") {
+        e.preventDefault();
+        if (document.fullscreenElement) {
+          void document.exitFullscreen();
+        } else {
+          void document.documentElement.requestFullscreen().catch(() => undefined);
+        }
+        return;
+      }
+
+      // 应用级快捷键：查生效键位表（v0.9.0 自定义快捷键）。
+      // 完全相等匹配（Ctrl+S 与 Ctrl+Alt+S 互不误触），只处理 global / global-editor
+      // 作用域；格式键（rich/source）由 PM 动态 keymap 与源码模式 parseShortcut 处理。
+      // 仍需在任何地方都能触发，不因编辑器 contentEditable 被拦截。
       const target = e.target as HTMLElement;
-      const isInputField = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
+      const def = matchShortcut(e, ["global", "editor"]);
+      if (!def) return;
+      // editableGate：焦点在可编辑元素内不拦截（防改绑后吞词跳转等原生行为）
+      if (def.editableGate && isFocusInEditable(document.activeElement)) return;
+      // 撤销/恢复（global-editor）：仅 textarea 内接管（自定义撤销栈）；
+      // ProseMirror 中由其 keymap 处理，不拦截
+      if (def.scope === "global-editor" && target.tagName !== "TEXTAREA") return;
+      // AI 对话窗：输入法组合态（isComposing）时 Enter/字母用于选词，不能当快捷键
+      if (def.id === "ai.chat" && e.isComposing) return;
 
-      // 撤销 Ctrl+Z
-      if (e.ctrlKey && !e.shiftKey && e.key === "z") {
-        if (isInputField && target.tagName === "TEXTAREA") {
-          // textarea 中：阻止浏览器原生撤销，使用自定义撤销
-          e.preventDefault();
-          if (undoHandler) undoHandler();
+      e.preventDefault();
+      switch (def.id) {
+        // ─── 文件 ───
+        case "file.new": handleNewFile(); return;
+        case "file.open": handleOpenFile(); return;
+        case "file.save": handleSaveFile(); return;
+        case "file.saveAs": handleSaveAsFile(); return;
+        case "export.html": setShowExport(true); return;
+        // ─── 编辑 ───
+        case "edit.undo": if (undoHandler) undoHandler(); return;
+        case "edit.redo":
+        case "edit.redo2": if (redoHandler) redoHandler(); return;
+        case "edit.find": setShowSearch(true); return;
+        case "edit.replace": setShowSearchReplace(true); return;
+        // 翻译/AI/折叠/插入：统一走 lightmd:command（EditorContainer / AppShell / 命令路由处理）
+        case "edit.translate":
+        case "edit.translateDocument":
+        case "ai.chat":
+        case "view.toggleLeft":
+        case "view.toggleRight":
+        case "view.toggleTag":
+        case "insert.table":
+        case "insert.taskList":
+          window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: def.id } }));
+          return;
+        // ─── 视图 ───
+        case "view.toggleTheme": {
+          // G6：循环切换 6 个主题（light → dark → github → newsprint → night → solarized → light）
+          const idx = THEMES.indexOf(theme as Theme);
+          setTheme(THEMES[(idx + 1) % THEMES.length]);
+          return;
         }
-        // ProseMirror 中由其 keymap 处理，不拦截
-        return;
-      }
-      // 恢复 Ctrl+Y / Ctrl+Shift+Z
-      if ((e.ctrlKey && !e.shiftKey && e.key === "y") ||
-          (e.ctrlKey && e.shiftKey && e.key === "Z")) {
-        if (isInputField && target.tagName === "TEXTAREA") {
-          // textarea 中：阻止浏览器原生行为，使用自定义恢复
-          e.preventDefault();
-          if (redoHandler) redoHandler();
+        case "view.toggleFocusMode": toggleFocusMode(); return;
+        case "view.toggleTypewriter": toggleTypewriter(); return;
+        case "view.toggleOutline": setShowOutline((v) => !v); return;
+        case "view.commandPalette": setShowCommandPalette(true); return;
+        case "view.snapshot": {
+          const { openTabs, activeTabIdx } = useEditorStore.getState();
+          const activeTab = openTabs[activeTabIdx];
+          // v0.8.0 WP1：临时（未落盘）文件没有版本快照，直接忽略
+          if (activeTab && activeTab.path) {
+            setSnapshotFilePath(activeTab.path);
+            setShowSnapshotDialog(true);
+          }
+          return;
         }
-        // ProseMirror 中由其 keymap 处理，不拦截
-        return;
-      }
-
-      if (e.ctrlKey && !e.shiftKey && e.key === "o") {
-        e.preventDefault();
-        handleOpenFile();
-        return;
-      }
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === "s") {
-        // 排除 Alt 修饰键：Ctrl+Alt+S 已在 EditorContainer 中映射为「删除线」
-        e.preventDefault();
-        handleSaveFile();
-        return;
-      }
-      if (e.ctrlKey && e.shiftKey && e.key === "S") {
-        e.preventDefault();
-        handleSaveAsFile();
-        return;
-      }
-      if (e.ctrlKey && !e.shiftKey && e.key === "n") {
-        e.preventDefault();
-        handleNewFile();
-        return;
-      }
-      if (e.ctrlKey && e.shiftKey && e.key === "T") {
-        e.preventDefault();
-        // G6：循环切换 6 个主题（light → dark → github → newsprint → night → solarized → light）
-        const idx = THEMES.indexOf(theme as Theme);
-        const nextTheme = THEMES[(idx + 1) % THEMES.length];
-        setTheme(nextTheme);
-      }
-      if (e.ctrlKey && e.key === ",") {
-        e.preventDefault();
-        setShowSettings(true);
-      }
-      if (e.ctrlKey && e.shiftKey && e.key === "E") {
-        e.preventDefault();
-        setShowExport(true);
-      }
-      if (e.key === "F8") {
-        e.preventDefault();
-        toggleFocusMode();
-      }
-      if (e.key === "F9") {
-        e.preventDefault();
-        toggleTypewriter();
-      }
-      if (e.ctrlKey && e.shiftKey && e.key === "O") {
-        e.preventDefault();
-        setShowOutline((v) => !v);
-      }
-      // ─── v0.9.0 WP2：多窗口快捷键（已核实与既有绑定无冲突） ───
-      // Ctrl+Shift+N 新建辅助窗口
-      if (e.ctrlKey && e.shiftKey && (e.key === "N" || e.key === "n")) {
-        e.preventDefault();
-        windowCommandsRef.current.newWindow();
-        return;
-      }
-      // Ctrl+Shift+W 关闭当前窗口（Ctrl+W 仍是关闭标签，语义分离）
-      if (e.ctrlKey && e.shiftKey && (e.key === "W" || e.key === "w")) {
-        e.preventDefault();
-        windowCommandsRef.current.closeWindow();
-        return;
-      }
-      // Ctrl+Alt+O 打开文件到**新窗口**（Ctrl+Shift+O 已被大纲栏占用，见 App.tsx 快捷键清单）
-      if (e.ctrlKey && e.altKey && (e.key === "O" || e.key === "o")) {
-        e.preventDefault();
-        windowCommandsRef.current.openInNewWindow();
-        return;
-      }
-      // Ctrl+Q 退出应用（写完整窗口集合并退出，供「恢复其他窗口」下次还原）
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === "q" || e.key === "Q")) {
-        e.preventDefault();
-        windowCommandsRef.current.quitApp();
-        return;
-      }
-      // G8：Ctrl+Shift+P 打开命令面板
-      if (e.ctrlKey && e.shiftKey && (e.key === "P" || e.key === "p")) {
-        e.preventDefault();
-        setShowCommandPalette(true);
-      }
-      // v0.4.0 功能4：打开版本快照窗口
-      // v0.8.0 WP2 需求1：快捷键由 Ctrl+Shift+V 改为 Ctrl+Alt+V
-      // （Ctrl+Shift+V 与"粘贴"的语义冲突，且 v0.8.0 引入文件复制/粘贴后更易误触）
-      if (e.ctrlKey && e.altKey && e.key.toLowerCase() === "v") {
-        e.preventDefault();
-        const { openTabs, activeTabIdx } = useEditorStore.getState();
-        const activeTab = openTabs[activeTabIdx];
-        // v0.8.0 WP1：临时（未落盘）文件没有版本快照，直接忽略
-        if (activeTab && activeTab.path) {
-          setSnapshotFilePath(activeTab.path);
-          setShowSnapshotDialog(true);
+        case "view.settings": setShowSettings(true); return;
+        // ─── 标签 ───
+        case "tab.next":
+        case "tab.prev": {
+          const { openTabs, activeTabIdx } = useEditorStore.getState();
+          if (openTabs.length <= 1) return;
+          // 保存当前标签内容
+          updateTabContent(activeTabIdx, contentRef.current);
+          const nextIdx = def.id === "tab.prev"
+            ? (activeTabIdx - 1 + openTabs.length) % openTabs.length
+            : (activeTabIdx + 1) % openTabs.length;
+          const nextTab = openTabs[nextIdx];
+          setActiveTab(nextIdx);
+          setContent(nextTab.content || "");
+          safeSetItem(CONTENT_KEY, nextTab.content || "");
+          openFile(nextTab.path);
+          setDirty(nextTab.isDirty || false);
+          setForceUpdateKey((k) => k + 1);
+          return;
         }
-        return;
-      }
-      // Ctrl+Tab 切换到下一个标签，Ctrl+Shift+Tab 切换到上一个标签
-      if (e.ctrlKey && e.key === "Tab") {
-        e.preventDefault();
-        const { openTabs, activeTabIdx } = useEditorStore.getState();
-        if (openTabs.length <= 1) return;
-        // 保存当前标签内容
-        updateTabContent(activeTabIdx, contentRef.current);
-        const nextIdx = e.shiftKey
-          ? (activeTabIdx - 1 + openTabs.length) % openTabs.length
-          : (activeTabIdx + 1) % openTabs.length;
-        const nextTab = openTabs[nextIdx];
-        setActiveTab(nextIdx);
-        setContent(nextTab.content || "");
-        safeSetItem(CONTENT_KEY, nextTab.content || "");
-        openFile(nextTab.path);
-        setDirty(nextTab.isDirty || false);
-        setForceUpdateKey((k) => k + 1);
-        return;
-      }
-      // Ctrl+W 关闭当前标签
-      if (e.ctrlKey && !e.shiftKey && e.key === "w") {
-        e.preventDefault();
-        const { openTabs, activeTabIdx } = useEditorStore.getState();
-        if (openTabs.length > 0 && openTabs[activeTabIdx]) {
-          handleTabClose(openTabs[activeTabIdx], activeTabIdx);
+        case "tab.close": {
+          const { openTabs, activeTabIdx } = useEditorStore.getState();
+          if (openTabs.length > 0 && openTabs[activeTabIdx]) {
+            handleTabClose(openTabs[activeTabIdx], activeTabIdx);
+          }
+          return;
         }
-        return;
-      }
-      // Ctrl+F 搜索
-      if (e.ctrlKey && !e.shiftKey && e.key === "f") {
-        e.preventDefault();
-        setShowSearch(true);
-      }
-      // Ctrl+H 查找替换
-      if (e.ctrlKey && !e.shiftKey && e.key === "h") {
-        e.preventDefault();
-        setShowSearchReplace(true);
-      }
-      // v0.7.5 功能1：Ctrl+K（macOS 为 Cmd+K）打开 AI 对话浮动窗。
-      // 已全文确认 Mod-k / Ctrl+K 无其他绑定（链接插入走工具栏与智能粘贴，无快捷键）。
-      // 注意大小写（Caps Lock 下 key 为 "K"）与输入法组合态（isComposing 时 Enter/字母
-      // 用于选词，不能当快捷键）。
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        !e.shiftKey &&
-        !e.altKey &&
-        (e.key === "k" || e.key === "K") &&
-        !e.isComposing
-      ) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "ai.chat" } }));
-        return;
-      }
-      // v0.6.0：F6 AI 翻译选中内容（统一走 lightmd:command 事件，由 EditorContainer 处理）
-      if (e.key === "F6" && !e.shiftKey) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "edit.translate" } }));
-      }
-      // v0.6.1：Shift+F6 全文翻译（统一走 lightmd:command 事件，由 EditorContainer 处理）
-      if (e.key === "F6" && e.shiftKey) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "edit.translateDocument" } }));
+        // ─── 窗口（v0.9.0 多窗口） ───
+        case "window.new": windowCommandsRef.current.newWindow(); return;
+        case "window.close": windowCommandsRef.current.closeWindow(); return;
+        case "window.openInNew": windowCommandsRef.current.openInNewWindow(); return;
+        case "window.quit": windowCommandsRef.current.quitApp(); return;
+        case "window.mergeToPrimary": windowCommandsRef.current.mergeToPrimary(); return;
+        default: return;
       }
     };
     window.addEventListener("keydown", handler);
@@ -3025,17 +2956,20 @@ function App() {
         onQuitApp={() => void handleQuitApp()}
         isPrimaryWindow={isPrimaryWindow}
       />
-      <TabBar
-        onTabSwitch={handleTabSwitch}
-        onTabClose={handleTabClose}
-        onSaveAs={handleSaveAsFile}
-        onCloseMany={handleCloseMany}
-        onNewUntitled={handleNewUntitled}
-        // v0.9.0 WP2：「移动到新窗口」右键项
-        onMoveToNewWindow={handleMoveTabToNewWindow}
-        // v0.9.0 第四轮（问题2）：标签拖出标签栏松手（落点是主窗口标签栏 → 询问合并）
-        onTabDropOutside={handleTabDropOutsideTabBar}
-      />
+      {/* v0.9.0 自定义快捷键：Ctrl+Shift+B 折叠/展开标签栏（view.toggleTag 命令路由） */}
+      {!tabBarCollapsed && (
+        <TabBar
+          onTabSwitch={handleTabSwitch}
+          onTabClose={handleTabClose}
+          onSaveAs={handleSaveAsFile}
+          onCloseMany={handleCloseMany}
+          onNewUntitled={handleNewUntitled}
+          // v0.9.0 WP2：「移动到新窗口」右键项
+          onMoveToNewWindow={handleMoveTabToNewWindow}
+          // v0.9.0 第四轮（问题2）：标签拖出标签栏松手（落点是主窗口标签栏 → 询问合并）
+          onTabDropOutside={handleTabDropOutsideTabBar}
+        />
+      )}
       <AppShell
         sidebar={<FileTree />}
         outline={

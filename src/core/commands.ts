@@ -210,6 +210,28 @@ export const commands: Command[] = [
     keywords: ["设置", "preferences", "settings"],
     action: () => dispatchCommand("view.settings"),
   },
+  // 🆕 v0.9.0：侧栏/大纲栏/标签栏折叠（Ctrl+Alt+←/→、Ctrl+Shift+B 快捷键共用同一命令入口）
+  {
+    id: "view.toggleLeft",
+    titleKey: "command.view.toggleLeft",
+    group: "view",
+    keywords: ["左侧栏", "侧栏", "折叠", "sidebar", "collapse"],
+    action: () => dispatchCommand("view.toggleLeft"),
+  },
+  {
+    id: "view.toggleRight",
+    titleKey: "command.view.toggleRight",
+    group: "view",
+    keywords: ["大纲栏", "折叠", "outline", "collapse"],
+    action: () => dispatchCommand("view.toggleRight"),
+  },
+  {
+    id: "view.toggleTag",
+    titleKey: "command.view.toggleTag",
+    group: "view",
+    keywords: ["标签栏", "折叠", "tab bar", "collapse"],
+    action: () => dispatchCommand("view.toggleTag"),
+  },
   // ─── 格式分组 ──────────────────────────────
   {
     id: "format.bold",

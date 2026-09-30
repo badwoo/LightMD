@@ -5,6 +5,13 @@ import { _setCurrentLanguage } from "../i18n/state";
 import type { Language } from "../i18n/types";
 // v0.8.4 需求7：文件树排序模式（纯类型导入，运行时零依赖）
 import type { SortMode } from "../utils/fileSort";
+// v0.9.0 自定义快捷键：冲突检测/归一化（core 不反向依赖本 store，无循环）
+import {
+  findShortcutConflict,
+  normalizeCombo,
+  setShortcutOverrides,
+  SHORTCUT_DEFS,
+} from "../core/shortcuts";
 
 /**
  * 主题类型（G6：从 2 主题扩展到 6 主题）
@@ -242,6 +249,20 @@ interface SettingsState {
    */
   restoreOtherWindows: boolean;
 
+  /**
+   * v0.9.0 自定义快捷键：id → 归一化键位覆盖（仅存用户改过的条目）。
+   * 缺省项回落 core/shortcuts.ts SHORTCUT_DEFS 默认值；
+   * 写入经 findShortcutConflict 查重（D5 校验 + 保留占用 + 互占），冲突时拒绝。
+   */
+  shortcuts: Record<string, string>;
+
+  /** v0.9.0：设置单项快捷键（冲突返回 false，不写入） */
+  setShortcut: (id: string, combo: string) => boolean;
+  /** v0.9.0：恢复单项默认键位（删除覆盖项） */
+  resetShortcut: (id: string) => void;
+  /** v0.9.0：恢复全部默认键位（清空覆盖表） */
+  resetAllShortcuts: () => void;
+
   /** v0.9.0：设置「恢复其他窗口」开关 */
   setRestoreOtherWindows: (v: boolean) => void;
 
@@ -321,6 +342,18 @@ export function migrateSettings(persisted: unknown, version: number): Partial<Se
     if (p.loadLastFolderOnStartup === false) p.loadLastFolderOnStartup = true;
     if (p.loadLastFolderCount === 1) p.loadLastFolderCount = 5;
   }
+  // v0.9.0（version < 4）：自定义快捷键覆盖表。缺字段/非法类型一律归一为 {}，
+  // 并过滤掉不在 SHORTCUT_DEFS 登记的 id（防手改 localStorage 注入垃圾键）
+  if (!p.shortcuts || typeof p.shortcuts !== "object" || Array.isArray(p.shortcuts)) {
+    p.shortcuts = {};
+  } else {
+    const validIds = new Set(SHORTCUT_DEFS.map((d) => d.id));
+    const cleaned: Record<string, string> = {};
+    for (const [id, combo] of Object.entries(p.shortcuts as Record<string, unknown>)) {
+      if (validIds.has(id) && typeof combo === "string" && combo) cleaned[id] = combo;
+    }
+    p.shortcuts = cleaned;
+  }
   return p;
 }
 
@@ -390,6 +423,26 @@ export const useSettingsStore = create<SettingsState>()(
       openExternalFileIn: "currentWindow",
       // v0.9.0：默认只恢复主窗口（用户主动关闭的窗口不复活）
       restoreOtherWindows: false,
+      // v0.9.0 自定义快捷键：默认无覆盖（全部走 SHORTCUT_DEFS 默认值）
+      shortcuts: {},
+
+      // v0.9.0 自定义快捷键：归一化 + 查重后写入；冲突/非法返回 false
+      setShortcut: (id, combo) => {
+        const def = SHORTCUT_DEFS.find((d) => d.id === id);
+        if (!def) return false;
+        if (findShortcutConflict(id, combo) !== null) return false;
+        const normalized = normalizeCombo(combo);
+        set((s) => ({ shortcuts: { ...s.shortcuts, [id]: normalized } }));
+        return true;
+      },
+      resetShortcut: (id) =>
+        set((s) => {
+          if (!(id in s.shortcuts)) return s;
+          const next = { ...s.shortcuts };
+          delete next[id];
+          return { shortcuts: next };
+        }),
+      resetAllShortcuts: () => set({ shortcuts: {} }),
 
       // v0.9.0：恢复其他窗口开关
       setRestoreOtherWindows: (v) => set({ restoreOtherWindows: v }),
@@ -457,8 +510,8 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: "lightmd-settings",
       // v0.8.1 需求4 / v0.8.2 需求7 / v0.8.4 需求7：persist version 一次性迁移（逻辑见 migrateSettings）
-      // v0.8.4 升 3：仅新增 fileTreeSort 字段，缺字段由 merge 回退默认值，无需 migrate 特判
-      version: 3,
+      // v0.9.0 升 4：新增 shortcuts（自定义快捷键覆盖表），缺字段由 merge 回退默认 {}，无需 migrate 特判
+      version: 4,
       migrate: (persisted, version) =>
         migrateSettings(persisted, version) as SettingsState,
       // v0.6.0：自定义合并——translate 嵌套对象做字段级回退，
@@ -517,3 +570,10 @@ export const useSettingsStore = create<SettingsState>()(
     }
   )
 );
+
+// v0.9.0 自定义快捷键：把覆盖表注入 core 运行时（keydown 事件驱动读取）。
+// persist rehydrate（含多窗口 broadcast 触发）会 setState → 订阅自动同步。
+useSettingsStore.subscribe((state) => {
+  setShortcutOverrides(state.shortcuts);
+});
+setShortcutOverrides(useSettingsStore.getState().shortcuts);

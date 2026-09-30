@@ -1,12 +1,21 @@
 /**
  * 自定义键盘映射
+ *
+ * v0.9.0 自定义快捷键改造：
+ * - **可自定义键**（undo/redo/格式类）迁入 `dynamicShortcutsPlugin`——每次 keydown
+ *   读 core/shortcuts.ts 生效表（默认 + 用户覆盖），改键即时生效、无需重建 EditorView；
+ * - **行为键**（Enter 列表分割、Shift+Enter 硬换行、Tab 缩进、Alt+↑↓ 移动块）保留静态
+ *   keymap，不纳入自定义范围（见基线表第九节）；
+ * - 删除线已按 D1 拍板统一为 Ctrl+Alt+S（原富文本 Ctrl+Shift+S 废弃，避开「另存为」）。
  */
 import { undo, redo } from "prosemirror-history";
 import type { Command } from "prosemirror-state";
+import { Plugin } from "prosemirror-state";
 import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands } from "prosemirror-commands";
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from "prosemirror-schema-list";
 import { keymap } from "prosemirror-keymap";
 import { lightMDSchema } from "./schema";
+import { matchShortcut } from "./shortcuts";
 
 const schema = lightMDSchema;
 
@@ -30,32 +39,55 @@ const insertHardBreak: Command = (state, dispatch) => {
   return true;
 };
 
-const mac = typeof navigator !== "undefined" ? /Mac/.test(navigator.platform) : false;
+/**
+ * 可自定义键 → ProseMirror 命令映射（id 对齐 core/shortcuts.ts SHORTCUT_DEFS）。
+ * undo/redo 属 global-editor 作用域：PM 内由此表接管（用户改键后旧 Ctrl+Z 不再触发，
+ * 因静态 keymap 不再登记 history 键）。
+ */
+const PM_COMMAND_BY_ID: Record<string, Command> = {
+  "edit.undo": undo,
+  "edit.redo": redo,
+  "edit.redo2": redo,
+
+  "format.bold": toggleMark(schema.marks.strong),
+  "format.italic": toggleMark(schema.marks.em),
+  "format.inlineCode": toggleMark(schema.marks.code),
+  "format.strikethrough": toggleMark(schema.marks.strike),
+
+  "format.heading1": setBlockType(schema.nodes.heading, { level: 1 }),
+  "format.heading2": setBlockType(schema.nodes.heading, { level: 2 }),
+  "format.heading3": setBlockType(schema.nodes.heading, { level: 3 }),
+  "format.heading4": setBlockType(schema.nodes.heading, { level: 4 }),
+  "format.heading5": setBlockType(schema.nodes.heading, { level: 5 }),
+  "format.heading6": setBlockType(schema.nodes.heading, { level: 6 }),
+  "format.paragraph": setBlockType(schema.nodes.paragraph),
+
+  "format.bulletList": wrapInList(schema.nodes.bullet_list),
+  "format.orderedList": wrapInList(schema.nodes.ordered_list),
+  "format.blockquote": wrapIn(schema.nodes.blockquote),
+};
+
+/**
+ * v0.9.0：动态快捷键插件（必须注册在静态 keymap **之前**）。
+ * 每次 keydown 读生效键位表做完全相等匹配，命中即执行对应 PM 命令；
+ * 未命中返回 false 交回静态 keymap / baseKeymap（Enter、Tab 等行为键）。
+ */
+function dynamicShortcutsPlugin(): Plugin {
+  return new Plugin({
+    props: {
+      handleKeyDown(view, event) {
+        const def = matchShortcut(event, ["editor", "rich"]);
+        if (!def) return false;
+        const cmd = PM_COMMAND_BY_ID[def.id];
+        if (!cmd) return false;
+        return cmd(view.state, view.dispatch, view);
+      },
+    },
+  });
+}
 
 export function buildKeymap() {
   return keymap({
-    "Mod-z": undo,
-    "Shift-Mod-z": redo,
-    ...(mac ? { "Mod-y": redo } : { "Ctrl-y": redo }),
-
-    "Mod-b": toggleMark(schema.marks.strong),
-    "Mod-i": toggleMark(schema.marks.em),
-    "Mod-`": toggleMark(schema.marks.code),
-    // 删除线：Mod+Shift+S（参考 toggleBold/toggleItalic 实现）
-    "Shift-Mod-s": toggleMark(schema.marks.strike),
-
-    "Mod-1": setBlockType(schema.nodes.heading, { level: 1 }),
-    "Mod-2": setBlockType(schema.nodes.heading, { level: 2 }),
-    "Mod-3": setBlockType(schema.nodes.heading, { level: 3 }),
-    "Mod-4": setBlockType(schema.nodes.heading, { level: 4 }),
-    "Mod-5": setBlockType(schema.nodes.heading, { level: 5 }),
-    "Mod-6": setBlockType(schema.nodes.heading, { level: 6 }),
-    "Mod-0": setBlockType(schema.nodes.paragraph),
-
-    "Shift-Mod-8": wrapInList(schema.nodes.bullet_list),
-    "Shift-Mod-9": wrapInList(schema.nodes.ordered_list),
-    "Shift-Mod-.": wrapIn(schema.nodes.blockquote),
-
     // 列表项 / 任务项 Enter 分割（v0.8.0 修复 P11-6）
     // 说明：本 keymap 必须在 baseKeymap **之前**注册（见 editor.ts 插件顺序），
     // 否则 Enter 会命中 baseKeymap 的 splitBlock，在同一列表项内新建段落，
@@ -79,3 +111,5 @@ export function buildKeymap() {
     "Alt-ArrowDown": lift,
   });
 }
+
+export { dynamicShortcutsPlugin };

@@ -66,13 +66,13 @@ describe("v0.8.1 需求4：侧栏默认宽度 +0.5cm", () => {
     expect(useSettingsStore.getState().outlineWidth).toBe(240);
   });
 
-  it("迁移后持久化版本号写回当前版本（v0.8.4 起 version=3）", async () => {
+  it("迁移后持久化版本号写回当前版本（v0.9.0 自定义快捷键起 version=4）", async () => {
     setPersisted({ sidebarWidth: 260, outlineWidth: 240 }, 0);
     await (useSettingsStore as any).persist.rehydrate();
     // 触发一次写入，确认落盘版本号已升级（避免每次启动重复迁移）
     useSettingsStore.getState().setSidebarWidth(279);
     const saved = JSON.parse(mockStorage[STORAGE_KEY]);
-    expect(saved.version).toBe(3);
+    expect(saved.version).toBe(4);
   });
 
   it("拖拽范围 180~480 覆盖新默认值（279/259 不被钳制）", () => {

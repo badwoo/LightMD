@@ -11,6 +11,8 @@
  * - 行首前缀：标题 H1~H6（已有标题则替换）/ 移除标题（转为段落）
  * - 块级插入：代码块 / 引用 / 列表 / 分割线 / 数学公式 / Mermaid 模板
  */
+// v0.9.0 自定义快捷键：源码模式键位解析读生效键位表（默认 + 用户覆盖）
+import { matchShortcut, getShortcutLabel } from "../../core/shortcuts";
 
 /** 格式化操作结果：替换文本 + 光标相对选区起点的偏移 */
 export interface FormatResult {
@@ -169,18 +171,35 @@ export function hasModifier(e: { ctrlKey: boolean; metaKey: boolean }): boolean 
 }
 
 /**
- * 解析快捷键事件，返回对应的 action 名（无匹配返回 null）
+ * 源码模式快捷键 action 名映射（id 对齐 core/shortcuts.ts SHORTCUT_DEFS）
+ */
+const SOURCE_ACTION_BY_ID: Record<string, string> = {
+  "format.bold": "bold",
+  "format.italic": "italic",
+  "format.strikethrough": "strikethrough",
+  "format.inlineCode": "code",
+  "format.math": "math",
+  "format.heading1": "heading1",
+  "format.heading2": "heading2",
+  "format.heading3": "heading3",
+  "format.heading4": "heading4",
+  "format.heading5": "heading5",
+  "format.heading6": "heading6",
+  "format.paragraph": "paragraph",
+};
+
+/**
+ * 解析源码模式 textarea 的快捷键事件，返回对应的 action 名（无匹配返回 null）
  *
- * 用于源码模式 textarea 的 keydown 处理：
- * - Ctrl/Cmd + B → bold
- * - Ctrl/Cmd + I → italic
- * - Ctrl/Cmd + Alt + S → strikethrough（避开 App.tsx 的 Ctrl+Shift+S 另存为）
- * - Ctrl/Cmd + ` → code
- * - Ctrl/Cmd + Shift + M → math（块级公式）
- * - Ctrl/Cmd + 1~6 → heading1~heading6（行首插入/替换标题）
- * - Ctrl/Cmd + 0 → paragraph（移除标题前缀）
+ * v0.9.0 自定义快捷键：改为读 core/shortcuts.ts 生效键位表（默认 + 用户覆盖），
+ * 默认键位与历史行为一致：
+ * - Ctrl/Cmd + B → bold；Ctrl/Cmd + I → italic；
+ * - Ctrl/Cmd + Alt + S → strikethrough（D1：与富文本统一，避开 Ctrl+Shift+S 另存为）
+ * - Ctrl/Cmd + ` → code；Ctrl/Cmd + Shift + M → math（块级公式）
+ * - Ctrl/Cmd + 1~6 → heading1~heading6；Ctrl/Cmd + 0 → paragraph
  *
- * 不处理 Ctrl+S/O/N/Z/Y/F/H 等已被 App.tsx 占用的组合。
+ * 全局键（Ctrl+S/O/N/F/H 等）属 global 作用域，结构上不会在本函数命中；
+ * 插入类（Ctrl+T 任务列表 / Ctrl+Alt+T 表格）由 App.tsx 全局匹配派发，也不在此处理。
  */
 export function parseShortcut(e: {
   ctrlKey: boolean;
@@ -188,24 +207,10 @@ export function parseShortcut(e: {
   shiftKey: boolean;
   altKey: boolean;
   key: string;
+  code?: string;
 }): string | null {
-  if (!hasModifier(e)) return null;
-  const key = e.key;
-  // Ctrl/Cmd + B → 加粗
-  if (!e.shiftKey && !e.altKey && (key === "b" || key === "B")) return "bold";
-  // Ctrl/Cmd + I → 斜体
-  if (!e.shiftKey && !e.altKey && (key === "i" || key === "I")) return "italic";
-  // Ctrl/Cmd + Alt + S → 删除线（避开 Ctrl+Shift+S 另存为）
-  if (!e.shiftKey && e.altKey && (key === "s" || key === "S")) return "strikethrough";
-  // Ctrl/Cmd + ` → 行内代码
-  if (!e.shiftKey && !e.altKey && key === "`") return "code";
-  // Ctrl/Cmd + Shift + M → 块级公式
-  if (e.shiftKey && !e.altKey && (key === "m" || key === "M")) return "math";
-  // Ctrl/Cmd + 1~6 → 行首标题
-  if (!e.shiftKey && !e.altKey && /^[1-6]$/.test(key)) return `heading${key}`;
-  // Ctrl/Cmd + 0 → 移除标题
-  if (!e.shiftKey && !e.altKey && key === "0") return "paragraph";
-  return null;
+  const def = matchShortcut(e, ["source"]);
+  return def ? SOURCE_ACTION_BY_ID[def.id] ?? null : null;
 }
 
 /** Mermaid 模板列表（按钮下拉菜单项） */
@@ -258,22 +263,24 @@ export interface FormatButton {
 /**
  * 格式工具栏按钮配置（静态常量，避免每次渲染重建）
  * 顺序：撤销/恢复 | 分隔 | H1-H6 | 粗体/斜体/粗斜体/删除线/行内代码 | 代码块 | 列表/任务 | 引用/链接/图片/表格 | Mermaid/数学公式/分割线
+ *
+ * v0.9.0 自定义快捷键：title 不再硬编码键位，展示时经 formatButtonTitle 动态拼接生效键位
  */
 export const FORMAT_BUTTONS: FormatButton[] = [
-  { action: "undo", label: "↩", title: "撤销 (Ctrl+Z)", isUndoRedo: true },
-  { action: "redo", label: "↪", title: "恢复 (Ctrl+Y)", isUndoRedo: true },
+  { action: "undo", label: "↩", title: "撤销", isUndoRedo: true },
+  { action: "redo", label: "↪", title: "恢复", isUndoRedo: true },
   { action: "sep1", label: "|", title: "", isSeparator: true },
-  { action: "h1", label: "H1", title: "标题一 (Ctrl+1)" },
-  { action: "h2", label: "H2", title: "标题二 (Ctrl+2)" },
-  { action: "h3", label: "H3", title: "标题三 (Ctrl+3)" },
-  { action: "h4", label: "H4", title: "标题四 (Ctrl+4)" },
-  { action: "h5", label: "H5", title: "标题五 (Ctrl+5)" },
-  { action: "h6", label: "H6", title: "标题六 (Ctrl+6)" },
-  { action: "bold", label: "B", title: "粗体 (Ctrl+B)" },
-  { action: "italic", label: "I", title: "斜体 (Ctrl+I)" },
+  { action: "h1", label: "H1", title: "标题一" },
+  { action: "h2", label: "H2", title: "标题二" },
+  { action: "h3", label: "H3", title: "标题三" },
+  { action: "h4", label: "H4", title: "标题四" },
+  { action: "h5", label: "H5", title: "标题五" },
+  { action: "h6", label: "H6", title: "标题六" },
+  { action: "bold", label: "B", title: "粗体" },
+  { action: "italic", label: "I", title: "斜体" },
   { action: "bolditalic", label: "BI", title: "粗斜体" },
-  { action: "strikethrough", label: "S", title: "删除线 (Ctrl+Alt+S)" },
-  { action: "code", label: "<>", title: "行内代码 (Ctrl+`)" },
+  { action: "strikethrough", label: "S", title: "删除线" },
+  { action: "code", label: "<>", title: "行内代码" },
   { action: "codeblock", label: "```", title: "代码块" },
   { action: "ul", label: "•", title: "无序列表" },
   { action: "task", label: "☑", title: "任务列表" },
@@ -283,6 +290,35 @@ export const FORMAT_BUTTONS: FormatButton[] = [
   { action: "image", label: "🖼", title: "图片" },
   { action: "table", label: "⊞", title: "表格" },
   { action: "mermaid", label: "◈", title: "Mermaid 图表", hasDropdown: true },
-  { action: "math", label: "∑", title: "数学公式 (Ctrl+Shift+M)" },
+  { action: "math", label: "∑", title: "数学公式" },
   { action: "hr", label: "—", title: "分割线" },
 ];
+
+/** 工具栏 action → 快捷键条目 id（有键位的才在 tooltip 中拼接） */
+const TOOLBAR_ACTION_DEF: Record<string, string> = {
+  undo: "edit.undo",
+  redo: "edit.redo",
+  h1: "format.heading1",
+  h2: "format.heading2",
+  h3: "format.heading3",
+  h4: "format.heading4",
+  h5: "format.heading5",
+  h6: "format.heading6",
+  bold: "format.bold",
+  italic: "format.italic",
+  strikethrough: "format.strikethrough",
+  code: "format.inlineCode",
+  ul: "format.bulletList",
+  ol: "format.orderedList",
+  quote: "format.blockquote",
+  table: "insert.table",
+  task: "insert.taskList",
+  math: "format.math",
+};
+
+/** 工具栏按钮 tooltip：基础文案 + 生效键位（改键后跟随变化） */
+export function formatButtonTitle(btn: FormatButton): string {
+  const defId = TOOLBAR_ACTION_DEF[btn.action];
+  const combo = defId ? getShortcutLabel(defId) : undefined;
+  return combo ? `${btn.title} (${combo})` : btn.title;
+}

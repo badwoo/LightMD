@@ -11,7 +11,8 @@ import { EditorState, TextSelection, Plugin } from "prosemirror-state";
 import { Node } from "prosemirror-model";
 import { toggleMark } from "prosemirror-commands";
 import { lightMDSchema as schema } from "../core/schema";
-import { buildKeymap } from "../core/keymap";
+import { buildKeymap, dynamicShortcutsPlugin } from "../core/keymap";
+import { setShortcutOverrides } from "../core/shortcuts";
 
 const isMac = typeof navigator !== "undefined" ? /Mac/.test(navigator.platform) : false;
 
@@ -42,14 +43,21 @@ function makeKeyEvent(key: string, mods: { ctrl?: boolean; shift?: boolean; alt?
 }
 
 function dispatchKey(state: EditorState, event: any): { handled: boolean; newState: EditorState } {
-  const plugin = buildKeymap();
+  // v0.9.0 自定义快捷键：动态键位插件（生效表匹配）先行，未命中 fallthrough 静态 keymap
+  const plugins = [dynamicShortcutsPlugin(), buildKeymap()];
   let newState = state;
   const fakeView: any = {
     state,
     dispatch: (tr: any) => { newState = state.apply(tr); },
   };
-  const props = plugin.spec.props as any;
-  const handled = props?.handleKeyDown ? props.handleKeyDown(fakeView, event) : false;
+  let handled = false;
+  for (const plugin of plugins) {
+    const props = plugin.spec.props as any;
+    if (props?.handleKeyDown && props.handleKeyDown(fakeView, event)) {
+      handled = true;
+      break;
+    }
+  }
   return { handled, newState };
 }
 
@@ -138,27 +146,40 @@ describe("buildKeymap 插件集成", () => {
     expect(typeof (plugin.spec.props as any)?.handleKeyDown).toBe("function");
   });
 
-  it("Ctrl+Shift+S（Windows/Linux）应触发 toggleMark(strike)", () => {
+  it("Ctrl+Alt+S（Windows/Linux，D1 统一键位）应触发 toggleMark(strike)", () => {
     if (isMac) return;
     const doc = makeDocWithText("hello world");
     const state = EditorState.create({
       doc,
       selection: TextSelection.create(doc, 1, 6),
     });
-    const event = makeKeyEvent("s", { ctrl: true, shift: true });
+    const event = makeKeyEvent("s", { ctrl: true, alt: true });
     const { handled, newState } = dispatchKey(state, event);
     expect(handled).toBe(true);
     expect(rangeHasMark(newState.doc, 1, 6, "strike")).toBe(true);
   });
 
-  it("Cmd+Shift+S（Mac）应触发 toggleMark(strike)", () => {
+  it("旧键 Ctrl+Shift+S 不再触发删除线（D1：让位给另存为）", () => {
+    if (isMac) return;
+    setShortcutOverrides({});
+    const doc = makeDocWithText("hello world");
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, 1, 6),
+    });
+    const event = makeKeyEvent("s", { ctrl: true, shift: true });
+    const { handled } = dispatchKey(state, event);
+    expect(handled).toBe(false);
+  });
+
+  it("Cmd+Alt+S（Mac，D1 统一键位）应触发 toggleMark(strike)", () => {
     if (!isMac) return;
     const doc = makeDocWithText("hello world");
     const state = EditorState.create({
       doc,
       selection: TextSelection.create(doc, 1, 6),
     });
-    const event = makeKeyEvent("s", { meta: true, shift: true });
+    const event = makeKeyEvent("s", { meta: true, alt: true });
     const { handled, newState } = dispatchKey(state, event);
     expect(handled).toBe(true);
     expect(rangeHasMark(newState.doc, 1, 6, "strike")).toBe(true);

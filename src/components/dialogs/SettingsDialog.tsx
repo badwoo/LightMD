@@ -11,6 +11,8 @@ import { useState, useEffect } from "react";
 import { useSettingsStore, THEMES, type Theme, type TranslateSettings } from "../../stores/useSettingsStore";
 import { translateService } from "../../services/translateService";
 import { useT } from "../../i18n";
+// v0.9.0 自定义快捷键设置弹窗（编辑器分类最后一栏入口）
+import { ShortcutSettingsDialog } from "./ShortcutSettingsDialog";
 import "./SettingsDialog.css";
 
 /** v0.6.0：翻译服务商预设（切换时自动填充 baseUrl/默认模型；models 供模型角色下拉选择） */
@@ -200,9 +202,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     onClose();
   };
 
+  // v0.9.0 自定义快捷键弹窗开关
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
   return (
     <div className="settings-overlay" onClick={onClose}>
       <div className="settings-dialog" onClick={(e) => e.stopPropagation()}>
+        {showShortcuts && <ShortcutSettingsDialog onClose={() => setShowShortcuts(false)} />}
         <div className="settings-header">
           <h2>{t("settings.title")}</h2>
           <button className="settings-close" onClick={onClose}>
@@ -453,6 +459,18 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   {settings.autoPairEnabled ? t("settings.on") : t("settings.off")}
                 </span>
               </label>
+            </div>
+
+            {/* v0.9.0 自定义快捷键入口（编辑器分类最后一栏，对齐 Ardot 入口卡片样式） */}
+            <div className="settings-field">
+              <label>{t("settings.shortcuts")}</label>
+              <button
+                className="settings-shortcuts-entry"
+                data-testid="shortcuts-entry"
+                onClick={() => setShowShortcuts(true)}
+              >
+                {t("settings.shortcuts.open")}
+              </button>
             </div>
           </section>
 

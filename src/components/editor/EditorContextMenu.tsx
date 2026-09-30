@@ -15,6 +15,8 @@
 import { useEffect, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../../i18n";
+// v0.9.0 自定义快捷键：菜单键位展示读生效键位表（改键后跟随变化）
+import { getShortcutLabel } from "../../core/shortcuts";
 import "./EditorContextMenu.css";
 
 /** 菜单项类型 */
@@ -67,11 +69,11 @@ export function buildMenuItems(
   translateEnabled = true,
 ): MenuItemConfig[] {
   const items: MenuItemConfig[] = [
-    // ─── 撤销/恢复 ───
-    { type: "item", action: "undo", label: "撤销", shortcut: "Ctrl+Z", disabled: !canUndo },
-    { type: "item", action: "redo", label: "恢复", shortcut: "Ctrl+Y", disabled: !canRedo },
+    // ─── 撤销/恢复（v0.9.0：键位动态读取生效表） ───
+    { type: "item", action: "undo", label: "撤销", shortcut: getShortcutLabel("edit.undo"), disabled: !canUndo },
+    { type: "item", action: "redo", label: "恢复", shortcut: getShortcutLabel("edit.redo"), disabled: !canRedo },
     { type: "separator" },
-    // ─── 剪切/复制/粘贴 ───
+    // ─── 剪切/复制/粘贴（系统剪贴板，保留键不入自定义表） ───
     { type: "item", action: "cut", label: "剪切", shortcut: "Ctrl+X", disabled: !hasSelection },
     { type: "item", action: "copy", label: "复制", shortcut: "Ctrl+C", disabled: !hasSelection },
     { type: "item", action: "paste", label: "粘贴", shortcut: "Ctrl+V", disabled: false },
@@ -81,15 +83,15 @@ export function buildMenuItems(
   if (hasSelection) {
     items.push(
       { type: "separator" },
-      { type: "item", action: "bold", label: "加粗", shortcut: "Ctrl+B" },
-      { type: "item", action: "italic", label: "斜体", shortcut: "Ctrl+I" },
-      { type: "item", action: "strikethrough", label: "删除线" },
-      { type: "item", action: "code", label: "行内代码", shortcut: "Ctrl+E" },
+      { type: "item", action: "bold", label: "加粗", shortcut: getShortcutLabel("format.bold") },
+      { type: "item", action: "italic", label: "斜体", shortcut: getShortcutLabel("format.italic") },
+      { type: "item", action: "strikethrough", label: "删除线", shortcut: getShortcutLabel("format.strikethrough") },
+      { type: "item", action: "code", label: "行内代码", shortcut: getShortcutLabel("format.inlineCode") },
     );
     // v0.6.0：AI 翻译（md 文件 + 总开关开启；快捷键 F6）
     if (isMdFile && translateEnabled) {
       items.push(
-        { type: "item", action: "translate", label: "AI 翻译", shortcut: "F6" },
+        { type: "item", action: "translate", label: "AI 翻译", shortcut: getShortcutLabel("edit.translate") },
       );
     }
   }

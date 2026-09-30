@@ -15,7 +15,7 @@ import { lightMDSchema } from "./schema";
 import { markdownToDoc } from "./markdown/parser";
 import { docToMarkdown } from "./markdown/serializer";
 import { buildInputRules } from "./inputrules";
-import { buildKeymap } from "./keymap";
+import { buildKeymap, dynamicShortcutsPlugin } from "./keymap";
 // v0.8.3 需求3：光标行（结构化行号）与列的计算（纯函数，可单测）
 import { computeDocLine, computeBlockColumn } from "../utils/cursorPosition";
 import { wysiwygPlugin } from "./plugins/wysiwyg";
@@ -209,6 +209,9 @@ export function createEditor(options: EditorOptions): EditorView | null {
     doc,
     plugins: [
       history(),
+      // v0.9.0 自定义快捷键：动态键位插件最先注册——每次 keydown 读生效键位表
+      // （默认 + 用户覆盖），命中即接管，未命中 fallthrough 到静态 keymap / baseKeymap
+      dynamicShortcutsPlugin(),
       // v0.8.0 修复 P11-6：自定义键位必须**先于** baseKeymap 注册。
       // 否则列表项/任务项内按 Enter 会命中 baseKeymap 的 splitBlock（在同一项内新建段落），
       // 序列化时项内多段落被合并成一行 → 切模式后换行丢失。
