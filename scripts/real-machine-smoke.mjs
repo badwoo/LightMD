@@ -12,7 +12,7 @@
  *
  * 断言范围：
  *  1. 应用外壳渲染完成 + 事件监听无失败（E2E 探针 dataset）
- *  2. 设置 → 编辑器 → 自定义快捷键入口，弹窗按分类列出 48 条
+ *  2. 设置 → 编辑器 → 自定义快捷键入口，弹窗按分类列出全部可自定义条目
  *  3. 真实按键录入：录制态 Ctrl+J → localStorage 真实落盘
  *  4. 冲突拦截：Ctrl+S（已被「保存文件」占用）→ 精确文案 + 不写入 + 保持录制态
  *  5. 单项恢复默认并落盘；覆盖表与测试前一致（无残留）
@@ -124,7 +124,7 @@ async function main() {
   await evalJs(`document.querySelector('[data-testid="shortcuts-entry"]').click(); true`);
   check("自定义快捷键弹窗打开", await waitFor(`!!document.querySelector(".shortcut-settings-dialog")`));
   const rowCount = await evalJs(`document.querySelectorAll(".shortcut-settings-row").length`);
-  check("按分类列出 48 条可自定义条目", rowCount === 48, `rows=${rowCount}`);
+  check("按分类列出全部可自定义条目(0.9.3 为 50 条)", rowCount === 50, `rows=${rowCount}`);
   const groups = await evalJs(
     `[...document.querySelectorAll(".shortcut-settings-group h3")].map(e=>e.textContent).join("/")`,
   );
