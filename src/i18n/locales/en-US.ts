@@ -567,6 +567,10 @@ export const enUS: Record<string, string> = {
   "image.cropTipIdle": "Click image to start selecting crop area",
   "image.cropTipSelecting": "Drag to select crop area",
   "image.cropTipConfirmed": "Selection confirmed, click Apply to crop",
+  "image.altLabel": "Alt text",
+  "image.altPlaceholder": "Image description (optional)",
+  "image.widthLabel": "Width (px)",
+  "image.dropFallback": "The drop position is no longer valid; inserted at the cursor instead",
   // ─── Editor context menu ───────────────────────────────────
   "menu.undo": "Undo",
   "menu.redo": "Redo",

@@ -103,6 +103,45 @@
   border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
+/* ─── E11b:alt/宽度编辑行 ──────────────────── */
+.image-edit-meta {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.image-edit-meta-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.image-edit-meta-field-narrow {
+  flex: 0 0 120px;
+}
+
+.image-edit-meta-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.image-edit-meta-input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.image-edit-meta-input:focus {
+  border-color: var(--accent-color, #3b82f6);
+}
+
 /* ─── 工具栏 ──────────────────── */
 .image-edit-toolbar {
   display: flex;

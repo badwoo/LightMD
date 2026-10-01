@@ -526,34 +526,45 @@ const nodeSpecs: Record<string, NodeSpec> = {
       src: { default: "" },
       alt: { default: "" },
       title: { default: "" },
+      // E11a(v0.9.3):显示宽度(px),markdown 语法 ![alt|300](src);null=未指定
+      width: { default: null },
     },
     parseDOM: [
       {
         tag: "img[src]",
         getAttrs(dom: string | HTMLElement) {
           const el = dom as HTMLElement;
+          // E11a:富文本粘贴的 <img style="width:120px"> / <img width> 还原为 width 属性
+          const styleWidth = el.style?.width ? Number.parseFloat(el.style.width) : NaN;
+          const attrWidth = el.getAttribute("width");
+          const raw =
+            Number.isFinite(styleWidth) ? styleWidth : attrWidth ? Number.parseFloat(attrWidth) : NaN;
           return {
             src: el.getAttribute("src") || "",
             alt: el.getAttribute("alt") || "",
             title: el.getAttribute("title") || "",
+            width: Number.isFinite(raw) ? Math.round(raw) : null,
           };
         },
       },
     ],
     toDOM(node: Node): DOMOutputSpec {
-      const { src, alt, title } = node.attrs;
+      const { src, alt, title, width } = node.attrs;
       // 将相对路径转换为 Tauri webview 可访问的 asset:// URL
       // data-editable="true" 标记图片为可编辑，供阅读模式注入点击监听（G3）
       // v0.8.3 WP5 需求7：loading="lazy" + decoding="async"——大图同步解码会阻塞
       // 合成帧（滚动掉帧的常见来源），懒加载让视口外图片完全不参与解码。
-      return ["img", {
+      const attrs: Record<string, string> = {
         src: resolveImageSrc(src),
         alt,
         title,
         "data-editable": "true",
         loading: "lazy",
         decoding: "async",
-      }];
+      };
+      // E11a:宽度在编辑器显示层即时生效;markdown 表达见 serializer 的 |W 后缀
+      if (typeof width === "number" && width > 0) attrs.style = `width:${width}px`;
+      return ["img", attrs];
     },
   },
 

@@ -1390,8 +1390,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // ─── G3：图片编辑对话框状态 ────────────────────
   // imageEditSrc 为 resolve 后的可显示 URL（asset:// 或 data:）
   // imageEditPos 为 ProseMirror 文档中图片节点的位置，确认后通过 setNodeMarkup 修改 attrs.src
+  // E11b(v0.9.3)：同时携带节点 alt/width，对话框内可编辑并写回
   const [imageEditDialogOpen, setImageEditDialogOpen] = useState(false);
   const [imageEditSrc, setImageEditSrc] = useState("");
+  const [imageEditAlt, setImageEditAlt] = useState("");
+  const [imageEditWidth, setImageEditWidth] = useState<number | null>(null);
   const [imageEditPos, setImageEditPos] = useState<number | null>(null);
   // ─── 右键菜单状态 ────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; hasSelection: boolean }>({
@@ -1452,6 +1455,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       e.stopPropagation();
       // img.src 是 resolveImageSrc 后的 URL（asset:// 或 data: 或 http(s)）
       setImageEditSrc(img.src);
+      // E11b(v0.9.3):读取节点 alt/width 供对话框编辑
+      const node = view.state.doc.nodeAt(pos);
+      if (node && node.type.name === "image") {
+        setImageEditAlt(node.attrs.alt || "");
+        setImageEditWidth(typeof node.attrs.width === "number" ? node.attrs.width : null);
+      } else {
+        setImageEditAlt("");
+        setImageEditWidth(null);
+      }
       setImageEditPos(pos);
       setImageEditDialogOpen(true);
     };
@@ -1459,8 +1471,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     return () => container.removeEventListener("click", handler, true);
   }, [viewMode]);
 
-  /** G3：图片编辑确认回调 —— 通过 setNodeMarkup 修改 image 节点 src attrs */
-  const handleImageEditConfirm = useCallback((newSrc: string) => {
+  /**
+   * G3：图片编辑确认回调 —— 通过 setNodeMarkup 修改 image 节点 attrs
+   * E11b(v0.9.3)：除 src 外同时写回对话框编辑的 alt 与 width
+   */
+  const handleImageEditConfirm = useCallback((newSrc: string, meta: { alt: string; width: number | null }) => {
     const view = viewRef.current;
     if (!view || imageEditPos === null) {
       setImageEditDialogOpen(false);
@@ -1469,10 +1484,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     try {
       const node = view.state.doc.nodeAt(imageEditPos);
       if (node && node.type.name === "image") {
-        // 保留原 alt/title，仅替换 src 为编辑后的 Base64 dataUrl
         const tr = view.state.tr.setNodeMarkup(imageEditPos, undefined, {
           ...node.attrs,
           src: newSrc,
+          alt: meta.alt,
+          width: meta.width,
         });
         view.dispatch(tr);
       }
@@ -1482,6 +1498,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setImageEditDialogOpen(false);
     setImageEditPos(null);
     setImageEditSrc("");
+    setImageEditAlt("");
+    setImageEditWidth(null);
   }, [imageEditPos]);
 
   // ─── 格式工具栏操作 ────────────────────────────
@@ -4725,11 +4743,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       <ImageEditDialog
         open={imageEditDialogOpen}
         imageSrc={imageEditSrc}
+        imageAlt={imageEditAlt}
+        imageWidth={imageEditWidth}
         onConfirm={handleImageEditConfirm}
         onClose={() => {
           setImageEditDialogOpen(false);
           setImageEditPos(null);
           setImageEditSrc("");
+          setImageEditAlt("");
+          setImageEditWidth(null);
         }}
       />
 

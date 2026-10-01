@@ -39,7 +39,7 @@ import { ExportDialog } from "./components/dialogs/ExportDialog";
 import { ImagePasteDialog } from "./components/dialogs/ImagePasteDialog";
 import { CommandPalette } from "./components/dialogs/CommandPalette";
 import { VersionSnapshotDialog } from "./components/dialogs/VersionSnapshotDialog";
-import { setImageHandler, insertImageAtCursor } from "./core/plugins/image-paste";
+import { setImageHandler, insertImageAtCursor, insertImagesAtPos, resolveDropInsertPos, type ImageDropContext } from "./core/plugins/image-paste";
 // E1(v0.9.2):阅读模式命令走 PM 真命令/节点构造(与快捷键同源)
 import { runPreviewCommand } from "./core/pmCommands";
 import { fileService, isTauri, type FileEntry } from "./services/fileService";
@@ -552,12 +552,6 @@ function App() {
     window.addEventListener("lightmd:closeFile", handler);
     return () => window.removeEventListener("lightmd:closeFile", handler);
   }, [openFile, closeTab, openTabs, activeTabIdx, setCurrentLanguage]);
-
-  // ─── 图片粘贴处理器 ───────────────────────
-  useEffect(() => {
-    setImageHandler((files) => setImageFiles(files));
-    return () => setImageHandler(null);
-  }, []);
 
   // ─── 拖拽文件/文件夹打开（使用 Tauri 事件系统） ──────
   useEffect(() => {
@@ -2974,15 +2968,39 @@ function App() {
   }, []);
 
   // ─── 图片插入回调 ─────────────────────────
+  // E11c(v0.9.3):拖拽落点快照守卫——drop 时记录的 doc/pos 在弹窗确认时仍有效
+  // (doc 引用一致且落点可插入)则插到落点,否则降级光标处并提示
+  const [imageDropCtx, setImageDropCtx] = useState<ImageDropContext | null>(null);
+
+  // 图片粘贴/拖入处理器:记录文件 + 落点上下文,弹 ImagePasteDialog
+  useEffect(() => {
+    setImageHandler((files, dropCtx) => {
+      setImageFiles(files);
+      setImageDropCtx(dropCtx ?? null);
+    });
+    return () => setImageHandler(null);
+  }, []);
+
   const handleImageInsert = useCallback(
     async (images: Array<{ src: string; alt: string }>) => {
       if (!editorView) return;
-      for (const img of images) {
-        insertImageAtCursor(editorView, img.src, img.alt);
+      const target = resolveDropInsertPos(editorView.state.doc, imageDropCtx);
+      if (target !== null) {
+        // 落点有效:按顺序插入到拖拽释放位置(单事务)
+        insertImagesAtPos(editorView, target, images);
+      } else {
+        // 有落点记录但已失效(期间文档被编辑)→ 降级光标处 + 提示;无记录(粘贴/多张)走光标
+        if (imageDropCtx && imageDropCtx.pos !== null) {
+          notify(t("image.dropFallback"), "warning");
+        }
+        for (const img of images) {
+          insertImageAtCursor(editorView, img.src, img.alt);
+        }
       }
       setImageFiles(null);
+      setImageDropCtx(null);
     },
-    [editorView]
+    [editorView, imageDropCtx, t]
   );
 
   const fileName = filePath ? getFileName(filePath) : t("app.untitled");

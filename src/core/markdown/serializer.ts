@@ -435,10 +435,12 @@ function inlineToMarkdown(node: Node, context?: "table"): string {
 
       parts.push(text);
     } else if (child.type.name === "image") {
-      const { src, alt, title } = child.attrs;
+      const { src, alt, title, width } = child.attrs;
       const titlePart = title ? ` "${escapeTitle(title)}"` : "";
+      // E11a(v0.9.3):宽度以 Typora 风格 |W 后缀表达;无宽度保持旧语法兼容旧文档
+      const widthPart = typeof width === "number" && width > 0 ? `|${width}` : "";
       // v0.9.0 C3：目标地址含空格/括号/尖括号时用 <...> 包裹
-      parts.push(`![${escapeText(alt || "")}](${escapeDest(src)}${titlePart})`);
+      parts.push(`![${escapeText(alt || "")}${widthPart}](${escapeDest(src)}${titlePart})`);
     } else if (child.type.name === "hard_break") {
       // v0.8.0 WP5 修复6：硬换行序列化为 CommonMark 两空格硬换行（"  \n"），
       // 与 parser 的 softbreak→hard_break 互逆，保证 md→doc→md 段内换行保真。

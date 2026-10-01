@@ -574,6 +574,10 @@ export const zhCN: Record<string, string> = {
   "image.cropTipIdle": "点击图片开始选择裁剪区域",
   "image.cropTipSelecting": "拖拽选择裁剪区域",
   "image.cropTipConfirmed": "选区已确定，点击「应用」裁剪生效",
+  "image.altLabel": "替代文本",
+  "image.altPlaceholder": "图片描述(留空则无)",
+  "image.widthLabel": "宽度(px)",
+  "image.dropFallback": "图片原位置已失效，已插入到光标处",
   // ─── 编辑器右键菜单 ────────────────────────────────────
   "menu.undo": "撤销",
   "menu.redo": "恢复",

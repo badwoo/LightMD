@@ -1100,10 +1100,20 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
     }
 
     if (t.type === "image") {
+      // E11a(v0.9.3):alt 支持 Typora 风格尺寸后缀 ![alt|300](src) → alt + width
+      const rawAlt = getAttr(t, "alt") || t.content || "";
+      let alt = rawAlt;
+      let width: number | null = null;
+      const wMatch = /^(.*)\|(\d+)$/.exec(rawAlt);
+      if (wMatch) {
+        alt = wMatch[1];
+        width = Number(wMatch[2]);
+      }
       nodes.push(schema.nodes.image.create({
         src: getAttr(t, "src") || "",
-        alt: getAttr(t, "alt") || t.content || "",
+        alt,
         title: getAttr(t, "title") || "",
+        width,
       }));
       i++;
       continue;

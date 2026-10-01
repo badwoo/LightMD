@@ -37,8 +37,12 @@ export interface ImageEditDialogProps {
   open: boolean;
   /** 原始图片 src（dataUrl 或 URL） */
   imageSrc: string;
-  /** 确认回调，参数为编辑后的 Base64 dataUrl */
-  onConfirm: (newSrc: string) => void;
+  /** E11b(v0.9.3):初始 alt 文本(来自 image 节点 attrs) */
+  imageAlt?: string;
+  /** E11b(v0.9.3):初始宽度 px(来自 image 节点 attrs;null/undefined=未设置) */
+  imageWidth?: number | null;
+  /** 确认回调:编辑后的 Base64 dataUrl + alt/宽度 meta(E11b) */
+  onConfirm: (newSrc: string, meta: { alt: string; width: number | null }) => void;
   /** 关闭回调 */
   onClose: () => void;
 }
@@ -54,12 +58,16 @@ interface DisplayRect {
 /** 裁剪三态状态机：idle → selecting → confirmed → 应用 */
 type CropMode = "idle" | "selecting" | "confirmed";
 
-export function ImageEditDialog({ open, imageSrc, onConfirm, onClose }: ImageEditDialogProps) {
+export function ImageEditDialog({ open, imageSrc, imageAlt, imageWidth, onConfirm, onClose }: ImageEditDialogProps) {
   const t = useT();
   /** 当前编辑中的图片 src（应用变换后的） */
   const [currentSrc, setCurrentSrc] = useState("");
   /** 原始图片 src（用于重置） */
   const [originalSrc, setOriginalSrc] = useState("");
+  /** E11b:alt 文本输入值 */
+  const [altText, setAltText] = useState("");
+  /** E11b:宽度输入值(字符串态,空串=未设置) */
+  const [widthText, setWidthText] = useState("");
   /** 是否正在处理变换 */
   const [processing, setProcessing] = useState(false);
   /** 错误信息 */
@@ -80,13 +88,15 @@ export function ImageEditDialog({ open, imageSrc, onConfirm, onClose }: ImageEdi
     if (open) {
       setCurrentSrc(imageSrc);
       setOriginalSrc(imageSrc);
+      setAltText(imageAlt ?? "");
+      setWidthText(typeof imageWidth === "number" && imageWidth > 0 ? String(imageWidth) : "");
       setProcessing(false);
       setError("");
       setCropRect(null);
       setCropMode("idle");
       dragStartRef.current = null;
     }
-  }, [open, imageSrc]);
+  }, [open, imageSrc, imageAlt, imageWidth]);
 
   /** 计算图片显示坐标到原图坐标的缩放比例 */
   const getScale = useCallback((): { scaleX: number; scaleY: number } | null => {
@@ -270,11 +280,21 @@ export function ImageEditDialog({ open, imageSrc, onConfirm, onClose }: ImageEdi
     setError("");
   }, [originalSrc]);
 
-  /** 确认：保存编辑后的图片到文档 */
+  /**
+   * E11b(v0.9.3):解析宽度输入。空串/非正数/非数字 → null(未设置,序列化回旧语法)。
+   */
+  const parseWidthInput = useCallback((): number | null => {
+    const trimmed = widthText.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  }, [widthText]);
+
+  /** 确认：保存编辑后的图片与 alt/宽度 meta 到文档 */
   const handleConfirm = useCallback(() => {
     if (processing || !currentSrc) return;
-    onConfirm(currentSrc);
-  }, [processing, currentSrc, onConfirm]);
+    onConfirm(currentSrc, { alt: altText, width: parseWidthInput() });
+  }, [processing, currentSrc, altText, parseWidthInput, onConfirm]);
 
   // Esc 取消
   useEffect(() => {
@@ -311,6 +331,33 @@ export function ImageEditDialog({ open, imageSrc, onConfirm, onClose }: ImageEdi
 
         <div className="image-edit-body">
           {error && <div className="image-edit-error">{error}</div>}
+
+          {/* E11b(v0.9.3):alt 与宽度编辑(顶部;裁剪/旋转功能保留在下方画布区) */}
+          <div className="image-edit-meta">
+            <label className="image-edit-meta-field">
+              <span className="image-edit-meta-label">{t("image.altLabel")}</span>
+              <input
+                type="text"
+                className="image-edit-meta-input"
+                value={altText}
+                aria-label={t("image.altLabel")}
+                placeholder={t("image.altPlaceholder")}
+                onChange={(e) => setAltText(e.target.value)}
+              />
+            </label>
+            <label className="image-edit-meta-field image-edit-meta-field-narrow">
+              <span className="image-edit-meta-label">{t("image.widthLabel")}</span>
+              <input
+                type="number"
+                min={1}
+                className="image-edit-meta-input"
+                value={widthText}
+                aria-label={t("image.widthLabel")}
+                placeholder="auto"
+                onChange={(e) => setWidthText(e.target.value)}
+              />
+            </label>
+          </div>
 
           <div
             ref={editorRef}
