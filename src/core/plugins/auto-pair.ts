@@ -102,6 +102,9 @@ export function autoPairPlugin(): Plugin {
     handleKeyDown(view, event) {
       if (!useSettingsStore.getState().autoPairEnabled) return false;
       if (event.key !== "Backspace") return false;
+      // E5(v0.9.2):IME 组合态守卫——部分输入法组合期 isComposing=false 但 keyCode=229,
+      // 拼音未上屏按 Backspace 不应误触成对删除
+      if (event.isComposing || event.keyCode === 229) return false;
       if (inDisabledNode(view)) return false;
 
       const { state } = view;

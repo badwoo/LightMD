@@ -1625,6 +1625,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // value[start-1] 为开符号、value[start] 为对应闭符号且光标无选区 → 一次删掉一对；
     // 有内容时（"（abc）"）不拦截：默认 Backspace 仅删光标前单字符，不吞闭符号。
     if (autoPairEnabled && e.key === "Backspace") {
+      // E5(v0.9.2):IME 组合态守卫——组合期按 Backspace 删拼音,不做成对删除
+      // (部分输入法组合期 isComposing=false 但 keyCode=229,与 PM 端 auto-pair 对齐)
+      if (e.isComposing || e.keyCode === 229) return;
       const ta = sourceTextareaRef.current;
       if (ta) {
         const start = ta.selectionStart ?? 0;
