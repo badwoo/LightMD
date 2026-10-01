@@ -1315,6 +1315,24 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setTimeout(restore, 50);
   }, [pushUndoEntry]);
 
+  // ─── E1(v0.9.2):阅读模式下对话框插入直接写入 ProseMirror ────
+  // 此前 LinkDialog/ImageInsertDialog 确认后走 insertTextAtCursor(textarea 通道),
+  // 阅读模式无 textarea → 静默失败。preview 模式下改走 markdownToDoc → replaceSelection。
+  const insertMarkdownIntoPM = useCallback((md: string) => {
+    const view = viewRef.current;
+    if (!view) return;
+    try {
+      // 开放度 0/0:作为整体块插入,不与两侧内容粘连
+      const slice = new Slice(markdownToDoc(md).content, 0, 0);
+      const tr = view.state.tr.replaceSelection(slice);
+      view.dispatch(tr.scrollIntoView());
+      view.focus();
+    } catch (e) {
+      console.warn("[EditorContainer] PM 插入失败,回退文本通道:", e);
+      insertTextAtCursor(md);
+    }
+  }, [insertTextAtCursor]);
+
   // ─── SlashCommand 插入回调 ────────────────────────
   // mode="block"：删除当前行从行首（含 / 和过滤文字）到光标的内容，在行首插入 markdown
   // mode="inline"：用 markdown 替换当前选中文本（markdown 已是完整包裹字符串）
@@ -1394,6 +1412,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
     setLinkDialogOpen(true);
   }, []);
+
+  // ─── E1(v0.9.2):命令面板/工具栏在阅读模式下发的链接/图片对话框打开事件 ────
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const kind = (e as CustomEvent).detail?.kind;
+      if (kind === "link") {
+        openLinkDialog();
+      } else if (kind === "image") {
+        setImageDialogOpen(true);
+      }
+    };
+    window.addEventListener("lightmd:pm-dialog", handler);
+    return () => window.removeEventListener("lightmd:pm-dialog", handler);
+  }, [openLinkDialog]);
 
   // ─── G3：阅读模式图片点击监听 ────────────────────
   // 仅在 preview 模式监听 ProseMirror 容器的 click 事件，
@@ -1627,7 +1659,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (autoPairEnabled && e.key === "Backspace") {
       // E5(v0.9.2):IME 组合态守卫——组合期按 Backspace 删拼音,不做成对删除
       // (部分输入法组合期 isComposing=false 但 keyCode=229,与 PM 端 auto-pair 对齐)
-      if (e.isComposing || e.keyCode === 229) return;
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       const ta = sourceTextareaRef.current;
       if (ta) {
         const start = ta.selectionStart ?? 0;
@@ -4654,7 +4686,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         open={linkDialogOpen}
         initialText={linkInitialText}
         onInsert={(md) => {
-          insertTextAtCursor(md);
+          // E1:阅读模式走 PM 插入(此前 preview 下 textarea 为 null 会静默失败)
+          if (viewMode === "preview" && viewRef.current) insertMarkdownIntoPM(md);
+          else insertTextAtCursor(md);
           setLinkDialogOpen(false);
         }}
         onClose={() => {
@@ -4677,7 +4711,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       <ImageInsertDialog
         open={imageDialogOpen}
         onInsert={(md) => {
-          insertTextAtCursor(md);
+          // E1:阅读模式走 PM 插入
+          if (viewMode === "preview" && viewRef.current) insertMarkdownIntoPM(md);
+          else insertTextAtCursor(md);
           setImageDialogOpen(false);
         }}
         onClose={() => setImageDialogOpen(false)}

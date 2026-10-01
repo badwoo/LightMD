@@ -56,6 +56,8 @@ const PM_COMMAND_BY_ID: Record<string, Command> = {
   "format.italic": toggleMark(schema.marks.em),
   "format.inlineCode": toggleMark(schema.marks.code),
   "format.strikethrough": toggleMark(schema.marks.strike),
+  // E1(v0.9.2):高亮 ==text==(此前仅源码模式有语法串,阅读模式命令无归属)
+  "format.highlight": toggleMark(schema.marks.mark),
 
   "format.heading1": setBlockType(schema.nodes.heading, { level: 1 }),
   "format.heading2": setBlockType(schema.nodes.heading, { level: 2 }),
@@ -69,6 +71,15 @@ const PM_COMMAND_BY_ID: Record<string, Command> = {
   "format.orderedList": wrapInList(schema.nodes.ordered_list),
   "format.blockquote": wrapIn(schema.nodes.blockquote),
 };
+
+/**
+ * E1(v0.9.2):查询 id 对应的 PM 命令。
+ * 动态快捷键(direct keydown)与阅读模式命令路由(App.tsx lightmd:command)
+ * 共用同一命令源,保证两条路径行为一致(修复"假命令"问题)。
+ */
+export function getPMCommand(id: string): Command | undefined {
+  return PM_COMMAND_BY_ID[id];
+}
 
 /**
  * v0.9.0：动态快捷键插件（必须注册在静态 keymap **之前**）。

@@ -40,6 +40,8 @@ import { ImagePasteDialog } from "./components/dialogs/ImagePasteDialog";
 import { CommandPalette } from "./components/dialogs/CommandPalette";
 import { VersionSnapshotDialog } from "./components/dialogs/VersionSnapshotDialog";
 import { setImageHandler, insertImageAtCursor } from "./core/plugins/image-paste";
+// E1(v0.9.2):阅读模式命令走 PM 真命令/节点构造(与快捷键同源)
+import { runPreviewCommand } from "./core/pmCommands";
 import { fileService, isTauri, type FileEntry } from "./services/fileService";
 import { versionSnapshotService } from "./services/versionSnapshotService";
 // v0.7.0 bug修复：文件浏览进度（重新打开/关闭标签时清除，标签切换保留）
@@ -2602,14 +2604,20 @@ function App() {
         const currentMode = useEditorStore.getState().viewMode;
         const isSource = currentMode === "edit" || currentMode === "split";
         if (isSource && sourceInsertHandler) {
-          // 源码模式：通过 sourceInsertHandler 插入语法
+          // 源码模式：通过 sourceInsertHandler 插入语法（行为保持不变）
           sourceInsertHandler(syntaxEntry.syntax, syntaxEntry.cursorOffset);
         } else if (editorViewRef.current) {
-          // 阅读模式：通过 ProseMirror 插入文本
+          // E1(v0.9.2)：阅读模式走 PM 真命令/节点构造，
+          // 修复此前 insertText(语法串) 不触发 InputRules 的"假命令"问题
           const view = editorViewRef.current;
-          const tr = view.state.tr.insertText(syntaxEntry.syntax);
-          view.dispatch(tr);
-          view.focus();
+          if (id === "insert.link" || id === "insert.image") {
+            // 链接/图片：打开 EditorContainer 的既有对话框，确认后插入 PM
+            window.dispatchEvent(new CustomEvent("lightmd:pm-dialog", {
+              detail: { kind: id === "insert.link" ? "link" : "image" },
+            }));
+          } else {
+            runPreviewCommand(id, view);
+          }
         }
       }
     };
