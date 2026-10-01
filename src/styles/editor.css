@@ -171,6 +171,32 @@
   font-style: normal;
 }
 
+/* E6(v0.9.4)：行内语法标记显示（光标进入 mark 区间时以伪元素显示源码符号） */
+.md-reveal::before {
+  content: attr(data-md-open);
+}
+.md-reveal::after {
+  content: attr(data-md-close);
+}
+.md-reveal::before,
+.md-reveal::after {
+  color: var(--marker-color);
+  opacity: 0.4;
+  pointer-events: none;
+  user-select: none;
+  font-weight: normal;
+  font-style: normal;
+}
+/* 链接闭合侧 `](href)` 过长时截断显示 */
+.md-reveal[data-href]::after {
+  display: inline-block;
+  max-width: 18em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
 /* 专注模式 */
 /* 亮色主题：浅色背景上的深色文字，opacity 0.25 足以形成视觉对比 */
 .ProseMirror.focus-mode .focus-dimmed {
@@ -352,6 +378,33 @@
   z-index: 2;
   pointer-events: none;
   text-transform: uppercase;
+}
+
+/* E17(v0.9.4)：语言下拉取代原 ::before 的 language 纯文本标签 */
+.code-block-wrapper.has-lang-select::before {
+  display: none;
+}
+.code-block-wrapper .code-lang-select {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 3;
+  max-width: 10em;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-hover, rgba(0,0,0,0.05));
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity var(--transition-normal);
+}
+.code-block-wrapper .code-lang-select:hover,
+.code-block-wrapper .code-lang-select:focus {
+  opacity: 1;
+  border-color: var(--border-color);
 }
 
 .code-block-wrapper code {

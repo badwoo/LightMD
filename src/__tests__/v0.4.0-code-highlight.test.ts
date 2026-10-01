@@ -244,12 +244,12 @@ describe("highlightCode - v0.4.0 新增语言", () => {
     expect(result).toContain("token");
   });
 
-  it("配置文件语言回退到 plaintext（返回转义文本）", () => {
-    // toml/ini/properties 未在 PrismJS 中 import，resolveLanguage 回退到 plaintext
-    const tomlResult = highlightCode("key = 'value'", "toml");
-    expect(tomlResult).toBe("key = 'value'");
-    const iniResult = highlightCode("[section]", "ini");
-    expect(iniResult).toBe("[section]");
+  it("配置文件语言在 v0.9.4 起已静态注册（toml/ini 可高亮）；未知语言回退 plaintext", () => {
+    // E17(v0.9.4)：toml/ini 已补充注册，不再回退 plaintext
+    expect(highlightCode("key = 'value'", "toml")).toContain("token");
+    expect(highlightCode("[section]", "ini")).toContain("token");
+    // 真正未注册的语言仍回退为转义文本（无特殊字符时原样返回）
+    expect(highlightCode("key = 'value'", "no-such-lang-xyz")).toBe("key = 'value'");
   });
 });
 

@@ -42,6 +42,10 @@ export const zhCN: Record<string, string> = {
   "settings.paragraphBreaks.gfm": "GFM(即换行)",
   "settings.paragraphBreaks.commonmark": "CommonMark(需两空格)",
   "settings.paragraphBreaks.hint": "切换后重新打开文档生效",
+  // E9(v0.9.4)：粘贴 Markdown 自动转换
+  "settings.pasteMarkdown": "粘贴 Markdown 自动转换",
+  // E17(v0.9.4)：代码块自动换行
+  "settings.codeBlockWrap": "代码块自动换行",
   // ─── v0.6.0：AI 翻译设置 ────────────────────
   "settings.translate": "AI",
   "settings.translate.enabled": "启用 AI 功能",
@@ -425,6 +429,12 @@ export const zhCN: Record<string, string> = {
   "editor.renderFailed": "渲染失败",
   "editor.emptyHint": "打开文件或拖拽 .md 文件开始编辑",
   "editor.preview": "预览",
+  // E12(v0.9.4)：源码模式撤销到边界时的提示
+  "editor.undoBoundary": "已到本模式撤销边界",
+  // E17(v0.9.4)：代码块语言下拉
+  "codeblock.language": "代码语言",
+  "codeblock.langAuto": "自动检测",
+  "codeblock.langPlain": "纯文本",
   // ─── App.tsx 应用层 ────────────────────────────
   "app.untitled": "无标题.md",
   // v0.8.0 WP1：临时文件命名（新建文件1、新建文件2…）

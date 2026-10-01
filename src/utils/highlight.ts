@@ -31,6 +31,57 @@ import "prismjs/components/prism-r";
 import "prismjs/components/prism-scala";
 import "prismjs/components/prism-perl";
 import "prismjs/components/prism-powershell";
+// E17(v0.9.4)：补充常用语言静态注册（此前仅 27 种，README 宣称 200+ 与实际不符）
+import "prismjs/components/prism-toml";
+import "prismjs/components/prism-docker";
+import "prismjs/components/prism-ini";
+import "prismjs/components/prism-graphql";
+import "prismjs/components/prism-makefile";
+import "prismjs/components/prism-diff";
+
+/**
+ * E17(v0.9.4)：本编辑器静态注册的 PrismJS 高亮语言清单。
+ *
+ * 说明：PrismJS 上游理论支持 200+ 语言，但本项目按需静态注册，实际可用集合以本表为准
+ * （README 的声明口径与此表一致，测试会校验一致性）。
+ * 代码块语言下拉（CodeBlockView）与文档说明均以本表为单一数据源。
+ */
+export const SUPPORTED_HIGHLIGHT_LANGUAGES: readonly string[] = Object.freeze([
+  "plaintext",
+  "javascript",
+  "typescript",
+  "jsx",
+  "tsx",
+  "css",
+  "html",
+  "json",
+  "python",
+  "rust",
+  "bash",
+  "markdown",
+  "yaml",
+  "sql",
+  "java",
+  "c",
+  "cpp",
+  "go",
+  "php",
+  "swift",
+  "kotlin",
+  "dart",
+  "lua",
+  "ruby",
+  "r",
+  "scala",
+  "perl",
+  "powershell",
+  "toml",
+  "docker",
+  "ini",
+  "graphql",
+  "makefile",
+  "diff",
+]);
 
 // 语言别名映射
 const langAliases: Record<string, string> = {
@@ -46,6 +97,8 @@ const langAliases: Record<string, string> = {
   pl: "perl", pm: "perl",
   ps1: "powershell", pwsh: "powershell",
   rlang: "r",
+  // E17(v0.9.4)：新增语言的常见写法
+  dockerfile: "docker", mk: "makefile", make: "makefile", patch: "diff",
 };
 
 /** 解析语言名，返回 PrismJS 支持的语言标识或 "plaintext" */

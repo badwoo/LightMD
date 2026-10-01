@@ -253,6 +253,35 @@ export function shouldSkipProseMirrorSync(isMdFile: boolean, fromSource: boolean
   return false;
 }
 
+/**
+ * E12(v0.9.4)：源码→阅读时是否需要把 textarea 内容重建为 ProseMirror 文档（纯函数，便于单测）。
+ *
+ * 内容一致时返回 false：跳过整树 replaceWith，避免写入一条无意义的 PM history
+ * （旧实现使"阅读→源码→不改→阅读"也占用一次撤销）。
+ */
+export function shouldReplacePmDoc(sourceMarkdown: string, pmMarkdown: string): boolean {
+  return sourceMarkdown !== pmMarkdown;
+}
+
+/**
+ * E12(v0.9.4)：阅读→源码时是否需要清空源码模式的 diff 撤销栈（纯函数，便于单测）。
+ *
+ * 仅当本次同步文本与进入前 textarea 文本不一致（PM 侧有变更 → 旧栈基线失效）时才清空；
+ * 一致时保留栈，避免"切一圈回来"撤销历史被白白丢弃。
+ */
+export function shouldResetSourceUndoStack(prevText: string, syncedText: string): boolean {
+  return prevText !== syncedText;
+}
+
+/**
+ * E12(v0.9.4)：源码模式撤销到边界时给出的提示文案（null = 未到边界，正常撤销）。
+ *
+ * 抽为纯函数：承载"撤到底给出明确提示"的决策（旧实现为静默 no-op），同时便于单测。
+ */
+export function sourceUndoBoundaryMessage(undoStackLength: number): string | null {
+  return undoStackLength === 0 ? translate("editor.undoBoundary") : null;
+}
+
 // v0.6.3 P2-14：翻译前快照时间节流（模块级，同一文件 10 分钟内只记录一次）
 const TRANSLATE_SNAPSHOT_THROTTLE_MS = 10 * 60 * 1000;
 let lastTranslateSnapshot = { path: "", at: 0 };
@@ -506,7 +535,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       return;
     }
     const textarea = sourceTextareaRef.current;
-    if (!textarea || undoStackRef.current.length === 0) return;
+    if (!textarea) return;
+    // E12(v0.9.4)：撤到底再按 Ctrl+Z 原为静默 no-op，改为明确提示撤销边界
+    const boundaryMsg = sourceUndoBoundaryMessage(undoStackRef.current.length);
+    if (boundaryMsg) {
+      notifyWarning(boundaryMsg);
+      return;
+    }
     // 将当前状态推入恢复栈（记录差异，正向：当前→撤销目标）
     const currentContent = sourceContentRef.current;
     const undoEntry = undoStackRef.current.pop()!;
@@ -991,10 +1026,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
     if (fromPreview && toSource) {
       // ── 阅读 → 编辑/分屏：从 ProseMirror 同步到 textarea ──
+      // E12(v0.9.4)：记录进入前 textarea 文本与本次同步文本（供 diff 栈清空判定，见下方）
+      const prevSourceText = sourceContentRef.current;
+      let syncedSourceText = "";
       try {
         // v0.6.6 问题4：PM 序列化输出含完整 base64 → 显示层 mask 为短标记
         // （data URL 不含换行，mask 不改变行结构，光标行号映射不受影响）
         const { text: mdMasked } = maskBase64Images(getMarkdownFromDoc(view.state.doc), base64TokensRef.current);
+        syncedSourceText = mdMasked;
         setSourceContent(mdMasked);
         sourceContentRef.current = mdMasked;
 
@@ -1040,6 +1079,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         });
       } catch {
         const { text: fallbackMasked } = maskBase64Images(content, base64TokensRef.current);
+        syncedSourceText = fallbackMasked;
         setSourceContent(fallbackMasked);
         sourceContentRef.current = fallbackMasked;
         // 解析失败时无可用光标行号 → 无锚点，回退滚动百分比
@@ -1051,15 +1091,23 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         };
       }
 
-      undoStackRef.current = [];
-      redoStackRef.current = [];
+      // E12(v0.9.4)：不再无条件清空 diff 栈。
+      // 仅当本次同步文本与进入前 textarea 文本不一致（PM 侧有变更 → 旧栈基线失效）时才清空；
+      // 内容一致（如"切一圈不改"）保留栈，避免撤销历史被白白丢弃。
+      if (shouldResetSourceUndoStack(prevSourceText, syncedSourceText)) {
+        undoStackRef.current = [];
+        redoStackRef.current = [];
+      }
     } else if (fromSource && toPreview) {
       // ── 编辑/分屏 → 阅读：从 textarea 同步到 ProseMirror ──
       if (sourceContent) {
         try {
           // v0.6.6 问题4：textarea 显示层是短标记 → 还原完整 base64 后再解析 PM doc
-          const newDoc = markdownToDoc(unmaskBase64Images(sourceContent, base64TokensRef.current));
-          const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
+          const unmaskedSource = unmaskBase64Images(sourceContent, base64TokensRef.current);
+          // E12(v0.9.4)：内容与 PM 完全一致时跳过整树替换——replaceWith 会写入一条
+          // PM history，"切一圈不改"也会占用一次撤销。改为仅移动光标（选区事务不入历史）。
+          const contentChanged = shouldReplacePmDoc(unmaskedSource, getMarkdownFromDoc(view.state.doc));
+          const newDoc = contentChanged ? markdownToDoc(unmaskedSource) : view.state.doc;
 
           // 映射光标位置
           const textarea = sourceTextareaRef.current;
@@ -1093,6 +1141,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             return true;
           });
 
+          // E12(v0.9.4)：仅内容变化时才做整树替换，避免无意义的 PM history 记录
+          const tr = contentChanged
+            ? view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content)
+            : view.state.tr;
           const safePos = Math.min(targetPos, tr.doc.content.size - 1);
           tr.setSelection(TextSelection.near(tr.doc.resolve(Math.max(1, safePos))));
           tr.setMeta("fileSwitch", true);

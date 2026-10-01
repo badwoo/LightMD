@@ -41,6 +41,10 @@ export const enUS: Record<string, string> = {
   "settings.paragraphBreaks.gfm": "GFM (line break)",
   "settings.paragraphBreaks.commonmark": "CommonMark (2 spaces)",
   "settings.paragraphBreaks.hint": "Reopen the document to apply",
+  // E9(v0.9.4): Paste Markdown auto-conversion
+  "settings.pasteMarkdown": "Convert Markdown on paste",
+  // E17(v0.9.4): Code block word wrap
+  "settings.codeBlockWrap": "Wrap code block lines",
   // ─── v0.6.0：AI 翻译设置 ────────────────────
   "settings.translate": "AI",
   "settings.translate.enabled": "Enable AI features",
@@ -418,6 +422,12 @@ export const enUS: Record<string, string> = {
   "editor.renderFailed": "Render failed",
   "editor.emptyHint": "Open a file or drag a .md file to start editing",
   "editor.preview": "Preview",
+  // E12(v0.9.4): undo reached the boundary of this mode
+  "editor.undoBoundary": "Reached the undo boundary of this mode",
+  // E17(v0.9.4): code block language dropdown
+  "codeblock.language": "Code language",
+  "codeblock.langAuto": "Auto-detect",
+  "codeblock.langPlain": "Plain text",
   // ─── App.tsx application layer ───────────────────────────────────
   "app.untitled": "Untitled.md",
   // v0.8.0 WP1：临时文件命名（Untitled 1, Untitled 2 …）

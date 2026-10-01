@@ -111,8 +111,14 @@ describe("v0.5.0 N4：代码块语言自动检测", () => {
     const src = readSrc("src/core/plugins/code-block.ts");
     expect(src).toMatch(/import \{ detectLanguage \} from "\.\.\/\.\.\/utils\/detect-language"/);
     expect(src).toMatch(/const detected = detectLanguage\(code\)/);
-    // 静默：检测结果仅用于高亮层 className，不修改 node attrs
-    expect(src).not.toMatch(/tr\.setNodeMarkup/);
+    // 静默：检测结果仅用于高亮层 className，不修改 node attrs。
+    // E17(v0.9.4) 起本文件另有「语言下拉」显式写回路径（setNodeMarkup），
+    // 故此处把断言收窄到自动检测分支的作用域内（检测本身仍不写回）。
+    const detectStart = src.indexOf("const detected = detectLanguage(code)");
+    const detectEnd = src.indexOf("// G9：行号生成");
+    expect(detectStart).toBeGreaterThan(-1);
+    expect(detectEnd).toBeGreaterThan(detectStart);
+    expect(src.slice(detectStart, detectEnd)).not.toMatch(/setNodeMarkup/);
   });
 
   it("集成：无语言代码块获得语法 token 高亮，且文档 language 属性保持为空", () => {

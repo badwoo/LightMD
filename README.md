@@ -24,7 +24,7 @@ LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器�
 - ✅ **GFM 任务列表**（`- [x]` / `- [ ]`）
 - ✅ **Mermaid 图表**（流程图、时序图、甘特图、类图、状态图等 20+ 种，工具栏内置 7 种模板一键插入）
 - ✅ **KaTeX 数学公式**（行内 `$...$` 与块级 `$$...$$`；块级公式编辑态实时预览，0.5.0 新增）
-- ✅ **代码语法高亮**（PrismJS，200+ 语言，0.2.0 新增 PHP/Swift/Kotlin/Dart/Lua/Ruby/R/Scala/Perl/PowerShell；0.5.0 新增无语言标注代码块自动识别语言）
+- ✅ **代码语法高亮**（PrismJS，静态注册 34 种常用语言，代码块右上角可下拉切换；0.2.0 新增 PHP/Swift/Kotlin/Dart/Lua/Ruby/R/Scala/Perl/PowerShell；0.5.0 新增无语言标注代码块自动识别语言；0.9.4 新增 TOML/Docker/INI/GraphQL/Makefile/Diff）
 - ✅ **高亮标记** `==文本==`（0.2.0 新增）
 - ✅ **上标 / 下标** `^文本^` / `~文本~`（0.2.0 新增）
 - ✅ **Emoji 表情** `:smile:` 自动补全（0.2.0 新增）

@@ -501,6 +501,22 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               </label>
             </div>
 
+            {/* E17(v0.9.4)：代码块自动换行（关闭后双层同步 pre + 横向滚动） */}
+            <div className="settings-field">
+              <label>{t("settings.codeBlockWrap")}</label>
+              <label className="settings-switch">
+                <input
+                  type="checkbox"
+                  checked={settings.codeBlockWrap}
+                  onChange={(e) => settings.setCodeBlockWrap(e.target.checked)}
+                />
+                <span className="settings-switch-slider"></span>
+                <span className="settings-switch-label">
+                  {settings.codeBlockWrap ? t("settings.on") : t("settings.off")}
+                </span>
+              </label>
+            </div>
+
             {/* N1：自动配对补全开关（括号/引号自动补全，编辑与源码模式同时生效） */}
             <div className="settings-field">
               <label>{t("settings.autoPair")}</label>
@@ -529,6 +545,22 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 <option value="commonmark">{t("settings.paragraphBreaks.commonmark")}</option>
               </select>
               <span className="settings-hint">{t("settings.paragraphBreaks.hint")}</span>
+            </div>
+
+            {/* E9(v0.9.4)：粘贴 Markdown 自动转换（富文本/纯文本 Markdown 粘贴解析为结构） */}
+            <div className="settings-field">
+              <label>{t("settings.pasteMarkdown")}</label>
+              <label className="settings-switch">
+                <input
+                  type="checkbox"
+                  checked={settings.pasteMarkdownEnabled}
+                  onChange={(e) => settings.setPasteMarkdownEnabled(e.target.checked)}
+                />
+                <span className="settings-switch-slider"></span>
+                <span className="settings-switch-label">
+                  {settings.pasteMarkdownEnabled ? t("settings.on") : t("settings.off")}
+                </span>
+              </label>
             </div>
 
             {/* v0.9.0 自定义快捷键入口（编辑器分类最后一栏，对齐 Ardot 入口卡片样式） */}

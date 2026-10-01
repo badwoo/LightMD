@@ -19,7 +19,10 @@ import { buildKeymap, dynamicShortcutsPlugin } from "./keymap";
 // v0.8.3 需求3：光标行（结构化行号）与列的计算（纯函数，可单测）
 import { computeDocLine, computeBlockColumn } from "../utils/cursorPosition";
 import { wysiwygPlugin } from "./plugins/wysiwyg";
+// E6(v0.9.4)：行内语法标记显示（光标进入 mark 区间显示源码符号）
+import { inlineMarkRevealPlugin } from "./plugins/inline-mark-reveal";
 import { imagePastePlugin } from "./plugins/image-paste";
+import { clipboardPastePlugin } from "./plugins/clipboard-paste";
 import { focusModePlugin } from "./plugins/focus-mode";
 import { footnoteHoverPlugin } from "./plugins/footnote-hover";
 import { CodeBlockView } from "./plugins/code-block";
@@ -219,7 +222,12 @@ export function createEditor(options: EditorOptions): EditorView | null {
       keymap(baseKeymap),
       buildInputRules(),
       wysiwygPlugin,
+      // E6(v0.9.4)：块级 marker 之后注册行内 reveal，两者装饰互补
+      inlineMarkRevealPlugin,
       imagePastePlugin,
+      // E9(v0.9.4)：Markdown 感知粘贴/富文本粘贴。
+      // 必须晚于 imagePaste（图片优先），早于 smartPaste（单 URL→链接为兜底）
+      clipboardPastePlugin(),
       focusModePlugin,
       footnoteHoverPlugin,
       searchHighlightPlugin,
