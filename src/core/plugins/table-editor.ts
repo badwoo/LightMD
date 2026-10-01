@@ -163,6 +163,45 @@ function isInHead($pos: ResolvedPos): boolean {
   return false;
 }
 
+// ─── 右键菜单项构建(E4,v0.9.2) ────────────────────────
+
+/**
+ * 右键菜单项描述。key 为 i18n key(渲染时经 t() 取文案);
+ * key 为 null 表示分隔线;danger 为 true 时渲染红色样式。
+ * 此前文案硬编码中文且以 label.includes("删除") 判定危险样式,
+ * 英文界面穿帮、i18n 化后判定失效,故重构为数据驱动。
+ */
+export interface ContextMenuItem {
+  key: string | null;
+  op?: (tr: Transaction, $pos: ResolvedPos) => Transaction | null;
+  danger?: boolean;
+}
+
+/**
+ * 构建表格右键菜单项(纯函数,便于单测)。
+ * 表头行(table_head 内)不提供"删除行":GFM 表头恒一行,
+ * 删除行实为删除整个 table_head,行为反直觉(仍可删列)。
+ */
+export function buildContextMenuItems($pos: ResolvedPos): ContextMenuItem[] {
+  const items: ContextMenuItem[] = [
+    { key: "table.addRowAbove", op: insertRowAbove },
+    { key: "table.addRowBelow", op: insertRowBelow },
+    { key: null },
+    { key: "table.addColumnLeft", op: insertColumnLeft },
+    { key: "table.addColumnRight", op: insertColumnRight },
+    { key: null },
+  ];
+  if (!isInHead($pos)) {
+    items.push(
+      { key: "table.deleteRow", op: deleteRow, danger: true },
+      { key: "table.deleteColumn", op: deleteColumn, danger: true },
+    );
+  } else {
+    items.push({ key: "table.deleteColumn", op: deleteColumn, danger: true });
+  }
+  return items;
+}
+
 /** 计算 cell 在所属 row 中的索引 */
 function cellIndexInRow(row: Node, cellPos: number, rowPos: number): number {
   let pos = rowPos + 1;
@@ -1094,29 +1133,20 @@ export class TableView implements NodeView {
     menu.className = "table-context-menu";
     menu.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:999;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;box-shadow:var(--shadow-md);padding:4px 0;min-width:155px;font-size:13px;color:var(--text-primary);`;
 
-    // 菜单项与对应操作（label 中含 "删除" 视为危险操作）
-    const actions: Array<{ label: string; op?: (tr: Transaction, $pos: ResolvedPos) => Transaction | null }> = [
-      { label: "⬆ 上方插入行", op: insertRowAbove },
-      { label: "⬇ 下方插入行", op: insertRowBelow },
-      { label: "-" },
-      { label: "⬅ 左侧插入列", op: insertColumnLeft },
-      { label: "➡ 右侧插入列", op: insertColumnRight },
-      { label: "-" },
-      { label: "🗑 删除当前行", op: deleteRow },
-      { label: "🗑 删除当前列", op: deleteColumn },
-    ];
+    // E4:菜单项数据驱动(i18n key + danger 字段),表头行不含"删除行"
+    const actions = buildContextMenuItems($pos);
 
-    actions.forEach(({ label, op }) => {
-      if (label === "-") {
+    actions.forEach(({ key, op, danger }) => {
+      if (key === null) {
         const sep = document.createElement("div");
         sep.style.cssText = "height:1px;background:var(--border-light);margin:3px 0;";
         menu.appendChild(sep);
         return;
       }
       const btn = document.createElement("button");
-      btn.textContent = label;
+      btn.textContent = t(key);
       btn.style.cssText = "display:block;width:100%;padding:5px 12px;border:none;background:none;text-align:left;cursor:pointer;";
-      if (label.includes("删除")) btn.style.color = "#d32f2f";
+      if (danger) btn.style.color = "#d32f2f";
       btn.addEventListener("mouseenter", () => (btn.style.background = "var(--bg-hover)"));
       btn.addEventListener("mouseleave", () => (btn.style.background = "none"));
       btn.addEventListener("click", (ev) => {
