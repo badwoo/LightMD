@@ -16,6 +16,8 @@ import { taskListPlugin } from "./task-list-plugin";
 import { headingAnchorPlugin, collectHeadings, type TocHeading } from "./heading-anchor";
 import { tocPlugin } from "./toc-plugin";
 import { setBlockSource } from "./blockSourceMap";
+// E14(v0.9.2):段内换行语义默认值取自设置(与 auto-pair 同款 getState 先例)
+import { useSettingsStore } from "../../stores/useSettingsStore";
 
 // Token 类型兼容 markdown-it
 interface Token {
@@ -57,40 +59,94 @@ export function sanitizeLinkHref(href: string): string | null {
 
 const schema = lightMDSchema;
 
-// 配置 markdown-it
-const md = new MarkdownIt("commonmark", {
-  html: false,
-  breaks: true,
-  linkify: true,
-  // v0.9.0 C5：关闭 typographer——智能引号会在解析层把直引号改写为弯引号，
-  // 文档内容被静默改字（git diff 噪音）。保真优先；预览不再自动排版弯引号。
-  typographer: false,
-});
+// ─── markdown-it 实例管理(E14,v0.9.2) ──────────────────────
 
-md.enable(["table", "strikethrough"]);
-md.use(mathPlugin);
-md.use(taskListPlugin);
-// 标题锚点自动生成 id + [toc] 自动目录（分屏预览/导出 HTML 时生效）
-md.use(headingAnchorPlugin);
-md.use(tocPlugin);
-// 高亮标记、上下标、emoji、脚注、定义列表
-md.use(markPlugin);
-md.use(subPlugin);
-md.use(supPlugin);
-md.use(emojiPlugin);
-md.use(footnotePlugin);
-md.use(deflistPlugin);
+/**
+ * markdown-it 工厂:插件、validateLink、linkify 等配置全部集中于此。
+ * 此前 parser.ts / exportBlocks.ts / ExportDialog.tsx 三处独立实例化且
+ * 各自硬编码 breaks,配置变更需改三处且已出现漂移。
+ *
+ * @param opts.breaks 段内单换行语义:true=GFM(即换行,默认);false=CommonMark(渲染为空格)
+ * @param opts.typographer 智能排版(弯引号等);编辑管线恒 false,导出管线维持 true(R1 统一)
+ * @param opts.validateLink 链接 scheme 白名单;默认开启(编辑管线)。
+ *   导出管线须传 false:导出 HTML 不经 PM,base64 图片(data:)依赖默认放行,
+ *   白名单贯通会使 EPUB/PNG 导出丢图;安全策略统一在 R1 处理
+ */
+export function createMarkdownIt(opts: { breaks: boolean; typographer?: boolean; validateLink?: boolean }): MarkdownIt {
+  const instance = new MarkdownIt("commonmark", {
+    html: false,
+    breaks: opts.breaks,
+    linkify: true,
+    // 编辑管线保持 v0.9.0 C5 决策:关闭 typographer——智能引号会在解析层把
+    // 直引号改写为弯引号,文档内容被静默改字(git diff 噪音)。保真优先。
+    typographer: opts.typographer ?? false,
+  });
+  instance.enable(["table", "strikethrough"]);
+  instance.use(mathPlugin);
+  instance.use(taskListPlugin);
+  // 标题锚点自动生成 id + [toc] 自动目录(分屏预览/导出 HTML 时生效)
+  instance.use(headingAnchorPlugin);
+  instance.use(tocPlugin);
+  // 高亮标记、上下标、emoji、脚注、定义列表
+  instance.use(markPlugin);
+  instance.use(subPlugin);
+  instance.use(supPlugin);
+  instance.use(emojiPlugin);
+  instance.use(footnotePlugin);
+  instance.use(deflistPlugin);
 
-// v0.7.3 改进6(S2)：链接 scheme 白名单——markdown-it 在解析层即拒绝
-// javascript:/data:/vbscript:/file: 链接（渲染为纯文本，不出 <a href="">），
-// 与 PM 回写的 sanitizeLinkHref 双层防护（防提示注入产出的恶意链接）
-md.validateLink = (url: string) => sanitizeLinkHref(url) !== null;
+  // v0.7.3 改进6(S2):链接 scheme 白名单——markdown-it 在解析层即拒绝
+  // javascript:/data:/vbscript:/file: 链接(渲染为纯文本,不出 <a href="">),
+  // 与 PM 回写的 sanitizeLinkHref 双层防护(防提示注入产出的恶意链接)。
+  // 仅编辑管线启用;导出管线传 validateLink:false 保持 base64 图片可用
+  if (opts.validateLink !== false) {
+    instance.validateLink = (url: string) => sanitizeLinkHref(url) !== null;
+  }
+  return instance;
+}
+
+/** 默认实例:GFM 段内换行(即换行),供既有引用平滑过渡 */
+const md = createMarkdownIt({ breaks: true });
+
+/** CommonMark 实例(懒创建缓存,仅 commonmark 设置的用户使用) */
+let commonmarkInstance: MarkdownIt | null = null;
+
+/**
+ * 按段内换行语义获取 markdown-it 实例(分屏预览等渲染方使用)。
+ * @param breaks true=GFM(默认);false=CommonMark
+ */
+export function getMarkdownIt(breaks: boolean): MarkdownIt {
+  if (breaks) return md;
+  if (!commonmarkInstance) commonmarkInstance = createMarkdownIt({ breaks: false });
+  return commonmarkInstance;
+}
+
+/** 解析选项:段内换行语义覆盖(未显式传入时读 settings.paragraphBreaks) */
+export interface ParseOptions {
+  /** true=GFM 即换行;false=CommonMark;缺省读 settings */
+  breaks?: boolean;
+}
+
+function effectiveBreaks(opts?: ParseOptions): boolean {
+  if (opts?.breaks !== undefined) return opts.breaks;
+  // auto-pair.ts 已有 getState 读取先例(插件无法订阅 React 状态,取值时读最新)
+  return useSettingsStore.getState().paragraphBreaks !== "commonmark";
+}
+
+/**
+ * 当前解析会话的段内换行语义(模块级上下文)。
+ * 解析为同步过程:入口(markdownToDoc / markdownToInline / parseInline)设置,
+ * 深层函数(softbreak 映射等)读取;无异步,无竞态。
+ */
+let activeBreaks = true;
 
 // ─── 公开 API ──────────────────────────────────────────────
 
-export function markdownToDoc(markdown: string): Node {
+export function markdownToDoc(markdown: string, opts?: ParseOptions): Node {
+  activeBreaks = effectiveBreaks(opts);
+  const inst = getMarkdownIt(activeBreaks);
   const env: Record<string, unknown> = {};
-  const rawTokens = md.parse(markdown, env);
+  const rawTokens = inst.parse(markdown, env);
   const tokens = rawTokens as unknown as Token[];
   // 获取 heading-anchor 插件收集的标题列表，供 toc 节点使用
   const headings = (env.__headings as TocHeading[] | undefined) || collectHeadings(tokens);
@@ -108,8 +164,10 @@ export function markdownToDoc(markdown: string): Node {
   }
 }
 
-export function markdownToInline(markdown: string): Node[] {
-  const rawTokens = md.parseInline(markdown, {});
+export function markdownToInline(markdown: string, opts?: ParseOptions): Node[] {
+  activeBreaks = effectiveBreaks(opts);
+  const inst = getMarkdownIt(activeBreaks);
+  const rawTokens = inst.parseInline(markdown, {});
   // v0.6.0 修复：parseInline 返回单个 inline token，其 children 才是行内 token 流
   // （此前直接传外层 token 导致始终返回空数组）
   const children = (rawTokens[0] as unknown as Token | undefined)?.children || [];
@@ -805,7 +863,7 @@ function parseDefinitionList(tokens: Token[], index: number): ParseResult {
 
 function parseInline(text: string, inTableCell = false): Node[] {
   if (!text) return [];
-  const rawTokens = md.parseInline(text, {});
+  const rawTokens = getMarkdownIt(activeBreaks).parseInline(text, {});
   const allTokens = rawTokens as unknown as Token[];
 
   // md.parseInline wraps results in an "inline" token with children
@@ -858,10 +916,17 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
       i++; continue;
     }
     if (t.type === "hardbreak") { nodes.push(schema.nodes.hard_break.create()); i++; continue; }
-    // v0.8.0 WP5 修复6：段内单换行（softbreak）原本被解析成 schema.text(" ")，
-    // 导致 md→doc→md 往返丢换行（"a\nb" 变 "a b"）。改为 hard_break 节点，
-    // 与 serializer 的 "  \n"（CommonMark 两空格硬换行）互逆，保真往返。
-    if (t.type === "softbreak") { nodes.push(schema.nodes.hard_break.create()); i++; continue; }
+    // 段内单换行(softbreak)按设置分派(E14,v0.9.2):
+    // - GFM(默认):hard_break 节点,与 serializer "  \n" 互逆,往返保真(v0.8.0 WP5 修复6)
+    // - CommonMark:同段空格(渲染语义);"  \n" 硬换行仍走 hardbreak 分支不受影响
+    if (t.type === "softbreak") {
+      if (activeBreaks) {
+        nodes.push(schema.nodes.hard_break.create());
+      } else {
+        nodes.push(schema.text(" "));
+      }
+      i++; continue;
+    }
     if (t.type === "code_inline") {
       // code_inline 内容可能为空，用零宽空格占位
       nodes.push(schema.text(t.content || "\u200B", [schema.mark("code")]));

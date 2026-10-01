@@ -21,16 +21,9 @@
  */
 
 import MarkdownIt from "markdown-it";
-import markPlugin from "markdown-it-mark";
-import subPlugin from "markdown-it-sub";
-import supPlugin from "markdown-it-sup";
-import { full as emojiPlugin } from "markdown-it-emoji";
-import footnotePlugin from "markdown-it-footnote";
-import deflistPlugin from "markdown-it-deflist";
-import { mathPlugin } from "../core/markdown/katex-plugin";
-import { taskListPlugin } from "../core/markdown/task-list-plugin";
-import { headingAnchorPlugin } from "../core/markdown/heading-anchor";
-import { tocPlugin } from "../core/markdown/toc-plugin";
+// E14(v0.9.2):实例统一由 parser 工厂创建,插件配置单一来源
+import { createMarkdownIt } from "../core/markdown/parser";
+import { useSettingsStore } from "../stores/useSettingsStore";
 
 // Token 类型兼容 markdown-it（与 parser.ts 保持一致，避免引入 markdown-it/lib/token 类型声明）
 export interface Token {
@@ -537,29 +530,13 @@ export function parseBlockTokens(tokens: Token[], start: number, end: number): B
 // ─── markdown-it 实例创建 ──────────────────────
 
 /**
- * 创建默认的 markdown-it 实例（与主解析器 parser.ts 保持一致的插件配置）
+ * 创建默认的 markdown-it 实例(E14,v0.9.2:统一走 parser.ts 工厂,插件配置单一来源)
  *
- * 必须与 parser.ts 一致，否则导出的结构与预览不一致。
+ * breaks 跟随段内换行设置;typographer 维持导出管线历史行为 true(R1 统一)。
  */
 export function createDefaultMarkdownIt(): MarkdownIt {
-  const md = new MarkdownIt("commonmark", {
-    html: false,
-    breaks: true,
-    linkify: true,
-    typographer: true,
-  });
-  md.enable(["table", "strikethrough"]);
-  md.use(mathPlugin);
-  md.use(taskListPlugin);
-  md.use(headingAnchorPlugin);
-  md.use(tocPlugin);
-  md.use(markPlugin);
-  md.use(subPlugin);
-  md.use(supPlugin);
-  md.use(emojiPlugin);
-  md.use(footnotePlugin);
-  md.use(deflistPlugin);
-  return md;
+  const breaks = useSettingsStore.getState().paragraphBreaks !== "commonmark";
+  return createMarkdownIt({ breaks, typographer: true, validateLink: false });
 }
 
 /**

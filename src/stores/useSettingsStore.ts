@@ -210,6 +210,8 @@ interface SettingsState {
   spellcheckEnabled: boolean;
   /** N1: 自动配对补全开关（默认 true，输入括号/引号自动补全配对） */
   autoPairEnabled: boolean;
+  /** E14(v0.9.2): 段内换行语义（默认 gfm=即换行;commonmark=渲染为空格） */
+  paragraphBreaks: "gfm" | "commonmark";
   /** v0.4.0: 侧边栏宽度（默认 279，范围 180~480；v0.8.1 需求4 由 260 提升） */
   sidebarWidth: number;
   /** v0.4.0: 大纲栏宽度（默认 259，范围 180~480；v0.8.1 需求4 由 240 提升） */
@@ -292,6 +294,8 @@ interface SettingsState {
   setSpellcheckEnabled: (v: boolean) => void;
   /** N1: 设置是否启用自动配对补全 */
   setAutoPairEnabled: (v: boolean) => void;
+  /** E14(v0.9.2): 设置段内换行语义 */
+  setParagraphBreaks: (v: "gfm" | "commonmark") => void;
   /** v0.4.0：设置侧边栏宽度（钳制 180~480） */
   setSidebarWidth: (w: number) => void;
   /** v0.4.0：设置大纲栏宽度（钳制 180~480） */
@@ -416,6 +420,8 @@ export const useSettingsStore = create<SettingsState>()(
       spellcheckEnabled: false,
       // N1：默认开启自动配对补全
       autoPairEnabled: true,
+      // E14：默认 GFM 段内换行(即换行,与既有行为一致)
+      paragraphBreaks: "gfm",
       // v0.4.0：侧边栏默认宽度 260px；v0.8.1 需求4：+0.5cm（≈19px）→ 279px
       sidebarWidth: 279,
       // v0.4.0：大纲栏默认宽度 240px；v0.8.1 需求4：+0.5cm（≈19px）→ 259px
@@ -505,6 +511,8 @@ export const useSettingsStore = create<SettingsState>()(
       setSpellcheckEnabled: (spellcheckEnabled) => set({ spellcheckEnabled }),
       // N1：设置是否启用自动配对补全
       setAutoPairEnabled: (autoPairEnabled) => set({ autoPairEnabled }),
+      // E14：设置段内换行语义(切换后重新打开文档生效)
+      setParagraphBreaks: (paragraphBreaks) => set({ paragraphBreaks }),
       // v0.4.0：钳制到 180~480
       setSidebarWidth: (w) => set({ sidebarWidth: clamp(Math.round(w), 180, 480) }),
       // v0.4.0：钳制到 180~480

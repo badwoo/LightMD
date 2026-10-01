@@ -292,40 +292,12 @@ li.task-item { display: flex; align-items: flex-start; gap: 6px; margin: 0.3em 0
 `;
 
 export async function renderMarkdownToHTML(md: string): Promise<string> {
-  // 复用主解析器的配置（html:false, breaks:true, linkify:true, typographer:true）
-  // 确保导出结果与阅读/分屏模式一致
-  const MarkdownIt = (await import("markdown-it")).default;
-  const mdParser = new MarkdownIt("commonmark", {
-    html: false,
-    breaks: true,
-    linkify: true,
-    typographer: true,
-  });
-  mdParser.enable(["table", "strikethrough"]);
-  // 启用任务列表插件
-  const { taskListPlugin } = await import("../../core/markdown/task-list-plugin");
-  mdParser.use(taskListPlugin);
-  // 启用 KaTeX 数学公式插件
-  const { mathPlugin } = await import("../../core/markdown/katex-plugin");
-  mdParser.use(mathPlugin);
-  // 标题锚点 id + [toc] 自动目录（与主解析器保持一致）
-  const { headingAnchorPlugin } = await import("../../core/markdown/heading-anchor");
-  const { tocPlugin } = await import("../../core/markdown/toc-plugin");
-  mdParser.use(headingAnchorPlugin);
-  mdParser.use(tocPlugin);
-  // 启用高亮标记、上下标、emoji、脚注、定义列表插件（与主解析器保持一致）
-  const markPlugin = (await import("markdown-it-mark")).default;
-  const subPlugin = (await import("markdown-it-sub")).default;
-  const supPlugin = (await import("markdown-it-sup")).default;
-  const emojiPlugin = (await import("markdown-it-emoji")).full;
-  const footnotePlugin = (await import("markdown-it-footnote")).default;
-  const deflistPlugin = (await import("markdown-it-deflist")).default;
-  mdParser.use(markPlugin);
-  mdParser.use(subPlugin);
-  mdParser.use(supPlugin);
-  mdParser.use(emojiPlugin);
-  mdParser.use(footnotePlugin);
-  mdParser.use(deflistPlugin);
+  // E14(v0.9.2):三处 markdown-it 实例统一走 parser 工厂,插件配置单一来源;
+  // breaks 跟随段内换行设置,typographer 维持导出管线历史行为 true(R1 统一)
+  const { createMarkdownIt } = await import("../../core/markdown/parser");
+  const { useSettingsStore } = await import("../../stores/useSettingsStore");
+  const breaks = useSettingsStore.getState().paragraphBreaks !== "commonmark";
+  const mdParser = createMarkdownIt({ breaks, typographer: true, validateLink: false });
   const html = mdParser.render(md);
   // 将 mermaid 代码块包装为可渲染的容器
   let result = html.replace(

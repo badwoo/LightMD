@@ -45,7 +45,7 @@ import {
   FORMAT_BUTTONS as formatButtons,
   formatButtonTitle,
 } from "./sourceFormat";
-import { md } from "../../core/markdown/parser";
+import { getMarkdownIt } from "../../core/markdown/parser";
 import { highlightCodeBlocksInHtml, getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
 import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc } from "../../utils/imagePath";
@@ -226,7 +226,9 @@ function applyDiff(text: string, entry: HistoryEntry, reverse: boolean): string 
 
 function renderMarkdownToHtml(markdown: string): string {
   try {
-    return md.render(markdown);
+    // E14(v0.9.2):分屏预览跟随段内换行设置(gfm=即换行 / commonmark=标准语义)
+    const breaks = useSettingsStore.getState().paragraphBreaks !== "commonmark";
+    return getMarkdownIt(breaks).render(markdown);
   } catch {
     return `<p>${translate("editor.renderFailed")}</p>`;
   }

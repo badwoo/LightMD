@@ -37,6 +37,10 @@ export const enUS: Record<string, string> = {
   "settings.spellcheck": "Spell Check",
   // N1：自动配对补全开关
   "settings.autoPair": "Auto Pair",
+  "settings.paragraphBreaks": "Line Breaks in Paragraph",
+  "settings.paragraphBreaks.gfm": "GFM (line break)",
+  "settings.paragraphBreaks.commonmark": "CommonMark (2 spaces)",
+  "settings.paragraphBreaks.hint": "Reopen the document to apply",
   // ─── v0.6.0：AI 翻译设置 ────────────────────
   "settings.translate": "AI",
   "settings.translate.enabled": "Enable AI features",

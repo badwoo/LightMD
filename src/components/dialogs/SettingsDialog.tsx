@@ -517,6 +517,20 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               </label>
             </div>
 
+            {/* E14(v0.9.2):段内换行语义(gfm=即换行 / commonmark=标准) */}
+            <div className="settings-field">
+              <label>{t("settings.paragraphBreaks")}</label>
+              <select
+                className="settings-select"
+                value={settings.paragraphBreaks}
+                onChange={(e) => settings.setParagraphBreaks(e.target.value as "gfm" | "commonmark")}
+              >
+                <option value="gfm">{t("settings.paragraphBreaks.gfm")}</option>
+                <option value="commonmark">{t("settings.paragraphBreaks.commonmark")}</option>
+              </select>
+              <span className="settings-hint">{t("settings.paragraphBreaks.hint")}</span>
+            </div>
+
             {/* v0.9.0 自定义快捷键入口（编辑器分类最后一栏，对齐 Ardot 入口卡片样式） */}
             <div className="settings-field">
               <label>{t("settings.shortcuts")}</label>

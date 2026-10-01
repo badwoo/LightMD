@@ -38,6 +38,10 @@ export const zhCN: Record<string, string> = {
   "settings.spellcheck": "拼写检查",
   // N1：自动配对补全开关
   "settings.autoPair": "自动配对补全",
+  "settings.paragraphBreaks": "段内换行",
+  "settings.paragraphBreaks.gfm": "GFM(即换行)",
+  "settings.paragraphBreaks.commonmark": "CommonMark(需两空格)",
+  "settings.paragraphBreaks.hint": "切换后重新打开文档生效",
   // ─── v0.6.0：AI 翻译设置 ────────────────────
   "settings.translate": "AI",
   "settings.translate.enabled": "启用 AI 功能",
