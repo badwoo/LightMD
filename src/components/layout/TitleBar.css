@@ -7,6 +7,8 @@
   background: var(--titlebar-bg);
   border-bottom: 1px solid var(--border-color);
   user-select: none;
+  /* v0.9.2 需求：文件名相对整个标题栏绝对居中，需要以 .titlebar 为定位参照 */
+  position: relative;
   /* v0.8.1 需求6：无边框窗口的拖动依赖 data-tauri-drag-region 属性
      （-webkit-app-region 是 Electron 特性，WebView2 下不生效，已移除） */
 }
@@ -15,6 +17,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  /* v0.9.2:压过绝对居中的文件名层,重叠时按钮可点击 */
+  position: relative;
+  z-index: 1;
 }
 
 .titlebar-brand {
@@ -79,11 +84,26 @@
 }
 
 .titlebar-center {
-  flex: 1;
+  /* v0.9.2 需求：文件名相对整个标题栏水平居中。
+     此前为 flex:1 中段 + text-align:center,但左段(品牌/模式切换/菜单)远宽于
+     右段(图标+窗口控制),中段几何中心整体偏右,文件名没有落在窗口中心。
+   */
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 40%;
   text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .titlebar-title {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
   font-size: 11px;
   color: var(--text-tertiary);
   font-weight: 400;
@@ -93,6 +113,8 @@
   display: flex;
   align-items: center;
   gap: 2px;
+  position: relative;
+  z-index: 1;
 }
 
 .titlebar-icon-btn {

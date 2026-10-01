@@ -603,8 +603,9 @@ export function FileTree() {
 
   // v0.4.1：收藏/最近区域显示开关（标题栏 toggle 按钮控制）
   // Issue 2 修复：收藏栏默认改为关闭状态
+  // v0.9.2 需求：「最近打开」区块同样默认关闭（点击标题栏时钟图标开启）
   const [showFavorites, setShowFavorites] = useState(false);
-  const [showRecent, setShowRecent] = useState(true);
+  const [showRecent, setShowRecent] = useState(false);
 
   // v0.8.2 功能1：「打开的文件」栏标题栏缩小/放大状态（与文件夹栏一致）。
   // v0.8.2 调整：去掉标题栏"关闭"按钮——本栏随文件数据自动出现/消失
