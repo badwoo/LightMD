@@ -155,8 +155,8 @@ export function tableAround($pos: ResolvedPos): { pos: number; node: Node; depth
   return null;
 }
 
-/** 判断位置是否在 table_head 中 */
-function isInHead($pos: ResolvedPos): boolean {
+/** 判断位置是否在 table_head 中(E2:tableNav 末格追加行复用) */
+export function isInHead($pos: ResolvedPos): boolean {
   for (let d = $pos.depth; d > 0; d--) {
     if ($pos.node(d).type.name === "table_head") return true;
   }

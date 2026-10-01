@@ -16,6 +16,9 @@ import { wrapInList, splitListItem, liftListItem, sinkListItem } from "prosemirr
 import { keymap } from "prosemirror-keymap";
 import { lightMDSchema } from "./schema";
 import { matchShortcut } from "./shortcuts";
+// E2(v0.9.2):Tab 三处缺失的补齐
+import { tableTab, tableShiftTab } from "./tableNav";
+import { codeBlockIndent, codeBlockOutdent } from "./plugins/code-indent";
 
 const schema = lightMDSchema;
 
@@ -102,9 +105,21 @@ export function buildKeymap() {
     // 段内硬换行（Shift+Enter）
     "Shift-Enter": insertHardBreak,
 
-    // Tab 缩进列表项
-    Tab: sinkListItem(schema.nodes.list_item),
-    "Shift-Tab": liftListItem(schema.nodes.list_item),
+    // Tab 缩进(E2:v0.9.2 补齐三处缺失——表格导航 > 代码块缩进 > 任务项/列表项嵌套)
+    // chainCommands 顺序即优先级;各命令在不适用的上下文返回 false,
+    // 全部不适用(普通段落)时交回浏览器默认行为,与既有行为一致
+    Tab: chainCommands(
+      tableTab,
+      codeBlockIndent,
+      sinkListItem(schema.nodes.task_item),
+      sinkListItem(schema.nodes.list_item),
+    ),
+    "Shift-Tab": chainCommands(
+      tableShiftTab,
+      codeBlockOutdent,
+      liftListItem(schema.nodes.task_item),
+      liftListItem(schema.nodes.list_item),
+    ),
 
     // Alt+上/下 移动块
     "Alt-ArrowUp": joinUp,
