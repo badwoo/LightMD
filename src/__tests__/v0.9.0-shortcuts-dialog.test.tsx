@@ -43,14 +43,14 @@ afterEach(() => {
 });
 
 describe("v0.9.0 ShortcutSettingsDialog：渲染与搜索（A2）", () => {
-  it("按分类渲染全部 48 条可自定义条目", () => {
+  it("按分类渲染全部 50 条可自定义条目(v0.9.3 E8 新增 2 条)", () => {
     openDialog();
     for (const label of ["新建文件", "保存文件", "另存为", "撤销", "加粗", "删除线", "标题 4",
       "命令面板", "左侧栏展开/收缩", "标签栏展开/收缩", "下一个标签", "新建窗口", "插入表格"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
     const rows = document.querySelectorAll(".shortcut-settings-row");
-    expect(rows.length).toBe(48);
+    expect(rows.length).toBe(50);
   });
 
   it("搜索框按功能名过滤", () => {

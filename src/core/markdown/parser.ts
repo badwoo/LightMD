@@ -10,7 +10,7 @@ import { full as emojiPlugin } from "markdown-it-emoji";
 import footnotePlugin from "markdown-it-footnote";
 import deflistPlugin from "markdown-it-deflist";
 import { lightMDSchema } from "../schema";
-import type { Node } from "prosemirror-model";
+import type { Node, Mark } from "prosemirror-model";
 import { mathPlugin } from "./katex-plugin";
 import { taskListPlugin } from "./task-list-plugin";
 import { headingAnchorPlugin, collectHeadings, type TocHeading } from "./heading-anchor";
@@ -71,10 +71,26 @@ const schema = lightMDSchema;
  * @param opts.validateLink 链接 scheme 白名单;默认开启(编辑管线)。
  *   导出管线须传 false:导出 HTML 不经 PM,base64 图片(data:)依赖默认放行,
  *   白名单贯通会使 EPUB/PNG 导出丢图;安全策略统一在 R1 处理
+ * @param opts.html HTML 放行开关(E8,v0.9.3)。false(默认)=html:false,HTML 全部字面转义——
+ *   DOCX/LaTeX 导出(exportBlocks)的 Block[] 中间结构无法承载块级 HTML token,
+ *   开启会走 default 分支丢内容,故维持字面文本;
+ *   true=html:true 放行,供 HTML/PDF/PNG 导出(ExportDialog)保真输出
+ * @param opts.htmlBlockDisabled 编辑管线的 HTML 最小白名单(E8,v0.9.3),仅在 html:true 下有意义:
+ *   ① disable html_block——块级 HTML(<div>/<script>)禁用后按普通段落文本字面保留,
+ *     否则 token 走 default 分支被跳过、内容直接丢失;
+ *   ② 行内 HTML 白名单——渲染层仅放行 <u>/<br>/<sub>/<sup>/<mark>,其余转义。
+ *     分屏预览与 PM 解析共用编辑实例,而分屏 iframe 带 allow-scripts + allow-same-origin,
+ *     放行任意行内 HTML 等于注入脚本,必须白名单化
  */
-export function createMarkdownIt(opts: { breaks: boolean; typographer?: boolean; validateLink?: boolean }): MarkdownIt {
+export function createMarkdownIt(opts: {
+  breaks: boolean;
+  typographer?: boolean;
+  validateLink?: boolean;
+  html?: boolean;
+  htmlBlockDisabled?: boolean;
+}): MarkdownIt {
   const instance = new MarkdownIt("commonmark", {
-    html: false,
+    html: opts.html ?? false,
     breaks: opts.breaks,
     linkify: true,
     // 编辑管线保持 v0.9.0 C5 决策:关闭 typographer——智能引号会在解析层把
@@ -95,6 +111,22 @@ export function createMarkdownIt(opts: { breaks: boolean; typographer?: boolean;
   instance.use(footnotePlugin);
   instance.use(deflistPlugin);
 
+  // E8(v0.9.3):编辑管线的 HTML 最小白名单(详见 jsdoc)
+  if (opts.html && opts.htmlBlockDisabled) {
+    instance.disable("html_block");
+    instance.renderer.rules.html_inline = (tokens, idx) => {
+      const content = tokens[idx]?.content || "";
+      const trimmed = content.trim();
+      // 三层语义与 PM 解析层一致:
+      // ① 白名单无属性标签放行(渲染为真实结构);
+      // ② 块级标签转义为字面文本(编辑器内按原文显示,分屏一致);
+      // ③ 其余行内标签剥离(编辑器同样剥标签保内容)
+      if (INLINE_HTML_WHITELIST_RE.test(trimmed)) return content;
+      if (isBlockLevelHtmlTag(trimmed)) return instance.utils.escapeHtml(content);
+      return "";
+    };
+  }
+
   // v0.7.3 改进6(S2):链接 scheme 白名单——markdown-it 在解析层即拒绝
   // javascript:/data:/vbscript:/file: 链接(渲染为纯文本,不出 <a href="">),
   // 与 PM 回写的 sanitizeLinkHref 双层防护(防提示注入产出的恶意链接)。
@@ -105,8 +137,37 @@ export function createMarkdownIt(opts: { breaks: boolean; typographer?: boolean;
   return instance;
 }
 
-/** 默认实例:GFM 段内换行(即换行),供既有引用平滑过渡 */
-const md = createMarkdownIt({ breaks: true });
+/**
+ * E8(v0.9.3):行内 HTML 白名单(无属性开/闭标签)。
+ * PM 解析层(parseInlineTokens)与 markdown-it 渲染层共用同一判定,
+ * 保证"编辑器里转成结构的标签"与"分屏预览里放行渲染的标签"一致。
+ */
+const INLINE_HTML_WHITELIST_RE = /^<\/?(?:u|br|sub|sup|mark)\s*\/?>$/i;
+
+/**
+ * E8(v0.9.3):CommonMark 块级 HTML 标签(html_block 语义)。
+ * html_block 禁用后,块级标签会以 html_inline token 形式漏到行内流
+ * (如 "<div class=\"x\">")——这些标签按**字面文本**保留(与 html:false 时代行为一致,
+ * 防止文档保存时标签被静默剥离);仅非块级的未白名单行内标签(如 <span>)做"标签剥离"。
+ */
+const BLOCK_HTML_TAGS = new Set([
+  "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption",
+  "center", "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt",
+  "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset",
+  "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "iframe",
+  "legend", "li", "link", "main", "menu", "menuitem", "nav", "noframes", "ol",
+  "optgroup", "option", "p", "param", "pre", "script", "search", "section", "style",
+  "summary", "table", "tbody", "td", "textarea", "tfoot", "th", "thead", "title",
+  "tr", "track", "ul",
+]);
+
+function isBlockLevelHtmlTag(trimmed: string): boolean {
+  const m = /^<(\/?)([a-zA-Z][a-zA-Z0-9-]*)/.exec(trimmed);
+  return !!m && BLOCK_HTML_TAGS.has(m[2].toLowerCase());
+}
+
+/** 默认实例:GFM 段内换行(即换行),供既有引用平滑过渡(E8:开启编辑管线 HTML 白名单) */
+const md = createMarkdownIt({ breaks: true, html: true, htmlBlockDisabled: true });
 
 /** CommonMark 实例(懒创建缓存,仅 commonmark 设置的用户使用) */
 let commonmarkInstance: MarkdownIt | null = null;
@@ -117,7 +178,9 @@ let commonmarkInstance: MarkdownIt | null = null;
  */
 export function getMarkdownIt(breaks: boolean): MarkdownIt {
   if (breaks) return md;
-  if (!commonmarkInstance) commonmarkInstance = createMarkdownIt({ breaks: false });
+  if (!commonmarkInstance) {
+    commonmarkInstance = createMarkdownIt({ breaks: false, html: true, htmlBlockDisabled: true });
+  }
   return commonmarkInstance;
 }
 
@@ -861,6 +924,19 @@ function parseDefinitionList(tokens: Token[], index: number): ParseResult {
 
 // ─── Inline 解析 ─────────────────────────────────────────
 
+/**
+ * E8(v0.9.3):白名单 HTML 标签 → 对应 mark。
+ * <u> → underline(Markdown 无原生下划线语法);<sub>/<sup>/<mark> → 既有 mark。
+ */
+function htmlTagMark(tag: string): Mark {
+  switch (tag) {
+    case "u": return schema.mark("underline");
+    case "sub": return schema.mark("subscript");
+    case "sup": return schema.mark("superscript");
+    default: return schema.mark("mark");
+  }
+}
+
 function parseInline(text: string, inTableCell = false): Node[] {
   if (!text) return [];
   const rawTokens = getMarkdownIt(activeBreaks).parseInline(text, {});
@@ -882,10 +958,37 @@ function parseInline(text: string, inTableCell = false): Node[] {
 
 function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
   const nodes: Node[] = [];
+  // E8(v0.9.3):html_inline 白名单开启标签栈——<u>内容</u> 中间的内容携带对应 mark。
+  // 仅 text 节点可携带 mark(schema 中其他 inline 节点 marks:""),出栈直接丢弃。
+  const htmlMarkStack: Mark[] = [];
   let i = 0;
 
   while (i < tokens.length) {
     const t = tokens[i];
+
+    // E8(v0.9.3):行内 HTML 白名单分支
+    // - <br> → hard_break;<u>/<sub>/<sup>/<mark> 开闭标签 → mark 栈;
+    // - 其余标签(含带属性形式)剥离,包裹的内容随 text token 自然保留;
+    // - 白名单判定与渲染层(INLINE_HTML_WHITELIST_RE)一致,分屏预览与 PM 结构不漂移
+    if (t.type === "html_inline") {
+      const content = t.content || "";
+      const trimmed = content.trim();
+      if (/^<br\s*\/?>$/i.test(trimmed)) {
+        nodes.push(schema.nodes.hard_break.create());
+      } else {
+        const open = /^<(u|sub|sup|mark)\s*>$/i.exec(trimmed);
+        if (open) {
+          htmlMarkStack.push(htmlTagMark(open[1].toLowerCase()));
+        } else if (/^<\/(u|sub|sup|mark)\s*>$/i.test(trimmed)) {
+          htmlMarkStack.pop();
+        } else if (isBlockLevelHtmlTag(trimmed)) {
+          // 块级标签:字面文本保留(编辑器内可见原文,保存不丢)
+          nodes.push(schema.text(content, htmlMarkStack.length ? htmlMarkStack.slice() : undefined));
+        }
+        // 其余(非块级未白名单):标签剥离,包裹的内容随 text token 自然保留
+      }
+      i++; continue;
+    }
 
     if (t.type === "text") {
       // 跳过空文本节点（ProseMirror 不允许空文本节点）
@@ -893,14 +996,15 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
         // v0.8.0 修复 P0-1：表格单元格内的换行由 serializer 写成 <br>（真实换行
         // "  \n" 会截断 GFM 表格行）。md 配置 html:false，<br> 落在 text token 里，
         // 此处仅在表格单元格上下文把它还原为 hard_break，保证表格内换行往返保真。
+        // （E8 开启 html:true 后 <br> 走上方 html_inline 分支，本分支保留兜底。）
         if (inTableCell && /<br\s*\/?>/i.test(t.content)) {
           const segs = t.content.split(/<br\s*\/?>/gi);
           segs.forEach((seg, sIdx) => {
             if (sIdx > 0) nodes.push(schema.nodes.hard_break.create());
-            if (seg) nodes.push(schema.text(seg));
+            if (seg) nodes.push(schema.text(seg, htmlMarkStack.length ? htmlMarkStack.slice() : undefined));
           });
         } else {
-          nodes.push(schema.text(t.content));
+          nodes.push(schema.text(t.content, htmlMarkStack.length ? htmlMarkStack.slice() : undefined));
         }
       }
       i++; continue;
@@ -912,7 +1016,8 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
       // 注意 markdown-it-emoji 的 markup 是不含冒号的短码（"smile"）
       const raw = (t.markup as string) || "";
       const shortcode = raw ? (raw.startsWith(":") ? raw : `:${raw}:`) : t.content;
-      if (shortcode) nodes.push(schema.text(shortcode));
+      // emoji 是文本形态节点,允许携带 mark(E8:html 白名单栈穿透)
+      if (shortcode) nodes.push(schema.text(shortcode, htmlMarkStack.length ? htmlMarkStack.slice() : undefined));
       i++; continue;
     }
     if (t.type === "hardbreak") { nodes.push(schema.nodes.hard_break.create()); i++; continue; }
@@ -923,7 +1028,7 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
       if (activeBreaks) {
         nodes.push(schema.nodes.hard_break.create());
       } else {
-        nodes.push(schema.text(" "));
+        nodes.push(schema.text(" ", htmlMarkStack.length ? htmlMarkStack.slice() : undefined));
       }
       i++; continue;
     }
@@ -957,33 +1062,39 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
       i++;
 
       const innerNodes = parseInlineTokens(innerTokens);
+      // E8(v0.9.3):外层 html 白名单栈穿透到内层节点(<u>**x**</u> 双重包裹场景)。
+      // 仅 text 节点可携带 mark(math_inline 等节点 marks:"" 不允许)
+      const htmlWrapped =
+        htmlMarkStack.length > 0
+          ? innerNodes.map((n) => (n.isText ? n.mark([...n.marks, ...htmlMarkStack]) : n))
+          : innerNodes;
       if (markType === "link") {
         const href = getAttr(t, "href") || "";
         const title = getAttr(t, "title") || "";
         // v0.7.3 改进6(S2)：危险 scheme 拒绝 → 保留文本但不渲染为可点击链接
         const safeHref = sanitizeLinkHref(href);
         if (safeHref) {
-          nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("link", { href: safeHref, title })])));
+          nodes.push(...htmlWrapped.map((n) => n.mark([...n.marks, schema.mark("link", { href: safeHref, title })])));
         } else {
-          nodes.push(...innerNodes);
+          nodes.push(...htmlWrapped);
         }
       } else if (markType === "strong") {
-        nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("strong")])));
+        nodes.push(...htmlWrapped.map((n) => n.mark([...n.marks, schema.mark("strong")])));
       } else if (markType === "em") {
-        nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("em")])));
+        nodes.push(...htmlWrapped.map((n) => n.mark([...n.marks, schema.mark("em")])));
       } else if (markType === "s") {
-        nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("strike")])));
+        nodes.push(...htmlWrapped.map((n) => n.mark([...n.marks, schema.mark("strike")])));
       } else if (markType === "mark") {
         // 高亮标记 ==text==
-        nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("mark")])));
+        nodes.push(...htmlWrapped.map((n) => n.mark([...n.marks, schema.mark("mark")])));
       } else if (markType === "sub") {
         // 下标 ~sub~
-        nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("subscript")])));
+        nodes.push(...htmlWrapped.map((n) => n.mark([...n.marks, schema.mark("subscript")])));
       } else if (markType === "sup") {
         // 上标 ^sup^
-        nodes.push(...innerNodes.map((n) => n.mark([...n.marks, schema.mark("superscript")])));
+        nodes.push(...htmlWrapped.map((n) => n.mark([...n.marks, schema.mark("superscript")])));
       } else {
-        nodes.push(...innerNodes);
+        nodes.push(...htmlWrapped);
       }
       continue;
     }

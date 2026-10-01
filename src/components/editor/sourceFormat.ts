@@ -118,6 +118,9 @@ export function buildFormatReplacement(action: string, selected: string): Format
       return wrapSelection(selected, "***", "***", "粗斜体");
     case "strikethrough":
       return wrapSelection(selected, "~~", "~~", "删除线");
+    case "underline":
+      // E8(v0.9.3):下划线无 Markdown 原生语法,源码模式以 HTML <u> 表达
+      return wrapSelection(selected, "<u>", "</u>", "下划线文本");
     case "code":
       return wrapSelection(selected, "`", "`", "代码");
     case "codeblock":
@@ -178,6 +181,8 @@ const SOURCE_ACTION_BY_ID: Record<string, string> = {
   "format.italic": "italic",
   "format.strikethrough": "strikethrough",
   "format.inlineCode": "code",
+  // E8(v0.9.3):下划线源码模式以 <u> 包裹(Markdown 无原生语法)
+  "format.underline": "underline",
   "format.math": "math",
   "format.heading1": "heading1",
   "format.heading2": "heading2",

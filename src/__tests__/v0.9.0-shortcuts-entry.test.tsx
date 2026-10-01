@@ -45,7 +45,7 @@ describe("v0.9.0 A1：设置弹窗内的自定义快捷键入口", () => {
     // 点击入口 → 弹出快捷键弹窗（48 行 + 搜索框）
     fireEvent.click(entry);
     expect(document.querySelector(".shortcut-settings-dialog")).toBeTruthy();
-    expect(document.querySelectorAll(".shortcut-settings-row").length).toBe(48);
+    expect(document.querySelectorAll(".shortcut-settings-row").length).toBe(50);
     expect(document.querySelector(".shortcut-settings-search")).toBeTruthy();
   });
 

@@ -69,6 +69,15 @@ const markSpecs: Record<string, MarkSpec> = {
     },
   },
 
+  // 下划线标记，对应 HTML <u> 标签（E8,v0.9.3）。
+  // Markdown 无原生下划线语法，序列化统一为 <u> 包裹（见 serializer.applyMark）
+  underline: {
+    parseDOM: [{ tag: "u" }],
+    toDOM(): DOMOutputSpec {
+      return ["u", 0];
+    },
+  },
+
   // 高亮标记 ==text==，对应 HTML <mark> 标签
   mark: {
     parseDOM: [{ tag: "mark" }],

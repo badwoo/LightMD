@@ -720,6 +720,7 @@ export const zhCN: Record<string, string> = {
   "command.format.italic": "斜体",
   "command.format.strikethrough": "删除线",
   "command.format.inlineCode": "行内代码",
+  "command.format.underline": "下划线",
   "command.format.highlight": "高亮",
   "command.format.heading1": "标题 1",
   "command.format.heading2": "标题 2",

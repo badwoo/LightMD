@@ -265,6 +265,14 @@ export const commands: Command[] = [
     action: () => dispatchCommand("format.inlineCode"),
   },
   {
+    // E8(v0.9.3):下划线命令面板入口(阅读模式走 PM toggleMark,源码模式走 <u> 包裹)
+    id: "format.underline",
+    titleKey: "command.format.underline",
+    group: "format",
+    keywords: ["下划线", "underline"],
+    action: () => dispatchCommand("format.underline"),
+  },
+  {
     id: "format.highlight",
     titleKey: "command.format.highlight",
     group: "format",

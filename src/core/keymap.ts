@@ -58,6 +58,8 @@ const PM_COMMAND_BY_ID: Record<string, Command> = {
   "format.strikethrough": toggleMark(schema.marks.strike),
   // E1(v0.9.2):高亮 ==text==(此前仅源码模式有语法串,阅读模式命令无归属)
   "format.highlight": toggleMark(schema.marks.mark),
+  // E8(v0.9.3):下划线 Ctrl+U(与 format.underline 快捷键条目同源)
+  "format.underline": toggleMark(schema.marks.underline),
 
   "format.heading1": setBlockType(schema.nodes.heading, { level: 1 }),
   "format.heading2": setBlockType(schema.nodes.heading, { level: 2 }),

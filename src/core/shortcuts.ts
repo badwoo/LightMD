@@ -123,6 +123,8 @@ export const SHORTCUT_DEFS: readonly ShortcutDef[] = Object.freeze([
   // D1 已拍板：删除线两编辑模式统一 Ctrl+Alt+S（原富文本 Ctrl+Shift+S 废弃）
   { id: "format.strikethrough", category: "format", labelKey: "command.format.strikethrough", defaultCombo: "Ctrl+Alt+S", scope: "rich-source" },
   { id: "format.inlineCode", category: "format", labelKey: "command.format.inlineCode", defaultCombo: "Ctrl+`", scope: "rich-source" },
+  // E8(v0.9.3):下划线(Markdown 无原生语法,统一 <u> 表达;Ctrl+U 此前无占用)
+  { id: "format.underline", category: "format", labelKey: "command.format.underline", defaultCombo: "Ctrl+U", scope: "rich-source" },
   { id: "format.math", category: "format", labelKey: "shortcut.format.math", defaultCombo: "Ctrl+Shift+M", scope: "source" },
   { id: "format.heading1", category: "format", labelKey: "command.format.heading1", defaultCombo: "Ctrl+1", scope: "rich-source" },
   { id: "format.heading2", category: "format", labelKey: "command.format.heading2", defaultCombo: "Ctrl+2", scope: "rich-source" },
@@ -165,6 +167,8 @@ export const SHORTCUT_DEFS: readonly ShortcutDef[] = Object.freeze([
   // 为消除副作用，App.tsx 侧已加「仅可编辑面才派发」守卫（只读标签不再被写入）。
   { id: "insert.table", category: "insert", labelKey: "command.insert.table", defaultCombo: "Ctrl+Alt+T", scope: "global", command: "insert.table" },
   { id: "insert.taskList", category: "insert", labelKey: "command.insert.taskList", defaultCombo: "Ctrl+T", scope: "global", command: "insert.taskList" },
+  // E8(v0.9.3):插入链接补默认键位(Ctrl+K 已被 ai.chat 占用,按任务卡取 Ctrl+Shift+K)
+  { id: "insert.link", category: "insert", labelKey: "command.insert.link", defaultCombo: "Ctrl+Shift+K", scope: "global", command: "insert.link" },
 ]);
 
 /** 🔒 保留占用清单（不纳入自定义；新增默认键位/用户绑定均不得落入）。

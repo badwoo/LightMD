@@ -403,9 +403,11 @@ const MARK_OUTER_ORDER: Record<string, number> = {
   strong: 1,
   em: 2,
   strike: 3,
-  mark: 4,
-  subscript: 5,
-  superscript: 6,
+  // E8(v0.9.3):下划线无 Markdown 原生语法,以 <u> 包裹,层级紧邻 strike
+  underline: 4,
+  mark: 5,
+  subscript: 6,
+  superscript: 7,
   code: 99,
 };
 
@@ -466,6 +468,9 @@ function applyMark(text: string, mark: Mark, inTableCell = false): string {
       return inlineCodeWrap(text, inTableCell);
     case "strike":
       return `~~${text}~~`;
+    case "underline":
+      // E8(v0.9.3):下划线序列化为 HTML <u> 标签(Markdown 无原生语法)
+      return `<u>${text}</u>`;
     case "mark":
       // 高亮标记 ==text==
       return `==${text}==`;

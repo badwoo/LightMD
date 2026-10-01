@@ -145,6 +145,8 @@ const COMMAND_SYNTAX: Record<string, { syntax: string; cursorOffset?: number }> 
   "format.strikethrough": { syntax: "~~~~", cursorOffset: 2 },
   "format.inlineCode": { syntax: "``", cursorOffset: 1 },
   "format.highlight": { syntax: "====", cursorOffset: 2 },
+  // E8(v0.9.3):下划线无 Markdown 原生语法,源码模式以 <u> 包裹
+  "format.underline": { syntax: "<u></u>", cursorOffset: 3 },
   "format.heading1": { syntax: "# " },
   "format.heading2": { syntax: "## " },
   "format.heading3": { syntax: "### " },
@@ -2839,10 +2841,11 @@ function App() {
         case "view.toggleTag":
           window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: def.id } }));
           return;
-        // 插入表格/任务列表：只在**可编辑面**写入（源码 textarea 或 ProseMirror 可编辑），
+        // 插入表格/任务列表/链接：只在**可编辑面**写入（源码 textarea 或 ProseMirror 可编辑），
         // 否则会往只读标签的文档里塞字（v0.9.0 review 修复）
         case "insert.table":
-        case "insert.taskList": {
+        case "insert.taskList":
+        case "insert.link": {
           const mode = useEditorStore.getState().viewMode;
           const isSource = mode === "edit" || mode === "split";
           const pmEditable = editorViewRef.current?.editable === true;

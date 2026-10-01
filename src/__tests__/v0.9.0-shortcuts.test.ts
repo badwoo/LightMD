@@ -53,10 +53,10 @@ describe("v0.9.0 自定义快捷键：默认表完整性", () => {
     }
   });
 
-  it("48 条可自定义条目按分类登记", () => {
+  it("50 条可自定义条目按分类登记(v0.9.3 E8 新增 format.underline/insert.link)", () => {
     const byCategory: Record<string, number> = {};
     for (const def of SHORTCUT_DEFS) byCategory[def.category] = (byCategory[def.category] || 0) + 1;
-    expect(byCategory).toEqual({ file: 5, edit: 8, format: 15, view: 10, tab: 3, window: 5, insert: 2 });
+    expect(byCategory).toEqual({ file: 5, edit: 8, format: 16, view: 10, tab: 3, window: 5, insert: 3 });
   });
 
   it("既有绑定完整保留（REG-4 回归清单）", () => {
