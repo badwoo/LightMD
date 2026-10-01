@@ -2,7 +2,7 @@
  * ProseMirror InputRules —— Markdown 语法即时转换
  */
 import { InputRule, inputRules } from "prosemirror-inputrules";
-import { TextSelection } from "prosemirror-state";
+import { EditorState, TextSelection } from "prosemirror-state";
 import type { NodeType, MarkType } from "prosemirror-model";
 import { lightMDSchema } from "./schema";
 
@@ -144,7 +144,28 @@ const blockquoteRule = blockRule(/^>\s$/, schema.nodes.blockquote);
 
 // ─── 分割线规则 ──────────────────────────────────────────
 
-const hrRule = new InputRule(/^(---|\*\*\*)$/, (state, match, start, end) => {
+/**
+ * E3(v0.9.2):块级转换守卫(hrRule / codeBlockRule 专用)。
+ *
+ * 此前两条规则为裸 InputRule,在列表项、引用块等嵌套块内输入 --- 或 ```
+ * 也会被转换为水平线/代码块,序列化时嵌套结构易错乱。
+ * 仅照搬 blockRule 的 parent + 行首守卫并不够:列表项/引用内的段落
+ * 同样满足"parent 为 paragraph + 行首",必须再限定 $start.depth === 1
+ * (仅顶层块触发),嵌套上下文中保持字面文本。
+ */
+function topLevelParagraphGuard(state: EditorState, start: number): boolean {
+  const $start = state.doc.resolve(start);
+  if ($start.depth !== 1) return false;
+  const parentType = $start.parent.type;
+  if (parentType !== schema.nodes.paragraph && parentType !== schema.nodes.heading) {
+    return false;
+  }
+  return start === $start.start($start.depth);
+}
+
+const hrRule = new InputRule(/^(---|\*\*\*|___)$/, (state, match, start, end) => {
+  // E3:列表项/引用内等嵌套块中输入 ---/*** 不再误转水平线;新增 ___ 变体
+  if (!topLevelParagraphGuard(state, start)) return null;
   const tr = state.tr;
   tr.replaceRangeWith(start, end, schema.nodes.horizontal_rule.create());
   const para = schema.nodes.paragraph.create();
@@ -165,8 +186,11 @@ const markRules = [
     /(?<!\*)(\*)(?!\*)(.+?)(?<!\*)\1(?!\*)$/,
     schema.marks.em
   ),
+  // E3:code 规则内容要求"非空且不含反引号"——修复前 (.*?)(空内容) 会把
+  // 打代码块路径中的 `` / ``` 吞成行内代码(顶层被 codeBlockRule 掩盖,
+  // 嵌套块内守卫生效后暴露),导致围栏代码块无法通过打字进入
   markRule(
-    /(`)(.*?)\1$/,
+    /(`)([^`]+)\1$/,
     schema.marks.code
   ),
   markRule(
@@ -196,6 +220,8 @@ const markRules = [
 const codeBlockRule = new InputRule(
   /^```(\w*)\s*$/,
   (state, match, start, end) => {
+    // E3:列表项/引用内等嵌套块中输入 ``` 不再误转代码块
+    if (!topLevelParagraphGuard(state, start)) return null;
     const tr = state.tr;
     const language = match[1] || "";
 
