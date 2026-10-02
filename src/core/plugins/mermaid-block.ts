@@ -182,8 +182,8 @@ export class MermaidBlockView implements NodeView {
   update(node: PMNode): boolean {
     if (node.type !== this.node.type) return false;
     this.node = node;
-    // 强制清除缓存，因为 node 已更新
-    this.lastRenderedCode = "";
+    // 不再强制清缓存:renderMermaid 内部按 getCode() 结果与 lastRenderedCode 比对,
+    // 内容未变的 update(选区/属性等无关事务)直接命中缓存跳过渲染
     this.renderMermaid();
     return true;
   }
