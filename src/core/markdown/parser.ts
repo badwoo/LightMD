@@ -568,26 +568,54 @@ function parseTaskList(tokens: Token[], index: number): ParseResult {
       const checked = checkedAttr === "true";
       let content = "";
       const childBlocks: Node[] = [];
+      // 冲刷当前累积的 inline 内容为段落（E15：任务项内多段落不再合并）
+      const flushParagraph = () => {
+        if (content) {
+          childBlocks.push(schema.nodes.paragraph.create(null, parseInline(content)));
+          content = "";
+        }
+      };
       i++;
       // 收集 inline 内容和嵌套的 task_list
       while (i < tokens.length && tokens[i].type !== "task_item_close") {
         if (tokens[i].type === "inline") {
           content += tokens[i].content;
         } else if (tokens[i].type === "task_list_open") {
+          flushParagraph();
           // 递归解析嵌套的任务列表
           const childResult = parseTaskList(tokens, i);
           childBlocks.push(childResult.node);
           i = childResult.nextIndex;
           continue; // i 已被 parseTaskList 更新，跳过下面的 i++
+        } else if (tokens[i].type === "paragraph_open") {
+          // E15：嵌套段落开始（首个 inline 无段落包裹，后续段落有）
+          flushParagraph();
+        } else if (tokens[i].type === "paragraph_close") {
+          flushParagraph();
+        } else {
+          // E15：任务项内嵌套的普通列表/代码块等块级 token
+          // （task-list-plugin 已将缩进续行解析为子块 token 插入）
+          const sub = parseBlockToken(tokens, i, tokens.length);
+          if (sub && sub.nextIndex > i) {
+            flushParagraph();
+            childBlocks.push(sub.node);
+            if (sub.extraNodes?.length) childBlocks.push(...sub.extraNodes);
+            i = sub.nextIndex;
+            continue;
+          }
         }
         i++;
       }
+      flushParagraph();
       // 跳过 task_item_close
       if (i < tokens.length && tokens[i].type === "task_item_close") i++;
 
-      const para = schema.nodes.paragraph.create(null, parseInline(content));
-      // task_item 的 content 为 "paragraph block*"，嵌套 task_list 作为 block*
-      const children = [para, ...childBlocks];
+      // task_item 的 content 为 "paragraph block*"，首块必须是段落；
+      // 无任何内容时空段落占位
+      const children =
+        childBlocks.length > 0
+          ? childBlocks
+          : [schema.nodes.paragraph.create(null, parseInline(content))];
       items.push(schema.nodes.task_item.create({ checked }, children));
     } else {
       i++;
@@ -797,7 +825,7 @@ function buildTableRow(cells: Token[][], aligns: string[], isHeader: boolean): N
 // ─── 脚注块 ────────────────────────────────────────────
 // 解析 footnote_block_open 到 footnote_block_close 之间的内容
 // 每个 footnote_open/footnote_close 对应一个 footnote_definition 节点
-// 简化处理：取 footnote 内各段落 inline 内容（空格连接）作为脚注定义内容
+// E15：footnote_definition 内容模型为 block+，多段落/块级内容逐块解析不再压平
 
 function parseFootnoteBlock(tokens: Token[], index: number): ParseResult {
   const defs: Node[] = [];
@@ -812,38 +840,38 @@ function parseFootnoteBlock(tokens: Token[], index: number): ParseResult {
     if (t.type === "footnote_open") {
       // 从 meta 读取 label
       const label = (t.meta as { label?: string })?.label ?? "";
-      // 收集 footnote_open 到 footnote_close 之间的内容
-      let content = "";
+      // E15：逐块收集 footnote_open 到 footnote_close 之间的内容
+      const blocks: Node[] = [];
       i++;
       while (i < tokens.length && tokens[i].type !== "footnote_close") {
-        // 跳过 footnote_anchor（这是 markdown-it 内部的回链标记）
+        // 跳过 footnote_anchor（markdown-it 内部的回链标记）与段落边界 token
+        // （paragraph 交给 parseBlockToken 整体组装）
+        if (tokens[i].type === "footnote_anchor" || tokens[i].type === "paragraph_open" || tokens[i].type === "paragraph_close") {
+          i++;
+          continue;
+        }
         if (tokens[i].type === "inline") {
-          if (content && !content.endsWith(" ")) content += " ";
-          content += tokens[i].content;
-        } else if (
-          tokens[i].type !== "footnote_anchor" &&
-          tokens[i].type !== "paragraph_open" &&
-          tokens[i].type !== "paragraph_close"
-        ) {
-          // v0.9.0 D6：脚注内非段落类的块级内容（代码块等）递归解析取文本
-          // 拼接，防止内容整体丢失（接受结构扁平化，先保证不丢）。
-          // 注意段落仍走 inline 收集（保留 inline 格式），多段落以空格连接。
-          const sub = parseBlockToken(tokens, i, tokens.length);
-          if (sub && sub.nextIndex > i) {
-            if (content && !content.endsWith(" ")) content += " ";
-            content += sub.node.textContent;
-            i = sub.nextIndex;
-            continue;
-          }
+          // markdown-it-footnote 的单行定义可能直接给出 inline（无段落包裹）
+          blocks.push(schema.nodes.paragraph.create(null, parseInline(tokens[i].content)));
+          i++;
+          continue;
+        }
+        // 其余块级 token（段落、代码块、列表等）递归解析
+        const sub = parseBlockToken(tokens, i, tokens.length);
+        if (sub && sub.nextIndex > i) {
+          blocks.push(sub.node);
+          if (sub.extraNodes?.length) blocks.push(...sub.extraNodes);
+          i = sub.nextIndex;
+          continue;
         }
         i++;
       }
       // 跳过 footnote_close
       if (i < tokens.length && tokens[i].type === "footnote_close") i++;
 
-      // 创建 footnote_definition 节点
-      const inlineNodes = parseInline(content);
-      defs.push(schema.nodes.footnote_definition.create({ label }, inlineNodes));
+      // block+ 至少一个块：空脚注用空段落占位
+      const content = blocks.length > 0 ? blocks : [schema.nodes.paragraph.create()];
+      defs.push(schema.nodes.footnote_definition.create({ label }, content));
     } else {
       i++;
     }

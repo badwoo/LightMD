@@ -278,6 +278,15 @@
   padding-top: 0.5em;
 }
 
+/* E15：脚注定义内容模型为 block+,内部内容渲染为段落;收紧默认 margin 保持紧凑排版 */
+.ProseMirror .footnote-def p {
+  margin: 0;
+}
+
+.ProseMirror .footnote-def p + p {
+  margin-top: 0.4em;
+}
+
 .ProseMirror .footnote-def::before {
   content: attr(data-label) ": ";
   font-weight: 600;
@@ -310,6 +319,15 @@
 .footnote-tooltip a {
   color: var(--link-color, #0078d4);
   text-decoration: none;
+}
+
+/* E15：脚注定义内容为 block+,悬停预览序列化产物含段落;收紧默认 margin */
+.footnote-tooltip p {
+  margin: 0;
+}
+
+.footnote-tooltip p + p {
+  margin-top: 0.4em;
 }
 
 .footnote-tooltip a:hover {

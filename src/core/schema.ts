@@ -363,8 +363,9 @@ const nodeSpecs: Record<string, NodeSpec> = {
   },
 
   // 脚注定义 [^id]: content，block 节点，id="fn{id}" 供脚注引用链接跳转
+  // E15：内容模型 inline* → block+，脚注内多段落/块级内容不再压平为单行
   footnote_definition: {
-    content: "inline*",
+    content: "block+",
     group: "block",
     defining: true,
     attrs: {

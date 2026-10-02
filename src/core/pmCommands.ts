@@ -28,6 +28,14 @@ function makeTable() {
   ]);
 }
 
+/**
+ * 创建空的脚注定义节点(E15:内容模型为 block+,至少一个块)。
+ * 空内容时放入一个空段落,保证节点合乎 schema 且光标可直接进入输入。
+ */
+export function insertFootnoteDefinition(label: string) {
+  return schema.nodes.footnote_definition.create({ label }, schema.nodes.paragraph.create());
+}
+
 /** 收集文档中已占用的脚注 label,返回首个未用的数字 label("1"、"2"、…) */
 function nextFootnoteLabel(doc: import("prosemirror-model").Node): string {
   const used = new Set<string>();
@@ -103,7 +111,7 @@ export function runPreviewCommand(id: string, view: EditorView): boolean {
       // 光标处插入脚注引用,文末追加定义(label 取首个未用编号)
       const label = nextFootnoteLabel(state.doc);
       const ref = schema.nodes.footnote_ref.create({ label });
-      const def = schema.nodes.footnote_definition.create({ label });
+      const def = insertFootnoteDefinition(label);
       const tr = state.tr.replaceSelectionWith(ref);
       tr.insert(tr.doc.content.size, def);
       view.dispatch(tr.scrollIntoView());

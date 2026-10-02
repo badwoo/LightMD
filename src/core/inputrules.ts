@@ -342,9 +342,19 @@ const footnoteDefInputRule = new InputRule(/\[\^([^\]]+)\]:\s$/, (state, match, 
   if ($start.depth !== 1 || $start.parent.type !== schema.nodes.paragraph) return null;
   if (start !== $start.start($start.depth)) return null;
   const tr = state.tr;
-  tr.delete(start, end);
-  // 整块转 footnote_definition(label 写入 attrs,内容为空待输入)
-  tr.setBlockType(start, start, schema.nodes.footnote_definition, { label: match[1] });
+  // E15：footnote_definition 内容模型为 block+,setBlockType 无法把 inline 内容
+  // 装进块容器——改为整个段落替换为「footnote_definition + 空段落」结构,
+  // 光标经映射落回内部空段落,继续输入语义与旧版一致。
+  const paraFrom = $start.before($start.depth);
+  const paraTo = $start.after($start.depth);
+  const def = schema.nodes.footnote_definition.create(
+    { label: match[1] },
+    schema.nodes.paragraph.create()
+  );
+  tr.replaceWith(paraFrom, paraTo, def);
+  // 光标放入内部空段落
+  const $target = tr.doc.resolve(paraFrom + 2);
+  tr.setSelection(TextSelection.near($target));
   return tr;
 });
 

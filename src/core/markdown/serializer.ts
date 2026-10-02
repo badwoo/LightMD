@@ -139,10 +139,39 @@ function blockToMarkdown(node: Node): string | null {
 
 // ─── 脚注定义 ──────────────────────────────────────────
 
+/**
+ * E15：脚注定义内容模型为 block+，多段落/块级内容输出为 4 空格缩进续行
+ * （段落前空行），markdown-it-footnote 解析端认可该形式，往返分段保持。
+ */
 function footnoteDefinitionToMarkdown(node: Node): string {
   const label = node.attrs.label || "";
-  const content = inlineToMarkdown(node);
-  return `[^${label}]: ${content}\n`;
+  const lines: string[] = [];
+  let headerDone = false;
+  node.forEach((child) => {
+    const childMd = blockToMarkdown(child);
+    if (!childMd) return;
+    if (!headerDone && child.type.name === "paragraph") {
+      // 首段与 [^label]: 同行（内容可能为空 → "[^label]: " 空脚注形式）
+      lines.push(`[^${label}]: ${inlineToMarkdown(child)}`);
+      headerDone = true;
+    } else {
+      if (!headerDone) {
+        // 首块非段落：先输出定义头行，内容走缩进续行
+        lines.push(`[^${label}]:`);
+        headerDone = true;
+      } else if (child.type.name === "paragraph") {
+        // 后续段落前插空行，避免缩进续行被当作同段软换行
+        lines.push("");
+      }
+      const trimmed = childMd.trimEnd();
+      trimmed.split("\n").forEach((line) => {
+        lines.push(line ? `    ${line}` : "");
+      });
+    }
+  });
+  // 空脚注占位：[^label]: 单独成行
+  if (lines.length === 0) return `[^${label}]:\n`;
+  return lines.join("\n") + "\n";
 }
 
 // ─── 定义列表 ──────────────────────────────────────────
@@ -300,32 +329,35 @@ function listToMarkdown(
 function taskListToMarkdown(node: Node): string {
   const lines: string[] = [];
 
+  // E15：任务项内非首段内容不再压平进首行——嵌套普通列表/段落/代码块等
+  // 输出为 4 空格缩进续行（段落前空行，与 listToMarkdown 的 P11-6 规则一致），
+  // task-list-plugin 解析端会收集缩进续行做子文档解析，往返无损。
   // 递归序列化任务列表，支持任意层级嵌套
   const serializeItems = (taskListNode: Node, indent: string) => {
     taskListNode.forEach((taskItem) => {
       const checked = taskItem.attrs.checked ? "x" : " ";
       let isFirstChild = true;
-      // v0.7.0 修复1c：本项首行（"- [ ] xxx"）在 lines 中的索引。
-      // task 项在 markdown 中只能单行表达（task-list-plugin 逐行解析），
-      // item 内的后续段落若序列化为缩进续行，解析时会断裂列表并丢失内容。
-      // 修复：后续块级内容取文本合并追加到首行，保证内容不丢失。
-      let firstLineIdx = -1;
       taskItem.forEach((child) => {
         if (isFirstChild && child.type.name === "paragraph") {
           const content = inlineToMarkdown(child);
           lines.push(`${indent}- [${checked}] ${content}`);
-          firstLineIdx = lines.length - 1;
           isFirstChild = false;
         } else if (child.type.name === "task_list") {
           // 嵌套任务列表：递归序列化，增加 2 空格缩进
           serializeItems(child, indent + "  ");
           isFirstChild = false;
         } else {
-          // 其他块级内容：合并到首行（空段落跳过）
-          const text = child.type.name === "paragraph" ? inlineToMarkdown(child) : child.textContent;
-          if (text.trim() && firstLineIdx >= 0 && lines[firstLineIdx] !== undefined) {
-            const sep = lines[firstLineIdx].endsWith(" ") ? "" : " ";
-            lines[firstLineIdx] += sep + text;
+          // E15：其余块级内容输出 2 空格缩进续行(与嵌套任务列表的缩进一致,
+          // 保证「与子任务平级的普通列表」解析时按缩进树正确归属父任务项;
+          // CommonMark 中列表项内容列即 marker 宽度,2 空格为合法嵌套缩进)
+          const childMd = blockToMarkdown(child);
+          if (childMd) {
+            // 后续**段落**前插入空行，否则子文档解析会把缩进续行当作同段软换行
+            if (child.type.name === "paragraph") lines.push("");
+            const trimmed = childMd.trimEnd();
+            trimmed.split("\n").forEach((line) => {
+              lines.push(line ? `${indent}  ${line}` : "");
+            });
           }
           isFirstChild = false;
         }

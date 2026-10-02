@@ -16,6 +16,21 @@ interface TaskItemNode {
   content: string;
   indent: number; // 缩进空格数
   children: TaskItemNode[];
+  // E15：任务项内的缩进续行（嵌套普通列表/段落/代码块等），
+  // 保留原始行（含缩进），emit 时相对化后交给 block 解析器二次解析
+  extraLines: string[];
+}
+
+/** 将 extraLines 相对化（去除全部非空行的最小公共缩进）并拼为子文档源码 */
+function relativizeExtraLines(lines: string[]): string {
+  let min = Infinity;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const ind = line.match(/^\s*/)![0].length;
+    if (ind < min) min = ind;
+  }
+  if (!Number.isFinite(min)) min = 0;
+  return lines.map((line) => line.slice(min)).join("\n");
 }
 
 function taskListBlock(state: any, startLine: number, endLine: number, silent: boolean): boolean {
@@ -31,13 +46,12 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
   if (state.tShift[startLine] > 0) return false;
 
   // 收集连续的任务列表项（包括缩进的子任务项）
-  interface RawItem {
-    checked: boolean;
-    content: string;
-    indent: number; // 缩进空格数（来自 state.tShift）
-    line: number;
-  }
-  const rawItems: RawItem[] = [];
+  // E15：条目流设计——任务项与缩进续行线性收集，buildTree 时按缩进归属，
+  // 保证「与子任务平级的普通列表块」能正确挂回父任务项
+  type Entry =
+    | { kind: "item"; checked: boolean; content: string; indent: number; line: number }
+    | { kind: "extra"; indent: number; text: string };
+  const entries: Entry[] = [];
   let nextLine = startLine;
 
   while (nextLine <= endLine) {
@@ -53,44 +67,82 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
     );
     // 空行跳过（但不中断，允许任务项之间有空行）
     if (currentLineText.trim() === "") {
+      // E15：空行记入条目流（缩进跟随前一 entry），维持子文档的段落分隔语义
+      const prev = entries[entries.length - 1];
+      entries.push({ kind: "extra", indent: prev ? prev.indent : 0, text: "" });
       nextLine++;
       continue;
     }
     const itemMatch = currentLineText.match(TASK_ITEM_RE);
-    if (!itemMatch) break;
+    if (!itemMatch) {
+      // E15：缩进的非任务项行（嵌套普通列表/段落/代码块等）记入条目流；
+      // 顶层（缩进 0）的非任务项行结束任务列表，交还 markdown-it 处理
+      const lineIndent = state.tShift[nextLine];
+      if (entries.length > 0 && lineIndent > 0) {
+        entries.push({ kind: "extra", indent: lineIndent, text: " ".repeat(lineIndent) + currentLineText });
+        nextLine++;
+        continue;
+      }
+      break;
+    }
 
     const checked = itemMatch[3] !== " ";
     const content = currentLineText.slice(itemMatch[0].length);
     // 缩进来自 state.tShift（markdown-it 已展开 tab 为空格）
-    const indent = state.tShift[nextLine];
-    rawItems.push({
+    entries.push({
+      kind: "item",
       checked,
       content,
-      indent,
+      indent: state.tShift[nextLine],
       line: nextLine,
     });
     nextLine++;
   }
 
-  if (rawItems.length === 0) return false;
+  if (entries.length === 0) return false;
 
-  // 将扁平列表构建为树形结构（基于缩进）
-  const buildTree = (items: RawItem[], startIdx: number, parentIndent: number): { nodes: TaskItemNode[]; nextIdx: number } => {
+  // 将条目流构建为树形结构（基于缩进）
+  // extra 行归属规则：挂到最近一个缩进严格小于它的 item；当前层找不到时
+  // break 交回上层（它与上层 item 的内容平级）。空行无法归属时丢弃。
+  const buildTree = (items: Entry[], startIdx: number, parentIndent: number): { nodes: TaskItemNode[]; nextIdx: number } => {
     const nodes: TaskItemNode[] = [];
     let i = startIdx;
     while (i < items.length) {
-      const item = items[i];
-      if (item.indent <= parentIndent) break; // 回到父级或更高级，结束当前层级
+      const entry = items[i];
+      if (entry.kind === "extra") {
+        if (entry.indent > parentIndent) {
+          let attached = false;
+          for (let k = nodes.length - 1; k >= 0; k--) {
+            if (nodes[k].indent < entry.indent) {
+              nodes[k].extraLines.push(entry.text);
+              attached = true;
+              break;
+            }
+          }
+          if (attached) {
+            i++;
+            continue;
+          }
+          if (entry.text === "") {
+            // 悬空空行（无法归属任何 item）：丢弃，不中断收集
+            i++;
+            continue;
+          }
+        }
+        break; // 交回上层归属
+      }
+      if (entry.indent <= parentIndent) break; // 回到父级或更高级，结束当前层级
 
       const node: TaskItemNode = {
-        checked: item.checked,
-        content: item.content,
-        indent: item.indent,
+        checked: entry.checked,
+        content: entry.content,
+        indent: entry.indent,
         children: [],
+        extraLines: [],
       };
 
       // 递归处理子项（缩进大于当前项的）
-      const childResult = buildTree(items, i + 1, item.indent);
+      const childResult = buildTree(items, i + 1, entry.indent);
       node.children = childResult.nodes;
       i = childResult.nextIdx;
 
@@ -99,7 +151,7 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
     return { nodes, nextIdx: i };
   };
 
-  const { nodes: rootNodes } = buildTree(rawItems, 0, -1);
+  const { nodes: rootNodes } = buildTree(entries, 0, -1);
 
   // 递归生成 token
   const emitNodes = (nodes: TaskItemNode[], itemLineOffset: number) => {
@@ -117,7 +169,8 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
       inlineToken.map = [startLine + idx, startLine + idx + 1];
       inlineToken.children = [];
 
-      // 递归生成子任务列表
+      // 递归生成子任务列表（先于 extra 子块输出，使「任务子列表 + 普通块」
+      // 的序列化顺序规范化、二次往返收敛；未编辑块仍走 B6 返回原文）
       if (node.children.length > 0) {
         // task_list_open (嵌套)
         const childListOpen = state.push("task_list_open", "ul", 1);
@@ -129,6 +182,18 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
         // task_list_close (嵌套)
         const childListClose = state.push("task_list_close", "ul", -1);
         childListClose.markup = "-";
+      }
+
+      // E15：任务项内的缩进续行（嵌套普通列表/段落等）作为块级子 token。
+      // 子文档去除公共缩进后交给 markdown-it block 解析器解析，
+      // token 结构与原生列表完全一致。
+      if (node.extraLines.length > 0) {
+        const subSrc = relativizeExtraLines(node.extraLines);
+        if (subSrc.trim()) {
+          const subTokens: any[] = [];
+          state.md.block.parse(subSrc, state.md, state.env, subTokens);
+          for (const st of subTokens) state.tokens.push(st);
+        }
       }
 
       // task_item_close
