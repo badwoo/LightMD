@@ -64,7 +64,7 @@ import { evalDoublePress, DOUBLE_PRESS_THRESHOLD } from "./utils/modeSwitch";
 // v0.9.0：F11 窗口全屏（Tauri 窗口 API + DOM 回退，见 util 内 P8 探针结论）
 // v0.9.1 需求6：改为「沉浸式全屏」——大字提示 → 全屏 + 收起四周面板，显式 set
 import { setWindowFullscreen } from "./utils/windowFullscreen";
-import { pathCompareKey } from "./utils/path";
+import { pathCompareKey, getParentDir } from "./utils/path";
 import { unwrapTargetedEvent } from "./utils/targetedEvent";
 import { markListenerReady, markListenerFailed, noteEventReceived } from "./utils/e2eProbe";
 import { tabsNeedingCloseConfirm } from "./utils/dirtyTabs";
@@ -1700,6 +1700,19 @@ function App() {
             fileScrollProgress.move(untitledProgressKey(oldTab?.id), selected);
             useEditorStore.getState().promoteTab(idx, selected, getFileName(selected));
           }
+          // v0.9.5 问题2：按新路径同步语言并强制编辑器上下文重建——临时文件另存为
+          // .py 等代码文件后语法高亮立即生效,无需关闭重开(与 lightmd:openFile 路径对齐)
+          setCurrentLanguage(
+            isMarkdownFile(selected) ? "markdown" : getFileLanguage(selected)
+          );
+          setForceUpdateKey((k) => k + 1);
+          // v0.9.5 问题1：另存为后定向刷新文件夹树——新文件立即出现在目录树中,
+          // 不依赖 OS 目录 watcher 事件(watcher 注册失败/去抖丢事件时只能手动刷新)
+          window.dispatchEvent(
+            new CustomEvent("lightmd:refresh-folder", {
+              detail: { dir: getParentDir(selected) },
+            })
+          );
           addRecentFile({ path: selected, name: getFileName(selected) });
           // v0.4.0 功能4：对新路径记录初始版本快照
           versionSnapshotService.recordSnapshot(selected, markdown, true).catch(() => {});
@@ -2335,6 +2348,16 @@ function App() {
           const old = useEditorStore.getState().openTabs[idx];
           fileScrollProgress.move(untitledProgressKey(old?.id), selected);
           useEditorStore.getState().promoteTab(idx, selected, getFileName(selected));
+          // v0.9.5 问题2:按新路径同步语言(与 handleSaveAsFile 一致)
+          useEditorStore.getState().setCurrentLanguage(
+            isMarkdownFile(selected) ? "markdown" : getFileLanguage(selected)
+          );
+          // v0.9.5 问题1:定向刷新文件夹树,新文件立即出现
+          window.dispatchEvent(
+            new CustomEvent("lightmd:refresh-folder", {
+              detail: { dir: getParentDir(selected) },
+            })
+          );
         }
         addRecentFile({ path: selected, name: getFileName(selected) });
         return true;

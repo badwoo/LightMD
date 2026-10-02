@@ -1494,9 +1494,22 @@ export function FileTree() {
       if (disposed) fn();
       else unlisten = fn;
     });
+    // v0.9.5 问题1：应用自身「另存为」落盘后派发的定向刷新事件。
+    // 另存为写盘不依赖 OS 目录 watcher 回声（watcher 注册失败/在途去抖丢事件时
+    // 新文件只能手动刷新才能看到），由写入方主动通知，走同一条 resolveRefreshDirs
+    // → refreshDir 定向刷新链；目录不在任何打开文件夹下时 refreshDir 内部忽略。
+    const onRefreshFolder = (e: Event) => {
+      const dir = (e as CustomEvent).detail?.dir as string | undefined;
+      if (!dir) return;
+      const dirs = resolveRefreshDirs([dir], childrenMapRef.current.keys());
+      if (dirs.length === 0) dirs.push(dir);
+      for (const d of dirs) refreshDirRef.current(d);
+    };
+    window.addEventListener("lightmd:refresh-folder", onRefreshFolder);
     return () => {
       disposed = true;
       unlisten?.();
+      window.removeEventListener("lightmd:refresh-folder", onRefreshFolder);
       for (const { timer } of pending.values()) window.clearTimeout(timer);
       pending.clear();
     };
