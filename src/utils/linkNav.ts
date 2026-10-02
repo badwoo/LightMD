@@ -46,8 +46,11 @@ export function resolveLinkAction(href: string, docPath: string): LinkAction {
     // 编辑器渲染白名单(sanitizeLinkHref)一致,点击不产生导航面
     return { kind: "none" };
   }
-  // 无 scheme:相对路径或绝对路径 → 内部文件
-  const normalized = normalizePath(stripExtendedPathPrefix(h));
+  // 无 scheme:相对路径或绝对路径 → 内部文件。
+  // markdown-it normalizeLink 会把非 ASCII 字符百分号编码(href="%E9%93%BE..."),
+  // 先解码还原真实文件名;含非法 % 序列的字符串解码失败时原样保留
+  const decoded = decodeURIComponentSafe(normalizePath(stripExtendedPathPrefix(h)));
+  const normalized = normalizePath(stripExtendedPathPrefix(decoded));
   if (/^[a-z]:\//i.test(normalized) || normalized.startsWith("/")) {
     // Windows 绝对路径(X:/...)或 POSIX 绝对路径:直接打开
     return { kind: "open-internal", path: normalized };

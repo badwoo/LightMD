@@ -123,13 +123,13 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
         </div>
       </div>
       {/* 折叠时隐藏列表和空状态提示 */}
+      {/* v0.9.5 问题6：与「打开的文件」栏列表之间空一个条目位（空收藏时同样保持间距） */}
+      {!collapsed && compact && <div className="filetree-temp-spacer" />}
       {!collapsed && favorites.length === 0 && (
         <div className="favorites-empty">{t("sidebar.noFavorites")}</div>
       )}
       {!collapsed && favorites.length > 0 && (
         <div className="favorites-list">
-          {/* v0.9.5 问题6：与「打开的文件」栏列表之间空一个条目位 */}
-          {compact && <div className="filetree-temp-spacer" />}
           {favorites.map((file) => {
             // 兼容 Windows 路径：取父目录用于显示
             const dir = file.path.replace(/\\/g, "/").replace(/\/[^/]*$/, "");

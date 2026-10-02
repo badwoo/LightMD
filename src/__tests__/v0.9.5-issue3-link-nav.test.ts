@@ -12,6 +12,13 @@ describe("v0.9.5 问题3 resolveLinkAction", () => {
     expect(b).toEqual({ kind: "open-internal", path: "D:/docs/b.md" });
   });
 
+  it("百分号编码的中文路径解码后解析(markdown-it normalizeLink 产物)", () => {
+    // markdown-it normalizeLink 会把 href 中的非 ASCII 字符编码
+    const encoded = encodeURIComponent("链接目标文档.md");
+    const a = resolveLinkAction(`./${encoded}`, "D:/docs/链接源文档.md");
+    expect(a).toEqual({ kind: "open-internal", path: "D:/docs/链接目标文档.md" });
+  });
+
   it("../ 上级目录解析", () => {
     expect(resolveLinkAction("../shared/x.md", "D:/docs/sub/a.md")).toEqual({
       kind: "open-internal",
