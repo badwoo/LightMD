@@ -22,7 +22,7 @@
  * 注意：脚本会把窗口从最大化还原（否则无法用尺寸判断全屏），
  * 收尾请执行 real-machine-smoke-close.mjs 恢复最大化并正常退出。
  */
-const CDP_BASE = "http://127.0.0.1:9222";
+const CDP_BASE = process.env.SMOKE_CDP_BASE || "http://127.0.0.1:9222";
 const results = [];
 let failed = 0;
 
