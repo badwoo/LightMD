@@ -26,8 +26,8 @@ interface RecentFilesProps {
   nextSectionKey?: string;
   /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
-  /** v0.9.5 问题6：紧凑内嵌形态——单行条目,顶部空一个条目位,紧跟
-      「打开的文件/收藏」栏列表之下;高度模型与标题栏保持普通分区行为 */
+  /** v0.9.5 问题6 修订2：紧凑内嵌形态——单行条目；高度模型与标题栏保持
+      普通分区行为，一个条目位的空档由上一栏（「打开的文件」/「收藏」）收缩高度承担 */
   compact?: boolean;
 }
 
@@ -139,8 +139,8 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
           )}
         </div>
       </div>
-      {/* v0.9.5 问题6：与上一栏列表之间空一个条目位（折叠时贴紧上方不占位） */}
-      {compact && !collapsed && <div className="filetree-temp-spacer" />}
+      {/* v0.9.5 问题6 修订2：面板内不再塞空档——一个条目位的间距改由
+          上一栏（「打开的文件」/「收藏」）的收缩高度承担 */}
       {!collapsed && (
         <div className="recent-files-list">
           {/* v0.8.3 需求1：列表超出栏高时由 .recent-files-list 内部滚动 */}

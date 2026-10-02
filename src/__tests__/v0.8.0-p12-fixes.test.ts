@@ -168,8 +168,8 @@ describe("P12-4 关闭末栏后上一栏自动填充", () => {
     expect(src).toContain("skipAutoFillRef");
     expect(src).toContain("orderedKey");
     // 总高不足容器时才扩展（已溢出交给滚动条）
-    // v0.9.5 问题6 修订：收藏/最近打开展开时末栏不撑满（保持紧凑分区高度）
-    expect(src).toContain("if (total < container && !lastIsFavOrRecent) {");
+    // v0.9.5 问题6 修订2：末栏（含收藏/最近）无条件撑满到底部
+    expect(src).toContain("if (total < container) {");
     expect(src).toMatch(/next\[lastKey\] = target/);
   });
 });

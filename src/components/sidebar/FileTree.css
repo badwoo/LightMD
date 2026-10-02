@@ -718,11 +718,8 @@
   text-overflow: ellipsis;
 }
 
-/* 收藏/最近打开栏与「打开的文件」栏列表之间的空档（一个条目位） */
-.filetree-temp-spacer {
-  height: 30px;
-  flex-shrink: 0;
-}
+/* v0.9.5 问题6 修订2：面板内的 .filetree-temp-spacer 已移除——
+   一个条目位的空档改由「打开的文件」栏的收缩高度承担（见 FileTree.tsx） */
 
 .favorite-info {
   flex: 1;

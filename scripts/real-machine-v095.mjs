@@ -259,30 +259,50 @@ async function main() {
     const headerVisible = !!header && getComputedStyle(header).display !== "none";
     const spacer = !!sec.querySelector('.filetree-temp-spacer');
     const temp = document.querySelector('.filetree-temp-section');
+    const scroller = document.querySelector('.filetree-scroll');
     if (!temp) return "no-temp";
-    // v0.9.5 问题6 修订:temp 高度显式收缩为内容自然高度并写入分区(sizeOf),
-    // 「收藏/最近」栏标题栏紧接 temp 列表末尾 —— 只隔分隔条(4px)
-    const gap = Math.round(sec.getBoundingClientRect().top - temp.getBoundingClientRect().bottom);
-    return JSON.stringify({ headerVisible, spacer, gap, tempHeight: temp.style.height || "" });
+    const tempRect = temp.getBoundingClientRect();
+    const secRect = sec.getBoundingClientRect();
+    const items = [...temp.querySelectorAll('.filetree-temp-content > *')];
+    const itemSum = items.reduce((s, e) => s + e.getBoundingClientRect().height, 0);
+    const headerH = header ? header.getBoundingClientRect().height : 0;
+    return JSON.stringify({
+      headerVisible,
+      spacer,
+      itemCount: items.length,
+      itemSum: Math.round(itemSum),
+      headerH: Math.round(headerH),
+      tempH: Math.round(tempRect.height),
+      // 面板顶部与「打开的文件」栏底部的间距（只应为 4px 分隔条）
+      gap: Math.round(secRect.top - tempRect.bottom),
+      panelH: Math.round(secRect.height),
+      // 末栏撑满：面板底部与侧栏可视底部的距离（应≈0）
+      panelBottomGap: scroller ? Math.round(scroller.getBoundingClientRect().bottom - secRect.bottom) : null,
+    });
   })()`);
   let favOk = false;
+  let favDetail = favLayout;
   try {
     const o = JSON.parse(favLayout);
-    favOk =
-      favOpen === "clicked" &&
-      o.headerVisible &&
-      o.spacer &&
-      o.gap >= 0 &&
-      o.gap <= 12 &&
-      /px$/.test(String(o.tempHeight));
+    // 空档由「打开的文件」栏高度承担：高度 ≈ 条目高之和 + 标题栏高 + 一个条目位(30)
+    const slotOk = Math.abs(o.tempH - (o.itemSum + o.headerH + 30)) <= 12;
+    // 面板整体紧随空档之后（仅隔 4px 分隔条）
+    const gapOk = o.gap >= 0 && o.gap <= 12;
+    // 面板内不应再有空档元素
+    const innerOk = o.spacer === false;
+    // 末栏无条件撑满到底部：未溢出时须贴底（bottomGap≈0）；内容超出可视高度时
+    // 由滚动条接管（bottomGap 为负），此时不应出现"未撑满却留白"的正间隙
+    const fillOk = o.panelBottomGap !== null && o.panelBottomGap <= 12;
+    favOk = favOpen === "clicked" && o.headerVisible && innerOk && slotOk && gapOk && fillOk;
+    favDetail = `layout=${favLayout} slotOk=${slotOk} gapOk=${gapOk} innerOk=${innerOk} fillOk=${fillOk}`;
   } catch { /* ignore */ }
   check(
-    "问题6 收藏栏紧凑内嵌(标题栏可见+空档+紧跟打开文件栏列表)",
+    "问题6 收藏栏接位(列表末尾下一个条目位)且末栏撑满到底部",
     favOk,
-    `open=${favOpen} layout=${favLayout}`
+    favDetail
   );
 
-  // v0.9.5 问题6 修订:temp↔收藏 分隔条拖拽守恒（拖拽逻辑不受紧凑布局影响）
+  // v0.9.5 问题6 修订2:temp↔收藏 分隔条拖拽守恒（末栏撑满后向下拖：temp 变高、面板变矮）
   const dragBefore = JSON.parse(await evalJs(`(() => {
     const t = document.querySelector('.filetree-temp-section');
     const s = document.querySelector('.favorites-section');
@@ -299,10 +319,10 @@ async function main() {
   if (String(dragBefore.resizer).includes("filetree-v-resizer")) {
     await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: dragBefore.x, y: dragBefore.y, button: "left", buttons: 1, clickCount: 1 });
     for (let i = 1; i <= 6; i++) {
-      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: dragBefore.x, y: dragBefore.y - (40 * i) / 6, button: "left", buttons: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: dragBefore.x, y: dragBefore.y + (40 * i) / 6, button: "left", buttons: 1 });
       await sleep(30);
     }
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: dragBefore.x, y: dragBefore.y - 40, button: "left", buttons: 0, clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: dragBefore.x, y: dragBefore.y + 40, button: "left", buttons: 0, clickCount: 1 });
     await sleep(300);
   }
   const dragAfter = JSON.parse(await evalJs(`(() => {
@@ -313,10 +333,10 @@ async function main() {
       panel: s ? Math.round(s.getBoundingClientRect().height) : null,
     });
   })()`));
-  const dTemp = (dragBefore.temp ?? 0) - (dragAfter.temp ?? 0);
-  const dPanel = (dragAfter.panel ?? 0) - (dragBefore.panel ?? 0);
+  const dTemp = (dragAfter.temp ?? 0) - (dragBefore.temp ?? 0);
+  const dPanel = (dragBefore.panel ?? 0) - (dragAfter.panel ?? 0);
   check(
-    "问题6 修订:temp↔收藏分隔条拖拽守恒(拖拽逻辑不受影响)",
+    "问题6 修订2:temp↔收藏分隔条拖拽守恒(拖拽逻辑不受影响)",
     dTemp > 0 && dPanel > 0 && Math.abs(dTemp - dPanel) <= 2,
     `before=${JSON.stringify(dragBefore)} after=${JSON.stringify(dragAfter)} Δtemp=${dTemp} Δpanel=${dPanel}`
   );

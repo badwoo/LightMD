@@ -27,8 +27,8 @@ interface FavoritesProps {
   nextSectionKey?: string;
   /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
-  /** v0.9.5 问题6：紧凑内嵌形态——单行条目,顶部空一个条目位,紧跟
-      「打开的文件」栏列表之下;高度模型与标题栏保持普通分区行为 */
+  /** v0.9.5 问题6 修订2：紧凑内嵌形态——单行条目；高度模型与标题栏保持
+      普通分区行为，一个条目位的空档由上一栏（「打开的文件」栏）收缩高度承担 */
   compact?: boolean;
 }
 
@@ -122,8 +122,8 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
         </div>
       </div>
       {/* 折叠时隐藏列表和空状态提示 */}
-      {/* v0.9.5 问题6：与「打开的文件」栏列表之间空一个条目位（折叠时贴紧上方不占位） */}
-      {compact && !collapsed && <div className="filetree-temp-spacer" />}
+      {/* v0.9.5 问题6 修订2：面板内不再塞空档——一个条目位的间距改由
+          「打开的文件」栏的收缩高度承担，面板整体（标题栏 + 列表）从该空位之后开始 */}
       {!collapsed && favorites.length === 0 && (
         <div className="favorites-empty">{t("sidebar.noFavorites")}</div>
       )}

@@ -166,6 +166,12 @@ const ITEM_SLIDE_IN_MS = 500;
 const ITEM_COLLAPSE_MS = 400;
 /** v0.8.2：条目收起前的停顿（ms），同 SECTION_COLLAPSE_DELAY_MS 语义 */
 const ITEM_COLLAPSE_DELAY_MS = 120;
+/** v0.9.5 问题6 修订2：侧栏列表条目行高（px）。
+ * 与 FileTree.css 中 `.filetree-node`（含 compact 单行条目）30px 对齐；
+ * 「打开的文件」栏在收藏/最近打开时收缩为「列表内容自然高度 + 本值」，
+ * 即预留一个条目位空档，收藏/最近面板整体（标题栏 + 列表）因此从
+ * 列表末尾的下一个条目位开始（5 条文件 → 面板顶部位于第 8 行）。 */
+export const SIDEBAR_ITEM_HEIGHT = 30;
 
 /** v0.8.2：section 关闭动画总时长（滑出 + 停顿 + 收起），到点后卸载 DOM */
 export const SECTION_OUT_TOTAL_MS =
@@ -664,6 +670,10 @@ export function FileTree() {
     () => ({ ...settingsSectionSizes }),
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** v0.9.5 问题6 修订2：收藏/最近打开期间「打开的文件」栏收缩前的记忆高度
+   * （null = 未处于收缩态）。同时用于持久化排除——收缩高度是运行时布局产物，
+   * 不应写回设置，否则在收藏/最近打开状态下退出应用，下次启动该栏会残留空档。 */
+  const prevTempSizeRef = useRef<number | null>(null);
 
   const sizeOf = useCallback(
     (key: string) => sectionSizes[key] ?? (key.startsWith("folder:") ? 250 : 200),
@@ -680,7 +690,12 @@ export function FileTree() {
   useEffect(() => {
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
     persistTimer.current = window.setTimeout(() => {
-      setSidebarSectionSizes(sectionSizes);
+      // v0.9.5 问题6 修订2：收缩态下「打开的文件」栏高度不持久化（写回收缩前记忆值）
+      const toSave =
+        prevTempSizeRef.current !== null
+          ? { ...sectionSizes, temp: prevTempSizeRef.current }
+          : sectionSizes;
+      setSidebarSectionSizes(toSave);
     }, 250);
     return () => {
       if (persistTimer.current) window.clearTimeout(persistTimer.current);
@@ -769,12 +784,13 @@ export function FileTree() {
   const autoFillRef = useRef<{ key: string; prevHeight: number; filledHeight: number } | null>(
     null,
   );
-  // v0.9.5 问题6：收藏/最近打开任一栏展开时,「打开的文件」栏**显式收缩**到
-  // 内容自然高度(写入 sizeOf,与分区/拖拽体系一致),收藏面板因此紧贴其列表
-  // 末尾下方(顶部 spacer 空一个条目位);关闭时恢复收缩前的记忆高度。
+  // v0.9.5 问题6 修订2：收藏/最近打开任一栏展开时,「打开的文件」栏**显式收缩**为
+  // 「列表内容自然高度 + 一个条目位(SIDEBAR_ITEM_HEIGHT)」并写入 sizeOf(与分区/
+  // 拖拽体系一致)。空档由本栏高度承担(不再在面板内部塞 spacer),收藏/最近面板
+  // 整体(标题栏 + 列表)因此从列表末尾的下一个条目位开始——5 条文件时第 7 行为
+  // 空档、面板标题栏位于第 8 行。关闭时恢复收缩前的记忆高度。
   // 不依赖 autoFill 的还原路径——temp 从未被撑满过(autoFillRef 为空)时
   // autoFill 不会收缩,显式收缩保证任何状态下都成立。
-  const prevTempSizeRef = useRef<number | null>(null);
   const sizeOfRef = useRef(sizeOf);
   sizeOfRef.current = sizeOf;
   useEffect(() => {
@@ -794,7 +810,10 @@ export function FileTree() {
         const next = { ...prev };
         const cur = next.temp ?? sizeOfRef.current("temp");
         if (prevTempSizeRef.current === null) prevTempSizeRef.current = cur;
-        const target = contentH !== null ? Math.max(MIN_SECTION_HEIGHT, Math.min(cur, contentH)) : cur;
+        const target =
+          contentH !== null
+            ? Math.max(MIN_SECTION_HEIGHT, contentH + SIDEBAR_ITEM_HEIGHT)
+            : cur;
         next.temp = target;
         return next;
       });
@@ -837,12 +856,13 @@ export function FileTree() {
         }
 
         // ② 末栏总高不足容器时撑满到底部（已溢出则保持现状，交给滚动条）
-        // v0.9.5 问题6 修订：收藏/最近打开展开时不撑满——末栏(favorites/recent)
-        // 保持固定分区高度,面板顶部空档与"紧跟打开的文件栏"的紧凑布局才成立
+        // v0.9.5 问题6 修订2：末栏**无条件**撑满——收藏/最近作为末尾栏时其列表
+        // 同样撑满至底部（需求：侧栏末尾栏的列表范围自动撑满到底部），向上拖拽
+        // 因此可吞掉剩余空间一直拖到底部。条目位空档由「打开的文件」栏高度承担，
+        // 与末栏是否撑满无关，故不再跳过收藏/最近。
         const total =
           ordered.reduce((sum, k) => sum + heightOf(k), 0) + RESIZER_HEIGHT * resizerCount;
-        const lastIsFavOrRecent = lastKey === "favorites" || lastKey === "recent";
-        if (total < container && !lastIsFavOrRecent) {
+        if (total < container) {
           const others = ordered.filter((k) => k !== lastKey).map(heightOf);
           const target = computeMaxSelfHeight(
             container,

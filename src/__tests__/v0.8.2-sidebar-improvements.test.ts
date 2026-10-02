@@ -437,11 +437,25 @@ describe("v0.8.2 源码接线（UI 结构锁定）", () => {
   });
 
   it("0.8.2 调整3：四个栏标题栏在折叠/放大状态下均禁用拖拽", () => {
-    // v0.9.5 问题6 修订：temp 恢复 sizeOf 分区高度（收缩写入 sizeOf），拖拽正常
+    // v0.9.5 问题6 修订2：temp 恢复 sizeOf 分区高度（收缩写入 sizeOf），拖拽正常
     expect(fileTreeSrc).toContain("if (tempCollapsed || tempMaximized) return;");
     expect(fileTreeSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");
     expect(favoritesSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");
     expect(recentSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");
+  });
+
+  it("0.9.5 问题6 修订2：条目位空档由「打开的文件」栏收缩高度承担（面板内无 spacer）", () => {
+    // 收缩目标 = 列表内容自然高度 + 一个条目位（面板整体从空档之后开始）
+    expect(fileTreeSrc).toContain("export const SIDEBAR_ITEM_HEIGHT = 30;");
+    expect(fileTreeSrc).toContain("Math.max(MIN_SECTION_HEIGHT, contentH + SIDEBAR_ITEM_HEIGHT)");
+    // 面板内不再渲染空档，间距由上一栏高度承担
+    expect(favoritesSrc).not.toContain("filetree-temp-spacer");
+    expect(recentSrc).not.toContain("filetree-temp-spacer");
+    // 末栏（含收藏/最近）无条件撑满到底部
+    expect(fileTreeSrc).toContain("if (total < container) {");
+    expect(fileTreeSrc).not.toContain("lastIsFavOrRecent");
+    // 收缩高度不写回设置（否则收藏栏打开时退出会残留空档）
+    expect(fileTreeSrc).toContain("{ ...sectionSizes, temp: prevTempSizeRef.current }");
   });
 
   it("0.8.2 调整3：beginSectionDrag 具备 buttons===0 检测与 blur 兜底（防监听器泄漏）", () => {
