@@ -689,6 +689,9 @@ export function FileTree() {
 
   // 可见 section 的顺序（决定相邻配对与分隔条位置）
   const tempVisible = tempFiles.length > 0 || untitledTabs.length > 0;
+  // v0.9.5 问题6：收藏/最近打开任一栏展开时,「打开的文件」栏高度收缩为内容自适应,
+  // 收藏/最近面板以紧凑内嵌形态(无标题栏、单行条目)紧贴其列表之下(空一个条目位)
+  const favRecentCompact = showFavorites || (showRecent && recentFiles.length > 0);
   const ordered: string[] = [];
   if (openFolders.length > 0) {
     openFolders.forEach((f) => ordered.push(`folder:${f.path}`));
@@ -2493,7 +2496,12 @@ export function FileTree() {
     const tempSectionStyle: React.CSSProperties = {};
     if (tempMaximized) {
       tempSectionStyle.height = 500;
-    } else if (!tempCollapsed) {
+    } else if (tempCollapsed) {
+      // 折叠：高度自适应标题栏
+    } else if (favRecentCompact) {
+      // v0.9.5 问题6：收藏/最近打开展开时高度自适应内容,使收藏/最近条目
+      // 紧贴本栏列表末尾下方（否则固定 200px 的底部空白把两栏隔开）
+    } else {
       tempSectionStyle.height = sizeOf("temp");
     }
     return (
@@ -2511,7 +2519,7 @@ export function FileTree() {
               // v0.8.2 功能2：折叠/放大时标题栏不触发拖拽——
               // 折叠时高度被 CSS !important 固定；放大时高度固定 500px，
               // 两种状态下拖拽都会"显示没反应但内部高度被改"，故统一禁用
-              if (tempCollapsed || tempMaximized) return;
+              if (tempCollapsed || tempMaximized || favRecentCompact) return;
               if (tempPrevKey) {
                 // v0.8.0 修复 P11-4 / P12-4/5：temp 是最后一个可见区域时可一直拖到底部
                 const maxBottom = maxBottomFor(tempPrevKey, "temp");
@@ -3068,7 +3076,8 @@ export function FileTree() {
           v0.8.2 功能3：SlideWrap 滑入/滑出动画 */}
       <SlideWrap visible={showFavorites}>
         <>
-          {prevOf("favorites") && (
+          {/* v0.9.5 问题6：紧凑内嵌形态高度自适应,固定分区拖拽无意义,分隔条不渲染 */}
+          {prevOf("favorites") && !favRecentCompact && (
             <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("favorites")!, "favorites")} />
           )}
           <Favorites
@@ -3079,6 +3088,7 @@ export function FileTree() {
             nextSectionKey={nextOf("favorites")}
             maxHeight={maxBottomFor(prevOf("favorites"), "favorites")}
             onClose={() => setShowFavorites(false)}
+            compact={favRecentCompact}
           />
         </>
       </SlideWrap>
@@ -3087,7 +3097,8 @@ export function FileTree() {
           v0.8.2 功能3：SlideWrap 滑入/滑出动画 */}
       <SlideWrap visible={showRecent && recentFiles.length > 0}>
         <>
-          {prevOf("recent") && (
+          {/* v0.9.5 问题6：紧凑内嵌形态高度自适应,固定分区拖拽无意义,分隔条不渲染 */}
+          {prevOf("recent") && !favRecentCompact && (
             <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("recent")!, "recent")} />
           )}
           <RecentFiles
@@ -3098,6 +3109,7 @@ export function FileTree() {
             nextSectionKey={nextOf("recent")}
             maxHeight={maxBottomFor(prevOf("recent"), "recent")}
             onClose={() => setShowRecent(false)}
+            compact={favRecentCompact}
           />
         </>
       </SlideWrap>

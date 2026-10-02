@@ -26,9 +26,12 @@ interface RecentFilesProps {
   nextSectionKey?: string;
   /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
+  /** v0.9.5 问题6：紧凑内嵌形态——无标题栏、高度自适应、单行条目,
+      紧跟「打开的文件/收藏」栏列表之下（顶部空一个条目位） */
+  compact?: boolean;
 }
 
-export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKey, nextSectionKey, maxHeight }: RecentFilesProps) {
+export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKey, nextSectionKey, maxHeight, compact }: RecentFilesProps) {
   const recentFiles = useFileStore((s) => s.recentFiles);
   // v0.8.5 需求8：最近打开文件夹（数据层 addRecentFolder 保证去重头插 + 上限 10 条）
   const recentFolders = useFileStore((s) => s.recentFolders);
@@ -88,7 +91,9 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
 
   // 计算 section 高度样式
   const sectionStyle: React.CSSProperties = {};
-  if (maximized) {
+  if (compact) {
+    // v0.9.5 问题6：紧凑内嵌形态高度自适应内容,不参与固定分区
+  } else if (maximized) {
     sectionStyle.height = 500;
   } else if (height !== undefined && !collapsed) {
     sectionStyle.height = height;
@@ -103,6 +108,7 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
     >
       <div
         className="recent-files-header"
+        style={compact ? { display: "none" } : undefined}
         onMouseDown={(e) => { if (!collapsed && !maximized) onMouseDown(e); }}
         onDoubleClick={handleHeaderDoubleClick}
       >
@@ -136,6 +142,8 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
       </div>
       {!collapsed && (
         <div className="recent-files-list">
+          {/* v0.9.5 问题6：与上一栏列表之间空一个条目位 */}
+          {compact && <div className="filetree-temp-spacer" />}
           {/* v0.8.3 需求1：列表超出栏高时由 .recent-files-list 内部滚动 */}
           {/* v0.8.5 需求8：文件与文件夹混排渲染（mergedItems 已按 accessedAt 降序 + 截断 66 条） */}
           {mergedItems.map((item) => {
@@ -145,7 +153,7 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
             return (
               <div
                 key={item.path}
-                className="filetree-node recent-file-item"
+                className={`filetree-node recent-file-item ${compact ? "compact" : ""}`}
                 onClick={() => {
                   if (item.kind === "folder") {
                     // v0.8.5 需求8：点击文件夹条目 → 派发既有 lightmd:openFolder 事件

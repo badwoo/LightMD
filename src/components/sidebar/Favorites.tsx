@@ -27,9 +27,12 @@ interface FavoritesProps {
   nextSectionKey?: string;
   /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
+  /** v0.9.5 问题6：紧凑内嵌形态——无标题栏、高度自适应、单行条目,
+      紧跟「打开的文件」栏列表之下（顶部空一个条目位） */
+  compact?: boolean;
 }
 
-export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey, nextSectionKey, maxHeight }: FavoritesProps) {
+export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey, nextSectionKey, maxHeight, compact }: FavoritesProps) {
   const favorites = useFileStore((s) => s.favorites);
   const removeFavorite = useFileStore((s) => s.removeFavorite);
   const t = useT();
@@ -50,7 +53,9 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
 
   // 计算 section 高度样式：最大化时固定 500px，否则用传入 height（折叠时不设高度，自适应标题栏）
   const sectionStyle: React.CSSProperties = {};
-  if (maximized) {
+  if (compact) {
+    // v0.9.5 问题6：紧凑内嵌形态高度自适应内容,不参与固定分区
+  } else if (maximized) {
     sectionStyle.height = 500;
   } else if (height !== undefined && !collapsed) {
     sectionStyle.height = height;
@@ -81,6 +86,7 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
     >
       <div
         className="favorites-header"
+        style={compact ? { display: "none" } : undefined}
         onMouseDown={(e) => { if (!collapsed && !maximized) onMouseDown(e); }}
         onDoubleClick={handleHeaderDoubleClick}
       >
@@ -122,13 +128,15 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
       )}
       {!collapsed && favorites.length > 0 && (
         <div className="favorites-list">
+          {/* v0.9.5 问题6：与「打开的文件」栏列表之间空一个条目位 */}
+          {compact && <div className="filetree-temp-spacer" />}
           {favorites.map((file) => {
             // 兼容 Windows 路径：取父目录用于显示
             const dir = file.path.replace(/\\/g, "/").replace(/\/[^/]*$/, "");
             return (
               <div
                 key={file.path}
-                className="filetree-node favorite-item"
+                className={`filetree-node favorite-item ${compact ? "compact" : ""}`}
                 onClick={() =>
                   onOpen({
                     name: file.name,

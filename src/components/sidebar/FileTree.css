@@ -690,6 +690,40 @@
   cursor: pointer;
 }
 
+/* v0.9.5 问题6：紧凑内嵌形态——单行 30px 条目,与「打开的文件」栏条目对齐 */
+.favorite-item.compact,
+.recent-file-item.compact {
+  height: 30px;
+  padding: 0 8px 0 14px !important;
+}
+
+.favorite-item.compact .favorite-info,
+.recent-file-item.compact .recent-file-info {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  min-width: 0;
+}
+
+/* 单行形态隐藏次行路径,完整路径保留在条目 title 提示中 */
+.favorite-item.compact .favorite-path,
+.recent-file-item.compact .recent-file-path {
+  display: none;
+}
+
+.favorite-item.compact .filetree-name,
+.recent-file-item.compact .filetree-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 收藏/最近打开栏与「打开的文件」栏列表之间的空档（一个条目位） */
+.filetree-temp-spacer {
+  height: 30px;
+  flex-shrink: 0;
+}
+
 .favorite-info {
   flex: 1;
   display: flex;
