@@ -1563,23 +1563,25 @@ function App() {
   // ─── v0.9.0 WP0/WP9：窗口状态上报（会话快照 + OPEN_FILES 冲突检测数据源） ────
   // 只上报「标签元数据」（path/id/name/pinned/dirty）+ 文件夹 + 活跃下标，
   // **不含正文内容**；并用指纹跳过无变化的重复上报（避免每次击键都发 IPC）。
-  const windowStateFingerprintRef = useRef<string>("");
+  const windowStateFingerprintRef = useRef("");
   const activeTabIdxForSync = useEditorStore((s) => s.activeTabIdx);
   useEffect(() => {
-    // v0.9.5 问题2：同步写入「退出时刻打开的文件标签」快照（openTabs 每次变化即写，
-    // 无防抖窗口）。legacy 启动恢复以此优先为数据源，手动关闭的标签不再被恢复。
-    // 仅记录已落盘的文件标签（untitled 由独立的 untitledTabs 机制持久化）。
-    try {
-      const st = useEditorStore.getState();
-      const openFileTabs = st.openTabs
-        .filter((t) => !t.isUntitled && t.path)
-        .map((t) => ({ path: t.path, name: t.name }));
-      localStorage.setItem("lightmd-open-file-tabs", JSON.stringify(openFileTabs));
-    } catch {
-      // 持久化失败不影响会话上报主链路
-    }
     if (!isTauri()) return;
     const timer = setTimeout(() => {
+      // v0.9.5 问题2：同步写入「退出时刻打开的文件标签」快照。写入必须放在
+      // 300ms 防抖定时器**之后**生效且不能在挂载瞬间（恢复开始前）执行——
+      // 挂载时 openTabs 尚为空,立即写入会把快照覆盖为空列表,启动恢复
+      // 读到空快照后 legacy 路径全部失效。恢复期间起写快照无碍（恢复已读过）。
+      // 仅记录已落盘的文件标签（untitled 由独立的 untitledTabs 机制持久化）。
+      try {
+        const stNow = useEditorStore.getState();
+        const openFileTabs = stNow.openTabs
+          .filter((t) => !t.isUntitled && t.path)
+          .map((t) => ({ path: t.path, name: t.name }));
+        localStorage.setItem("lightmd-open-file-tabs", JSON.stringify(openFileTabs));
+      } catch {
+        // 持久化失败不影响会话上报主链路
+      }
       const st = useEditorStore.getState();
       const folders = useWindowStore.getState().folderPaths;
       const tabs = st.openTabs.map((t) => ({
@@ -2550,6 +2552,12 @@ function App() {
         saveLastActiveTab(cur.openTabs[cur.activeTabIdx] ?? null);
       }
       fileScrollProgress.saveSnapshot(tabsProgressKeys(cur.openTabs));
+      // v0.9.5 问题2：关窗前补写文件标签快照(绕过 300ms 防抖窗口)——
+      // 否则"刚关了标签就关窗"时快照仍是关标签前的集合,重启后已关标签被恢复
+      const openFileTabs = cur.openTabs
+        .filter((t) => !t.isUntitled && t.path)
+        .map((t) => ({ path: t.path, name: t.name }));
+      localStorage.setItem("lightmd-open-file-tabs", JSON.stringify(openFileTabs));
     } catch (err) {
       console.warn("[关闭窗口] 持久化冲刷失败（忽略）:", err);
     }

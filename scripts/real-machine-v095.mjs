@@ -238,11 +238,15 @@ async function main() {
   // ═══ 5. 问题6：收藏/最近打开紧凑内嵌 ═══
   await openFile(fileB, fs.readFileSync(fileB, "utf-8"));
   await sleep(300);
-  // 打开收藏栏(点击工具栏星标按钮)
-  const favOpen = await evalJs(`(() => {
+  // 打开收藏栏(点击工具栏星标按钮;若上次运行残留为打开态则先关闭再打开)
+  const favOpen = await evalJs(`(async () => {
     const btns = [...document.querySelectorAll('.filetree-btn')];
     const star = btns.find(b => b.querySelector('svg path[fill="#ffa726"]') || b.innerHTML.includes('8 1l2.2'));
     if (!star) return "no-star-btn";
+    if (document.querySelector('.favorites-section')) {
+      star.click();
+      await new Promise(r => setTimeout(r, 500));
+    }
     star.click();
     return "clicked";
   })()`);
@@ -251,21 +255,21 @@ async function main() {
     const sec = document.querySelector('.favorites-section');
     if (!sec) return "no-fav-section";
     const header = sec.querySelector('.favorites-header');
-    const headerHidden = !header || getComputedStyle(header).display === "none";
-    const spacer = sec.querySelector('.filetree-temp-spacer');
+    // v0.9.5 反馈修复:紧凑内嵌形态保留标题栏(计数/折叠/关闭可用)
+    const headerVisible = !!header && getComputedStyle(header).display !== "none";
+    const spacer = !!sec.querySelector('.filetree-temp-spacer');
     const temp = document.querySelector('.filetree-temp-section');
     // 高度自适应 = 未设内联 height(computed height 恒为像素值,不能作判据)
     const tempAuto = temp ? (temp.style.height === "" ? true : false) : "no-temp";
-    const resizerBefore = !!document.querySelector('.filetree-v-resizer');
-    return JSON.stringify({ headerHidden, spacer: !!spacer, tempAuto });
+    return JSON.stringify({ headerVisible, spacer, tempAuto });
   })()`);
   let favOk = false;
   try {
     const o = JSON.parse(favLayout);
-    favOk = favOpen === "clicked" && o.headerHidden && o.spacer && o.tempAuto === true;
+    favOk = favOpen === "clicked" && o.headerVisible && o.spacer && o.tempAuto === true;
   } catch { /* ignore */ }
   check(
-    "问题6 收藏栏紧凑内嵌(无标题栏+空档+打开文件栏自适应)",
+    "问题6 收藏栏紧凑内嵌(标题栏可见+空档+打开文件栏自适应)",
     favOk,
     `open=${favOpen} layout=${favLayout}`
   );
