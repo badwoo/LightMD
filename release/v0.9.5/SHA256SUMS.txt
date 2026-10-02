@@ -1,0 +1,2 @@
+1c33970096c6e5d16beea1c4c4b2dad0d5787a98156e13456cf709e4e8aa88df *LightMD_0.9.5_x64-setup.exe
+f40c3e38b8a5e5cd8de001229aced494b0e08c63fdf4fba202eca9e29dd15f0c *LightMD_0.9.5_x64_en-US.msi
