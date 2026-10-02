@@ -46,13 +46,22 @@ function getAttr(token: Token, name: string): string | null {
 // v0.7.3 改进6(S2)：链接 URL scheme 白名单。
 // 校验 LLM 输出/恶意文档写入的 href，javascript:/data:/vbscript:/file: 等
 // 危险 scheme 拒绝，其余放行。拒绝时返回 null → 保留文本但不渲染为可点击链接。
+// v0.9.5(问题4)：data:image 放行——临时文件粘贴图片以 base64 data URL 内联存储,
+// 重启后 markdownToDoc 重新解析时 data: 被整体拒绝 → image token 的 src 被清空,
+// 图片退化为 alt 字符。放行 image 类 MIME 与 markdown-it 默认 GOOD_DATA_RE 语义一致
+// (data:text/html 等仍拒绝,无脚本注入面)。
+const SAFE_DATA_URL_RE = /^data:image\/(gif|png|jpe?g|webp|avif|bmp|svg\+xml)[;,]/i;
+
 export function sanitizeLinkHref(href: string): string | null {
   const h = href.trim();
   if (!h) return null; // 空链接
   const m = /^([a-z][a-z0-9.+-]*):/i.exec(h);
   if (!m) return h; // 无 scheme：相对路径/锚点/纯文本放行
   const protocol = m[1].toLowerCase();
-  const BAD = ["javascript", "data", "vbscript", "file"];
+  if (protocol === "data") {
+    return SAFE_DATA_URL_RE.test(h) ? h : null;
+  }
+  const BAD = ["javascript", "vbscript", "file"];
   if (BAD.includes(protocol)) return null;
   return h; // http/https/ftp/mailto/tel 及未知 scheme 放行（与 markdown-it 语义对齐）
 }
