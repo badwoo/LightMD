@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.9.0**
+**Current Version: v0.9.5**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -164,8 +164,8 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 Visit the [Releases](../../releases) page to download the 0.9.0 installers:
 
-- **`LightMD_0.9.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.9.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.9.5_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.9.5_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -216,6 +216,43 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.9.5 (2026-10-02)
+
+**Correctness & performance wrap-up + six usability fixes** (baseline 0.9.4)
+
+- **Lossless content model for task items and footnotes** — nested lists / multiple paragraphs / code blocks inside a task item are no longer flattened; multi-paragraph footnotes keep their structure; both are directly editable
+- **Focus mode & Mermaid performance** — decoration set cached in plugin state (O(1) large-document check, local-only recalculation), so typing in 100k-character documents no longer stutters; Mermaid renders are cache-hit by content, so unrelated operations no longer trigger a full re-render
+- **Fixes**: the file tree now shows a file immediately after "Save As"; syntax highlighting switches instantly after saving a scratch file as `.py`; clicking links inside a document opens the target file / scrolls to the anchor / hands external links to the browser; pasted images in scratch files render after a restart; split preview no longer shows the previous document; the Favorites / Recent panels sit flush under "Open Files" while keeping their headers; startup restore no longer revives manually closed tabs and no longer toasts red errors for deleted files
+
+### v0.9.4 (2026-10-01)
+
+**Display & paste catch-up** (baseline 0.9.3)
+
+- **Inline syntax markers** — moving the caret into bold / italic / strikethrough / highlight / sub / sup / underline / inline code / link reveals the surrounding Markdown symbols, and hides when you leave
+- **Markdown-aware paste** — rich text is converted back to real structure; plain text with ≥2 Markdown traits is parsed as Markdown; inside code blocks / math everything stays literal (toggleable in settings)
+- **Undo history across modes** — no more empty undo steps, no more wrongly cleared history, and an explicit "undo boundary" notice in source mode
+- **Code block language dropdown & wrap toggle** — switch language from the block corner and re-highlight instantly; highlight languages 27 → 34
+
+### v0.9.3 (2026-10-01)
+
+**Input & formatting catch-up** (baseline 0.9.2)
+
+- **Underline** — `Ctrl+U` toggles for real in preview mode; source mode inserts `<u></u>`
+- **Six input rules (type-to-see)** — `$math$`, `$$`, `[text](url)`, `![alt|300](src)`, `[^1]` / `[^1]:`, `[toc]`, and two-line table syntax all convert as you type
+- **Minimal HTML whitelist** — `<u>` `<br>` `<sub>` `<sup>` `<mark>` become real formatting; other inline tags are stripped but keep their text; block-level HTML stays literal
+- **Image experience** — `![alt|300](src)` width syntax, alt/width fields in the image dialog, drop-point insertion
+- **`Ctrl+Shift+K`** inserts a link
+
+### v0.9.2 (2026-10-01)
+
+**P0 editing defects cleared + title bar & sidebar polish** (baseline 0.9.1)
+
+- **Format commands in preview mode were fakes** — the toolbar / palette inserted literal `****`, `## `; they now run the same real commands as the shortcuts
+- **Tab now works in code blocks, task lists and tables** — cell-by-cell navigation (last cell appends a row), 2-space indent in code blocks, task nesting
+- **`---` and triple-backtick fences inside list items / quotes no longer mis-convert** — conversion only triggers at the start of a top-level paragraph / heading
+- **Table context menu i18n + header rows can no longer be deleted**; IME composing Backspace no longer deletes paired symbols
+- **Paragraph-break setting** — GFM (soft break, default) vs CommonMark (two trailing spaces), honoured across preview and all exports; **"Recent" is collapsed by default**; the title-bar filename is now centred in the whole title bar
 
 ### v0.9.0 (2026-09-30)
 
