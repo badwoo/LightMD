@@ -440,6 +440,8 @@ export const zhCN: Record<string, string> = {
   // v0.8.0 WP1：临时文件命名（新建文件1、新建文件2…）
   "app.untitledN": "新文件{n}",
   "app.unnamed": "未命名.md",
+  // v0.9.5 问题3：文档内链接点击打开失败提示
+  "app.linkOpenFailed": "链接目标打开失败：{msg}",
   "app.unnamedDoc": "# 未命名文档\n\n开始输入内容...\n",
   "app.confirmNewWithUnsaved": "当前文件有未保存的更改，是否继续新建？",
   "app.confirmCloseDirty": "\"{name}\" 有未保存的更改，确定关闭吗？",

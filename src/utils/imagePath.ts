@@ -32,7 +32,7 @@ export function getCurrentDocPath(): string | null {
  * @param rel 相对路径（如 ./assets/x.png 或 ../images/y.jpg）
  * @returns 绝对路径（正斜杠格式）
  */
-function resolveRelativePath(base: string, rel: string): string {
+export function resolveRelativePath(base: string, rel: string): string {
   const baseParts = base.split("/").filter(Boolean);
   const relParts = rel.split("/");
 

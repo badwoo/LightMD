@@ -931,6 +931,23 @@ function App() {
     [],
   );
 
+  // ─── v0.9.5 问题3：文档内链接点击打开目标文件 ───
+  // EditorContainer（阅读模式点击 / 分屏 iframe 桥接）解析相对路径后派发此事件，
+  // 统一走 openFileByPath 复用既有打开链路（标签去重、冲突检测、大文件降级）
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const path = (e as CustomEvent).detail?.path as string | undefined;
+      if (!path) return;
+      try {
+        await openFileByPath(path);
+      } catch (err) {
+        notifyError(t("app.linkOpenFailed", { msg: String(err) }));
+      }
+    };
+    window.addEventListener("lightmd:open-path", handler);
+    return () => window.removeEventListener("lightmd:open-path", handler);
+  }, [openFileByPath, t]);
+
   /**
    * 取「会话快照」并把标签恢复到本窗口（多窗口精确恢复，§3.5）。
    *

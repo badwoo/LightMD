@@ -49,6 +49,8 @@ import { getMarkdownIt } from "../../core/markdown/parser";
 import { highlightCodeBlocksInHtml, getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
 import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc } from "../../utils/imagePath";
+import { resolveLinkAction, anchorMatchesHeading } from "../../utils/linkNav";
+import { isTauri } from "../../services/fileService";
 import { calculateWordCount } from "../../utils/wordCount";
 import { findParagraphRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight, syncTextareaMetrics, buildSourceGhostHtml } from "../../utils/focus-paragraph";
 import { isTypewriterTriggerKey, isModifierKey, computeTypewriterScrollTop, shouldSkipScrollForCharInput, computeScrollPercent, isCursorOutsideViewport, computeSyncScrollTop, shouldSkipInitialScrollToCenter, computeRestoreScrollTop, computeViewportCenter, createScrollKeyBaseline, markScrollKeyDown, consumeScrollKeyUp } from "../../utils/typewriter";
@@ -1535,6 +1537,81 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     container.addEventListener("click", handler, true);
     return () => container.removeEventListener("click", handler, true);
   }, [viewMode]);
+
+  // ─── v0.9.5 问题3：文档内链接点击导航 ────────────────
+  // 此前全项目无链接点击处理——阅读模式 <a href> 点击被 WebView2 当作页面内导航,
+  // 相对路径链接点击无任何反应。统一分发:内部文件 → lightmd:open-path 事件
+  // (App 层 openFileByPath 复用打开链路);http(s)/mailto → 外部打开;
+  // 锚点 → 编辑器内滚动到标题
+  const openExternalHref = useCallback(async (href: string) => {
+    if (isTauri()) {
+      try {
+        const { open } = await import("@tauri-apps/plugin-shell");
+        await open(href);
+      } catch (err) {
+        console.error("外部链接打开失败:", err);
+      }
+    } else {
+      window.open(href, "_blank", "noopener");
+    }
+  }, []);
+
+  const scrollEditorToAnchor = useCallback((anchor: string) => {
+    const container = editorRef.current;
+    if (!container) return;
+    const headings = container.querySelectorAll("h1, h2, h3, h4, h5, h6");
+    for (const h of headings) {
+      const el = h as HTMLElement;
+      if (el.id === anchor || anchorMatchesHeading(anchor, el.textContent || "")) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+    }
+  }, []);
+
+  const handleLinkNav = useCallback(
+    (href: string) => {
+      const action = resolveLinkAction(href, filePath || "");
+      if (action.kind === "open-internal") {
+        window.dispatchEvent(new CustomEvent("lightmd:open-path", { detail: { path: action.path } }));
+      } else if (action.kind === "open-external") {
+        void openExternalHref(action.href);
+      } else if (action.kind === "scroll-anchor") {
+        scrollEditorToAnchor(action.anchor);
+      }
+    },
+    [filePath, openExternalHref, scrollEditorToAnchor]
+  );
+
+  // 阅读模式：ProseMirror 容器内链接点击(捕获阶段,先于 PM 的选区处理)
+  useEffect(() => {
+    if (viewMode !== "preview") return;
+    const container = editorRef.current;
+    if (!container) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const a = target?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!a) return;
+      const href = a.getAttribute("href") || "";
+      if (!href) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleLinkNav(href);
+    };
+    container.addEventListener("click", handler, true);
+    return () => container.removeEventListener("click", handler, true);
+  }, [viewMode, handleLinkNav]);
+
+  // 分屏：iframe 内链接点击经 postMessage 桥接回主文档(桥接脚本在完整重写时注入 head)
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type !== "lightmd-preview-link") return;
+      const href = e.data.href;
+      if (typeof href === "string" && href) handleLinkNav(href);
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [handleLinkNav]);
 
   /**
    * G3：图片编辑确认回调 —— 通过 setNodeMarkup 修改 image 节点 attrs
@@ -4343,7 +4420,22 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 注入 PrismJS 语法高亮 CSS，使分屏模式代码高亮与阅读模式一致
       const prismCss = getPrismCss(theme === "dark");
       doc.open();
+      // v0.9.5 问题3：链接点击桥接——iframe 内相对路径/外部链接点击 postMessage 回主文档。
+      // 锚点(#开头)不拦截,交给 iframe 原生 hash 导航滚动(渲染层已生成标题 id)
       doc.write(`<!DOCTYPE html><html><head><style>${sharedStyles}${prismCss}</style>
+      <script>
+        (function() {
+          document.addEventListener('click', function(e) {
+            var t = e.target;
+            var a = t && t.closest ? t.closest('a[href]') : null;
+            if (!a) return;
+            var href = a.getAttribute('href') || '';
+            if (!href || href.charAt(0) === '#') return;
+            e.preventDefault();
+            parent.postMessage({ type: 'lightmd-preview-link', href: href }, '*');
+          }, true);
+        })();
+      <\/script>
       ${hasMermaid ? '<script src="/vendor/mermaid/mermaid.min.js"></script>' : ''}
       ${hasMath ? '<link rel="stylesheet" href="/vendor/katex/katex.min.css">' : ''}
       ${hasMath ? '<script src="/vendor/katex/katex.min.js"></script>' : ''}

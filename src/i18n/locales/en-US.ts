@@ -433,6 +433,8 @@ export const enUS: Record<string, string> = {
   // v0.8.0 WP1：临时文件命名（Untitled 1, Untitled 2 …）
   "app.untitledN": "Untitled {n}",
   "app.unnamed": "Unnamed.md",
+  // v0.9.5 问题3：文档内链接点击打开失败提示
+  "app.linkOpenFailed": "Failed to open link target: {msg}",
   "app.unnamedDoc": "# Unnamed Document\n\nStart typing...\n",
   "app.confirmNewWithUnsaved": "The current file has unsaved changes. Continue creating a new one?",
   "app.confirmCloseDirty": "\"{name}\" has unsaved changes. Close anyway?",
