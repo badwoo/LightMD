@@ -490,6 +490,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const { text: masked } = maskBase64Images(content, base64TokensRef.current);
       setSourceContent(masked);
       sourceContentRef.current = masked;
+    } else if (lastMaskFilePathRef.current !== filePath) {
+      // v0.9.5 问题5：阅读模式下文件切换（含新建空临时文件）——sourceContent
+      // 立即同步新文件内容。原先仅在源码/非 md 模式同步，阅读模式下新建空文件时
+      // sourceContent 残留上一文档内容，切分屏后预览面板渲染出上一个文档。
+      // 仅按路径变化触发（打字不进此分支，避免每键 mask 的 O(n) 开销）；
+      // PM doc 由文件切换 effect 重建，B6 未编辑块序列化即原文，与 content 一致。
+      base64TokensRef.current = new Map();
+      lastMaskFilePathRef.current = filePath;
+      const { text: masked } = maskBase64Images(content, base64TokensRef.current);
+      setSourceContent(masked);
+      sourceContentRef.current = masked;
+      // 分屏模式下立即刷新防抖渲染，消除 300ms 内旧内容闪现
+      setDebouncedSourceContent(masked);
     }
   }, [content, isSourceMode, isMdFile, filePath]);
 
@@ -4251,11 +4264,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, []);
 
   useEffect(() => {
-    if (viewMode !== "split" || !previewHtml) return;
+    if (viewMode !== "split") return;
     const iframe = previewIframeRef.current;
     if (!iframe) return;
     const doc = iframe.contentDocument;
     if (!doc) return;
+    // v0.9.5 问题5：空内容（空临时文件）时清空预览残留——iframe 常驻不卸载、
+    // 也不随文件切换重建，previewHtml 为空时若直接 return，
+    // body 保留的是上一个文档最后写入的 HTML
+    if (!previewHtml) {
+      if (doc.body) doc.body.innerHTML = "";
+      return;
+    }
     const cv = collectCssVars();
     // 判断是否包含 mermaid 图表
     const hasMermaid = previewHtml.includes('class="mermaid"');
