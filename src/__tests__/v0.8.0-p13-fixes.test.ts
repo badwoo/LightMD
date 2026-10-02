@@ -72,7 +72,8 @@ describe("P13-2 关闭末栏撑满 / 重开新栏紧跟上一栏", () => {
     // 还原发生在撑满判定之前，因此新栏的高度基于"还原后的上一栏"计算
     // v0.8.2 功能5：还原表达式改为多行三元（收缩到内容高度），此处定位还原块的结束行
     const revertIdx = fileTreeSrc.indexOf(": filled.prevHeight;");
-    const fillIdx = fileTreeSrc.indexOf("if (total < container)");
+    // v0.9.5 问题6 修订：撑满判定增加收藏/最近打开跳过条件
+    const fillIdx = fileTreeSrc.indexOf("if (total < container && !lastIsFavOrRecent) {");
     expect(revertIdx).toBeGreaterThan(-1);
     expect(fillIdx).toBeGreaterThan(revertIdx);
   });

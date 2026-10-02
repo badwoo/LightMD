@@ -437,8 +437,8 @@ describe("v0.8.2 源码接线（UI 结构锁定）", () => {
   });
 
   it("0.8.2 调整3：四个栏标题栏在折叠/放大状态下均禁用拖拽", () => {
-    // v0.9.5 问题6：收藏/最近打开紧凑内嵌时「打开的文件」栏高度自适应，拖拽一并禁用
-    expect(fileTreeSrc).toContain("if (tempCollapsed || tempMaximized || favRecentCompact) return;");
+    // v0.9.5 问题6 修订：temp 恢复 sizeOf 分区高度（收缩写入 sizeOf），拖拽正常
+    expect(fileTreeSrc).toContain("if (tempCollapsed || tempMaximized) return;");
     expect(fileTreeSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");
     expect(favoritesSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");
     expect(recentSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");

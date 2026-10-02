@@ -27,8 +27,8 @@ interface FavoritesProps {
   nextSectionKey?: string;
   /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
-  /** v0.9.5 问题6：紧凑内嵌形态——高度自适应、单行条目,顶部空一个条目位,
-      紧跟「打开的文件」栏列表之下;标题栏保留(计数/折叠/关闭可用) */
+  /** v0.9.5 问题6：紧凑内嵌形态——单行条目,顶部空一个条目位,紧跟
+      「打开的文件」栏列表之下;高度模型与标题栏保持普通分区行为 */
   compact?: boolean;
 }
 
@@ -52,10 +52,10 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
   }, [contextMenu]);
 
   // 计算 section 高度样式：最大化时固定 500px，否则用传入 height（折叠时不设高度，自适应标题栏）
+  // v0.9.5 问题6 修订：紧凑内嵌形态恢复固定分区高度(sizeOf)参与配对拖拽——
+  // 紧凑仅指「单行条目 + 顶部空一个条目位」，高度模型与普通分区一致
   const sectionStyle: React.CSSProperties = {};
-  if (compact) {
-    // v0.9.5 问题6：紧凑内嵌形态高度自适应内容,不参与固定分区
-  } else if (maximized) {
+  if (maximized) {
     sectionStyle.height = 500;
   } else if (height !== undefined && !collapsed) {
     sectionStyle.height = height;

@@ -769,6 +769,38 @@ export function FileTree() {
   const autoFillRef = useRef<{ key: string; prevHeight: number; filledHeight: number } | null>(
     null,
   );
+  // v0.9.5 问题6：收藏/最近打开任一栏展开时,「打开的文件」栏**显式收缩**到
+  // 内容自然高度(写入 sizeOf,与分区/拖拽体系一致),收藏面板因此紧贴其列表
+  // 末尾下方(顶部 spacer 空一个条目位);关闭时恢复收缩前的记忆高度。
+  // 不依赖 autoFill 的还原路径——temp 从未被撑满过(autoFillRef 为空)时
+  // autoFill 不会收缩,显式收缩保证任何状态下都成立。
+  const prevTempSizeRef = useRef<number | null>(null);
+  const sizeOfRef = useRef(sizeOf);
+  sizeOfRef.current = sizeOf;
+  useEffect(() => {
+    if (!favRecentCompact) {
+      // 关闭收藏/最近打开:恢复收缩前记忆高度(随后 autoFill 会按需重新撑满)
+      const restore = prevTempSizeRef.current;
+      if (restore !== null) {
+        prevTempSizeRef.current = null;
+        setSectionSizes((prev) => ({ ...prev, temp: restore }));
+      }
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      const tempEl = findSectionByKey(document, "temp");
+      const contentH = tempEl ? measureSectionContentHeight(tempEl) : null;
+      setSectionSizes((prev) => {
+        const next = { ...prev };
+        const cur = next.temp ?? sizeOfRef.current("temp");
+        if (prevTempSizeRef.current === null) prevTempSizeRef.current = cur;
+        const target = contentH !== null ? Math.max(MIN_SECTION_HEIGHT, Math.min(cur, contentH)) : cur;
+        next.temp = target;
+        return next;
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [favRecentCompact]);
   useEffect(() => {
     if (skipAutoFillRef.current) {
       skipAutoFillRef.current = false;
@@ -805,9 +837,12 @@ export function FileTree() {
         }
 
         // ② 末栏总高不足容器时撑满到底部（已溢出则保持现状，交给滚动条）
+        // v0.9.5 问题6 修订：收藏/最近打开展开时不撑满——末栏(favorites/recent)
+        // 保持固定分区高度,面板顶部空档与"紧跟打开的文件栏"的紧凑布局才成立
         const total =
           ordered.reduce((sum, k) => sum + heightOf(k), 0) + RESIZER_HEIGHT * resizerCount;
-        if (total < container) {
+        const lastIsFavOrRecent = lastKey === "favorites" || lastKey === "recent";
+        if (total < container && !lastIsFavOrRecent) {
           const others = ordered.filter((k) => k !== lastKey).map(heightOf);
           const target = computeMaxSelfHeight(
             container,
@@ -2498,10 +2533,10 @@ export function FileTree() {
       tempSectionStyle.height = 500;
     } else if (tempCollapsed) {
       // 折叠：高度自适应标题栏
-    } else if (favRecentCompact) {
-      // v0.9.5 问题6：收藏/最近打开展开时高度自适应内容,使收藏/最近条目
-      // 紧贴本栏列表末尾下方（否则固定 200px 的底部空白把两栏隔开）
     } else {
+      // v0.9.5 问题6 修订：temp 恢复 sizeOf 固定分区高度。收藏/最近打开展开时
+      // 的收缩由下方显式收缩 effect 写入 sizeOf("temp") 完成——temp 显示值与
+      // 分区系统一致,保证 temp-favorites 之间的分隔条拖拽跟手
       tempSectionStyle.height = sizeOf("temp");
     }
     return (
@@ -2519,7 +2554,7 @@ export function FileTree() {
               // v0.8.2 功能2：折叠/放大时标题栏不触发拖拽——
               // 折叠时高度被 CSS !important 固定；放大时高度固定 500px，
               // 两种状态下拖拽都会"显示没反应但内部高度被改"，故统一禁用
-              if (tempCollapsed || tempMaximized || favRecentCompact) return;
+              if (tempCollapsed || tempMaximized) return;
               if (tempPrevKey) {
                 // v0.8.0 修复 P11-4 / P12-4/5：temp 是最后一个可见区域时可一直拖到底部
                 const maxBottom = maxBottomFor(tempPrevKey, "temp");
@@ -3076,8 +3111,7 @@ export function FileTree() {
           v0.8.2 功能3：SlideWrap 滑入/滑出动画 */}
       <SlideWrap visible={showFavorites}>
         <>
-          {/* v0.9.5 问题6：紧凑内嵌形态高度自适应,固定分区拖拽无意义,分隔条不渲染 */}
-          {prevOf("favorites") && !favRecentCompact && (
+          {prevOf("favorites") && (
             <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("favorites")!, "favorites")} />
           )}
           <Favorites
@@ -3097,8 +3131,7 @@ export function FileTree() {
           v0.8.2 功能3：SlideWrap 滑入/滑出动画 */}
       <SlideWrap visible={showRecent && recentFiles.length > 0}>
         <>
-          {/* v0.9.5 问题6：紧凑内嵌形态高度自适应,固定分区拖拽无意义,分隔条不渲染 */}
-          {prevOf("recent") && !favRecentCompact && (
+          {prevOf("recent") && (
             <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("recent")!, "recent")} />
           )}
           <RecentFiles
