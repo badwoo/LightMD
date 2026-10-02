@@ -914,8 +914,9 @@ function App() {
    * 走 `lightmd:openFile` 事件以复用既有全链路（标签去重、大文件降级、快照记录）。
    */
   const openFileByPath = useCallback(
-    async (path: string, opts?: { name?: string; skipConflictCheck?: boolean; presetReadonly?: boolean }) => {
-      const content = await fileService.readFile(path);
+    async (path: string, opts?: { name?: string; skipConflictCheck?: boolean; presetReadonly?: boolean; silent?: boolean }) => {
+      // opts.silent（v0.9.5 问题3）：启动恢复读取已删除文件时静默，只标 ⚠ 不弹提示
+      const content = await fileService.readFile(path, { silent: opts?.silent ?? false });
       window.dispatchEvent(
         new CustomEvent("lightmd:openFile", {
           detail: {
@@ -984,6 +985,7 @@ function App() {
           await openFileByPath(path, {
             name: tab.name,
             skipConflictCheck: true,
+            silent: true, // v0.9.5 问题3：已删除文件的恢复失败只标 ⚠,不弹红色提示
           });
           if (tab.pinned) {
             const idx = useEditorStore.getState().getTabByPath(path);
@@ -1564,6 +1566,18 @@ function App() {
   const windowStateFingerprintRef = useRef<string>("");
   const activeTabIdxForSync = useEditorStore((s) => s.activeTabIdx);
   useEffect(() => {
+    // v0.9.5 问题2：同步写入「退出时刻打开的文件标签」快照（openTabs 每次变化即写，
+    // 无防抖窗口）。legacy 启动恢复以此优先为数据源，手动关闭的标签不再被恢复。
+    // 仅记录已落盘的文件标签（untitled 由独立的 untitledTabs 机制持久化）。
+    try {
+      const st = useEditorStore.getState();
+      const openFileTabs = st.openTabs
+        .filter((t) => !t.isUntitled && t.path)
+        .map((t) => ({ path: t.path, name: t.name }));
+      localStorage.setItem("lightmd-open-file-tabs", JSON.stringify(openFileTabs));
+    } catch {
+      // 持久化失败不影响会话上报主链路
+    }
     if (!isTauri()) return;
     const timer = setTimeout(() => {
       const st = useEditorStore.getState();
@@ -2539,12 +2553,19 @@ function App() {
     } catch (err) {
       console.warn("[关闭窗口] 持久化冲刷失败（忽略）:", err);
     }
+    // v0.9.5 问题2：关闭确认前立即冲刷 Rust 侧窗口状态（绕过 300ms 防抖）——
+    // 否则"刚关了标签就关窗"会把已关闭的标签写进 session.json，下次启动被恢复
+    try {
+      await flushWindowState();
+    } catch (err) {
+      console.warn("[关闭窗口] 窗口状态冲刷失败（忽略）:", err);
+    }
     noteEventReceived("closeFlow", "flushed");
     await windowService.confirmClose().catch((err) => {
       console.error("[关闭窗口] 确认关闭失败:", err);
     });
     noteEventReceived("closeFlow", "confirmed");
-  }, [askChoice, t]);
+  }, [askChoice, t, flushWindowState]);
   const handleCloseRequestedRef = useRef(handleCloseRequested);
   useEffect(() => {
     handleCloseRequestedRef.current = handleCloseRequested;

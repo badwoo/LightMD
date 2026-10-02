@@ -26,8 +26,8 @@ interface RecentFilesProps {
   nextSectionKey?: string;
   /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
-  /** v0.9.5 问题6：紧凑内嵌形态——无标题栏、高度自适应、单行条目,
-      紧跟「打开的文件/收藏」栏列表之下（顶部空一个条目位） */
+  /** v0.9.5 问题6：紧凑内嵌形态——高度自适应、单行条目,顶部空一个条目位,
+      紧跟「打开的文件/收藏」栏列表之下;标题栏保留(计数/折叠/关闭可用) */
   compact?: boolean;
 }
 
@@ -108,7 +108,6 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
     >
       <div
         className="recent-files-header"
-        style={compact ? { display: "none" } : undefined}
         onMouseDown={(e) => { if (!collapsed && !maximized) onMouseDown(e); }}
         onDoubleClick={handleHeaderDoubleClick}
       >
@@ -140,10 +139,10 @@ export function RecentFiles({ onOpen, height, onClose, sectionKey, prevSectionKe
           )}
         </div>
       </div>
+      {/* v0.9.5 问题6：与上一栏列表之间空一个条目位（折叠时贴紧上方不占位） */}
+      {compact && !collapsed && <div className="filetree-temp-spacer" />}
       {!collapsed && (
         <div className="recent-files-list">
-          {/* v0.9.5 问题6：与上一栏列表之间空一个条目位 */}
-          {compact && <div className="filetree-temp-spacer" />}
           {/* v0.8.3 需求1：列表超出栏高时由 .recent-files-list 内部滚动 */}
           {/* v0.8.5 需求8：文件与文件夹混排渲染（mergedItems 已按 accessedAt 降序 + 截断 66 条） */}
           {mergedItems.map((item) => {

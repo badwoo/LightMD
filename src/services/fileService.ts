@@ -38,12 +38,20 @@ function wrapError(context: string, err: unknown): string {
 }
 
 export const fileService = {
-  async readFile(path: string): Promise<string> {
+  /**
+   * 读取文件内容
+   * @param opts.silent 静默模式：true 时不弹出错误提示,仅抛错——
+   *   供启动恢复使用:被删除/移动的历史文件恢复失败时只标 ⚠（用户从最近打开
+   *   自行知晓），不弹红色"读取文件失败"提示（v0.9.5 问题3）
+   */
+  async readFile(path: string, opts?: { silent?: boolean }): Promise<string> {
     try {
       return await invoke<string>("read_file", { path });
     } catch (err) {
       const msg = wrapError("读取文件失败", err);
-      notifyError(msg);
+      if (!opts?.silent) {
+        notifyError(msg);
+      }
       throw new Error(msg);
     }
   },

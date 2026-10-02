@@ -27,8 +27,8 @@ interface FavoritesProps {
   nextSectionKey?: string;
   /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
-  /** v0.9.5 问题6：紧凑内嵌形态——无标题栏、高度自适应、单行条目,
-      紧跟「打开的文件」栏列表之下（顶部空一个条目位） */
+  /** v0.9.5 问题6：紧凑内嵌形态——高度自适应、单行条目,顶部空一个条目位,
+      紧跟「打开的文件」栏列表之下;标题栏保留(计数/折叠/关闭可用) */
   compact?: boolean;
 }
 
@@ -86,7 +86,6 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
     >
       <div
         className="favorites-header"
-        style={compact ? { display: "none" } : undefined}
         onMouseDown={(e) => { if (!collapsed && !maximized) onMouseDown(e); }}
         onDoubleClick={handleHeaderDoubleClick}
       >
@@ -123,8 +122,8 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
         </div>
       </div>
       {/* 折叠时隐藏列表和空状态提示 */}
-      {/* v0.9.5 问题6：与「打开的文件」栏列表之间空一个条目位（空收藏时同样保持间距） */}
-      {!collapsed && compact && <div className="filetree-temp-spacer" />}
+      {/* v0.9.5 问题6：与「打开的文件」栏列表之间空一个条目位（折叠时贴紧上方不占位） */}
+      {compact && !collapsed && <div className="filetree-temp-spacer" />}
       {!collapsed && favorites.length === 0 && (
         <div className="favorites-empty">{t("sidebar.noFavorites")}</div>
       )}

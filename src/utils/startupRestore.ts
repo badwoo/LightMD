@@ -41,10 +41,17 @@ interface StorageLike {
 
 /** fileService 的最小接口（便于测试注入） */
 interface FileServiceLike {
-  readFile(path: string): Promise<string>;
+  readFile(path: string, opts?: { silent?: boolean }): Promise<string>;
   exists?(path: string): Promise<boolean>;
   listDir?(path: string): Promise<unknown[]>;
 }
+
+/**
+ * v0.9.5 问题2：localStorage key——退出时刻仍打开的「文件标签」快照
+ * （App 层在 openTabs 变化时同步写入）。legacy 启动恢复以此优先为数据源,
+ * 手动关闭的标签不再被恢复；无快照(旧版本升级)时回退 recentFiles 历史。
+ */
+export const OPEN_FILE_TABS_KEY = "lightmd-open-file-tabs";
 
 /** 解析 localStorage 中的 lightmd-settings，返回 loadLastFile 相关字段 */
 function readSettings(storage: StorageLike): {
@@ -146,9 +153,39 @@ export async function restoreRecentFiles(opts: {
   }
 
   const { recentFiles } = readFileStore(storage);
-  // 钳制 N 到 1-50（与 store setter 一致）
-  const N = clamp(settings.loadLastFileCount, 1, 50);
-  let filesToRestore = recentFiles.slice(0, N);
+
+  // v0.9.5 问题2：优先以「退出时刻打开的文件标签快照」为恢复源——
+  // recentFiles 是纯打开历史（关闭标签不移除），用它恢复会让手动关闭的
+  // 标签在重启后复活；快照由 App 层在 openTabs 每次变化时同步写入。
+  let filesToRestore: { path: string; name: string; accessedAt: number }[] = [];
+  try {
+    const raw = storage.getItem(OPEN_FILE_TABS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        filesToRestore = arr
+          .filter((t: unknown): t is { path: string; name?: string } => {
+            const e = t as { path?: unknown };
+            return !!e && typeof e.path === "string" && e.path.length > 0;
+          })
+          .map((t) => ({
+            path: t.path,
+            name: typeof t.name === "string" && t.name ? t.name : getFileName(t.path),
+            accessedAt: 0,
+          }));
+      }
+    }
+  } catch {
+    // 快照损坏：清空后走历史回退
+    filesToRestore = [];
+  }
+
+  // 回退兼容：无标签快照（旧版本升级）→ 按最近 N 条历史（旧行为）
+  if (filesToRestore.length === 0) {
+    // 钳制 N 到 1-50（与 store setter 一致）
+    const N = clamp(settings.loadLastFileCount, 1, 50);
+    filesToRestore = recentFiles.slice(0, N);
+  }
 
   // 回退兼容：旧版本无 recentFiles 持久化，使用 lightmd-last-file
   if (filesToRestore.length === 0) {
@@ -168,7 +205,9 @@ export async function restoreRecentFiles(opts: {
   // 串行 await，避免标签顺序混乱
   for (const file of filesToRestore) {
     try {
-      const content = await fileServiceImpl.readFile(file.path);
+      // v0.9.5 问题3：启动恢复读取失败(文件已删除/移动)静默处理——
+      // 只标 ⚠ 供用户从最近打开自行知晓，不弹红色"读取文件失败"提示
+      const content = await fileServiceImpl.readFile(file.path, { silent: true });
       opts.dispatchOpenFile({ path: file.path, content });
       restored++;
     } catch {
