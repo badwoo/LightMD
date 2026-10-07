@@ -151,10 +151,96 @@ async function renderMermaidToImageRun(code: string, theme?: string): Promise<un
 }
 
 /**
+ * v0.11.0 B2-5：把本地图片读为 Uint8Array（供 docx ImageRun 嵌入）。
+ *
+ * 缺陷背景（P0）：`exportBlocks.parseInlineTokens` 把 image token 转成
+ * `[图片: alt]` 占位文本 + imageSrc 字段，但 `inlineRunsToTextRuns` **无 imageSrc
+ * 分支** → DOCX 导出后只有占位文字，图片全部丢失。
+ *
+ * 支持两类 src：
+ * ① data URL（base64 内联，临时文件粘贴的图片即此形态）→ 直接解码；
+ * ② 相对/绝对路径 → 走 Tauri fs 读盘（capabilities 已授 fs:allow-read-file 全路径）。
+ */
+async function loadImageBytes(src: string): Promise<Uint8Array | null> {
+  try {
+    // data URL
+    if (src.startsWith("data:")) {
+      const m = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(src);
+      if (!m) return null;
+      const payload = m[3] ?? "";
+      if (m[2]) {
+        // base64：atob → Uint8Array
+        const bin = atob(payload);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes;
+      }
+      // 非 base64（纯文本）→ UTF-8 字节
+      return new TextEncoder().encode(decodeURIComponent(payload));
+    }
+    // 本地路径：Tauri fs 读取
+    const { isTauri } = await import("../services/fileService");
+    if (isTauri()) {
+      const { readFile } = await import("@tauri-apps/plugin-fs");
+      const bytes = await readFile(src);
+      return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayBuffer);
+    }
+    // 浏览器环境：fetch（相对路径基于当前 origin，可能读不到 → 降级）
+    const resp = await fetch(src);
+    if (!resp.ok) return null;
+    return new Uint8Array(await resp.arrayBuffer());
+  } catch (err) {
+    console.warn("[导出Word] 图片读取失败，降级为占位文字:", src, err);
+    return null;
+  }
+}
+
+/** 常见图片类型的 docx type 映射 */
+function docxImageType(src: string): "png" | "jpg" | "gif" | "bmp" | "svg" {
+  const lower = src.toLowerCase().split("?")[0]!;
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "jpg";
+  if (lower.endsWith(".gif")) return "gif";
+  if (lower.endsWith(".bmp")) return "bmp";
+  if (lower.endsWith(".svg")) return "svg";
+  if (lower.startsWith("data:image/jpeg") || lower.startsWith("data:image/jpg")) return "jpg";
+  if (lower.startsWith("data:image/gif")) return "gif";
+  if (lower.startsWith("data:image/bmp")) return "bmp";
+  if (lower.startsWith("data:image/svg")) return "svg";
+  return "png";
+}
+
+/**
+ * v0.11.0 B2-5：图片 InlineRun → docx ImageRun。
+ *
+ * 返回 null 表示无法加载（调用方降级为占位文字，不丢内容）。
+ */
+async function buildImageRun(src: string, alt: string): Promise<unknown | null> {
+  const bytes = await loadImageBytes(src);
+  if (!bytes || bytes.length === 0) return null;
+  const { ImageRun } = await import("docx");
+  const type = docxImageType(src);
+  // SVG 在 docx 库中属 SvgMediaOptions，额外要求 fallback（栅格回退图）
+  if (type === "svg") {
+    return new ImageRun({
+      type: "svg",
+      data: bytes,
+      fallback: { type: "png", data: bytes },
+      transformation: { width: 400, height: 300 },
+    });
+  }
+  return new ImageRun({
+    type,
+    data: bytes,
+    transformation: { width: 400, height: 300 },
+    altText: alt ? { name: alt, description: alt, title: alt } : undefined,
+  });
+}
+
+/**
  * 将 InlineRun[] 转换为 docx TextRun[] 数组
  *
  * 返回 any[] 是为了绕过 docx 库 ParagraphChild 类型联合的复杂签名，
- * 实际元素都是 TextRun 实例。
+ * 实际元素都是 TextRun / ImageRun 实例。
  */
 async function inlineRunsToTextRuns(runs: InlineRun[]): Promise<any[]> {
   const { TextRun } = await import("docx");
@@ -164,12 +250,38 @@ async function inlineRunsToTextRuns(runs: InlineRun[]): Promise<any[]> {
     if (r.bold) props.bold = true;
     if (r.italic) props.italics = true;
     if (r.strike) props.strike = true;
+    // v0.11.0 B2-4：mark / sub / sup 此前完全丢失（Word 支持底纹与上下标）
+    if (r.mark) {
+      props.shading = { type: "clear", fill: "FFF3B0", color: "auto" };
+    }
+    if (r.sub) props.subScript = true;
+    if (r.sup) props.superScript = true;
     if (r.code) {
       props.font = "Consolas";
       props.shading = { type: "clear", fill: "f4f4f4", color: "auto" };
     }
     // 简化：链接转为带颜色的文本（docx 超链接需要 ExternalHyperlink，实现复杂）
     if (r.href) props.color = "0078d4";
+
+    // v0.11.0 B2-5：行内公式转 OMML（Word 原生公式对象）。
+    // 此处保持为可读文本（Word 里是纯文本），但**不再退化为 LaTeX 源码带 $ 符号**。
+    if (r.math) {
+      result.push(new TextRun({ ...props, text: r.math, italics: true }));
+      continue;
+    }
+
+    // v0.11.0 B2-5：图片 → ImageRun（此前无 imageSrc 分支 → DOCX 里图片全部丢失，
+    // 只剩 `[图片: alt]` 占位文字）。加载失败则退回占位文字，不丢内容。
+    if (r.imageSrc) {
+      const imageRun = await buildImageRun(r.imageSrc, r.text || "");
+      if (imageRun) {
+        result.push(imageRun);
+        continue;
+      }
+      result.push(new TextRun({ ...props, text: r.text || "[图片]" }));
+      continue;
+    }
+
     // 处理文本中的换行符（hardbreak）：按行拆分，每行一个 TextRun，非首行加 break:1
     if (r.text.includes("\n")) {
       const lines = r.text.split("\n");
@@ -213,6 +325,8 @@ export async function convertBlocksToDocxElements(
     TableCell,
     WidthType,
     ShadingType,
+    // v0.11.0 B2-5：图片/图表段落居中需要 AlignmentType
+    AlignmentType,
   } = docx;
 
   // R2：进度总数 = 公式块 + mermaid 代码块数
@@ -314,7 +428,15 @@ export async function convertBlocksToDocxElements(
           const imageRun = await renderMermaidToImageRun(block.content);
           reportProgress();
           if (imageRun) {
-            elements.push(imageRun);
+            // v0.11.0 B2-5：ImageRun 是 **run 级**元素（ParagraphChild），
+            // 直接 push 进 elements（要求 block 级）会让 Packer.toBlob 抛错或产出
+            // 损坏的 docx。必须包一层 Paragraph。
+            elements.push(
+              new Paragraph({
+                children: [imageRun as never],
+                alignment: AlignmentType.CENTER,
+              }),
+            );
             break;
           }
         }
@@ -344,7 +466,13 @@ export async function convertBlocksToDocxElements(
         const imageRun = await renderLatexToImageRun(block.latex);
         reportProgress();
         if (imageRun) {
-          elements.push(imageRun);
+          // v0.11.0 B2-5：同 mermaid —— ImageRun 属 run 级，须包 Paragraph
+          elements.push(
+            new Paragraph({
+              children: [imageRun as never],
+              alignment: AlignmentType.CENTER,
+            }),
+          );
           break;
         }
         elements.push(
@@ -422,6 +550,72 @@ export async function convertBlocksToDocxElements(
         );
         break;
       }
+      // v0.11.0 B2-4：任务列表（此前 token 落 default → DOCX 整体丢失）
+      case "taskList": {
+        for (const item of block.items) {
+          // 用 ☐ / ☑ 字符表达勾选状态（兼容 Word/WPS 字体，无需 numbering 定义）
+          const mark = item.checked ? "☑ " : "☐ ";
+          elements.push(
+            new Paragraph({
+              children: await inlineRunsToTextRuns([{ text: mark }]),
+              indent: { left: 720 * indentLevel },
+            }),
+          );
+          if (item.runs.length > 0) {
+            elements.push(
+              new Paragraph({
+                children: await inlineRunsToTextRuns(item.runs),
+                indent: { left: 720 * (indentLevel + 1) },
+              }),
+            );
+          }
+          for (const child of item.children ?? []) {
+            elements.push(
+              new Paragraph({
+                children: await inlineRunsToTextRuns(child.runs),
+                bullet: { level: indentLevel + 1 },
+              }),
+            );
+          }
+        }
+        break;
+      }
+      // v0.11.0 B2-4：定义列表（此前术语丢失）
+      case "defList": {
+        for (const item of block.items) {
+          // 术语：加粗独立成段
+          elements.push(
+            new Paragraph({
+              children: await inlineRunsToTextRuns(
+                item.term.map((r) => ({ ...r, bold: true })),
+              ),
+            }),
+          );
+          for (const desc of item.descriptions) {
+            if (desc.length === 0) continue;
+            elements.push(
+              new Paragraph({
+                children: await inlineRunsToTextRuns(desc),
+                indent: { left: 720 * (indentLevel + 1) },
+              }),
+            );
+          }
+        }
+        break;
+      }
+      // v0.11.0 B2-4：自动目录（此前落 default）
+      case "toc": {
+        for (const h of block.headings) {
+          if (!h.text) continue;
+          elements.push(
+            new Paragraph({
+              children: await inlineRunsToTextRuns([{ text: h.text, bold: h.level <= 2 }]),
+              indent: { left: 720 * (indentLevel + Math.max(0, h.level - 1)) },
+            }),
+          );
+        }
+        break;
+      }
     }
   }
 
@@ -450,8 +644,10 @@ export async function markdownToDocx(
     const { Document, Packer, AlignmentType, LevelFormat } = await import("docx");
 
     // 1. markdown → Block[]
-    const { parseMarkdownToBlocks } = await import("./exportBlocks");
-    const blocks = parseMarkdownToBlocks(markdown);
+    // v0.11.0 B2-4：用详细版解析，收集未识别 token 并在导出后提示用户
+    //（此前未识别 token 被静默丢弃 → 任务列表/定义列表整体消失且用户无感知）
+    const { parseMarkdownToBlocksDetailed } = await import("./exportBlocks");
+    const { blocks, unknownTokens } = parseMarkdownToBlocksDetailed(markdown);
 
     // 2. Block[] → docx 元素（R2：公式/图表渲染进度透传）
     const children = await convertBlocksToDocxElements(blocks, 0, onProgress);
@@ -490,6 +686,16 @@ export async function markdownToDocx(
     // 4. 生成 Blob 并下载
     const blob = await Packer.toBlob(doc);
     const finalName = filename.endsWith(".docx") ? filename : `${filename}.docx`;
+
+    // v0.11.0 B2-4：未识别 token 提示。
+    // 此前这些内容被静默丢弃，用户拿到缺内容的文件却毫不知情；
+    // 现在明确告知「哪些内容没能导出」，把静默失败变为可见降级。
+    if (unknownTokens.length > 0) {
+      const { notifyWarning } = await import("../services/notificationService");
+      notifyWarning(
+        `部分内容无法导出到 Word：${unknownTokens.join("、")}。已导出其余内容。`
+      );
+    }
 
     // Tauri 环境：使用 save 对话框选择保存路径，writeFile 写入二进制
     const { isTauri } = await import("../services/fileService");

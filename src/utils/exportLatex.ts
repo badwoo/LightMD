@@ -194,6 +194,42 @@ function blockToLatex(block: Block): string {
       return `\\[\n${block.latex}\n\\]\n`;
     case "table":
       return renderTable(block) + "\n";
+    // v0.11.0 B2-4：新增两种 kind 的 LaTeX 渲染（此前落 default 被丢弃）
+    case "taskList": {
+      // 任务列表 → itemize + \(\square\) / \(\boxtimes\)（amssymb 提供 \square）
+      const items = block.items
+        .map((item) => {
+          const mark = item.checked ? "\\boxtimes" : "\\square";
+          const text = inlineRunsToLatex(item.runs);
+          return `  \\item[${mark}] ${text}`;
+        })
+        .join("\n");
+      return `\\begin{itemize}\n${items}\n\\end{itemize}\n`;
+    }
+    case "defList": {
+      // 定义列表 → description 环境（LaTeX 原生支持）
+      const items = block.items
+        .map((item) => {
+          const term = inlineRunsToLatex(item.term);
+          const descs = item.descriptions
+            .map((d) => inlineRunsToLatex(d))
+            .join("\n\n");
+          return `  \\item[${term}] ${descs}`;
+        })
+        .join("\n");
+      return `\\begin{description}\n${items}\n\\end{description}\n`;
+    }
+    case "toc": {
+      // 自动目录内容 → 转为章节列表（LaTeX 真实目录应用 \tableofcontents，此处输出静态列表）
+      if (block.headings.length === 0) return "";
+      const items = block.headings
+        .map((h) => {
+          const indent = "  ".repeat(Math.max(0, h.level - 1));
+          return `${indent}\\item ${h.text}`;
+        })
+        .join("\n");
+      return `\\begin{itemize}\n${items}\n\\end{itemize}\n`;
+    }
   }
 }
 
@@ -214,6 +250,7 @@ function latexPreamble(title: string): string {
 \\usepackage{ulem}
 \\usepackage{soul}
 \\usepackage{amsmath}
+\\usepackage{amssymb}
 % v0.8.0 限制：图片以 \\includegraphics{原始路径} 形式写出，未自动拷贝图片文件。
 % 请将图片放置于 .tex 同目录（或修改路径）后再用 XeLaTeX 编译。
 \\begin{document}

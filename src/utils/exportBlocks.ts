@@ -64,24 +64,56 @@ export interface InlineRun {
   imageSrc?: string;
 }
 
-/** 列表项 */
+/**
+ * 列表项
+ *
+ * v0.11.0 B2-4：新增 `checked`（任务列表项的勾选状态；undefined = 非任务项）。
+ */
 export interface ListItem {
   runs: InlineRun[];
   /** 嵌套子列表 */
   children?: ListItem[];
+  /** 任务列表勾选状态：true=已完成 / false=未完成 / undefined=非任务项 */
+  checked?: boolean;
 }
 
-/** 块级元素中间结构 */
+/** 定义列表项（v0.11.0 B2-4 新增） */
+export interface DefItem {
+  /** 术语（dt） */
+  term: InlineRun[];
+  /** 定义描述（dd，可多条） */
+  descriptions: InlineRun[][];
+  /** 定义描述内部的嵌套块（dd 内含块级内容时） */
+  blocks?: Block[];
+}
+
+/**
+ * 块级元素中间结构
+ *
+ * v0.11.0 B2-4 新增两种 kind：
+ * - `taskList`：GFM 任务列表（此前 token 落 default 被丢弃 → DOCX 导出整体丢失）
+ * - `defList`：定义列表（此前 dt 丢失、只剩 dd）
+ */
 export type Block =
   | { kind: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; runs: InlineRun[] }
   | { kind: "paragraph"; runs: InlineRun[] }
   | { kind: "bulletList"; items: ListItem[] }
   | { kind: "orderedList"; items: ListItem[]; start: number }
+  | { kind: "taskList"; items: ListItem[] }
+  | { kind: "defList"; items: DefItem[] }
   | { kind: "codeBlock"; content: string; language: string }
   | { kind: "table"; header: InlineRun[][][]; rows: InlineRun[][][] }
   | { kind: "blockquote"; blocks: Block[] }
   | { kind: "hr" }
+  | { kind: "toc"; headings: { level: number; text: string; id: string }[] }
   | { kind: "mathBlock"; latex: string };
+
+/** 解析结果：blocks + 未识别 token 类型（v0.11.0 B2-4：不再静默丢弃） */
+export interface ParseResult {
+  blocks: Block[];
+  /** 未能映射到 Block 的 token 类型（去重）。非空即意味着导出结果可能不完整 */
+  unknownTokens: string[];
+}
 
 // ─── markdown-it token → Block[] 转换 ──────────────────────
 
@@ -318,6 +350,178 @@ function parseList(
 }
 
 /**
+ * v0.11.0 B2-4：解析 GFM 任务列表（task_list_open / task_item_open）。
+ *
+ * 缺陷背景（P0）：task-list 插件产出的 item 类型是 `task_item_open`（**不是**
+ * `list_item_open`），故 parseList 完全不匹配 → 整段任务列表在导出时落
+ * `default: i++` 被丢弃（实测 `parseBlockTokens("- [ ] x")` 返回 `[]`）。
+ *
+ * 结构上与普通列表同构，差异仅在：
+ * ① item 元素类型名不同；
+ * ② `task_item_open` 带 `checked` attr（"1"/"0" 或 ""）。
+ */
+function parseTaskList(
+  tokens: Token[],
+  startIdx: number,
+): { items: ListItem[]; nextIndex: number } {
+  const items: ListItem[] = [];
+  let i = startIdx + 1;
+  let depth = 1;
+
+  while (i < tokens.length && depth > 0) {
+    const t = tokens[i]!;
+    if (t.type === "task_list_open") {
+      depth++;
+      i++;
+      continue;
+    }
+    if (t.type === "task_list_close") {
+      depth--;
+      i++;
+      continue;
+    }
+
+    if (t.type === "task_item_open" && depth === 1) {
+      // checked attr：插件写 `data-checked="true" | "false"`（task-list-plugin.ts:162），
+      // 另兼容 markdown-it-task-lists 风格的 "1"/"" 写法
+      const raw = getTokenAttr(t, "data-checked") ?? getTokenAttr(t, "checked");
+      const checked = raw === "true" || raw === "1" || raw === "";
+
+      // 收集 task_item_open → task_item_close 之间的内容
+      const itemStart = i + 1;
+      let itemEnd = itemStart;
+      let itemDepth = 1;
+      while (itemEnd < tokens.length && itemDepth > 0) {
+        const it = tokens[itemEnd]!;
+        if (it.type === "task_item_open") itemDepth++;
+        if (it.type === "task_item_close") itemDepth--;
+        if (itemDepth > 0) itemEnd++;
+      }
+
+      const runs: InlineRun[] = [];
+      const children: ListItem[] = [];
+      let j = itemStart;
+      while (j < itemEnd) {
+        const jt = tokens[j]!;
+        // 任务项内可嵌套普通列表或子任务列表
+        if (jt.type === "bullet_list_open" || jt.type === "ordered_list_open") {
+          const nested = parseList(tokens, j);
+          children.push(...nested.items);
+          j = nested.nextIndex;
+          continue;
+        }
+        if (jt.type === "task_list_open") {
+          const nested = parseTaskList(tokens, j);
+          children.push(...nested.items);
+          j = nested.nextIndex;
+          continue;
+        }
+        if (jt.type === "inline") {
+          if (jt.children) runs.push(...parseInlineTokens(jt.children));
+          else if (jt.content) runs.push({ text: jt.content });
+        }
+        j++;
+      }
+
+      items.push({
+        runs,
+        children: children.length > 0 ? children : undefined,
+        checked,
+      });
+      i = itemEnd + 1;
+      continue;
+    }
+
+    i++;
+  }
+
+  return { items, nextIndex: i };
+}
+
+/**
+ * v0.11.0 B2-4：解析定义列表（dl_open / dt_open / dd_open）。
+ *
+ * 缺陷背景（P0）：deflist 插件的 token 此前全部落 default 被跳过，
+ * 实测 `"Term\n: Definition"` 导出后只剩 `Definition`（**术语丢失**）。
+ *
+ * markdown-it deflist 的实际 token 形态（实测）：
+ *   dl_open, dt_open, inline, dt_close, dd_open, paragraph_open, inline, paragraph_close, dd_close, dl_close
+ * 注意 dd 内部包着 paragraph_open/close，故 dd 的描述文本要穿透 paragraph 取 inline。
+ */
+function parseDefList(
+  tokens: Token[],
+  startIdx: number,
+): { items: DefItem[]; nextIndex: number } {
+  const items: DefItem[] = [];
+  let i = startIdx + 1;
+  let depth = 1;
+
+  /** 读取 [from, to) 区间内所有 inline token 的 runs */
+  const collectRuns = (from: number, to: number): InlineRun[] => {
+    const runs: InlineRun[] = [];
+    for (let k = from; k < to; k++) {
+      const t = tokens[k]!;
+      if (t.type === "inline") {
+        if (t.children) runs.push(...parseInlineTokens(t.children));
+        else if (t.content) runs.push({ text: t.content });
+      }
+    }
+    return runs;
+  };
+
+  while (i < tokens.length && depth > 0) {
+    const t = tokens[i]!;
+    if (t.type === "dl_open") {
+      depth++;
+      i++;
+      continue;
+    }
+    if (t.type === "dl_close") {
+      depth--;
+      i++;
+      continue;
+    }
+
+    if (t.type === "dt_open" && depth === 1) {
+      // dt_open → dt_close
+      let end = i + 1;
+      let d = 1;
+      while (end < tokens.length && d > 0) {
+        const et = tokens[end]!;
+        if (et.type === "dt_open") d++;
+        if (et.type === "dt_close") d--;
+        if (d > 0) end++;
+      }
+      const term = collectRuns(i + 1, end);
+
+      // 该 dt 之后连续的 dd 全部归属此术语
+      const descriptions: InlineRun[][] = [];
+      let j = end + 1;
+      while (j < tokens.length && tokens[j]!.type === "dd_open") {
+        let ddEnd = j + 1;
+        let dd = 1;
+        while (ddEnd < tokens.length && dd > 0) {
+          const dt2 = tokens[ddEnd]!;
+          if (dt2.type === "dd_open") dd++;
+          if (dt2.type === "dd_close") dd--;
+          if (dd > 0) ddEnd++;
+        }
+        descriptions.push(collectRuns(j + 1, ddEnd));
+        j = ddEnd + 1;
+      }
+
+      items.push({ term, descriptions });
+      i = j;
+      continue;
+    }
+
+    i++;
+  }
+
+  return { items, nextIndex: i };
+}
+
+/**
  * 解析表格
  *
  * 简化处理：将每个单元格的 inline 内容合并为 InlineRun[]
@@ -428,8 +632,35 @@ function parseBlockquote(
  * @param end 结束索引（不含）
  */
 export function parseBlockTokens(tokens: Token[], start: number, end: number): Block[] {
+  const blocks = parseBlockTokensDetailed(tokens, start, end).blocks;
+  return blocks;
+}
+
+/**
+ * v0.11.0 B2-4：详细版解析，额外返回未识别 token 类型。
+ *
+ * 缺陷背景（P0）：原实现的 `default: i++` 会**静默丢弃**所有未映射的 token
+ * （注释自述「忽略未识别的 token」）→ 任务列表、定义列表整体消失，
+ * 且用户对导出缺内容毫无感知。
+ *
+ * 现改为：default 分支把 token 类型记入 unknownTokens（去重），
+ * 由调用方（exportDocx / exportEpub / exportLatex / ExportDialog）
+ * 上报「部分内容无法导出」提示。**即使未来再漏新语法也不再静默丢内容。**
+ */
+export function parseBlockTokensDetailed(
+  tokens: Token[],
+  start: number,
+  end: number,
+): ParseResult {
   const blocks: Block[] = [];
+  const unknown = new Set<string>();
   let i = start;
+
+  /** 记录未识别 token（跳过其配对 close token，避免逐个标记） */
+  const markUnknown = (type: string): void => {
+    if (type.endsWith("_close")) return; // close 由对应 open 处理
+    unknown.add(type);
+  };
 
   while (i < end) {
     const token = tokens[i];
@@ -439,6 +670,39 @@ export function parseBlockTokens(tokens: Token[], start: number, end: number): B
     }
 
     switch (token.type) {
+      // v0.11.0 B2-4：GFM 任务列表（此前落 default 被整体丢弃）
+      case "task_list_open": {
+        const r = parseTaskList(tokens, i);
+        blocks.push({ kind: "taskList", items: r.items });
+        i = r.nextIndex;
+        break;
+      }
+      // v0.11.0 B2-4：定义列表（此前 dt 丢失、只剩 dd）
+      case "dl_open": {
+        const r = parseDefList(tokens, i);
+        blocks.push({ kind: "defList", items: r.items });
+        i = r.nextIndex;
+        break;
+      }
+      // v0.11.0 B2-4：自动目录（此前落 default；PM 侧有 toc 节点，导出补齐）
+      case "toc": {
+        const items = parseInlineTokens(token.children || []);
+        // toc token 的 headings 信息在 attrs 或 meta 中，尽力提取
+        const headingsRaw =
+          (token.meta && (token.meta as { headings?: unknown }).headings) ?? null;
+        let headings: { level: number; text: string; id: string }[] = [];
+        if (Array.isArray(headingsRaw)) {
+          headings = headingsRaw as { level: number; text: string; id: string }[];
+        } else if (items.length > 0) {
+          // 兜底：至少保留目录内的文本条目，不让内容消失
+          headings = items
+            .filter((r) => r.text.trim().length > 0)
+            .map((r) => ({ level: 1, text: r.text.trim(), id: "" }));
+        }
+        blocks.push({ kind: "toc", headings });
+        i++;
+        break;
+      }
       case "heading_open": {
         const level = parseInt(token.tag?.slice(1) || "1", 10) as 1 | 2 | 3 | 4 | 5 | 6;
         // 收集 heading_open 到 heading_close 之间的 inline 内容
@@ -517,13 +781,21 @@ export function parseBlockTokens(tokens: Token[], start: number, end: number): B
         break;
       }
       default:
-        // 忽略未识别的 token（如 footnote_block_open 等）
+        // v0.11.0 B2-4：**不再静默丢弃**。
+        // 原实现直接 i++（注释「忽略未识别的 token」），导致任务列表/定义列表
+        // 等整段内容无声消失。现把类型记入 unknownTokens，由调用方提示用户。
+        //
+        // 已知仍走此分支的 token（内容本身不丢、由专门分支另行处理）：
+        // - inline / text：块级遍历中无意义（内容已在 *_open 分支内取）
+        // - footnote_ref / footnote_tail：行内处理，块级为结构标记
+        // - *_close：配对标记
+        markUnknown(token.type);
         i++;
         break;
     }
   }
 
-  return blocks;
+  return { blocks, unknownTokens: [...unknown] };
 }
 
 // ─── markdown-it 实例创建 ──────────────────────
@@ -551,7 +823,20 @@ export function parseMarkdownToBlocks(
   markdown: string,
   mdInstance?: MarkdownIt,
 ): Block[] {
+  return parseMarkdownToBlocksDetailed(markdown, mdInstance).blocks;
+}
+
+/**
+ * v0.11.0 B2-4：详细版（额外返回未识别 token）。
+ *
+ * 供各导出器上报「部分内容无法导出」用：DOCX / EPUB / LaTeX 在
+ * unknownTokens 非空时应提示用户，避免用户拿到悄悄缺内容的文件。
+ */
+export function parseMarkdownToBlocksDetailed(
+  markdown: string,
+  mdInstance?: MarkdownIt,
+): ParseResult {
   const md = mdInstance || createDefaultMarkdownIt();
   const tokens = md.parse(markdown, {});
-  return parseBlockTokens(tokens, 0, tokens.length);
+  return parseBlockTokensDetailed(tokens, 0, tokens.length);
 }
