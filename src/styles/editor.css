@@ -71,6 +71,10 @@
   color: var(--heading-color);
   margin: 1.2em 0 0.6em;
   line-height: 1.3;
+  /* v0.11.0 B4-5：文内锚点跳转走 scrollIntoView({block:"start"})，标题会紧贴
+     滚动容器顶边（"贴顶"）。留出顶部余量，跳转后标题不被上方界面元素压住。
+     可用 --editor-scroll-margin-top 覆盖。 */
+  scroll-margin-top: var(--editor-scroll-margin-top, 24px);
 }
 
 .ProseMirror h1 { font-size: 2em; }

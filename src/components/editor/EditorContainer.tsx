@@ -125,6 +125,22 @@ import { computeTextareaCursorPosition } from "../../utils/cursorPosition";
 import { UNTITLED_PROGRESS_PREFIX } from "../../utils/tabKey";
 import "../../styles/editor.css";
 
+/**
+ * v0.11.0 B4-9 返修：阅读模式点击图片时，是否应由**「编辑图片」对话框**接管。
+ *
+ * - `data-editable !== "true"` → 不是可编辑图片，不接管；
+ * - **只读标签 → 不接管**，把事件放行给图片灯箱
+ *   （core/plugins/image-lightbox 的冒泡监听）。
+ *
+ * 抽成纯函数是为了让这条判定可被单测锁定：真正的坑不在判定本身，而在
+ * 「EditorContainer 的图片监听注册在捕获阶段并会 stopPropagation」——
+ * 只要只读时仍然接管（截断事件），灯箱就永远打不开。
+ */
+export function shouldOpenImageEditor(img: { getAttribute(name: string): string | null }, isReadonly: boolean): boolean {
+  if (img.getAttribute("data-editable") !== "true") return false;
+  return !isReadonly;
+}
+
 // ─── 源码模式撤销/恢复栈（增量差异存储）──────────────
 // 不再存储完整文档快照，只存储变化的片段，大幅节省内存
 interface HistoryEntry {
@@ -1538,7 +1554,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const target = e.target as HTMLElement;
       if (!target || target.tagName !== "IMG") return;
       const img = target as HTMLImageElement;
-      if (img.getAttribute("data-editable") !== "true") return;
+      // v0.11.0 B4-9 返修：判定抽成纯函数（shouldOpenImageEditor）便于单测。
+      //
+      // 为什么只读标签必须**直接放行**（不 preventDefault / 不 stopPropagation）：
+      // 本监听注册在**捕获阶段**（见下方 addEventListener 第三参 true），先于冒泡执行；
+      // 一旦在此截断事件，挂在 .ProseMirror 上的图片灯箱**冒泡**监听就永远收不到
+      // → 灯箱实际打不开（线上表现：只读标签点图片仍弹「编辑图片」对话框，
+      // B4-9 形同虚设）。放行后由灯箱接管，可编辑标签行为保持不变。
+      const st = useEditorStore.getState();
+      if (!shouldOpenImageEditor(img, !!st.openTabs[st.activeTabIdx]?.isReadonly)) return;
       const view = viewRef.current;
       if (!view) return;
       // 通过 posAtDOM 找到图片节点位置
@@ -3600,6 +3624,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (id === "ai.summary") startAiAssistRef.current("summary");
       // v0.7.5 功能1：AI 对话（底部栏「AI对话」/ Ctrl+K / 命令面板共用同一入口）
       if (id === "ai.chat") startAiChatRef.current();
+      // v0.11.0 B3-1 返修：源码模式下命令面板的「正文（移除标题）」。
+      // App.tsx 对该 id 在源码模式直接放行（见其注释），由这里复用源码模式的
+      // 既有格式化入口 —— 与 Ctrl+0 同一条路径，真正移除行首 `#`。
+      if (id === "format.paragraph") {
+        const vm = useEditorStore.getState().viewMode;
+        if (vm === "edit" || vm === "split") handleFormatAction.current("paragraph");
+      }
     };
     window.addEventListener("lightmd:command", handler);
     return () => window.removeEventListener("lightmd:command", handler);
