@@ -344,22 +344,27 @@ export function insertColumnRight(tr: Transaction, $pos: ResolvedPos): Transacti
   return tr;
 }
 
-/** 删除当前行（thead 行视为删除整个 thead；tbody 仅剩一行时不删除） */
+/**
+ * 删除当前行。
+ *
+ * v0.11.0 B1-2（P0 修复）：**表头行不再允许删除**。
+ *
+ * 缺陷背景：原实现在 isInHead 时直接删掉整个 table_head 节点，而 schema 的 table
+ * content 是 `table_head? table_body`（head 可选），故 PM 不报错；但 serializer 的
+ * tableToMarkdown 无条件把 rows[0] 当表头输出 → 实测 `| A | B |` 被删后输出
+ * `| 1 | 2 |`，A/B 永久消失、数据行顶替表头。
+ *
+ * 现改为与「tbody 仅剩一行时拒绝删除」一致的策略：返回 null 表示拒绝，
+ * 调用方（工具栏 / 右键菜单）据此不 dispatch 事务。
+ * 注：右键菜单 buildContextMenuItems 此前已在表头时隐藏删除行，
+ * 工具栏按钮未做同样处理 —— 现由本函数统一兜底，两入口行为一致。
+ */
 export function deleteRow(tr: Transaction, $pos: ResolvedPos): Transaction | null {
   const rowInfo = rowAround($pos);
   if (!rowInfo) return null;
 
-  // thead 中的行：删除整个 table_head 节点（保留 tbody）
-  if (isInHead($pos)) {
-    for (let d = $pos.depth; d > 0; d--) {
-      const node = $pos.node(d);
-      if (node.type.name === "table_head") {
-        const headPos = $pos.before(d);
-        return tr.delete(headPos, headPos + node.nodeSize);
-      }
-    }
-    return null;
-  }
+  // v0.11.0 B1-2：表头行拒绝删除（原实现删整个 thead → 表头内容永久丢失）
+  if (isInHead($pos)) return null;
 
   // tbody 中的行：检查 tbody 是否仅剩这一行（schema 要求 table_body 至少一行）
   for (let d = $pos.depth; d > 0; d--) {
@@ -1022,6 +1027,21 @@ export class TableView implements NodeView {
       btn.type = "button";
       btn.style.cssText =
         "padding:3px 6px;border:1px solid transparent;background:none;cursor:pointer;border-radius:3px;";
+
+      // v0.11.0 B1-2：表头行时禁用「删除行」按钮。
+      // deleteRow 已改为在表头内返回 null（拒绝删除），此处进一步给出**可见反馈**——
+      // 按钮置灰 + 光标 not-allowed，避免用户点击后毫无响应而困惑
+      // （与右键菜单 buildContextMenuItems 在表头隐藏该项的既有策略对齐）。
+      if (op === deleteRow) {
+        const $head = this.getCurrentCellPos();
+        if ($head && isInHead($head)) {
+          btn.disabled = true;
+          btn.style.opacity = "0.35";
+          btn.style.cursor = "not-allowed";
+          btn.title = `${title}（表头行不可删除）`;
+        }
+      }
+
       if (danger) btn.style.color = "#d32f2f";
       btn.addEventListener("mouseenter", () => (btn.style.background = "var(--bg-hover,#f0f0f0)"));
       btn.addEventListener("mouseleave", () => (btn.style.background = "none"));

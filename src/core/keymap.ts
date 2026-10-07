@@ -9,7 +9,7 @@
  * - 删除线已按 D1 拍板统一为 Ctrl+Alt+S（原富文本 Ctrl+Shift+S 废弃，避开「另存为」）。
  */
 import { undo, redo } from "prosemirror-history";
-import type { Command } from "prosemirror-state";
+import type { Command, EditorState } from "prosemirror-state";
 import { Plugin } from "prosemirror-state";
 import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands } from "prosemirror-commands";
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from "prosemirror-schema-list";
@@ -25,15 +25,35 @@ const schema = lightMDSchema;
 /**
  * v0.8.0 修复 P11-6：Shift+Enter 插入段内硬换行（对应 Markdown 的"两空格 + 换行"）。
  *
- * 背景：用户"在阅读模式下每行末尾回车换行"，若用 Shift+Enter 表达段内换行，
- * 此前没有对应命令、行为不确定。这里显式支持，且与 serializer 的 hard_break ↔ "  \n"
- * 互逆，模式切换往返稳定。
- * 防护：光标前紧邻硬换行时不再插入，避免出现连续硬换行（CommonMark 中没有意义）。
+ * v0.11.0 B1-1（P0 修复）：**必须排除 `code: true` 的文本块**。
+ *
+ * 缺陷：原实现只判 selection.empty 与「前节点是否为 hard_break」，未考虑块类型。
+ * code_block / math_block 的 content 是 `text*`（schema.ts），容不下 hard_break 节点，
+ * ProseMirror 只能拆块 → 代码块被腰斩、剩余内容降级为 paragraph 并写回磁盘
+ * （实测存盘变成 "```js\nconst a = 1\n```\n\n  \n\nconst b = 2\n"，语法高亮失效）。
+ *
+ * 修复：新增 inCodeLikeBlock 守卫，在代码/公式块内返回 false 交回默认键盘处理。
+ * 由于 code_block 的 content 是 text*，**原生回车本就能正常换行**，
+ * 阻止 hard_break 不损失任何能力。守卫逻辑与 auto-pair.ts 的 inDisabledNode 一致，
+ * 但不依赖 view（Command 签名只有 state/dispatch），故独立实现而非复用。
  */
+const inCodeLikeBlock = (state: EditorState): boolean => {
+  const { $from } = state.selection;
+  for (let d = $from.depth; d > 0; d--) {
+    const name = $from.node(d).type.name;
+    if (name === "code_block" || name === "math_block" || name === "code_inline") {
+      return true;
+    }
+  }
+  return false;
+};
+
 const insertHardBreak: Command = (state, dispatch) => {
   if (!schema.nodes.hard_break) return false;
   const { selection } = state;
   if (!selection.empty) return false;
+  // v0.11.0 B1-1：代码块/公式块内不得插入 hard_break（会拆块并损坏文档）
+  if (inCodeLikeBlock(state)) return false;
   const before = selection.$from.nodeBefore;
   if (before && before.type === schema.nodes.hard_break) return false;
   if (dispatch) {
@@ -116,7 +136,13 @@ export function buildKeymap() {
     ),
 
     // 段内硬换行（Shift+Enter）
-    "Shift-Enter": insertHardBreak,
+    // v0.11.0 B1-1：包一层 IME 守卫——中文输入法候选确认过程中（view.composing）
+    // 若触发 Shift+Enter，不得执行命令。理由与 auto-pair.ts 的 Backspace 守卫一致：
+    // 不加此守卫时，候选确认会被误判为命令按键，进而在代码块内触发破坏性拆块。
+    "Shift-Enter": (state, dispatch, view) => {
+      if (view?.composing) return false;
+      return insertHardBreak(state, dispatch);
+    },
 
     // Tab 缩进(E2:v0.9.2 补齐三处缺失——表格导航 > 代码块缩进 > 任务项/列表项嵌套)
     // chainCommands 顺序即优先级;各命令在不适用的上下文返回 false,

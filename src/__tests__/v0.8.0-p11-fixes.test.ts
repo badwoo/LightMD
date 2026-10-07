@@ -79,7 +79,14 @@ describe("P11-6 Enter / Shift+Enter 键位", () => {
   });
 
   it("Shift+Enter 插入段内硬换行", () => {
-    expect(read("../core/keymap.ts")).toContain('"Shift-Enter": insertHardBreak');
+    // v0.11.0 B1-1：键位改为包装函数（追加 view.composing 的 IME 守卫，
+    // 防止中文输入法候选确认时误触），故断言 insertHardBreak 调用仍存在。
+    const src = read("../core/keymap.ts");
+    expect(src).toContain("insertHardBreak");
+    expect(src).toContain('"Shift-Enter"');
+    // IME 守卫：代码块/公式块守卫 + 组合输入守卫
+    expect(src).toContain("inCodeLikeBlock");
+    expect(src).toContain("view?.composing");
   });
 });
 

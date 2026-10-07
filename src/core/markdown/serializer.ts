@@ -375,8 +375,17 @@ function tableToMarkdown(node: Node): string {
   const rows: string[][] = [];
   const aligns: string[] = [];
 
+  // v0.11.0 B1-2（P0 防线②）：记录是否存在真正的 table_head。
+  // schema 的 table content 是 `table_head? table_body`（head 可选），因此当
+  // table_head 缺失时（历史上 deleteRow 删整个 thead 会造成此状态，v0.11.0 已
+  // 在 editor 侧拒绝该操作）**不得**把 tbody 首行当表头输出——那会让数据行被
+  // 伪装成表头、原表头内容静默丢失。此处是数据安全的最后一道闸：即使未来新增
+  // 某条路径删除了 table_head，输出也只是"缺表头"而非"丢数据 + 数据伪装表头"。
+  let hasHead = false;
+
   // 收集所有行
   node.forEach((section) => {
+    if (section.type.name === "table_head") hasHead = true;
     section.forEach((row) => {
       const cells: string[] = [];
       row.forEach((cell, _offset, colIdx) => {
@@ -397,8 +406,15 @@ function tableToMarkdown(node: Node): string {
 
   const result: string[] = [];
 
-  // 表头（第一行）
-  result.push("| " + rows[0].map((c) => c || " ").join(" | ") + " |");
+  // v0.11.0 B1-2：表头行。
+  // 正常情况 hasHead 为 true，rows[0] 即表头行。
+  // 无 table_head 时（防御分支）：补一行空表头，rows 全部作为数据行输出，
+  // 绝不把首行数据当表头（那会造成「原表头丢失 + 数据被伪装成表头」的双重损坏）。
+  if (hasHead) {
+    result.push("| " + rows[0].map((c) => c || " ").join(" | ") + " |");
+  } else {
+    result.push("| " + new Array(colCount).fill(" ").join(" | ") + " |");
+  }
 
   // 分隔行
   const sep = aligns.map((a) => {
@@ -412,8 +428,8 @@ function tableToMarkdown(node: Node): string {
   while (sep.length < colCount) sep.push("---");
   result.push("| " + sep.join(" | ") + " |");
 
-  // 数据行
-  for (let r = 1; r < rows.length; r++) {
+  // 数据行（无表头时从第 0 行开始；有表头时跳过已被当作表头的 rows[0]）
+  for (let r = hasHead ? 1 : 0; r < rows.length; r++) {
     const cells = rows[r];
     while (cells.length < colCount) cells.push("");
     result.push("| " + cells.map((c) => c || " ").join(" | ") + " |");

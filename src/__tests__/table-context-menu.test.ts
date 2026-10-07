@@ -309,15 +309,26 @@ describe("删除行", () => {
     expect(body.child(0).child(0).textContent).toBe("A");
   });
 
-  it("删除 thead 行：删除整个 table_head", () => {
+  it("删除 thead 行：v0.11.0 B1-2 起拒绝删除（防表头内容丢失）", () => {
+    // v0.11.0 B1-2（P0 修复）：原实现删除整个 table_head，而 schema 的
+    // `table_head? table_body` 允许 head 缺失故 PM 不报错，但 serializer 无条件把
+    // rows[0] 当表头 → 实测 `| A | B |` 被删后输出 `| 1 | 2 |`，A/B 永久消失。
+    // 现与「tbody 仅剩一行」一致：返回 null 表示拒绝。
     const doc = makeDoc(buildStandardTable());
     // cellIndex 0 = thead "H1"
-    const newDoc = applyOp(doc, 0, deleteRow);
-    const table = newDoc.firstChild!;
-    // thead 已删除，第一个子节点是 tbody
-    expect(table.firstChild!.type.name).toBe("table_body");
-    // tbody 仍 2 行
-    expect(table.firstChild!.childCount).toBe(2);
+    const result = applyOpAllowNull(doc, 0, deleteRow);
+    expect(result).toBeNull();
+  });
+
+  it("表头行被拒绝删除后，表头内容与数据均完整保留", () => {
+    const doc = makeDoc(buildStandardTable());
+    const result = applyOpAllowNull(doc, 0, deleteRow);
+    // 返回 null → 不产生事务，原文档不变
+    expect(result).toBeNull();
+    const table = doc.firstChild!;
+    // thead 仍在
+    expect(table.firstChild!.type.name).toBe("table_head");
+    expect(table.childCount).toBe(2);
   });
 
   it("删除 tbody 仅剩的一行：返回 null（schema 保护）", () => {
