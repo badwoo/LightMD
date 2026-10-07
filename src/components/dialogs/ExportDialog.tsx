@@ -8,7 +8,7 @@
  * - HTML / 图片 / Word：直接导出
  * - PDF：先弹出 PdfExportDialog 配置选项，确认后再导出
  */
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/useSettingsStore";
@@ -70,26 +70,31 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
 
     setExporting(true);
     setProgressText("");
+    // v0.11.0 B5-7：仅在**真正完成导出**时关闭对话框。
+    // 缺陷背景（P2）：原实现无条件 `finally { onClose() }` → 用户在保存对话框
+    // 点「取消」时对话框也被关掉（看起来像导出成功）；导出失败时同样关窗，
+    // 错误提示与失败现场一起消失、无法重试。
+    let succeeded = false;
     try {
       if (format === "html") {
-        await exportHTML(markdown, title, includeCSS, filePath);
+        succeeded = await exportHTML(markdown, title, includeCSS, filePath);
       } else if (format === "image") {
-        await exportImage(markdown, title, filePath, setProgressText);
+        succeeded = await exportImage(markdown, title, filePath, setProgressText);
       } else if (format === "word") {
         const baseName = title.replace(/\.md$/i, "");
-        await markdownToDocx(markdown, baseName, filePath, (done, total) =>
+        succeeded = await markdownToDocx(markdown, baseName, filePath, (done, total) =>
           setProgressText(`公式/图表 ${done}/${total}`),
         );
       } else if (format === "epub") {
         const baseName = title.replace(/\.md$/i, "");
         const { exportEpub } = await import("../../utils/exportEpub");
-        await exportEpub(markdown, baseName, filePath, (done, total) =>
+        succeeded = await exportEpub(markdown, baseName, filePath, (done, total) =>
           setProgressText(`公式/图表 ${done}/${total}`),
         );
       } else if (format === "latex") {
         const baseName = title.replace(/\.md$/i, "");
         const { exportLatex } = await import("../../utils/exportLatex");
-        await exportLatex(markdown, baseName, filePath);
+        succeeded = await exportLatex(markdown, baseName, filePath);
       }
     } catch (err) {
       console.error("导出失败:", err);
@@ -97,33 +102,40 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
     } finally {
       setExporting(false);
       setProgressText("");
-      // 非 PDF 格式导出后直接关闭对话框（PDF 由 handlePdfOptionsConfirm 处理关闭）
-      onClose();
     }
+    if (succeeded) onClose();
   };
+
+  /** 用户主动关闭（点取消/Esc/关闭按钮）—— 不算导出完成 */
+  const handleCancel = useCallback(() => {
+    if (exporting) return; // 导出中不响应，避免半途中断
+    onClose();
+  }, [exporting, onClose]);
 
   // G5：PDF 选项确认后执行导出
   const handlePdfOptionsConfirm = async (options: PdfExportOptions) => {
     setShowPdfOptions(false);
     setExporting(true);
+    let succeeded = false;
     try {
-      await exportPDFWithOptions(markdown, title, includeCSS, filePath, options);
+      succeeded = await exportPDFWithOptions(markdown, title, includeCSS, filePath, options);
     } catch (err) {
       console.error("PDF 导出失败:", err);
       notifyError(t("export.pdfExportFailed", { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setExporting(false);
-      onClose();
     }
+    // v0.11.0 B5-7：同 handleExport —— 仅成功时关闭
+    if (succeeded) onClose();
   };
 
   return (
     <>
-      <div className="export-overlay" onClick={onClose}>
+      <div className="export-overlay" onClick={handleCancel}>
         <div className="export-dialog" onClick={(e) => e.stopPropagation()}>
           <div className="export-header">
             <h2>{tt("export.title")}</h2>
-            <button className="export-close" onClick={onClose}>
+            <button className="export-close" onClick={handleCancel} title={tt("export.cancel")}>
               ✕
             </button>
           </div>
@@ -220,7 +232,7 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
           </div>
 
           <div className="export-footer">
-            <button className="export-btn secondary" onClick={onClose}>
+            <button className="export-btn secondary" onClick={handleCancel} disabled={exporting}>
               {tt("export.cancel")}
             </button>
             <button
@@ -331,8 +343,25 @@ function getDefaultDir(filePath: string | null | undefined): string | undefined 
   return idx > 0 ? filePath.substring(0, idx) : undefined;
 }
 
-async function exportHTML(md: string, title: string, includeCSS: boolean, filePath?: string | null) {
-  const body = await renderMarkdownToHTML(md);
+/**
+ * v0.11.0 B5-7：返回是否真正完成导出。
+ *
+ * 缺陷背景（P2）：原实现无返回值，调用方在 `finally` 里无条件 `onClose()`
+ * → 用户在「保存」对话框点**取消**时，对话框仍被关掉（看起来像导出完成），
+ * 导出失败时也关窗（错误提示与失败现场同时消失）。
+ */
+async function exportHTML(
+  md: string,
+  title: string,
+  includeCSS: boolean,
+  filePath?: string | null,
+): Promise<boolean> {
+  const bodyRaw = await renderMarkdownToHTML(md);
+  // v0.11.0 B5-6：HTML 导出也把图片转为 data URL。
+  // 缺陷背景（P1）：PDF 路径调了 convertImagesToDataUrlInHtml，HTML 路径没调
+  // → 导出的 HTML 单文件被移动/发送后，相对路径与本地路径图片**全部裂图**。
+  // 外部 http(s) 图片在离线打开时同样失效。
+  const body = await convertImagesToDataUrlInHtml(bodyRaw, filePath);
   // 获取当前主题，生成对应的 PrismJS 高亮 CSS
   const theme = useSettingsStore.getState().theme;
   const prismCss = getPrismCss(isDarkTheme(theme));
@@ -407,15 +436,20 @@ async function exportHTML(md: string, title: string, includeCSS: boolean, filePa
           await writeExportAsset(selected, mermaidAssetToWrite.name, mermaidAssetToWrite.content);
         }
         notifySuccess(t("export.exportedHtml", { path: selected }));
+        return true;
       }
+      // 用户取消保存 → 未完成
+      return false;
     } catch (err) {
       console.error("Tauri 导出 HTML 失败:", err);
       // 回退到浏览器下载
       downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), `${baseName}.html`);
+      return true;
     }
   } else {
     // 浏览器模式：下载文件
     downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), `${baseName}.html`);
+    return true;
   }
 }
 
@@ -459,7 +493,7 @@ async function exportPDFWithOptions(
   includeCSS: boolean,
   filePath: string | null | undefined,
   options: PdfExportOptions,
-) {
+): Promise<boolean> {
   const body = await renderMarkdownToHTML(md);
   const theme = useSettingsStore.getState().theme;
   const prismCss = getPrismCss(isDarkTheme(theme));
@@ -540,16 +574,21 @@ async function exportPDFWithOptions(
           pdfPath: selected,
         });
         notifySuccess(t("export.exportedPdf", { path: selected }));
+        return true;
       }
+      // 用户取消保存
+      return false;
     } catch (err) {
       console.error("PDF 导出失败:", err);
       notifyError(t("export.pdfExportFailed", { error: err instanceof Error ? err.message : String(err) }));
       // 回退到浏览器打印
       fallbackPrint(html);
+      return false;
     }
   } else {
-    // 浏览器模式：使用打印功能
+    // 浏览器模式：使用打印功能（用户可在打印对话框取消）
     fallbackPrint(html);
+    return true;
   }
 }
 
@@ -568,7 +607,12 @@ async function exportPDFWithOptions(
  *
  * @param onProgress 渲染进度回调（R2：mermaid/公式逐个替换时上报）
  */
-async function exportImage(md: string, title: string, filePath?: string | null, onProgress?: (text: string) => void) {
+async function exportImage(
+  md: string,
+  title: string,
+  filePath?: string | null,
+  onProgress?: (text: string) => void,
+): Promise<boolean> {
   const body = await renderMarkdownToHTML(md);
   const theme = useSettingsStore.getState().theme;
   const prismCss = getPrismCss(isDarkTheme(theme));
@@ -626,7 +670,9 @@ async function exportImage(md: string, title: string, filePath?: string | null, 
     // 截图前设为可见（html-to-image 需要元素可见才能正确渲染）
     container.style.visibility = "visible";
     const baseName = title.replace(/\.md$/i, "");
-    await exportElementAsPng(container, baseName, { filePath });
+    // v0.11.0 B5-7：透传成功标志（false = 用户取消保存或导出失败）
+    const ok = await exportElementAsPng(container, baseName, { filePath });
+    return ok;
   } finally {
     // 移除临时 div
     document.body.removeChild(container);

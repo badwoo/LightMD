@@ -302,6 +302,103 @@ async function inlineRunsToTextRuns(runs: InlineRun[]): Promise<any[]> {
 }
 
 /**
+ * v0.11.0 B5-2：有序列表起始序号 → numbering reference。
+ *
+ * 缺陷背景（P1）：此前所有有序列表都用固定的 `"default-numbering"`，而该
+ * numbering 的 level 0 未设 start → `5. x` 导出到 Word 后**从 1 开始**，
+ * 原文编号被静默改写。
+ *
+ * 修复：按 start 值生成不同 reference（如 `ol-start-5`），并由
+ * buildNumberingConfigs 配套生成对应的 numbering 定义（含 start + 对齐的
+ * 子级格式）。
+ *
+ * 编号 reference 的 start 取值范围有限（实际文档不会超过几十），这里按需生成。
+ */
+function orderedListNumberingRef(start: number): string {
+  const s = Number.isFinite(start) && start > 0 ? Math.floor(start) : 1;
+  return s === 1 ? "default-numbering" : `ol-start-${s}`;
+}
+
+/**
+ * v0.11.0 B5-2：为用到的起始序号生成 numbering 配置。
+ *
+ * @param blocks 全部块（递归收集所有有序列表的 start）
+ */
+function collectOrderedListStarts(blocks: Block[], out: Set<number> = new Set()): Set<number> {
+  for (const b of blocks) {
+    if (b.kind === "orderedList") out.add(b.start > 0 ? Math.floor(b.start) : 1);
+    else if (b.kind === "blockquote") collectOrderedListStarts(b.blocks, out);
+  }
+  return out;
+}
+
+/** 构造某个起始序号对应的 numbering config（3 级，格式与默认一致） */
+async function buildNumberingConfigFor(start: number) {
+  const { AlignmentType, LevelFormat } = await import("docx");
+  return {
+    reference: orderedListNumberingRef(start),
+    levels: [
+      {
+        level: 0,
+        format: LevelFormat.DECIMAL,
+        text: "%1.",
+        alignment: AlignmentType.START,
+        start,
+      },
+      {
+        level: 1,
+        format: LevelFormat.LOWER_LETTER,
+        text: "%2.",
+        alignment: AlignmentType.START,
+        start: 1,
+      },
+      {
+        // v0.11.0 B5-4：补第 3 级，支持更深的嵌套（原配置只有 2 级）
+        level: 2,
+        format: LevelFormat.LOWER_ROMAN,
+        text: "%3.",
+        alignment: AlignmentType.START,
+        start: 1,
+      },
+    ],
+  };
+}
+
+/**
+ * v0.11.0 B5-4：递归展开列表项（含任意层级嵌套）。
+ *
+ * 缺陷背景（P1）：此前只展开一层 `item.children`，第 3 层起被**扁平化**到
+ * level 1（层级丢失）。现递归处理，并把超过 3 层的嵌套钳到最深层级
+ * （docx 的 numbering 只需定义有限层级）。
+ */
+async function appendListItems(
+  items: import("./exportBlocks").ListItem[],
+  ref: string,
+  level: number,
+  elements: unknown[],
+  kind: "orderedList" | "bulletList",
+): Promise<void> {
+  const { Paragraph } = await import("docx");
+  const MAX_LEVEL = 2; // numbering 定义了 0/1/2 三级
+  for (const item of items) {
+    const textRuns = await inlineRunsToTextRuns(item.runs);
+    const atLevel = Math.min(level, MAX_LEVEL);
+    elements.push(
+      new Paragraph(
+        kind === "orderedList"
+          ? { numbering: { reference: ref, level: atLevel }, children: textRuns }
+          : // 无序列表沿用默认 bullet 定义（docx 内置 "default-bullet"）
+            { numbering: { reference: "default-bullet", level: atLevel }, children: textRuns },
+      ),
+    );
+    if (item.children?.length) {
+      // 递归：子列表沿用父级的 reference（有序）或默认 bullet（无序）
+      await appendListItems(item.children, ref, level + 1, elements, kind);
+    }
+  }
+}
+
+/**
  * 将 Block[] 转换为 docx 文档元素数组（Paragraph/Table 等）
  *
  * @param blocks Block[] 中间结构
@@ -375,51 +472,19 @@ export async function convertBlocksToDocxElements(
         break;
       }
       case "bulletList": {
-        for (const item of block.items) {
-          const textRuns = await inlineRunsToTextRuns(item.runs);
-          elements.push(
-            new Paragraph({
-              bullet: { level: 0 },
-              children: textRuns,
-            }),
-          );
-          // 嵌套子项
-          if (item.children) {
-            for (const child of item.children) {
-              const childRuns = await inlineRunsToTextRuns(child.runs);
-              elements.push(
-                new Paragraph({
-                  bullet: { level: 1 },
-                  children: childRuns,
-                }),
-              );
-            }
-          }
-        }
+        // v0.11.0 B5-4：改为递归展开（此前只处理一层，第 3 层起被扁平化）
+        await appendListItems(block.items, "default-bullet", 0, elements, "bulletList");
         break;
       }
       case "orderedList": {
-        for (let idx = 0; idx < block.items.length; idx++) {
-          const item = block.items[idx]!;
-          const textRuns = await inlineRunsToTextRuns(item.runs);
-          elements.push(
-            new Paragraph({
-              numbering: { reference: "default-numbering", level: 0 },
-              children: textRuns,
-            }),
-          );
-          if (item.children) {
-            for (const child of item.children) {
-              const childRuns = await inlineRunsToTextRuns(child.runs);
-              elements.push(
-                new Paragraph({
-                  numbering: { reference: "default-numbering", level: 1 },
-                  children: childRuns,
-                }),
-              );
-            }
-          }
-        }
+        // v0.11.0 B5-2：起始序号不再丢失。
+        // 缺陷背景（P1）：exportBlocks 已解析 markdown-it 的 start 属性并写入
+        // block.start，但此前统一用 `numbering: { reference: "default-numbering" }`
+        // → `5. x` 导出到 Word 后从 1 开始，原文编号被改写。
+        // 现按 start 值选用对应的 numbering reference（见 buildNumberingConfigs）。
+        const ref = orderedListNumberingRef(block.start);
+        // v0.11.0 B5-4：嵌套列表**递归**展开（此前只展开一层，第 3 层起被扁平化）。
+        await appendListItems(block.items, ref, 0, elements, "orderedList");
         break;
       }
       case "codeBlock": {
@@ -652,29 +717,29 @@ export async function markdownToDocx(
     // 2. Block[] → docx 元素（R2：公式/图表渲染进度透传）
     const children = await convertBlocksToDocxElements(blocks, 0, onProgress);
 
-    // 3. 构造 Document（含有序列表 numbering 配置）
+    // 3. 构造 Document（含有序/无序列表 numbering 配置）
+    // v0.11.0 B5-2：为文档中出现的每个有序列表起始序号生成对应 numbering
+    //（此前统一用 default-numbering → `5. x` 导出后从 1 开始）
+    // v0.11.0 B5-4：默认 numbering 补第 3 级，支持更深嵌套
+    const starts = collectOrderedListStarts(blocks);
+    const numberingConfigs: unknown[] = [await buildNumberingConfigFor(1)];
+    for (const st of starts) {
+      if (st === 1) continue;
+      numberingConfigs.push(await buildNumberingConfigFor(st));
+    }
+    // 无序列表定义（appendListItems 递归时按层级引用）
+    numberingConfigs.push({
+      reference: "default-bullet",
+      levels: [0, 1, 2].map((lv) => ({
+        level: lv,
+        format: LevelFormat.BULLET,
+        text: lv === 0 ? "\u2022" : lv === 1 ? "o" : "\u25AA",
+        alignment: AlignmentType.START,
+      })),
+    });
+
     const doc = new Document({
-      numbering: {
-        config: [
-          {
-            reference: "default-numbering",
-            levels: [
-              {
-                level: 0,
-                format: LevelFormat.DECIMAL,
-                text: "%1.",
-                alignment: AlignmentType.START,
-              },
-              {
-                level: 1,
-                format: LevelFormat.LOWER_LETTER,
-                text: "%2.",
-                alignment: AlignmentType.START,
-              },
-            ],
-          },
-        ],
-      },
+      numbering: { config: numberingConfigs as never },
       sections: [
         {
           properties: {},

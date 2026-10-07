@@ -55,6 +55,33 @@ export function escapeLatexText(text: string): string {
   });
 }
 
+/**
+ * v0.11.0 B5-5：转义 LaTeX **路径/URL**（`\href` 与 `\includegraphics` 的参数）。
+ *
+ * 缺陷背景（P1）：此前两处直接写原始值，而 URL/路径常含 `& % # _ { } ~ ^`
+ * —— `&` 是表格列分隔符、`%` 起注释、`#` 是非法参数符、`_`/`{`/`}` 会破坏
+ * 分组 → 含特殊字符的链接与图片会让**整个文档编译失败**。
+ *
+ * 与 escapeLatexText 的区别：路径里反斜杠是 Windows 路径分隔符（应保留），
+ * 故不转义 `\`；`~` 在路径中通常是波浪号文件名，用 `\textasciitilde{}` 安全。
+ */
+export function escapeLatexPath(path: string): string {
+  return path.replace(/[&%$#_{}~^]/g, (ch) => {
+    switch (ch) {
+      case "&": return "\\&";
+      case "%": return "\\%";
+      case "$": return "\\$";
+      case "#": return "\\#";
+      case "_": return "\\_";
+      case "{": return "\\{";
+      case "}": return "\\}";
+      case "~": return "\\textasciitilde{}";
+      case "^": return "\\textasciicircum{}";
+      default: return ch;
+    }
+  });
+}
+
 /** 行内 runs → LaTeX（含格式包裹与转义规则） */
 export function inlineRunsToLatex(runs: InlineRun[]): string {
   let out = "";
@@ -64,9 +91,11 @@ export function inlineRunsToLatex(runs: InlineRun[]): string {
       out += `$${run.math}$`;
       continue;
     }
-    // 图片：写出 \includegraphics（原始路径，不转义，v0.8.0 限制见文档头注释）
+    // 图片：写出 \includegraphics
+    // v0.11.0 B5-5：路径**必须转义** —— URL 含 & % # _ { } 等字符时
+    // 未转义会破坏 LaTeX 语法（& 是列分隔符、% 起注释、# 非法参数符）。
     if (run.imageSrc) {
-      out += `\\includegraphics{${run.imageSrc}}`;
+      out += `\\includegraphics{${escapeLatexPath(run.imageSrc)}}`;
       continue;
     }
     // 行内代码：原始内容不转义，包裹 \texttt
@@ -82,7 +111,8 @@ export function inlineRunsToLatex(runs: InlineRun[]): string {
     if (run.mark) inner = `\\hl{${inner}}`;
     if (run.sub) inner = `\\textsubscript{${inner}}`;
     if (run.sup) inner = `\\textsuperscript{${inner}}`;
-    if (run.href) inner = `\\href{${run.href}}{${inner}}`;
+    // v0.11.0 B5-5：URL 同样需转义（& % # _ { } ~ ^ 会破坏 LaTeX 语法）
+    if (run.href) inner = `\\href{${escapeLatexPath(run.href)}}{${inner}}`;
     out += inner;
   }
   return out;
@@ -137,10 +167,30 @@ function renderListItems(items: ListItem[], ordered: boolean): string {
   return lines.join("\n");
 }
 
-/** 表格渲染：tabular + l 列 + booktabs 规则 */
+/**
+ * v0.11.0 B5-5：表格列宽规格。
+ *
+ * 缺陷背景（P1）：此前恒用 `"l".repeat(colCount)`，l 列**不换行也不限宽**
+ * → 内容稍长就超出页面宽度，表格直接溢出到页外（打印时被裁切）。
+ *
+ * 修复：改用 `p{<宽度>}` 固定宽度列，宽度按列数均分页面可用宽度
+ * （A4 正文宽约 15cm，减去列间距开销），并居中对齐（与 markdown 表格的
+ * 视觉预期接近）。内容超长时 LaTeX 会在列内自动换行。
+ */
+function buildColumnSpec(colCount: number): string {
+  // 页面可用宽度（cm）：A4 宽 21cm - 左右边距各约 2.5cm - 单元格内边距余量
+  const usable = 16;
+  // 每列再预留列间距（	abcolsep 默认 6pt ≈ 0.21cm/侧）
+  const gap = 0.42;
+  const colWidth = Math.max(1.2, (usable - gap * (colCount - 1)) / colCount);
+  return new Array(colCount).fill(`>{\\raggedright\\arraybackslash}p{${colWidth.toFixed(2)}cm}`).join("");
+}
+
+/** 表格渲染：tabular + 定宽 p 列 + booktabs 规则 */
 function renderTable(block: Extract<Block, { kind: "table" }>): string {
   const colCount = block.header[0]?.length || block.rows[0]?.length || 1;
-  const spec = "l".repeat(colCount);
+  // v0.11.0 B5-5：定宽可换行列（此前恒 "l" 列 → 溢出页面）
+  const spec = buildColumnSpec(colCount);
   const rows: string[] = [];
   rows.push(`\\begin{tabular}{${spec}}`);
   rows.push("\\toprule");
@@ -251,6 +301,9 @@ function latexPreamble(title: string): string {
 \\usepackage{soul}
 \\usepackage{amsmath}
 \\usepackage{amssymb}
+% v0.11.0 B5-5：表格改用 >{\\raggedright\\arraybackslash}p{宽度} 定宽列，
+% 需要 array 宏包提供 \\arraybackslash；booktabs 提供三线表规则。
+\\usepackage{array}
 % v0.8.0 限制：图片以 \\includegraphics{原始路径} 形式写出，未自动拷贝图片文件。
 % 请将图片放置于 .tex 同目录（或修改路径）后再用 XeLaTeX 编译。
 \\begin{document}

@@ -939,7 +939,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             </div>{/* /.translate-config-fields */}
           </section>
 
-          {/* 自定义 CSS */}
+          {/* 自定义 CSS（v0.11.0 B6-2：此前有 UI 但无注入点 = 写了不生效） */}
           <section className="settings-section">
             <h3>{t("settings.customCss")}</h3>
             <textarea
@@ -950,6 +950,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               onChange={(e) => setCustomCss(e.target.value)}
               spellCheck={false}
             />
+            <small className="settings-hint">{t("settings.customCss.hint")}</small>
           </section>
         </div>
 

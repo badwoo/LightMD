@@ -125,6 +125,7 @@ export const enUS: Record<string, string> = {
   "settings.translate.customPromptPlaceholder": "Leave empty for built-in template; variables: {target_lang}, {tone}",
   "settings.customCss": "Custom CSS",
   "settings.customCss.placeholder": `/* Custom editor styles */\n/* e.g.: */\n/* h1 { color: red; } */`,
+  "settings.customCss.hint": "Takes effect immediately after saving; applies to both editor and reading views.",
   "settings.cancel": "Cancel",
   "settings.save": "Save",
   "settings.on": "On",

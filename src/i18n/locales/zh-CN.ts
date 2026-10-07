@@ -126,6 +126,7 @@ export const zhCN: Record<string, string> = {
   "settings.translate.customPromptPlaceholder": "留空使用内置翻译模板；可用变量：{target_lang} 目标语言、{tone} 语体",
   "settings.customCss": "自定义 CSS",
   "settings.customCss.placeholder": `/* 自定义编辑器样式 */\n/* 例如: */\n/* h1 { color: red; } */`,
+  "settings.customCss.hint": "保存后立即生效，作用于编辑器与阅读视图。",
   "settings.cancel": "取消",
   "settings.save": "保存设置",
   "settings.on": "开启",

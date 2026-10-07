@@ -232,7 +232,10 @@ describe("v0.8.0 LaTeX 导出", () => {
       expect(out).not.toContain("\\textasciicircum{}");
     });
 
-    it("表格 → tabular + l 列 + booktabs", () => {
+    it("表格 → tabular + 定宽可换行列 + booktabs", () => {
+      // v0.11.0 B5-5：列规格由恒 `"l".repeat(n)` 改为定宽 p 列。
+      // 缺陷背景（P1）：l 列**不换行也不限宽** → 内容稍长就超出页面宽度，
+      // 表格溢出到页外被裁切。现按列数均分页面可用宽度得 p{<w>cm}。
       const blocks: Block[] = [
         {
           kind: "table",
@@ -241,7 +244,11 @@ describe("v0.8.0 LaTeX 导出", () => {
         },
       ];
       const out = blocksToLatex(blocks);
-      expect(out).toContain("\\begin{tabular}{ll}");
+      // 列规格为两列定宽（非 "ll"）
+      expect(out).toMatch(/\\begin\{tabular\}\{.*p\{[\d.]+cm\}.*p\{[\d.]+cm\}/);
+      // 定宽列含 \raggedright 声明（避免两端对齐拉伸）
+      expect(out).toContain("\\raggedright");
+      expect(out).toContain("\\arraybackslash");
       expect(out).toContain("\\toprule");
       expect(out).toContain("姓名");
       expect(out).toContain("张三");
