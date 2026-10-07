@@ -454,6 +454,8 @@ export const enUS: Record<string, string> = {
   "export.exporting": "Exporting...",
   "export.exportFormat": "Export {format}",
   "export.exportFailed": "Export failed: {error}",
+  "export.assetsFallbackCdn":
+    "Could not read the built-in {items} asset(s); fell back to the CDN — formulas/diagrams will not render when the exported file is opened offline",
   "export.exportedHtml": "HTML exported: {path}",
   "export.exportedPdf": "PDF exported: {path}",
   "export.pdfExportFailed": "PDF export failed: {error}",
@@ -491,7 +493,7 @@ export const enUS: Record<string, string> = {
   "export.pdf.wide": "Wide",
   "export.pdf.custom": "Custom",
   "export.pdf.docTitle": "Document Title",
-  "export.pdf.varsHint": "Variables: {title} document title, {date} date, {page} page number",
+  "export.pdf.varsHint": "Variables: {title} document title, {date} date (page numbers are not supported by the current export engine)",
   "export.pdf.export": "Export PDF",
   "export.pdf.configure": "Configure PDF Options",
   // ─── Link dialog ───────────────────────────────────

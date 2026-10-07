@@ -4478,7 +4478,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       ${hasMath ? '<script src="/vendor/katex/katex.min.js"></script>' : ''}
       </head><body>${previewHtml}
       ${hasMermaid ? `<script>
-        mermaid.initialize({ startOnLoad: true, theme: ${isDarkTheme(theme) ? "'dark'" : "'default'"}, securityLevel: 'loose' });
+        mermaid.initialize({ startOnLoad: true, theme: ${isDarkTheme(theme) ? "'dark'" : "'default'"}, securityLevel: 'strict' });
       </script>` : ''}
       ${hasMath ? `<script>
         // 渲染行内公式

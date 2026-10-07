@@ -19,12 +19,21 @@ import mermaid from "mermaid";
 let mermaidInitialized = false;
 let currentMermaidTheme: "default" | "dark" = "default";
 
+/**
+ * v0.11.0 返修（B2-1 ④ 收口）：与应用内其它渲染路径统一为 strict。
+ *
+ * 导出侧（`buildMermaidInitScript` 默认值、`exportMathRender`）本已是 strict/antiscript，
+ * 若编辑器仍用 loose，会出现「编辑器里 HTML 标签正常、导出后变成字面标签」的不一致；
+ * strict 同时消除注入面。**副作用**：图表标签内的 HTML 不再被解释，按字面显示。
+ */
+const MERMAID_SECURITY_LEVEL = "strict";
+
 function initMermaid() {
   if (mermaidInitialized) return;
   mermaid.initialize({
     startOnLoad: false,
     theme: currentMermaidTheme,
-    securityLevel: "loose",
+    securityLevel: MERMAID_SECURITY_LEVEL,
     fontFamily: "inherit",
   });
   mermaidInitialized = true;
@@ -42,7 +51,7 @@ export function setMermaidTheme(isDark: boolean) {
   mermaid.initialize({
     startOnLoad: false,
     theme: newTheme,
-    securityLevel: "loose",
+    securityLevel: MERMAID_SECURITY_LEVEL,
     fontFamily: "inherit",
   });
   mermaidInitialized = true;

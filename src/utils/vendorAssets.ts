@@ -6,21 +6,40 @@
  *   KaTeX → **离线/内网打开导出文件时，公式与图表全空白，且无任何降级提示**。
  *   而 `public/vendor/katex`（592K）与 `public/vendor/mermaid`（3.2M）就在仓库内。
  *
+ * ⚠️ v0.11.0 返修（本次）：首版实现从 Tauri 的 `resourceDir()` 用 plugin-fs 读
+ *   `vendor/...`，但 `public/vendor` 经 Vite 打进 **dist 并由 webview 源提供**，
+ *   `tauri.conf.json` 也没有 `bundle.resources` 映射 ⇒ resourceDir 下根本没有
+ *   `vendor/`，`resolveAssetPath` 恒返回 null ⇒ 内联恒失败、恒回退 CDN
+ *   （实测：导出 HTML 仅 4.7KB、3 条 jsdelivr、0 个 data:font、无 `_assets/`）。
+ *
+ *   现改为**从应用自身的 webview 源 fetch**（开发态由 Vite 提供 public/，
+ *   打包后由内嵌的 dist 提供）——与 `index.html` 引 `/vendor/katex` 是同一条
+ *   真实可用路径；fs 读取保留为兜底（若将来补上 bundle.resources 仍可工作）。
+ *   同时去掉 `isTauri()` 前置短路，使本模块可在单测中直接验证
+ *   （首版把 collectInlineAssets 排除在测试外，正是这个 P0 漏网的原因）。
+ *
  * 本模块的策略（按体积权衡，用户拍板）：
  *   - **KaTeX 内联**（约 300K）：CSS + JS 内联，字体转 base64 data URL 内联
  *     → 导出 HTML 单文件自包含，离线可用。
  *   - **Mermaid 不内联**（3.2M，内联会让 HTML 臃肿到不可用）：
  *     改为在导出目录旁置 `_assets/mermaid.min.js`，HTML 用相对路径引用。
  *     这是「完全离线可用」与「文件体积」的折中。
- *   - 用户可显式关闭内联（回退 CDN），以控制文件体积。
  *
  * 附带修复：katex.min.css 声明了 60 个 url(fonts/...) 但字体目录只有 20 个
- * woff2（其余 40 个 woff/ttf 根本不存在）→ 内联时按实际存在的文件过滤，
- * 避免生成指向空文件的 @font-face。
+ * woff2（其余 40 个 woff/ttf 根本不存在）→ 内联时按**实际能否取到**过滤，
+ * 取不到的连同其 `format(...)` 一起移除，不再留死引用。
  */
-import { isTauri } from "../services/fileService";
+/** fs 兜底需要 Tauri 运行时；fetch 路径在浏览器/打包产物下都可用 */
+async function fsFallbackAvailable(): Promise<boolean> {
+  try {
+    const { isTauri } = await import("../services/fileService");
+    return isTauri();
+  } catch {
+    return false;
+  }
+}
 
-/** 资源文件（相对应用资源目录的路径） */
+/** 资源文件（相对应用资源根 / webview 根的路径） */
 export interface VendorAsset {
   /** 源路径（相对 public/） */
   src: string;
@@ -40,11 +59,67 @@ const MERMAID_JS: VendorAsset = {
 /** 资源子目录名（导出目录下） */
 export const EXPORT_ASSETS_DIR = "_assets";
 
-/** Tauri 下读取应用内资源为字符串 */
-async function readAssetText(asset: VendorAsset): Promise<string | null> {
-  if (!isTauri()) return null;
+/**
+ * 资源在应用内的 URL。
+ *
+ * 相对 `document.baseURI` 解析：开发态是 Vite 的根（public/ 由此提供），
+ * 打包后是 `http://tauri.localhost/`（内嵌 dist 由此提供）。
+ * 抽成纯函数以便单测直接断言解析结果。
+ */
+export function assetUrl(asset: VendorAsset, base?: string): string {
+  const b = base ?? (typeof document !== "undefined" ? document.baseURI : undefined);
+  return b ? new URL(asset.src, b).href : asset.src;
+}
+
+/** Uint8Array → base64（分块避免 apply 参数栈溢出，字体可达 100KB+） */
+function bytesToBase64(arr: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < arr.length; i += chunk) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(arr.subarray(i, i + chunk)) as unknown as number[],
+    );
+  }
+  return btoa(binary);
+}
+
+/** ① 经 webview 源取字节（打包产物真实可用路径） */
+async function fetchAssetBytes(asset: VendorAsset): Promise<Uint8Array | null> {
   try {
-    const fullPath = await resolveAssetPath(asset);
+    const res = await fetch(assetUrl(asset));
+    if (!res.ok) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/** ② fs 兜底：resourceDir + 相对路径（仅在配置了 bundle.resources 时才有文件） */
+async function resolveAssetPathViaFs(asset: VendorAsset): Promise<string | null> {
+  try {
+    const { exists } = await import("@tauri-apps/plugin-fs");
+    const { resourceDir } = await import("@tauri-apps/api/path");
+    const dir = await resourceDir();
+    const candidate = `${dir}/${asset.src}`;
+    if (await exists(candidate)) return candidate;
+  } catch {
+    /* resourceDir 不可用 */
+  }
+  return null;
+}
+
+/** 读取资源为字符串（webview fetch 优先，fs 兜底） */
+async function readAssetText(asset: VendorAsset): Promise<string | null> {
+  try {
+    const res = await fetch(assetUrl(asset));
+    if (res.ok) return await res.text();
+  } catch {
+    /* 落到 fs 兜底 */
+  }
+  if (!(await fsFallbackAvailable())) return null;
+  try {
+    const fullPath = await resolveAssetPathViaFs(asset);
     if (!fullPath) return null;
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return await readTextFile(fullPath);
@@ -54,69 +129,21 @@ async function readAssetText(asset: VendorAsset): Promise<string | null> {
   }
 }
 
-/** Tauri 下读取应用内资源为 base64（用于字体内联） */
+/** 读取资源为 base64（webview fetch 优先，fs 兜底；用于字体内联） */
 async function readAssetBase64(asset: VendorAsset): Promise<string | null> {
-  if (!isTauri()) return null;
+  const viaFetch = await fetchAssetBytes(asset);
+  if (viaFetch) return bytesToBase64(viaFetch);
+  if (!(await fsFallbackAvailable())) return null;
   try {
-    const fullPath = await resolveAssetPath(asset);
+    const fullPath = await resolveAssetPathViaFs(asset);
     if (!fullPath) return null;
     const { readFile } = await import("@tauri-apps/plugin-fs");
     const bytes = await readFile(fullPath);
-    let binary = "";
     const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayBuffer);
-    // 分块避免 apply 栈溢出（字体文件可达 100KB+）
-    const chunk = 0x8000;
-    for (let i = 0; i < arr.length; i += chunk) {
-      binary += String.fromCharCode.apply(
-        null,
-        Array.from(arr.subarray(i, i + chunk)) as unknown as number[],
-      );
-    }
-    return btoa(binary);
+    return bytesToBase64(arr);
   } catch (err) {
     console.warn("[导出] 读取资源失败(base64):", asset.src, err);
     return null;
-  }
-}
-
-/**
- * 解析资源的绝对路径。
- *
- * 优先走 Tauri 的 resourceDir（打包后资源在 resources 目录，public/ 会被复制到
- * 应用资源根）；开发态下 resourceDir 可能不可用，回退到 webview 根的相对路径。
- */
-async function resolveAssetPath(asset: VendorAsset): Promise<string | null> {
-  try {
-    const { exists } = await import("@tauri-apps/plugin-fs");
-    // ① resourceDir + 相对路径（Tauri v2 的标准做法）
-    try {
-      const { resourceDir } = await import("@tauri-apps/api/path");
-      const dir = await resourceDir();
-      const candidate = `${dir}/${asset.src}`;
-      if (await exists(candidate)) return candidate;
-    } catch {
-      /* resourceDir 不可用时回退 */
-    }
-  } catch {
-    /* 忽略 */
-  }
-  return null;
-}
-
-/** KaTeX CSS 中引用的字体（与实际字体目录取交集） */
-async function listKatexFonts(): Promise<Set<string>> {
-  try {
-    const fullPath = await resolveAssetPath({ src: "vendor/katex/fonts", dest: "" });
-    if (!fullPath) return new Set();
-    const { readDir } = await import("@tauri-apps/plugin-fs");
-    const entries = await readDir(fullPath);
-    return new Set(
-      entries
-        .filter((e) => e.isFile)
-        .map((e) => (e as { name: string }).name),
-    );
-  } catch {
-    return new Set();
   }
 }
 
@@ -128,39 +155,45 @@ function fontMime(name: string): string {
   return "application/octet-stream";
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * 生成内联字体的 KaTeX CSS。
  *
  * 把 `url(fonts/X.woff2)` 替换为 `url(data:font/woff2;base64,...)`。
- * **只处理字体目录中真实存在的文件**（CSS 里另有 40 个 woff/ttf 引用指向
- * 不存在的文件，保留它们无意义且会让某些解析器报错）。
+ * **取不到的字体连同其 `format(...)` 一起移除**：CSS 里 60 条引用中有 40 条
+ * 指向不存在的 woff/ttf，留着只会产生 404 与死 @font-face。
  */
 export async function renderKatexCss(): Promise<string | null> {
   const css = await readAssetText(KATEX_CSS);
   if (!css) return null;
-  const fonts = await listKatexFonts();
-  if (fonts.size === 0) return css; // 读不到字体目录时原样返回（退化但不破坏）
 
-  // 收集所有 url(fonts/...) 引用
   const refs = [...new Set([...css.matchAll(/url\((fonts\/[^)]+)\)/g)].map((m) => m[1]!))];
 
   let out = css;
   for (const ref of refs) {
     const name = ref.split("/").pop()!;
-    if (!fonts.has(name)) {
-      // 引用的文件不存在 → 移除该 @font-face 的 url 声明（保留其余属性无害）
+    const b64 = await readAssetBase64({ src: `vendor/katex/${ref}`, dest: name });
+    if (b64) {
+      out = out.replaceAll(`url(${ref})`, `url(data:${fontMime(name)};base64,${b64})`);
       continue;
     }
-    const b64 = await readAssetBase64({
-      src: `vendor/katex/${ref}`,
-      dest: name,
-    });
-    if (!b64) continue;
-    out = out.replaceAll(
-      `url(${ref})`,
-      `url(data:${fontMime(name)};base64,${b64})`,
+    // 取不到 → 连同前导逗号与 format() 一起删掉，避免留死引用
+    const entry = new RegExp(
+      `(,\\s*)?url\\(${escapeRegExp(ref)}\\)(\\s*format\\([^)]*\\))?`,
+      "g",
     );
+    out = out.replace(entry, "");
   }
+  // 清理删除后残留的标点（`url(a) format(...),` → `,;` / `,:` 等）
+  out = out
+    .replace(/,\s*;/g, ";")
+    .replace(/:\s*,/g, ":")
+    .replace(/,\s*,/g, ",")
+    .replace(/\bsrc\s*:\s*;/g, "")
+    .replace(/;\s*}/g, "}");
   return out;
 }
 
@@ -181,8 +214,10 @@ export interface InlineAssets {
   katexJs: string | null;
   /** mermaid JS 内容；为 null 时应写 `_assets/mermaid.min.js` 并用相对路径引用 */
   mermaidJs: string | null;
-  /** 是否成功读到至少一份资源（false 时应回退 CDN） */
+  /** 是否成功读到至少一份资源（false 时应回退 CDN 并告知用户） */
   ok: boolean;
+  /** 具体哪几类资源没读到（用于给出精确的降级提示） */
+  missing: Array<"katexCss" | "katexJs" | "mermaidJs">;
 }
 
 /**
@@ -193,12 +228,11 @@ export interface InlineAssets {
 export async function collectInlineAssets(includeFonts = true): Promise<InlineAssets> {
   const [katexJs, mermaidJs] = await Promise.all([renderKatexJs(), renderMermaidJs()]);
   const katexCss = includeFonts ? await renderKatexCss() : await readAssetText(KATEX_CSS);
-  return {
-    katexCss,
-    katexJs,
-    mermaidJs,
-    ok: !!(katexJs || katexCss || mermaidJs),
-  };
+  const missing: InlineAssets["missing"] = [];
+  if (!katexCss) missing.push("katexCss");
+  if (!katexJs) missing.push("katexJs");
+  if (!mermaidJs) missing.push("mermaidJs");
+  return { katexCss, katexJs, mermaidJs, ok: missing.length < 3, missing };
 }
 
 /** 生成 KaTeX 渲染脚本（内联版，无需外部 JS） */

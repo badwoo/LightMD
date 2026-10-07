@@ -461,6 +461,8 @@ export const zhCN: Record<string, string> = {
   "export.exporting": "导出中...",
   "export.exportFormat": "导出 {format}",
   "export.exportFailed": "导出失败: {error}",
+  "export.assetsFallbackCdn":
+    "未能读取内置的 {items} 资源，已回退到 CDN——导出的文件在离线或内网环境下公式/图表将无法显示",
   "export.exportedHtml": "已导出 HTML: {path}",
   "export.exportedPdf": "已导出 PDF: {path}",
   "export.pdfExportFailed": "PDF 导出失败: {error}",
@@ -498,7 +500,7 @@ export const zhCN: Record<string, string> = {
   "export.pdf.wide": "宽",
   "export.pdf.custom": "自定义",
   "export.pdf.docTitle": "文档标题",
-  "export.pdf.varsHint": "可用变量：{title} 文档标题、{date} 日期、{page} 页码",
+  "export.pdf.varsHint": "可用变量：{title} 文档标题、{date} 日期（当前导出引擎不支持页码）",
   "export.pdf.export": "导出 PDF",
   "export.pdf.configure": "配置 PDF 选项",
   // ─── 链接对话框 ────────────────────────────────────

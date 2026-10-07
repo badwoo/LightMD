@@ -13,7 +13,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { isTauri, fileService } from "../../services/fileService";
-import { notifySuccess, notifyError } from "../../services/notificationService";
+import { notifySuccess, notifyError, notifyWarning } from "../../services/notificationService";
 import { getPrismCss } from "../../utils/highlight";
 import {
   generateFullPrintStylesheet,
@@ -380,6 +380,19 @@ async function exportHTML(
   const assets = hasMermaid || hasMath ? await collectInlineAssets(true) : null;
   const useInline = !!assets?.ok;
 
+  // v0.11.0 返修：资源读不到时**不再静默回退 CDN**。
+  // 首版因为静默回退，打包产物上「内联恒失败」这个 P0 一直无人发现
+  // （实测导出 HTML 仅 4.7KB + 3 条 jsdelivr，离线打开公式/图表全空白）。
+  if (assets) {
+    const missingNeeded: string[] = [];
+    if (hasMath && !assets.katexCss) missingNeeded.push("KaTeX CSS");
+    if (hasMath && !assets.katexJs) missingNeeded.push("KaTeX JS");
+    if (hasMermaid && !assets.mermaidJs) missingNeeded.push("Mermaid");
+    if (missingNeeded.length > 0) {
+      notifyWarning(t("export.assetsFallbackCdn", { items: missingNeeded.join("、") }));
+    }
+  }
+
   // mermaid：内联不可行（体积），用相对路径引 _assets；无资源时回退 CDN
   let mermaidScript = "";
   let mermaidAssetToWrite: { name: string; content: string } | null = null;
@@ -523,6 +536,19 @@ async function exportPDFWithOptions(
   // 网络不可达则公式/图表静默空白，且 --virtual-time-budget 到点即截断。
   const assets = hasMermaid || hasMath ? await collectInlineAssets(true) : null;
   const useInline = !!assets?.ok;
+
+  // v0.11.0 返修：资源读不到时**不再静默回退 CDN**。
+  // 首版因为静默回退，打包产物上「内联恒失败」这个 P0 一直无人发现
+  // （实测导出 HTML 仅 4.7KB + 3 条 jsdelivr，离线打开公式/图表全空白）。
+  if (assets) {
+    const missingNeeded: string[] = [];
+    if (hasMath && !assets.katexCss) missingNeeded.push("KaTeX CSS");
+    if (hasMath && !assets.katexJs) missingNeeded.push("KaTeX JS");
+    if (hasMermaid && !assets.mermaidJs) missingNeeded.push("Mermaid");
+    if (missingNeeded.length > 0) {
+      notifyWarning(t("export.assetsFallbackCdn", { items: missingNeeded.join("、") }));
+    }
+  }
 
   let mermaidScript = "";
   if (hasMermaid) {
