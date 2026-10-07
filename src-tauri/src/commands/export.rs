@@ -61,7 +61,12 @@ fn build_pdf_print_args(pdf_path: &str, html_file_url: &str) -> Vec<String> {
         "--no-sandbox".to_string(),
         format!("--virtual-time-budget={}", VIRTUAL_TIME_BUDGET_MS),
         format!("--print-to-pdf={}", pdf_path),
-        "--print-to-pdf-no-header".to_string(),
+        // v0.11.0 返修：`--print-to-pdf-no-header` 在 Edge 154 上**完全无效**
+        // （加/不加输出字节完全一致），Chromium 默认页眉页脚照印 ——
+        // 每页都会带上日期、内部临时文件 URL 与页码 `N/M`，既泄漏路径，
+        // 又与新加的 position:fixed 页眉页脚叠印。实测 `--no-pdf-header-footer`
+        // 才是生效参数（输出无任何默认页眉页脚痕迹）。
+        "--no-pdf-header-footer".to_string(),
         html_file_url.to_string(),
     ]
 }
@@ -161,6 +166,21 @@ mod tests {
         assert!(args.iter().any(|a| a == "--virtual-time-budget=10000"));
         assert!(args.iter().any(|a| a == "--headless"));
         assert!(args.iter().any(|a| a.starts_with("--print-to-pdf=")));
+    }
+
+    #[test]
+    fn pdf_print_args_disables_default_header_footer_with_working_flag() {
+        // v0.11.0 返修：`--print-to-pdf-no-header` 被 Edge 154 忽略，
+        // 必须用 `--no-pdf-header-footer`，否则每页都会印上日期/临时 URL/页码。
+        let args = build_pdf_print_args("out.pdf", "file:///tmp/x.html");
+        assert!(
+            args.iter().any(|a| a == "--no-pdf-header-footer"),
+            "必须使用生效的 --no-pdf-header-footer"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--print-to-pdf-no-header"),
+            "无效的 --print-to-pdf-no-header 不应再出现"
+        );
     }
 
     #[cfg(windows)]

@@ -149,10 +149,23 @@ describe("问题3：PDF 导出报错修复", () => {
     expect(src).toMatch(/--virtual-time-budget=10000/);
   });
 
-  it("export.rs 仍包含 --print-to-pdf 和 --print-to-pdf-no-header", () => {
-    const src = readSrc("../../src-tauri/src/commands/export.rs");
-    expect(src).toMatch(/--print-to-pdf=/);
-    expect(src).toMatch(/--print-to-pdf-no-header/);
+  it("build_pdf_print_args 使用生效的 --no-pdf-header-footer（不再用无效的旧参数）", () => {
+    const raw = readSrc("../../src-tauri/src/commands/export.rs");
+    // [返修] 本用例原先断言仍含 `--print-to-pdf-no-header` —— 那是**无效参数**
+    // （Edge 154 实测加/不加输出字节一致），导致每页印上日期、内部临时路径与页码。
+    // 且原先断言被注释里的同名字符串满足 → 先只取 build_pdf_print_args 的实现体
+    // （到测试模块之前），再剔除注释，避免注释/测试断言造成假通过。
+    const start = raw.indexOf("fn build_pdf_print_args");
+    expect(start).toBeGreaterThan(-1);
+    const end = raw.indexOf("#[cfg(test)]");
+    const body = raw
+      .slice(start, end > start ? end : raw.length)
+      .split(/\r?\n/)
+      .map((l) => l.replace(/\/\/.*$/, ""))
+      .join("\n");
+    expect(body).toMatch(/--print-to-pdf=/);
+    expect(body).toMatch(/--no-pdf-header-footer/);
+    expect(body).not.toMatch(/--print-to-pdf-no-header/);
   });
 });
 

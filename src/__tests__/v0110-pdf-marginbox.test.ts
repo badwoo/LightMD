@@ -95,11 +95,18 @@ describe("v0.11.0 B2-2 PDF 页眉页脚与页码降级", () => {
     expect(css).toContain("font-family");
   });
 
-  it("自定义边距影响页眉页脚偏移量", () => {
+  it("页眉页脚用零偏移贴在页面盒边缘（不随边距变化，无负偏移）", () => {
     const narrow = generateFixedMarginBoxCss(opts({ margin: "narrow", headerText: "H" }), "d", DATE);
     const wide = generateFixedMarginBoxCss(opts({ margin: "wide", headerText: "H" }), "d", DATE);
-    // 不同边距 → 不同偏移（narrow 的 offset 更小）
-    expect(narrow).not.toBe(wide);
-    expect(narrow).toContain("top: -4mm");
+    // [返修] 本用例此前断言 narrow/wide 的偏移量不同、且 narrow 含 "top: -4mm" ——
+    // 那正是导致「页眉在末页丢失、页脚在首页丢失、短文档多出一页空白页」的实现。
+    // 实测（本机 Edge 154 对照实验）Chromium 打印时 position:fixed 以**页面盒**
+    // 为基准，top:0 / bottom:0 已经落在页边距区内、不会压正文且每页齐全；
+    // 故两种边距下输出应完全一致，且不得再出现负偏移。
+    expect(narrow).toBe(wide);
+    expect(narrow).toContain("top: 0;");
+    expect(narrow).toContain("bottom: 0;");
+    expect(narrow).not.toMatch(/top:\s*-/);
+    expect(narrow).not.toMatch(/bottom:\s*-/);
   });
 });

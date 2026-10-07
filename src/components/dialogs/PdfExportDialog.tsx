@@ -88,7 +88,7 @@ export function PdfExportDialog({ onClose, onConfirm, title }: PdfExportDialogPr
               className="pdf-export-input"
               type="text"
               value={options.footerText}
-              placeholder="{date} — 第 {page} 页"
+              placeholder="{date}"
               onChange={(e) => updateOption("footerText", e.target.value)}
             />
             <small className="pdf-export-hint">{tt("export.pdf.varsHint")}</small>

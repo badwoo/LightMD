@@ -172,9 +172,16 @@ function buildPlainText(text: string, title: string, dateStr: string): string {
 /**
  * v0.11.0 B2-2：生成页眉/页脚的**常规文档流元素**样式（替代失效的 margin box）。
  *
- * 原理：Chromium 打印时 `position: fixed` 的元素会在每一页重复渲染，
- * 因此用 fixed 定位 + 负 offset 拉到页边距区域，即可实现「每页都有的页眉页脚」。
- * 这解决了此前 `@page { @top-center }` 被静默忽略的问题。
+ * 原理：Chromium 打印时 `position: fixed` 的元素会在每一页重复渲染。
+ * **定位基准是页面盒（含页边距），不是内容盒** —— 实测同一 header 在
+ * `@page{margin:20mm}` 与 `@page{margin:40mm}` 下，首个文本基线 Y 完全相同
+ * （差 0.0pt），说明 `top:0` 贴的是**物理页顶**，落在页边距区内、不会压正文。
+ *
+ * ⚠️ v0.11.0 返修：首版用**负偏移**（`top:-offsetMm`）把元素拉进页边距，
+ * 实测会同时踩两个坑（本机 Edge 154 对照实验，见 scripts 实验记录）：
+ *   1. 页眉在**最后一页**丢失、页脚在**第一页**丢失（29 页文档实测 28/29）；
+ *   2. 短文档（4 段，基线 1 页）会**多出一页仅有页脚的空白页**。
+ * 改为零偏移后：长文档每页齐全且页数=基线，短文档页数也=基线。
  *
  * @param options PDF 导出选项
  * @param title 文档标题（{title}/{date} 变量替换）
@@ -186,10 +193,8 @@ export function generateFixedMarginBoxCss(
   title: string,
   dateStr: string = formatDate(),
 ): string {
-  const marginMm = resolveMarginMm(options);
-  // 页眉页脚距页边的距离（mm），落在页边距区内
-  const offsetMm = Math.max(4, Math.min(12, marginMm / 3));
-
+  void title;
+  void dateStr;
   const hasHeader = options.headerText.trim().length > 0;
   const hasFooter = options.footerText.trim().length > 0;
   if (!hasHeader && !hasFooter) return "";
@@ -198,7 +203,7 @@ export function generateFixedMarginBoxCss(
   if (hasHeader) {
     rules.push(`.pdf-header {
   position: fixed;
-  top: -${offsetMm}mm;
+  top: 0;
   left: 0;
   right: 0;
   text-align: center;
@@ -210,7 +215,7 @@ export function generateFixedMarginBoxCss(
   if (hasFooter) {
     rules.push(`.pdf-footer {
   position: fixed;
-  bottom: -${offsetMm}mm;
+  bottom: 0;
   left: 0;
   right: 0;
   text-align: center;
