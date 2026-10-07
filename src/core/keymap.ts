@@ -10,7 +10,7 @@
  */
 import { undo, redo } from "prosemirror-history";
 import type { Command, EditorState } from "prosemirror-state";
-import { Plugin } from "prosemirror-state";
+import { Plugin, TextSelection } from "prosemirror-state";
 import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands } from "prosemirror-commands";
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from "prosemirror-schema-list";
 import { keymap } from "prosemirror-keymap";
@@ -100,7 +100,20 @@ const PM_COMMAND_BY_ID: Record<string, Command> = {
   // 内容为占位空格随后清空，光标落在公式内可直接输入 LaTeX。
   "format.math": (state, dispatch) => {
     const node = schema.nodes.math_inline.create({ latex: "" }, schema.text(" "));
-    if (dispatch) dispatch(state.tr.replaceSelectionWith(node, false));
+    if (dispatch) {
+      const tr = state.tr.replaceSelectionWith(node, false);
+      // v0.11.0 B3-7 返修：把光标**放进刚插入的公式节点内**。
+      // 原实现只 replaceSelectionWith 就结束，选区落到节点之后（`$ $|`），
+      // 与注释「光标落在公式内可直接输入」不符 —— 用户接着打字会输到公式**外**
+      // 得到 `$ $x^2`。math_inline 非 atom（content 为 text*），可定位。
+      const start = tr.selection.from - node.nodeSize;
+      try {
+        tr.setSelection(TextSelection.create(tr.doc, start + 1));
+      } catch {
+        /* 定位失败时保持 replaceSelectionWith 的默认选区 */
+      }
+      dispatch(tr);
+    }
     return true;
   },
 };

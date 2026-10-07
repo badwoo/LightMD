@@ -2696,6 +2696,11 @@ function App() {
 
       if (isSource) {
         // ── 源码 / 分屏（左侧）──
+        // v0.11.0 B3-1 返修：`format.paragraph`（正文/移除标题）在源码模式
+        // **不能走语法插入**——COMMAND_SYNTAX 里它的 syntax 是空串，插入即纯 no-op。
+        // 交由 EditorContainer 的 lightmd:command 监听复用既有行首前缀移除
+        // （与 Ctrl+0 同一条路径），这里直接返回避免重复处理。
+        if (id === "format.paragraph") return;
         if (syntaxEntry) {
         if (sourceInsertHandler) {
           if (id === "insert.footnote") {

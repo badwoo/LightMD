@@ -750,6 +750,14 @@ export const zhCN: Record<string, string> = {
   "command.format.heading1": "标题 1",
   "command.format.heading2": "标题 2",
   "command.format.heading3": "标题 3",
+  // v0.11.0 B3-1 返修：补齐面板新增条目的文案
+  "command.format.heading4": "标题 4",
+  "command.format.heading5": "标题 5",
+  "command.format.heading6": "标题 6",
+  "command.format.paragraph": "正文（移除标题）",
+  "command.format.bulletList": "无序列表",
+  "command.format.orderedList": "有序列表",
+  "command.format.blockquote": "引用",
   // 插入分组命令
   "command.insert.table": "插入表格",
   "command.insert.link": "插入链接",

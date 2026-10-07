@@ -32,8 +32,15 @@ function posOfChild(doc: PMNode, index: number): number {
 function buildMove(dir: -1 | 1): Command {
   return (state, dispatch) => {
     const $from = state.selection.$from;
-    // depth < 1 说明光标在 doc 层面（非块内），无可移动目标
-    if ($from.depth < 1) return false;
+    // v0.11.0 B3-8 返修：**只在顶层生效**。
+    // 光标落在列表项/引用等嵌套结构内时，$from.index(0) 取到的是**顶层祖先**
+    // （整个列表 / 整个引用），移动它会重排整棵子树，与本文档承诺的
+    // 「嵌套返回 false」以及 keymap 的注释都不符（既有 Alt+Shift+↑/↓ 承载
+    // 原 joinUp/lift 语义，故这里不再"回退旧行为"，直接不处理）。
+    if ($from.depth > 1) return false;
+    // 顶层块索引：块级叶子（表格/图片/分隔线）被 NodeSelection 选中时
+    // $from.depth === 0，其 index(0) 依然有效。旧实现在 depth < 1 时直接
+    // return false，导致这些块完全移不动。
     const index = $from.index(0);
     const targetIndex = index + dir;
     if (index < 0 || targetIndex < 0 || targetIndex >= state.doc.childCount) return false;

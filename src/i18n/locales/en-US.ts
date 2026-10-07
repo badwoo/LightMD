@@ -743,6 +743,14 @@ export const enUS: Record<string, string> = {
   "command.format.heading1": "Heading 1",
   "command.format.heading2": "Heading 2",
   "command.format.heading3": "Heading 3",
+  // v0.11.0 B3-1: labels for the newly added palette entries
+  "command.format.heading4": "Heading 4",
+  "command.format.heading5": "Heading 5",
+  "command.format.heading6": "Heading 6",
+  "command.format.paragraph": "Body text (remove heading)",
+  "command.format.bulletList": "Bullet list",
+  "command.format.orderedList": "Numbered list",
+  "command.format.blockquote": "Blockquote",
   // Insert group commands
   "command.insert.table": "Insert Table",
   "command.insert.link": "Insert Link",

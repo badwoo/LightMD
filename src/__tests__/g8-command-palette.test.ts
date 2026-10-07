@@ -110,11 +110,33 @@ const tEn = (key: string): string => {
 describe("G8: 命令注册中心", () => {
   it("命令注册数量 ≥ 20（覆盖全部分组）", () => {
     expect(commands.length).toBeGreaterThanOrEqual(20);
-    // 实际注册 47 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument；
+    // 实际注册 54 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument；
     // v0.7.5 新增 ai.chat；v0.9.0 新增 5 条 window.*；v0.9.0 自定义快捷键新增 3 条 view.toggle*
     // 与 1 条 window.full——F11 🔒 保留键的鼠标/命令面板入口；v0.9.3 E8 新增 format.underline；
-    // v0.11.0 B3-7 新增 format.math——此前 Ctrl+Shift+M 在阅读模式是死键且面板无入口）
-    expect(commands.length).toBe(47);
+    // v0.11.0 B3-7 新增 format.math——此前 Ctrl+Shift+M 在阅读模式是死键且面板无入口；
+    // v0.11.0 B3-1 返修新增 7 条 format.heading4-6 / paragraph / bulletList /
+    //   orderedList / blockquote——验收①要求这些能**从面板执行**，此前只写了
+    //   App.tsx 的回落路由、面板却没有条目，属不可达配置）
+    expect(commands.length).toBe(54);
+  });
+
+  it("v0.11.0 B3-1 返修：面板可执行 标题4-6/正文/无序列表/有序列表/引用", () => {
+    // 断言「条目真的存在」而不只是数量——数量锁无法证明这些 id 可达。
+    for (const id of [
+      "format.heading4",
+      "format.heading5",
+      "format.heading6",
+      "format.paragraph",
+      "format.bulletList",
+      "format.orderedList",
+      "format.blockquote",
+    ]) {
+      const cmd = commands.find((c) => c.id === id);
+      expect(cmd, `${id} 应注册到命令面板`).toBeDefined();
+      expect(cmd!.group).toBe("format");
+      expect(cmd!.titleKey.length).toBeGreaterThan(0);
+      expect(typeof cmd!.action).toBe("function");
+    }
   });
 
   it("v0.11.0 B3-7：注册插入公式命令（此前面板无入口）", () => {

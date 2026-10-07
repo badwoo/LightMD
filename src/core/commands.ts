@@ -311,6 +311,59 @@ export const commands: Command[] = [
     keywords: ["标题3", "三级标题", "h3", "heading 3"],
     action: () => dispatchCommand("format.heading3"),
   },
+  // v0.11.0 B3-1 返修：补齐列表/引用/段落/标题 4-6 的面板条目。
+  // 缺陷背景（P1）：验收①要求「命令面板执行 有序/无序列表、引用、段落、标题4-6
+  // 两模式均有反应」，但面板只有上表这些 id → 命令根本产不出；
+  // 首版把 App.tsx 的回落路由写好了，却没有可触发的入口，属**不可达配置**。
+  {
+    id: "format.heading4",
+    titleKey: "command.format.heading4",
+    group: "format",
+    keywords: ["标题4", "四级标题", "h4", "heading 4"],
+    action: () => dispatchCommand("format.heading4"),
+  },
+  {
+    id: "format.heading5",
+    titleKey: "command.format.heading5",
+    group: "format",
+    keywords: ["标题5", "五级标题", "h5", "heading 5"],
+    action: () => dispatchCommand("format.heading5"),
+  },
+  {
+    id: "format.heading6",
+    titleKey: "command.format.heading6",
+    group: "format",
+    keywords: ["标题6", "六级标题", "h6", "heading 6"],
+    action: () => dispatchCommand("format.heading6"),
+  },
+  {
+    id: "format.paragraph",
+    titleKey: "command.format.paragraph",
+    group: "format",
+    keywords: ["正文", "段落", "移除标题", "paragraph", "body"],
+    action: () => dispatchCommand("format.paragraph"),
+  },
+  {
+    id: "format.bulletList",
+    titleKey: "command.format.bulletList",
+    group: "format",
+    keywords: ["无序列表", "项目符号", "bullet", "ul", "list"],
+    action: () => dispatchCommand("format.bulletList"),
+  },
+  {
+    id: "format.orderedList",
+    titleKey: "command.format.orderedList",
+    group: "format",
+    keywords: ["有序列表", "编号列表", "ordered", "ol", "list"],
+    action: () => dispatchCommand("format.orderedList"),
+  },
+  {
+    id: "format.blockquote",
+    titleKey: "command.format.blockquote",
+    group: "format",
+    keywords: ["引用", "引用块", "blockquote", "quote"],
+    action: () => dispatchCommand("format.blockquote"),
+  },
   // ─── 插入分组 ──────────────────────────────
   {
     id: "insert.table",
