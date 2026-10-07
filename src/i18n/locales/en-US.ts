@@ -376,7 +376,7 @@ export const enUS: Record<string, string> = {
   "outline.title": "Outline",
   "outline.empty": "No headings",
   "outline.emptyHeading": "(Empty heading)",
-  "outline.more": "{count} more headings...",
+  "outline.more": "Showing first 1000, {count} more headings...",
   "outline.dragHint": "Drag to reorder",
   "outline.searchPlaceholder": "Search outline…",
   "outline.searchEmpty": "No matching headings",
@@ -748,6 +748,8 @@ export const enUS: Record<string, string> = {
   // ─── Search & replace ───────────────────────────────────
   "search.placeholder": "Search...",
   "search.caseSensitive": "Match case",
+  "search.useRegex": "Regular expression ($1 capture groups in replacement)",
+  "search.regexInvalid": "Invalid regex",
   "search.previous": "Previous",
   "search.next": "Next",
   "search.noResult": "No results",

@@ -104,27 +104,90 @@ function lookupPmPos(blocks: OffsetBlock[], textOffset: number): number | undefi
 }
 
 /**
+ * R4（v0.10.0）：按模式构造搜索正则（纯函数，便于单元测试）
+ *
+ * - 关闭正则：全量转义元字符（v0.4.2 字面量语义回归不变）
+ * - 开启正则：直接按正则语义构造；非法正则返回 null（组件据此红字提示、禁用查找，
+ *   不抛异常不崩溃）
+ *
+ * @returns 带全局标志的 RegExp；非法正则返回 null
+ */
+export function buildSearchRegex(searchText: string, caseSensitive: boolean, useRegex: boolean): RegExp | null {
+  if (!searchText) return null;
+  const flags = caseSensitive ? "g" : "gi";
+  if (!useRegex) {
+    return new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+  }
+  try {
+    return new RegExp(searchText, flags);
+  } catch {
+    return null;
+  }
+}
+
+/** 匹配区间（R4：正则匹配长度可变，位置数组升级为区间） */
+export interface MatchRange {
+  start: number;
+  /** 不含端点 */
+  end: number;
+}
+
+/**
+ * R4：在文本中搜索匹配区间（纯函数，textarea 与 PM 两条路径共用）
+ *
+ * @returns 匹配区间数组；开启正则且表达式非法时返回 null；空关键词返回 []
+ */
+export function findMatchRanges(
+  text: string,
+  searchText: string,
+  caseSensitive = false,
+  useRegex = false,
+): MatchRange[] | null {
+  if (!searchText) return [];
+  const regex = buildSearchRegex(searchText, caseSensitive, useRegex);
+  if (!regex) return null;
+  const ranges: MatchRange[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    // 零长匹配防死循环：强制前进一位
+    if (match[0].length === 0) {
+      regex.lastIndex++;
+      continue;
+    }
+    ranges.push({ start: match.index, end: match.index + match[0].length });
+    if (ranges.length > 10000) break; // 防止无限循环（与 v0.4.2 上限一致）
+  }
+  return ranges;
+}
+
+/**
+ * R4：展开替换文本中的捕获组引用（$1/$2/$& 等）
+ *
+ * - 正则模式：用原生 String.replace 语义展开（与 textarea 路径的
+ *   String.replace(replacement) 行为一致）
+ * - 字面量模式：替换文本原样输出（保持 v0.4.2 行为，"$1" 不展开）
+ */
+export function expandReplacement(matchedText: string, regex: RegExp, replacement: string, useRegex: boolean): string {
+  if (!useRegex) return replacement;
+  return matchedText.replace(regex, replacement);
+}
+
+/**
  * Issue 6：在文本中搜索匹配项，返回匹配起始位置数组（纯函数，便于单元测试）
  *
  * 用于 md 文件的 ProseMirror 内容搜索和非 md 文件的 textarea 源码搜索。
  * 特殊字符会被正则转义，避免搜索文本中含 . * + 等时误匹配。
+ * R4：内部委托 findMatchRanges（区间 → 起点数组兼容层）；开启正则且非法时返回 []。
  *
  * @param text 待搜索的文本（sourceContent 或 PM textContent）
  * @param searchText 搜索关键词
  * @param caseSensitive 是否区分大小写
+ * @param useRegex 是否按正则语义匹配（R4）
  * @returns 匹配起始位置数组（0-indexed），最多返回 10000 个以防无限循环
  */
-export function findMatches(text: string, searchText: string, caseSensitive = false): number[] {
-  if (!searchText) return [];
-  const flags = caseSensitive ? "g" : "gi";
-  const regex = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
-  const matches: number[] = [];
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    matches.push(match.index);
-    if (matches.length > 10000) break; // 防止无限循环
-  }
-  return matches;
+export function findMatches(text: string, searchText: string, caseSensitive = false, useRegex = false): number[] {
+  const ranges = findMatchRanges(text, searchText, caseSensitive, useRegex);
+  return ranges ? ranges.map((r) => r.start) : [];
 }
 
 export function SearchReplaceDialog({
@@ -145,6 +208,9 @@ export function SearchReplaceDialog({
   const [searchText, setSearchText] = useState("");
   const [replaceText, setReplaceText] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
+  // R4：正则开关与非法表达式标记（非法时红字提示、禁用查找）
+  const [useRegex, setUseRegex] = useState(false);
+  const [regexInvalid, setRegexInvalid] = useState(false);
   const [matchCount, setMatchCount] = useState(0);
   const [currentMatch, setCurrentMatch] = useState(0);
   const [showReplace, setShowReplace] = useState(initialShowReplace);
@@ -154,7 +220,8 @@ export function SearchReplaceDialog({
     if (initialShowReplace) setShowReplace(true);
   }, [initialShowReplace]);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const matchesRef = useRef<number[]>([]);
+  // R4：匹配数组升级为区间（正则匹配长度可变），高亮/替换均按区间计算
+  const matchesRef = useRef<MatchRange[]>([]);
   // 缓存偏移映射，performSearch 构建后 highlightMatch 复用
   const offsetMapRef = useRef<OffsetMap | null>(null);
 
@@ -273,8 +340,11 @@ export function SearchReplaceDialog({
       text = "";
     }
 
-    // Issue 6：使用提取的 findMatches 纯函数搜索匹配项
-    const matches = findMatches(text, searchText, caseSensitive);
+    // Issue 6：使用提取的 findMatchRanges 纯函数搜索匹配区间
+    // R4：开启正则且表达式非法 → 红字提示 + 匹配数归零（禁用查找），不抛异常
+    const ranges = findMatchRanges(text, searchText, caseSensitive, useRegex);
+    setRegexInvalid(ranges === null);
+    const matches = ranges || [];
 
     matchesRef.current = matches;
     setMatchCount(matches.length);
@@ -284,7 +354,7 @@ export function SearchReplaceDialog({
     if (matches.length > 0) {
       highlightMatch(0);
     }
-  }, [searchText, caseSensitive, isSourceMode, sourceContent, editorView, isMdFile, viewMode]);
+  }, [searchText, caseSensitive, useRegex, isSourceMode, sourceContent, editorView, isMdFile, viewMode]);
 
   // 搜索文本变化时自动搜索
   useEffect(() => {
@@ -300,8 +370,10 @@ export function SearchReplaceDialog({
     if (!isMdFile && viewMode === "preview") {
       const previewEl = document.querySelector(".plaintext-preview");
       if (!previewEl) return;
-      const pos = matchesRef.current[index];
-      const endPos = pos + searchText.length;
+      const range = matchesRef.current[index];
+      const pos = range.start;
+      // R4：正则匹配长度可变，按区间计算终点
+      const endPos = range.end;
       // TreeWalker 遍历文本节点，定位匹配的起止位置（PrismJS 高亮后文本被分散在多个 span 中）
       const walker = document.createTreeWalker(previewEl, NodeFilter.SHOW_TEXT);
       let charCount = 0;
@@ -341,12 +413,14 @@ export function SearchReplaceDialog({
 
     if (isSourceMode && sourceTextareaRef?.current) {
       const textarea = sourceTextareaRef.current;
-      const pos = matchesRef.current[index];
+      // R4：按区间选区（正则匹配长度可变）
+      const range = matchesRef.current[index];
+      const pos = range.start;
       // Issue 6：非 md 文件在 preview 模式下 textarea 隐藏（display:none），
       // offsetParent === null 表示不可见，此时跳过视觉高亮（仅显示匹配计数）
       if (textarea.offsetParent === null) return;
       textarea.focus();
-      textarea.setSelectionRange(pos, pos + searchText.length);
+      textarea.setSelectionRange(pos, range.end);
       // 滚动到匹配位置
       const lines = textarea.value.substring(0, pos).split("\n");
       const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
@@ -356,13 +430,14 @@ export function SearchReplaceDialog({
       try {
         const offsetMap = offsetMapRef.current;
         if (!offsetMap) return;
-        const targetOffset = matchesRef.current[index];
+        const range = matchesRef.current[index];
+        const targetOffset = range.start;
 
         // 查找匹配起始位置对应的 PM 位置
         const pmStart = lookupPmPos(offsetMap.blocks, targetOffset);
         if (pmStart !== undefined) {
-          // 查找匹配结束位置对应的 PM 位置
-          const pmEnd = lookupPmPos(offsetMap.blocks, targetOffset + searchText.length - 1);
+          // 查找匹配结束位置对应的 PM 位置（R4：区间终点 - 1）
+          const pmEnd = lookupPmPos(offsetMap.blocks, range.end - 1);
           if (pmEnd !== undefined) {
             const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
             // 问题1修复：使用 ProseMirror Decoration 高亮匹配内容，不依赖编辑器焦点
@@ -395,7 +470,7 @@ export function SearchReplaceDialog({
         // 忽略位置计算错误
       }
     }
-  }, [isSourceMode, sourceTextareaRef, editorView, searchText, isMdFile, viewMode]);
+  }, [isSourceMode, sourceTextareaRef, editorView, isMdFile, viewMode]);
 
   // 上一个/下一个
   const goToMatch = useCallback((direction: 1 | -1) => {
@@ -410,22 +485,32 @@ export function SearchReplaceDialog({
   const replaceCurrent = useCallback(() => {
     if (matchesRef.current.length === 0 || currentMatch === 0) return;
 
+    // R4：正则模式下用展开后的替换文本（支持 $1 捕获组）
+    const regex = buildSearchRegex(searchText, caseSensitive, useRegex);
+    if (!regex) return;
+    const range = matchesRef.current[currentMatch - 1];
+    // 匹配文本按路径取源：textarea 路径来自 sourceContent，PM 路径来自 offsetMap.text
+    // （R4 修复：阅读模式下 sourceContent 为 undefined，不能作为匹配文本来源）
+    const matched =
+      isSourceMode && sourceContent !== undefined
+        ? sourceContent.substring(range.start, range.end)
+        : offsetMapRef.current?.text.substring(range.start, range.end) ?? searchText;
+    const expanded = expandReplacement(matched, regex, replaceText, useRegex);
+
     if (isSourceMode && sourceTextareaRef?.current && sourceContent !== undefined && onSourceContentChange) {
-      const pos = matchesRef.current[currentMatch - 1];
-      const newContent = sourceContent.substring(0, pos) + replaceText + sourceContent.substring(pos + searchText.length);
+      const newContent = sourceContent.substring(0, range.start) + expanded + sourceContent.substring(range.end);
       onSourceContentChange(newContent);
     } else if (editorView) {
       // 阅读模式：通过 ProseMirror transaction 替换文本
       try {
         const offsetMap = offsetMapRef.current;
         if (!offsetMap) return;
-        const targetOffset = matchesRef.current[currentMatch - 1];
 
-        const pmStart = lookupPmPos(offsetMap.blocks, targetOffset);
-        const pmEnd = lookupPmPos(offsetMap.blocks, targetOffset + searchText.length - 1);
+        const pmStart = lookupPmPos(offsetMap.blocks, range.start);
+        const pmEnd = lookupPmPos(offsetMap.blocks, range.end - 1);
         if (pmStart !== undefined && pmEnd !== undefined) {
           const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
-          const tr = editorView.state.tr.insertText(replaceText, pmStart, endPos);
+          const tr = editorView.state.tr.insertText(expanded, pmStart, endPos);
           tr.setMeta("addToHistory", true);
           editorView.dispatch(tr);
         }
@@ -436,15 +521,16 @@ export function SearchReplaceDialog({
 
     // 替换后重新搜索
     setTimeout(() => performSearch(), 50);
-  }, [isSourceMode, sourceTextareaRef, sourceContent, onSourceContentChange, currentMatch, searchText, replaceText, performSearch, editorView]);
+  }, [isSourceMode, sourceTextareaRef, sourceContent, onSourceContentChange, currentMatch, searchText, replaceText, caseSensitive, useRegex, performSearch, editorView]);
 
   // 全部替换
   const replaceAll = useCallback(() => {
     if (!searchText || matchesRef.current.length === 0) return;
 
     if (isSourceMode && sourceContent !== undefined && onSourceContentChange) {
-      const flags = caseSensitive ? "g" : "gi";
-      const regex = new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+      // R4：regex 模式原生支持 $1 捕获组；字面量模式维持旧行为（直接传入 replaceText）
+      const regex = buildSearchRegex(searchText, caseSensitive, useRegex);
+      if (!regex) return;
       const newContent = sourceContent.replace(regex, replaceText);
       onSourceContentChange(newContent);
     } else if (editorView) {
@@ -453,16 +539,20 @@ export function SearchReplaceDialog({
         const offsetMap = offsetMapRef.current;
         if (!offsetMap) return;
         const matches = matchesRef.current;
+        const regex = buildSearchRegex(searchText, caseSensitive, useRegex);
+        if (!regex) return;
 
         let tr = editorView.state.tr;
         // 从后往前替换，这样前面的偏移量不会受影响
         for (let i = matches.length - 1; i >= 0; i--) {
-          const targetOffset = matches[i];
-          const pmStart = lookupPmPos(offsetMap.blocks, targetOffset);
-          const pmEnd = lookupPmPos(offsetMap.blocks, targetOffset + searchText.length - 1);
+          const range = matches[i];
+          const pmStart = lookupPmPos(offsetMap.blocks, range.start);
+          const pmEnd = lookupPmPos(offsetMap.blocks, range.end - 1);
           if (pmStart !== undefined && pmEnd !== undefined) {
             const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
-            tr = tr.insertText(replaceText, pmStart, endPos);
+            // R4：逐 match 展开捕获组（字面量模式原样替换）
+            const matched = offsetMap.text.substring(range.start, range.end);
+            tr = tr.insertText(expandReplacement(matched, regex, replaceText, useRegex), pmStart, endPos);
           }
         }
         tr.setMeta("addToHistory", true);
@@ -473,7 +563,7 @@ export function SearchReplaceDialog({
     }
 
     setTimeout(() => performSearch(), 50);
-  }, [isSourceMode, sourceContent, onSourceContentChange, searchText, replaceText, caseSensitive, performSearch, editorView]);
+  }, [isSourceMode, sourceContent, onSourceContentChange, searchText, replaceText, caseSensitive, useRegex, performSearch, editorView]);
 
   // 键盘事件
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -504,7 +594,7 @@ export function SearchReplaceDialog({
       <div className="search-row">
         <input
           ref={searchInputRef}
-          className="search-input"
+          className={`search-input${regexInvalid ? " search-input-invalid" : ""}`}
           type="text"
           placeholder={t("search.placeholder")}
           value={searchText}
@@ -517,14 +607,26 @@ export function SearchReplaceDialog({
         >
           Aa
         </button>
+        {/* R4：正则开关——开启后按正则语义匹配、替换支持 $1 捕获组；非法表达式红字提示 */}
+        <button
+          className={`search-option-btn ${useRegex ? "active" : ""}`}
+          title={t("search.useRegex")}
+          onClick={() => setUseRegex(!useRegex)}
+        >
+          .*
+        </button>
         <button className="search-nav-btn" title={t("search.previous")} onClick={() => goToMatch(-1)} disabled={matchCount === 0}>
           ↑
         </button>
         <button className="search-nav-btn" title={t("search.next")} onClick={() => goToMatch(1)} disabled={matchCount === 0}>
           ↓
         </button>
-        <span className="search-count">
-          {matchCount > 0 ? `${currentMatch}/${matchCount}` : t("search.noResult")}
+        <span className={`search-count${regexInvalid ? " search-count-invalid" : ""}`}>
+          {regexInvalid
+            ? t("search.regexInvalid")
+            : matchCount > 0
+              ? `${currentMatch}/${matchCount}`
+              : t("search.noResult")}
         </span>
         <button className="search-toggle-btn" title={t("search.toggleReplace")} onClick={() => setShowReplace(!showReplace)}>
           ⟳

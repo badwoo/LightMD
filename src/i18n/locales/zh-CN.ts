@@ -383,7 +383,7 @@ export const zhCN: Record<string, string> = {
   "outline.title": "大纲",
   "outline.empty": "暂无标题",
   "outline.emptyHeading": "(空标题)",
-  "outline.more": "还有 {count} 个标题...",
+  "outline.more": "仅渲染前 1000 项，还有 {count} 个标题...",
   "outline.dragHint": "拖拽以重新排序",
   "outline.searchPlaceholder": "搜索目录…",
   "outline.searchEmpty": "无匹配标题",
@@ -755,6 +755,8 @@ export const zhCN: Record<string, string> = {
   // ─── 搜索替换 ────────────────────────────────────
   "search.placeholder": "搜索...",
   "search.caseSensitive": "区分大小写",
+  "search.useRegex": "正则表达式（替换支持 $1 捕获组）",
+  "search.regexInvalid": "正则无效",
   "search.previous": "上一个",
   "search.next": "下一个",
   "search.noResult": "无结果",

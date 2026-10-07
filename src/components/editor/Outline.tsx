@@ -56,8 +56,12 @@ interface OutlineProps {
   editorView: EditorView | null;
 }
 
-/** 大纲最大渲染数量，超出时只显示前 MAX_OUTLINE_ITEMS 项 */
-const MAX_OUTLINE_ITEMS = 100;
+/**
+ * 大纲最大渲染数量，超出时只显示前 MAX_OUTLINE_ITEMS 项
+ * R5（v0.10.0）：100 → 1000——长文档（技术书籍/会议纪要汇编）标题数常超百，
+ * 旧上限静默截断可用性差；1000 项 DOM 按钮的渲染开销可接受
+ */
+const MAX_OUTLINE_ITEMS = 1000;
 
 /**
  * 限制拖拽只能沿垂直方向移动的自定义 modifier
