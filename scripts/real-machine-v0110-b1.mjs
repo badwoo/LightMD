@@ -105,7 +105,11 @@ async function main() {
   const MATH_SRC = "$$\nx = 1\n$$\n";
   const PARA_SRC = "第一行文字\n\n第二行文字\n";
   const TABLE_SRC = "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n";
-  const IMAGE_SRC = "![alt|300](a.png)\n\n![plain](b.png)\n";
+  // 必须用**可解码**的图片：不存在的 a.png/b.png 会渲染成破图，
+  // 那时测出的宽度是破图占位尺寸（约 33px），无法证明 width 属性真实生效。
+  const GIF_1X1 =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+  const IMAGE_SRC = `![alt|300](${GIF_1X1})\n\n![plain](${GIF_1X1})\n`;
 
   fs.writeFileSync(fCode, CODE_SRC);
   fs.writeFileSync(fMath, MATH_SRC);
@@ -242,8 +246,19 @@ async function main() {
     // ══════════════════════════════════════════════════════════
     // 0. 环境自检：编辑器与代码块 NodeView 是否就绪
     // ══════════════════════════════════════════════════════════
+    // 注意：应用有 startupRestore，启动后会恢复上次打开的标签；
+    // 若不等它就 openFile，可能仍在旧文档上断言（曾因此出现 codeWrapper=0 的假 FAIL）。
+    // 这里改为「反复 openFile 直到当前源码确实等于目标内容」。
     await runCommand("view.preview");
-    await openFile(fCode, CODE_SRC);
+    let codeDocReady = false;
+    for (let i = 0; i < 6 && !codeDocReady; i++) {
+      await openFile(fCode, CODE_SRC);
+      const v = await readBackSource();
+      codeDocReady = typeof v === "string" && v.includes("const a = 1") && v.includes("const b = 2");
+      if (!codeDocReady) await sleep(700);
+    }
+    await runCommand("view.preview");
+    await sleep(400);
     const envSniff = await evalJs(`JSON.stringify({
       proseMirror: document.querySelectorAll('.ProseMirror').length,
       codeWrapper: document.querySelectorAll('.code-block-wrapper').length,
@@ -420,17 +435,21 @@ async function main() {
         if (!f || !f.contentDocument) return "no-iframe";
         const imgs = [...f.contentDocument.querySelectorAll('img')];
         if (imgs.length === 0) return "no-img";
-        const sized = imgs.find(im => (im.getAttribute('src') || '').includes('a.png'));
-        const plain = imgs.find(im => (im.getAttribute('src') || '').includes('b.png'));
+        // 两张图共用同一个 data URI，按 **alt** 区分（src 相同无法区分）
+        const sized = imgs.find(im => (im.getAttribute('alt') || '') === 'alt');
+        const plain = imgs.find(im => (im.getAttribute('alt') || '') === 'plain');
         return JSON.stringify({
           sizedFound: !!sized,
           sizedAlt: sized ? sized.getAttribute('alt') : null,
           sizedWidthAttr: sized ? sized.getAttribute('width') : null,
           sizedStyleWidth: sized ? sized.style.width : null,
           sizedRenderedWidth: sized ? Math.round(sized.getBoundingClientRect().width) : null,
+          sizedNaturalW: sized ? sized.naturalWidth : null,
           plainFound: !!plain,
           plainAlt: plain ? plain.getAttribute('alt') : null,
           plainWidthAttr: plain ? plain.getAttribute('width') : null,
+          plainRenderedWidth: plain ? Math.round(plain.getBoundingClientRect().width) : null,
+          plainNaturalW: plain ? plain.naturalWidth : null,
         });
       })()`);
       if (imgState !== "no-iframe" && imgState !== "no-img") break;
