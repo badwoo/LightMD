@@ -51,6 +51,27 @@ function nextFootnoteLabel(doc: import("prosemirror-model").Node): string {
 }
 
 /**
+ * v0.11.0 B3-3：从 markdown **源码文本**求下一个未占用的脚注 label。
+ *
+ * 缺陷背景（P1）：源码模式插入脚注时固定写 `[^1]: `（App.tsx 的 COMMAND_SYNTAX），
+ * 连续插入两次会产生两个 `[^1]:`，后者覆盖前者 → **脚注内容静默丢失**。
+ * 阅读模式走 nextFootnoteLabel(PM doc) 自动取号，故只有源码模式有此问题。
+ *
+ * 与 PM 版同口径（从 1 开始找第一个未占用），保证两种模式行为一致。
+ */
+export function nextFootnoteLabelFromText(text: string): string {
+  const used = new Set<string>();
+  // 匹配脚注定义 `[^label]:` 与引用 `[^label]`
+  for (const m of text.matchAll(/\[\^([^\]\s]+)\]/g)) {
+    used.add(m[1]!);
+  }
+  for (let i = 1; i < 1000; i++) {
+    if (!used.has(String(i))) return String(i);
+  }
+  return "1";
+}
+
+/**
  * 在阅读模式 PM 视图上执行格式/插入命令。
  * 返回是否已处理;false 时调用方可回退到对话框/其他通道。
  */

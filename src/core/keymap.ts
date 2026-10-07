@@ -92,6 +92,15 @@ const PM_COMMAND_BY_ID: Record<string, Command> = {
   "format.bulletList": wrapInList(schema.nodes.bullet_list),
   "format.orderedList": wrapInList(schema.nodes.ordered_list),
   "format.blockquote": wrapIn(schema.nodes.blockquote),
+
+  // v0.11.0 B3-7：插入行内公式（此前本表无此条目 → 阅读模式 Ctrl+Shift+M 是死键）。
+  // 构造与 inputrules 的 mathInlineRule 同款：单个 math_inline 节点，
+  // 内容为占位空格随后清空，光标落在公式内可直接输入 LaTeX。
+  "format.math": (state, dispatch) => {
+    const node = schema.nodes.math_inline.create({ latex: "" }, schema.text(" "));
+    if (dispatch) dispatch(state.tr.replaceSelectionWith(node, false));
+    return true;
+  },
 };
 
 /**

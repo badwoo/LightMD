@@ -108,7 +108,14 @@ interface EditorState {
   prevViewMode: ViewMode;
   focusMode: boolean;
   // 源码模式下的语法插入回调，由 EditorContainer 注册
-  sourceInsertHandler: ((syntax: string, cursorOffset?: number) => void) | null;
+  //
+  // v0.11.0 B3-3：新增第 3 参 `opts.label`。
+  // 脚注定义需要动态 label（源码模式原固定 `[^1]:`，连续插入两次会产生重复
+  // label 导致后者覆盖前者、内容丢失）。label 由持有源码 textarea ref 的
+  // EditorContainer 计算（内部有当前文本），App 侧无需感知文本。
+  sourceInsertHandler:
+    | ((syntax: string, cursorOffset?: number, opts?: { label?: string }) => void)
+    | null;
   // 撤销/恢复回调，由 EditorContainer 注册
   undoHandler: (() => void) | null;
   redoHandler: (() => void) | null;

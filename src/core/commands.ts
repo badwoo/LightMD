@@ -280,6 +280,17 @@ export const commands: Command[] = [
     action: () => dispatchCommand("format.highlight"),
   },
   {
+    // v0.11.0 B3-7：插入公式命令面板入口。
+    // 缺陷背景（P1）：此前命令面板无此条目，而快捷键 Ctrl+Shift+M 的
+    // scope=source 在阅读模式不命中、PM 侧也无对应命令 → **死键**，
+    // 用户既不能快捷插入也不能从面板插入公式。
+    id: "format.math",
+    titleKey: "shortcut.format.math",
+    group: "format",
+    keywords: ["公式", "数学", "公式", "math", "latex", "katex"],
+    action: () => dispatchCommand("format.math"),
+  },
+  {
     id: "format.heading1",
     titleKey: "command.format.heading1",
     group: "format",

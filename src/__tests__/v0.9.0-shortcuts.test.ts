@@ -212,8 +212,21 @@ describe("v0.9.0 自定义快捷键：生效解析（matchShortcut / comboFromEv
     expect(matchShortcut(kbd("b", { ctrl: true }), ["rich"])?.id).toBe("format.bold");
     expect(matchShortcut(kbd("s", { ctrl: true, alt: true }), ["rich"])?.id).toBe("format.strikethrough");
     expect(matchShortcut(kbd("s", { ctrl: true, alt: true }), ["source"])?.id).toBe("format.strikethrough");
+    // v0.11.0 B3-7：format.math 的 scope 由 "source" 改为 "rich-source"
+    // （原 scope=source 时 scopeMatches 的 source 分支不含 rich，
+    //  且 PM 侧无对应命令 → 阅读模式按 Ctrl+Shift+M 是死键）
     expect(matchShortcut(kbd("m", { ctrl: true, shift: true }), ["source"])?.id).toBe("format.math");
-    expect(matchShortcut(kbd("m", { ctrl: true, shift: true }), ["rich"])).toBeUndefined();
+    // 修复后：富文本模式也能命中（不再是 undefined）
+    expect(matchShortcut(kbd("m", { ctrl: true, shift: true }), ["rich"])?.id).toBe("format.math");
+  });
+
+  it("v0.11.0 B3-2：列表/引用类格式键在源码模式也可用", () => {
+    // 缺陷背景（P1·架构性）：此前三条 scope 为 "rich"，源码/分屏模式按
+    // Ctrl+Shift+8/9/. 无任何反应；而 format.bold（rich-source）两模式皆可用
+    // → 属逐条配置遗漏，非有意设计。现统一为 rich-source。
+    expect(matchShortcut(kbd("*", { ctrl: true, shift: true, code: "Digit8" }), ["source"])?.id).toBe("format.bulletList");
+    expect(matchShortcut(kbd("(", { ctrl: true, shift: true, code: "Digit9" }), ["source"])?.id).toBe("format.orderedList");
+    expect(matchShortcut(kbd(".", { ctrl: true, shift: true }), ["source"])?.id).toBe("format.blockquote");
   });
 
   it("Ctrl+Shift+数字 按 e.code 还原主键（Shift+8 产出 * 不影响匹配）", () => {

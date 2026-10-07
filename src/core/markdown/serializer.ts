@@ -648,8 +648,25 @@ function escapeText(text: string, inTableCell = false): string {
   // autolink 形态的 <（防 <scheme:...> 被解析为链接）
   out = out.replace(/<(?=[a-zA-Z][a-zA-Z0-9.+-]*:)/g, "\\<");
 
-  // 波浪线 / 脱字符 / 美元符：低频，直接转义（$ 防两个裸 $ 配对成行内公式）
-  out = out.replace(/~/g, "\\~").replace(/\^/g, "\\^").replace(/\$/g, "\\$");
+  // v0.11.0 B3-4：波浪线 / 脱字符改为「成对出现才转义」。
+  //
+  // 缺陷背景（P1）：此前是无条件裸替换（`out.replace(/~/g, "\\~")` 等），
+  // 导致 `x^2` 存成 `x\^2`、`a ~ b` 存成 `a \~ b` —— 单字符在 CommonMark 中
+  // 根本构不成任何标记（`~sub~`/`^sup^` 都需配对），属无必要转义，且每次编辑
+  // 该块都会重现，用户看到自己没写过的反斜杠 + git diff 噪音。
+  // 对照：`*`（count>=2 才转）、`_`（词内判断）本来就有条件判断，只有这三条是裸的。
+  //
+  // 判定与 markRules 的正则一致（`(~)([^~]+)\1` / `(\^)([^^]+)\1`）：
+  // 出现 2 次及以上才可能被解析成标记，此时转义。
+  if ((out.match(/~/g) || []).length >= 2) {
+    out = out.replace(/~/g, "\\~");
+  }
+  if ((out.match(/\^/g) || []).length >= 2) {
+    out = out.replace(/\^/g, "\\^");
+  }
+  // `$` 保留无条件转义：两个裸 `$` 会配对成行内公式（$x$），是真实风险，
+  // 且金额场景（$100）与公式难以在不看上下文的情况下区分。
+  out = out.replace(/\$/g, "\\$");
 
   if (inTableCell) {
     out = out.replace(/\|/g, "\\|");

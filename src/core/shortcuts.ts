@@ -125,7 +125,12 @@ export const SHORTCUT_DEFS: readonly ShortcutDef[] = Object.freeze([
   { id: "format.inlineCode", category: "format", labelKey: "command.format.inlineCode", defaultCombo: "Ctrl+`", scope: "rich-source" },
   // E8(v0.9.3):下划线(Markdown 无原生语法,统一 <u> 表达;Ctrl+U 此前无占用)
   { id: "format.underline", category: "format", labelKey: "command.format.underline", defaultCombo: "Ctrl+U", scope: "rich-source" },
-  { id: "format.math", category: "format", labelKey: "shortcut.format.math", defaultCombo: "Ctrl+Shift+M", scope: "source" },
+  // v0.11.0 B3-7：scope 由 "source" 改为 "rich-source"。
+  // 缺陷背景（P1）：scope=source 时 scopeMatches 的 source 分支不含 rich，
+  // 而 keymap 的 PM_COMMAND_BY_ID 原本也无 format.math → **阅读模式按
+  // Ctrl+Shift+M 完全无反应**，且命令面板找不到该命令（死键）。
+  // 现补 PM 命令（keymap.ts）+ 双模式可用。
+  { id: "format.math", category: "format", labelKey: "shortcut.format.math", defaultCombo: "Ctrl+Shift+M", scope: "rich-source" },
   { id: "format.heading1", category: "format", labelKey: "command.format.heading1", defaultCombo: "Ctrl+1", scope: "rich-source" },
   { id: "format.heading2", category: "format", labelKey: "command.format.heading2", defaultCombo: "Ctrl+2", scope: "rich-source" },
   { id: "format.heading3", category: "format", labelKey: "command.format.heading3", defaultCombo: "Ctrl+3", scope: "rich-source" },
@@ -133,9 +138,14 @@ export const SHORTCUT_DEFS: readonly ShortcutDef[] = Object.freeze([
   { id: "format.heading5", category: "format", labelKey: "shortcut.format.heading5", defaultCombo: "Ctrl+5", scope: "rich-source" },
   { id: "format.heading6", category: "format", labelKey: "shortcut.format.heading6", defaultCombo: "Ctrl+6", scope: "rich-source" },
   { id: "format.paragraph", category: "format", labelKey: "shortcut.format.paragraph", defaultCombo: "Ctrl+0", scope: "rich-source" },
-  { id: "format.bulletList", category: "format", labelKey: "shortcut.format.bulletList", defaultCombo: "Ctrl+Shift+8", scope: "rich" },
-  { id: "format.orderedList", category: "format", labelKey: "shortcut.format.orderedList", defaultCombo: "Ctrl+Shift+9", scope: "rich" },
-  { id: "format.blockquote", category: "format", labelKey: "shortcut.format.blockquote", defaultCombo: "Ctrl+Shift+.", scope: "rich" },
+  // v0.11.0 B3-2：scope 由 "rich" 改为 "rich-source"。
+  // 缺陷背景（P1·架构性）：此前三条仅注册在富文本，源码/分屏模式按
+  // Ctrl+Shift+8/9/. **无任何反应**；而 format.bold（rich-source）两模式皆可用
+  // → 属逐条配置遗漏，非有意设计。sourceFormat.ts 的 matchShortcut(e, ["source"])
+  // 经 scopeMatches 的 source 分支已能命中 rich-source，无需改动该处。
+  { id: "format.bulletList", category: "format", labelKey: "shortcut.format.bulletList", defaultCombo: "Ctrl+Shift+8", scope: "rich-source" },
+  { id: "format.orderedList", category: "format", labelKey: "shortcut.format.orderedList", defaultCombo: "Ctrl+Shift+9", scope: "rich-source" },
+  { id: "format.blockquote", category: "format", labelKey: "shortcut.format.blockquote", defaultCombo: "Ctrl+Shift+.", scope: "rich-source" },
   // ─── 视图 ───
   { id: "view.toggleTheme", category: "view", labelKey: "command.view.toggleTheme", defaultCombo: "Ctrl+Shift+T", scope: "global", command: "view.toggleTheme" },
   { id: "view.toggleFocusMode", category: "view", labelKey: "command.view.toggleFocusMode", defaultCombo: "F8", scope: "global", command: "view.toggleFocusMode" },

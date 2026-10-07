@@ -138,6 +138,12 @@ function getFileName(path: string): string {
  * G8：格式/插入命令的 markdown 语法映射
  * 用于源码模式（edit/split）下通过 sourceInsertHandler 插入语法
  * cursorOffset 表示插入后光标位置（相对于插入起点的偏移）
+ *
+ * v0.11.0 B3-1：补齐此前遗漏的 id。
+ * 此前此表只有 15 项，而 `App.tsx` 的命令路由是 `if (syntaxEntry)` 拦路
+ * → 不在表里的 id（如 format.bulletList / orderedList / blockquote / paragraph /
+ * heading4-6）**整个分支被跳过，两种编辑模式都不执行**（命令面板上是死命令）。
+ * 现补齐常用项，并配合下方的「未命中则回落 PM」双路逻辑彻底修复。
  */
 const COMMAND_SYNTAX: Record<string, { syntax: string; cursorOffset?: number }> = {
   "format.bold": { syntax: "****", cursorOffset: 2 },
@@ -150,12 +156,24 @@ const COMMAND_SYNTAX: Record<string, { syntax: string; cursorOffset?: number }> 
   "format.heading1": { syntax: "# " },
   "format.heading2": { syntax: "## " },
   "format.heading3": { syntax: "### " },
+  // v0.11.0 B3-1：补齐 h4-h6 与段落/列表/引用（此前缺失 → 命令面板死命令）
+  "format.heading4": { syntax: "#### " },
+  "format.heading5": { syntax: "##### " },
+  "format.heading6": { syntax: "###### " },
+  "format.paragraph": { syntax: "" },
+  "format.bulletList": { syntax: "- " },
+  "format.orderedList": { syntax: "1. " },
+  "format.blockquote": { syntax: "> " },
   "insert.table": { syntax: "\n| 列1 | 列2 |\n|------|------|\n| 内容 | 内容 |\n" },
   "insert.link": { syntax: "[](url)", cursorOffset: 1 },
   "insert.image": { syntax: "![](url)", cursorOffset: 2 },
   "insert.codeblock": { syntax: "\n```\n\n```\n", cursorOffset: 5 },
   "insert.mermaid": { syntax: "\n```mermaid\n\n```\n", cursorOffset: 11 },
   "insert.taskList": { syntax: "\n- [ ] " },
+  // v0.11.0 B3-1：源码模式插入行内公式（阅读模式走 PM 命令，见 keymap.ts）
+  "format.math": { syntax: "$$", cursorOffset: 1 },
+  // v0.11.0 B3-3：脚注 label 改为运行时动态计算（见 pmCommands.nextFootnoteLabel），
+  // 此处仅作占位；实际插入前会替换为未占用的编号。
   "insert.footnote": { syntax: "[^1]: " },
 };
 
@@ -2663,26 +2681,54 @@ function App() {
       // 🔒 F11 沉浸式全屏（命令面板 / 鼠标入口；快捷键在 keydown 里单独处理）
       if (id === "window.full") { toggleImmersiveRef.current(); return; }
 
-      // 格式/插入命令：通过 sourceInsertHandler（源码模式）或 editorView（阅读模式）处理
+      // 格式/插入命令：双路分发（v0.11.0 B3-1）
+      //
+      // 修复前：`if (syntaxEntry)` 单路拦路 —— 不在 COMMAND_SYNTAX 里的 id
+      // 整个分支被跳过，**两种编辑模式都不执行**（命令面板上的死命令）。
+      // pmCommands.ts 的注释声称「与快捷键同一命令源」，但被这张表提前拦掉了。
+      //
+      // 修复后：源码模式优先用语法插入（保持既有行为）；表里没有该 id 时，
+      // 回落 runPreviewCommand（它已覆盖列表/引用/标题/插入类），
+      // 两者都不认识才静默返回。
+      const currentMode = useEditorStore.getState().viewMode;
+      const isSource = currentMode === "edit" || currentMode === "split";
       const syntaxEntry = COMMAND_SYNTAX[id];
-      if (syntaxEntry) {
-        const currentMode = useEditorStore.getState().viewMode;
-        const isSource = currentMode === "edit" || currentMode === "split";
-        if (isSource && sourceInsertHandler) {
-          // 源码模式：通过 sourceInsertHandler 插入语法（行为保持不变）
-          sourceInsertHandler(syntaxEntry.syntax, syntaxEntry.cursorOffset);
-        } else if (editorViewRef.current) {
+
+      if (isSource) {
+        // ── 源码 / 分屏（左侧）──
+        if (syntaxEntry) {
+        if (sourceInsertHandler) {
+          if (id === "insert.footnote") {
+            // v0.11.0 B3-3：传动态 label 交由 EditorContainer 应用。
+            // label 需基于当前源码计算，App 侧拿不到文本（handler 由
+            // EditorContainer 注册，只有它持有 sourceContentRef），
+            // 故此处传空 label 让 EditorContainer 自行兜底计算。
+            sourceInsertHandler(syntaxEntry.syntax, syntaxEntry.cursorOffset, {});
+          } else {
+            sourceInsertHandler(syntaxEntry.syntax, syntaxEntry.cursorOffset);
+          }
+        }
+          return;
+        }
+        // 表里没有但 PM 支持的命令（如 format.math 之外的插类别）→ 尝试 PM
+        if (editorViewRef.current) {
+          runPreviewCommand(id, editorViewRef.current);
+        }
+        return;
+      }
+
+      // ── 阅读模式 ──
+      if (editorViewRef.current) {
+        const view = editorViewRef.current;
+        if (id === "insert.link" || id === "insert.image") {
+          // 链接/图片：打开 EditorContainer 的既有对话框，确认后插入 PM
+          window.dispatchEvent(new CustomEvent("lightmd:pm-dialog", {
+            detail: { kind: id === "insert.link" ? "link" : "image" },
+          }));
+        } else {
           // E1(v0.9.2)：阅读模式走 PM 真命令/节点构造，
           // 修复此前 insertText(语法串) 不触发 InputRules 的"假命令"问题
-          const view = editorViewRef.current;
-          if (id === "insert.link" || id === "insert.image") {
-            // 链接/图片：打开 EditorContainer 的既有对话框，确认后插入 PM
-            window.dispatchEvent(new CustomEvent("lightmd:pm-dialog", {
-              detail: { kind: id === "insert.link" ? "link" : "image" },
-            }));
-          } else {
-            runPreviewCommand(id, view);
-          }
+          runPreviewCommand(id, view);
         }
       }
     };

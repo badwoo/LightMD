@@ -11,6 +11,8 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { createEditor, getMarkdownFromDoc, clearSerializationCache } from "../../core/editor";
 import { markdownToDoc } from "../../core/markdown/parser";
+// v0.11.0 B3-3：源码模式插入脚注时求未占用 label（避免重复 label 覆盖内容）
+import { nextFootnoteLabelFromText } from "../../core/pmCommands";
 import { focusModeKey } from "../../core/plugins/focus-mode";
 import { setMermaidTheme } from "../../core/plugins/mermaid-block";
 import { TextSelection } from "prosemirror-state";
@@ -629,14 +631,25 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // ─── 语法插入回调 ────────────────────────────────
   useEffect(() => {
     if (isSourceMode) {
-      const insertHandler = (syntax: string, cursorOffset?: number) => {
+      const insertHandler = (
+        syntax: string,
+        cursorOffset?: number,
+        _opts?: { label?: string },
+      ) => {
         const textarea = sourceTextareaRef.current;
         if (!textarea) return;
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
         const currentContent = sourceContentRef.current;
         const selected = currentContent.substring(start, end);
-        const newContent = currentContent.substring(0, start) + syntax + currentContent.substring(end);
+        // v0.11.0 B3-3：脚注定义使用**未占用的下一个编号**。
+        // 缺陷背景：源码模式原固定插入 `[^1]: `，连续两次插入产生两个 `[^1]:`，
+        // 后者覆盖前者 → 脚注内容静默丢失。阅读模式走 PM 侧 nextFootnoteLabel，
+        // 只有源码模式有此问题。此处有 currentContent，可直接算。
+        const finalSyntax = /^\[\^\d+\]: $/.test(syntax)
+          ? `[^${nextFootnoteLabelFromText(currentContent)}]: `
+          : syntax;
+        const newContent = currentContent.substring(0, start) + finalSyntax + currentContent.substring(end);
         const scrollTop = textarea.scrollTop;
         // 直接推入差异（不用防抖，格式操作是离散的）
         const diff = computeDiff(currentContent, newContent);
@@ -647,7 +660,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         setDirtyRef.current(true);
         // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
         lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
-        const cursorPos = selected ? start + syntax.length : (cursorOffset !== undefined ? start + cursorOffset : start + Math.floor(syntax.length / 2));
+        const cursorPos = selected
+          ? start + finalSyntax.length
+          : cursorOffset !== undefined
+            ? start + cursorOffset
+            : start + Math.floor(finalSyntax.length / 2);
         const restore = () => {
           const ta = sourceTextareaRef.current;
           if (ta) {
