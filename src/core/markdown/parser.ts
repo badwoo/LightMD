@@ -76,14 +76,15 @@ const schema = lightMDSchema;
  * 各自硬编码 breaks,配置变更需改三处且已出现漂移。
  *
  * @param opts.breaks 段内单换行语义:true=GFM(即换行,默认);false=CommonMark(渲染为空格)
- * @param opts.typographer 智能排版(弯引号等);编辑管线恒 false,导出管线维持 true(R1 统一)
- * @param opts.validateLink 链接 scheme 白名单;默认开启(编辑管线)。
- *   导出管线须传 false:导出 HTML 不经 PM,base64 图片(data:)依赖默认放行,
- *   白名单贯通会使 EPUB/PNG 导出丢图;安全策略统一在 R1 处理
+ * @param opts.typographer 智能排版(弯引号等);R1(v0.10.0)起全管线恒 false——
+ *   导出与编辑所见即所得一致,导出不静默改写用户引号
+ * @param opts.validateLink 链接 scheme 白名单;R1 起全管线强制开启(默认)。
+ *   sanitizeLinkHref 拒绝 javascript:/vbscript:/file:,放行 data:image(v0.9.5),
+ *   base64 图片导出不受影响
  * @param opts.html HTML 放行开关(E8,v0.9.3)。false(默认)=html:false,HTML 全部字面转义——
  *   DOCX/LaTeX 导出(exportBlocks)的 Block[] 中间结构无法承载块级 HTML token,
  *   开启会走 default 分支丢内容,故维持字面文本;
- *   true=html:true 放行,供 HTML/PDF/PNG 导出(ExportDialog)保真输出
+ *   true=html:true 放行,供分屏预览与 HTML/PDF/PNG 导出(经 renderPipeline)保真输出
  * @param opts.htmlBlockDisabled 编辑管线的 HTML 最小白名单(E8,v0.9.3),仅在 html:true 下有意义:
  *   ① disable html_block——块级 HTML(<div>/<script>)禁用后按普通段落文本字面保留,
  *     否则 token 走 default 分支被跳过、内容直接丢失;
@@ -139,7 +140,8 @@ export function createMarkdownIt(opts: {
   // v0.7.3 改进6(S2):链接 scheme 白名单——markdown-it 在解析层即拒绝
   // javascript:/data:/vbscript:/file: 链接(渲染为纯文本,不出 <a href="">),
   // 与 PM 回写的 sanitizeLinkHref 双层防护(防提示注入产出的恶意链接)。
-  // 仅编辑管线启用;导出管线传 validateLink:false 保持 base64 图片可用
+  // R1(v0.10.0)起全管线强制开启:导出 HTML/PDF/PNG 同样拦截危险 scheme;
+  // data:image 已放行(v0.9.5),base64 图片导出不受影响
   if (opts.validateLink !== false) {
     instance.validateLink = (url: string) => sanitizeLinkHref(url) !== null;
   }

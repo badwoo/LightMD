@@ -19,6 +19,8 @@
  */
 
 import { renderMarkdownToHTML, convertImagesToDataUrlInHtml } from "../components/dialogs/ExportDialog";
+// R2（v0.10.0）：公式渲染为 MathML（EPUB3 原生支持，无需 KaTeX CSS）、图表渲染为内联 SVG
+import { replaceMathWithMathmlInHtml, replaceMermaidInHtml, type ExportRenderProgress } from "./exportMathRender";
 import { isTauri } from "../services/fileService";
 import { notifyError, notifySuccess } from "../services/notificationService";
 import { t } from "../i18n";
@@ -286,12 +288,14 @@ export function normalizeToXhtml(html: string): string {
  * @param markdown markdown 源码
  * @param filename 文件名（不含扩展名）
  * @param filePath 当前编辑文件路径（用于图片相对路径解析）
+ * @param onProgress R2：公式/图表渲染进度回调（done/total，失败也计数）
  * @returns ePub 文件的二进制内容
  */
 export async function buildEpubZip(
   markdown: string,
   filename: string,
   filePath?: string | null,
+  onProgress?: ExportRenderProgress,
 ): Promise<Uint8Array> {
   const baseName = filename.replace(/\.md$/i, "") || "document";
   const title = baseName;
@@ -300,6 +304,22 @@ export async function buildEpubZip(
   let html = await renderMarkdownToHTML(markdown);
   // 2. 图片内联为 data URL
   html = await convertImagesToDataUrlInHtml(html, filePath);
+
+  // 2.5 R2：公式/图表保真——EPUB 阅读器无脚本环境，占位符必须在此渲染为静态内容：
+  //     - 公式 → 纯 MathML（EPUB3 原生支持，阅读器自带数学排版）；
+  //     - 图表 → mermaid.render 的内联 SVG（EPUB3 原生支持矢量图）。
+  //     失败的公式/图表保留占位/代码块，导出不中断。
+  const mathResult = replaceMathWithMathmlInHtml(html);
+  html = mathResult.html;
+  if (mathResult.count > 0) onProgress?.(mathResult.count, mathResult.count);
+  let mermaidDone = 0;
+  html = await replaceMermaidInHtml(html, {
+    onProgress: (done, total) => {
+      mermaidDone = done;
+      onProgress?.(done, total);
+    },
+  });
+  void mermaidDone;
 
   // 3. 解析为 DOM 并按标题拆分章节
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
@@ -369,15 +389,17 @@ function downloadBlob(blob: Blob, filename: string) {
  * @param markdown markdown 源码
  * @param filename 文件名（不含扩展名）
  * @param filePath 当前编辑文件路径
+ * @param onProgress R2：公式/图表渲染进度回调（done/total，失败也计数）
  * @returns 成功返回 true，失败返回 false
  */
 export async function exportEpub(
   markdown: string,
   filename: string,
   filePath?: string | null,
+  onProgress?: ExportRenderProgress,
 ): Promise<boolean> {
   try {
-    const data = await buildEpubZip(markdown, filename, filePath);
+    const data = await buildEpubZip(markdown, filename, filePath, onProgress);
     const finalName = filename.replace(/\.md$/i, "") + ".epub";
 
     if (isTauri()) {

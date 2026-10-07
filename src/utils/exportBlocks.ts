@@ -21,9 +21,8 @@
  */
 
 import MarkdownIt from "markdown-it";
-// E14(v0.9.2):实例统一由 parser 工厂创建,插件配置单一来源
-import { createMarkdownIt } from "../core/markdown/parser";
-import { useSettingsStore } from "../stores/useSettingsStore";
+// R1(v0.10.0):实例统一由 renderPipeline 创建（内部走 parser 工厂），配置单一来源
+import { getDocxLatexMarkdownIt } from "../core/renderPipeline";
 
 // Token 类型兼容 markdown-it（与 parser.ts 保持一致，避免引入 markdown-it/lib/token 类型声明）
 export interface Token {
@@ -530,13 +529,15 @@ export function parseBlockTokens(tokens: Token[], start: number, end: number): B
 // ─── markdown-it 实例创建 ──────────────────────
 
 /**
- * 创建默认的 markdown-it 实例(E14,v0.9.2:统一走 parser.ts 工厂,插件配置单一来源)
+ * 创建默认的 markdown-it 实例(R1,v0.10.0:统一走 renderPipeline 配置)
  *
- * breaks 跟随段内换行设置;typographer 维持导出管线历史行为 true(R1 统一)。
+ * - typographer false(与编辑器一致,导出不静默改写弯引号——R1 消除漂移)
+ * - validateLink 白名单强制(javascript: 等危险 scheme 的链接解析为字面文本,
+ *   不再进入 DOCX/LaTeX——R1 安全统一;data:image 放行,base64 图不受影响)
+ * - html 维持 false:Block[] 中间结构无法承载 html token,开启会丢内容(E14 factory jsdoc)
  */
 export function createDefaultMarkdownIt(): MarkdownIt {
-  const breaks = useSettingsStore.getState().paragraphBreaks !== "commonmark";
-  return createMarkdownIt({ breaks, typographer: true, validateLink: false });
+  return getDocxLatexMarkdownIt();
 }
 
 /**
