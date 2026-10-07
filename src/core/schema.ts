@@ -464,12 +464,22 @@ const nodeSpecs: Record<string, NodeSpec> = {
     group: "block",
     attrs: {
       order: { default: 1 },
+      // v0.11.0 B3-6：原始分隔符（来自 markdown-it token.markup）。
+      // 缺陷背景（P1·不对称）：解析端支持 `1)` 语法，但 inputrules 只接受 `1.`
+      // → 能打开、不能输入；且 serializer 固定用 `1.` → 编辑后 `)` 被改写丢失。
+      // 记录原始分隔符，使序列化能还原原文/用户写法。
+      // 默认 "." 保持既有文档兼容（旧节点无该 attr 时回退）。
+      delim: { default: "." },
     },
     parseDOM: [
       {
         tag: "ol",
         getAttrs(dom: string | HTMLElement) {
-          return { order: Number((dom as HTMLElement).getAttribute("start")) || 1 };
+          return {
+            order: Number((dom as HTMLElement).getAttribute("start")) || 1,
+            // DOM 本身不携带分隔符信息，只能回退默认
+            delim: ".",
+          };
         },
       },
     ],

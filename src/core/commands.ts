@@ -285,7 +285,7 @@ export const commands: Command[] = [
     // scope=source 在阅读模式不命中、PM 侧也无对应命令 → **死键**，
     // 用户既不能快捷插入也不能从面板插入公式。
     id: "format.math",
-    titleKey: "shortcut.format.math",
+    titleKey: "command.format.math",
     group: "format",
     keywords: ["公式", "数学", "公式", "math", "latex", "katex"],
     action: () => dispatchCommand("format.math"),

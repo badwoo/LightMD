@@ -554,9 +554,14 @@ function parseList(tokens: Token[], index: number, listType: "bullet_list" | "or
 
   // v0.9.0 D4：读取 markdown-it 的 start 属性（"5. x" → start=5），
   // 旧实现固定 order:1 导致起始号被改写为 1
+  // v0.11.0 B3-6：同时读取原始分隔符（token.markup，"1)" → ")"），
+  // 使 serializer 能还原 `1)` 写法而非一律改写成 `1.`
   const attrs =
     listType === "ordered_list"
-      ? { order: Number(getAttr(tokens[index], "start")) || 1 }
+      ? {
+          order: Number(getAttr(tokens[index], "start")) || 1,
+          delim: (tokens[index]?.markup || ".") === ")" ? ")" : ".",
+        }
       : {};
   return { node: listNodeType.create(attrs, items), nextIndex: i };
 }

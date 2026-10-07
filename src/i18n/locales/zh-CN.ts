@@ -738,6 +738,7 @@ export const zhCN: Record<string, string> = {
   "command.format.inlineCode": "行内代码",
   "command.format.underline": "下划线",
   "command.format.highlight": "高亮",
+  "command.format.math": "插入公式",
   "command.format.heading1": "标题 1",
   "command.format.heading2": "标题 2",
   "command.format.heading3": "标题 3",

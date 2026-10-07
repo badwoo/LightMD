@@ -284,11 +284,15 @@ function listToMarkdown(
 ): string {
   const lines: string[] = [];
   // v0.9.0 D4：有序列表起始号从 attrs.order 取（parser 已读 markdown-it 的 start）
-  let idx = marker === "1." ? (node.attrs.order || 1) : 1;
+  // v0.11.0 B3-6：编号分隔符从 attrs.delim 取（`1)` / `1.`），
+  // 修复「能解析 `1)` 但编辑后被改写成 `1.`」的不对称
+  const isOrdered = marker === "1." || marker === "1)";
+  const delim = node.attrs?.delim === ")" ? ")" : ".";
+  let idx = isOrdered ? (node.attrs.order || 1) : 1;
 
   node.forEach((listItem) => {
     // 对于有序列表，使用递增数字
-    const prefix = marker === "1." ? `${idx}.` : marker;
+    const prefix = isOrdered ? `${idx}${delim}` : marker;
 
     // 遍历列表项的所有子节点
     let isFirstChild = true;

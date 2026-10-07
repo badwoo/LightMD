@@ -19,6 +19,8 @@ import { matchShortcut } from "./shortcuts";
 // E2(v0.9.2):Tab 三处缺失的补齐
 import { tableTab, tableShiftTab } from "./tableNav";
 import { codeBlockIndent, codeBlockOutdent } from "./plugins/code-indent";
+// v0.11.0 B3-8：真正的块移动（Alt+↑/↓）
+import { moveBlockUp, moveBlockDown } from "./blockMove";
 
 const schema = lightMDSchema;
 
@@ -169,9 +171,15 @@ export function buildKeymap() {
       liftListItem(schema.nodes.list_item),
     ),
 
-    // Alt+上/下 移动块
-    "Alt-ArrowUp": joinUp,
-    "Alt-ArrowDown": lift,
+    // v0.11.0 B3-8：Alt+↑/↓ 由 joinUp/lift 改为**真正的块移动**。
+    // 缺陷背景（P1）：原绑到 joinUp（与上块合并）/ lift（提升层级），
+    // 与 UI 宣称的「移动块」语义完全不符 —— 用户按 Alt+↑ 期望块上移一格，
+    // 实际却是把内容与上方块拼到一起，属误导性半成品。
+    // 原合并/提升能力**移到 Alt+Shift+↑/↓**，避免功能丢失。
+    "Alt-ArrowUp": moveBlockUp,
+    "Alt-ArrowDown": moveBlockDown,
+    "Alt-Shift-ArrowUp": joinUp,
+    "Alt-Shift-ArrowDown": lift,
   });
 }
 

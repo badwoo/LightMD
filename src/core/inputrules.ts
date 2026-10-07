@@ -123,22 +123,40 @@ const bulletListRule = new InputRule(/^[-+*]\s$/, (state, _match, start, end) =>
   return tr;
 });
 
-const orderedListRule = new InputRule(/^(\d+)\.\s$/, (state, match, start, end) => {
-  const $start = state.doc.resolve(start);
-  if ($start.parent.type !== schema.nodes.paragraph && $start.parent.type !== schema.nodes.heading) return null;
-  if (start !== $start.start($start.depth)) return null;
-  const order = Number(match[1]) || 1;
-  const tr = state.tr;
-  tr.delete(start, end);
-  const list = schema.nodes.ordered_list.create({ order }, [
-    schema.nodes.list_item.create(null, [schema.nodes.paragraph.create()]),
-  ]);
-  tr.replaceWith(start, start, list);
-  tr.setSelection(TextSelection.create(tr.doc, start + 2));
-  return tr;
-});
+/**
+ * v0.11.0 B3-6：构造有序列表输入规则。
+ *
+ * 缺陷背景（P1·不对称）：markdown-it 解析端**支持** `1)` 语法，但原
+ * inputrules 只有 `/^(\d+)\.\s$/` → 用户无法用键盘打出 `1)` 列表；
+ * 且 serializer 固定用 `1.` 递增 → 打开含 `1)` 的旧文档后一旦编辑，
+ * `)` 被改写为 `.`（写法被静默破坏）。
+ *
+ * 现抽出本工厂，同时注册 `.` 与 `)` 两条规则；delim 一并写入节点 attr，
+ * 由 serializer 按原样还原。
+ */
+function makeOrderedListRule(delim: "." | ")"): InputRule {
+  const escaped = delim === "." ? "\\." : "\\)";
+  return new InputRule(new RegExp(`^(\\d+)${escaped}\\s$`), (state, match, start, end) => {
+    const $start = state.doc.resolve(start);
+    if ($start.parent.type !== schema.nodes.paragraph && $start.parent.type !== schema.nodes.heading) return null;
+    if (start !== $start.start($start.depth)) return null;
+    const order = Number(match[1]) || 1;
+    const tr = state.tr;
+    tr.delete(start, end);
+    const list = schema.nodes.ordered_list.create({ order, delim }, [
+      schema.nodes.list_item.create(null, [schema.nodes.paragraph.create()]),
+    ]);
+    tr.replaceWith(start, start, list);
+    tr.setSelection(TextSelection.create(tr.doc, start + 2));
+    return tr;
+  });
+}
 
-const listRules = [bulletListRule, orderedListRule];
+const orderedListRule = makeOrderedListRule(".");
+// v0.11.0 B3-6：新增 `1)` 支持（Typora 两种标记都支持）
+const orderedListParenRule = makeOrderedListRule(")");
+
+const listRules = [bulletListRule, orderedListRule, orderedListParenRule];
 
 // ─── 引用规则 ────────────────────────────────────────────
 

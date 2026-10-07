@@ -731,6 +731,7 @@ export const enUS: Record<string, string> = {
   "command.format.inlineCode": "Inline Code",
   "command.format.underline": "Underline",
   "command.format.highlight": "Highlight",
+  "command.format.math": "Insert Formula",
   "command.format.heading1": "Heading 1",
   "command.format.heading2": "Heading 2",
   "command.format.heading3": "Heading 3",

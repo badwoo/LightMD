@@ -110,10 +110,17 @@ const tEn = (key: string): string => {
 describe("G8: 命令注册中心", () => {
   it("命令注册数量 ≥ 20（覆盖全部分组）", () => {
     expect(commands.length).toBeGreaterThanOrEqual(20);
-    // 实际注册 46 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument；
+    // 实际注册 47 条命令（v0.6.0 新增 edit.translate；v0.6.1 新增 edit.translateDocument；
     // v0.7.5 新增 ai.chat；v0.9.0 新增 5 条 window.*；v0.9.0 自定义快捷键新增 3 条 view.toggle*
-    // 与 1 条 window.full——F11 🔒 保留键的鼠标/命令面板入口；v0.9.3 E8 新增 format.underline）
-    expect(commands.length).toBe(46);
+    // 与 1 条 window.full——F11 🔒 保留键的鼠标/命令面板入口；v0.9.3 E8 新增 format.underline；
+    // v0.11.0 B3-7 新增 format.math——此前 Ctrl+Shift+M 在阅读模式是死键且面板无入口）
+    expect(commands.length).toBe(47);
+  });
+
+  it("v0.11.0 B3-7：注册插入公式命令（此前面板无入口）", () => {
+    const cmd = commands.find((c) => c.id === "format.math");
+    expect(cmd).toBeDefined();
+    expect(cmd!.group).toBe("format");
   });
 
   // v0.9.0 WP2：窗口分组命令（命令面板可达，与标题栏菜单/快捷键同源）
