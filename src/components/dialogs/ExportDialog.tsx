@@ -21,6 +21,13 @@ import {
   type PdfExportOptions,
 } from "../../utils/pdfExport";
 import { exportElementAsPng } from "../../utils/exportImage";
+// v0.11.0 B2-1：导出资源内联（离线可用；此前走 CDN → 离线公式图表全空白）
+import {
+  collectInlineAssets,
+  buildKatexRenderScript,
+  buildMermaidInitScript,
+  EXPORT_ASSETS_DIR,
+} from "../../utils/vendorAssets";
 // R2(v0.10.0)：导出前公式/图表渲染（PNG 保真；EPUB/DOCX 的替换在各自工具内实现）
 import {
   replaceMathPlaceholdersInDom,
@@ -334,15 +341,42 @@ async function exportHTML(md: string, title: string, includeCSS: boolean, filePa
   const hasMath = body.includes('data-math="inline"') || body.includes('data-math="block"');
   // 修复：mermaid 主题根据当前主题动态选择，原硬编码 "default" 在暗色主题下图表渲染异常
   const mermaidTheme = theme === "dark" ? "dark" : "default";
-  const mermaidScript = hasMermaid
-    ? '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>' +
-      `<script>mermaid.initialize({startOnLoad:true,theme:"${mermaidTheme}",securityLevel:"loose"});</script>`
-    : "";
-  const katexScript = hasMath
-    ? '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.17/dist/katex.min.css">' +
-      '<script src="https://cdn.jsdelivr.net/npm/katex@0.17/dist/katex.min.js"></script>' +
-      '<script>document.querySelectorAll("[data-math=inline]").forEach(function(e){var l=e.getAttribute("data-latex");l&&katex.render(l,e,{throwOnError:false,displayMode:false})});document.querySelectorAll("[data-math=block]").forEach(function(e){var l=e.getAttribute("data-latex");l&&katex.render(l,e,{throwOnError:false,displayMode:true})});</script>'
-    : "";
+  const baseName = title.replace(/\.md$/i, "");
+  const defaultDir = getDefaultDir(filePath);
+
+  // v0.11.0 B2-1：内联 vendor 资源，实现离线可用（此前走 CDN → 离线公式图表全空白）。
+  // mermaid 3.2MB 不内联，改为在导出目录旁置 _assets/mermaid.min.js。
+  const assets = hasMermaid || hasMath ? await collectInlineAssets(true) : null;
+  const useInline = !!assets?.ok;
+
+  // mermaid：内联不可行（体积），用相对路径引 _assets；无资源时回退 CDN
+  let mermaidScript = "";
+  let mermaidAssetToWrite: { name: string; content: string } | null = null;
+  if (hasMermaid) {
+    if (assets?.mermaidJs) {
+      mermaidAssetToWrite = { name: "mermaid.min.js", content: assets.mermaidJs };
+      mermaidScript =
+        `<script src="./${EXPORT_ASSETS_DIR}/mermaid.min.js"></script>` +
+        buildMermaidInitScript(mermaidTheme);
+    } else {
+      mermaidScript =
+        '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>' +
+        buildMermaidInitScript(mermaidTheme);
+    }
+  }
+
+  // KaTeX：CSS（含字体 base64）+ JS 全部内联 → 单文件自包含
+  const katexScript =
+    hasMath && useInline && assets?.katexCss && assets?.katexJs
+      ? `<style>${assets.katexCss}</style>` +
+        `<script>${assets.katexJs}</script>` +
+        buildKatexRenderScript()
+      : hasMath
+        ? '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.17/dist/katex.min.css">' +
+          '<script src="https://cdn.jsdelivr.net/npm/katex@0.17/dist/katex.min.js"></script>' +
+          buildKatexRenderScript()
+        : "";
+
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -358,9 +392,6 @@ async function exportHTML(md: string, title: string, includeCSS: boolean, filePa
 </body>
 </html>`;
 
-  const baseName = title.replace(/\.md$/i, "");
-  const defaultDir = getDefaultDir(filePath);
-
   if (isTauri()) {
     try {
       const selected = await save({
@@ -369,6 +400,10 @@ async function exportHTML(md: string, title: string, includeCSS: boolean, filePa
       });
       if (selected) {
         await fileService.writeFile(selected, html);
+        // v0.11.0 B2-1：旁置 _assets/mermaid.min.js（体积 3.2M 不内联）
+        if (mermaidAssetToWrite) {
+          await writeExportAsset(selected, mermaidAssetToWrite.name, mermaidAssetToWrite.content);
+        }
         notifySuccess(t("export.exportedHtml", { path: selected }));
       }
     } catch (err) {
@@ -379,6 +414,31 @@ async function exportHTML(md: string, title: string, includeCSS: boolean, filePa
   } else {
     // 浏览器模式：下载文件
     downloadBlob(new Blob([html], { type: "text/html;charset=utf-8" }), `${baseName}.html`);
+  }
+}
+
+/**
+ * v0.11.0 B2-1：在导出文件旁写 `_assets/<name>`。
+ *
+ * mermaid 3.2MB 内联会让 HTML 臃肿，故改为旁置资源目录 + 相对路径引用。
+ * 失败时只记日志（不阻断导出——HTML 里的相对路径引用会落空，
+ * 但用户仍能得到正文与公式，且会收到提示）。
+ */
+async function writeExportAsset(
+  htmlPath: string,
+  name: string,
+  content: string,
+): Promise<void> {
+  try {
+    const idx = htmlPath.replace(/\\/g, "/").lastIndexOf("/");
+    const dir = idx > 0 ? htmlPath.substring(0, idx) : "";
+    const assetDir = dir ? `${dir}/${EXPORT_ASSETS_DIR}` : EXPORT_ASSETS_DIR;
+    const { mkdir, writeTextFile, exists } = await import("@tauri-apps/plugin-fs");
+    if (!(await exists(assetDir))) await mkdir(assetDir, { recursive: true });
+    await writeTextFile(`${assetDir}/${name}`, content);
+  } catch (err) {
+    console.warn("[导出] 写入资源目录失败，图表可能无法显示:", err);
+    notifyError("导出资源写入失败，HTML 中的图表可能无法显示");
   }
 }
 
@@ -421,15 +481,38 @@ async function exportPDFWithOptions(
   const hasMermaid = body.includes('class="mermaid"');
   const hasMath = body.includes('data-math="inline"') || body.includes('data-math="block"');
   const mermaidTheme = theme === "dark" ? "dark" : "default";
-  const mermaidScript = hasMermaid
-    ? '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>' +
-      `<script>mermaid.initialize({startOnLoad:true,theme:"${mermaidTheme}",securityLevel:"loose"});</script>`
-    : "";
-  const katexScript = hasMath
-    ? '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.17/dist/katex.min.css">' +
-      '<script src="https://cdn.jsdelivr.net/npm/katex@0.17/dist/katex.min.js"></script>' +
-      '<script>document.querySelectorAll("[data-math=inline]").forEach(function(e){var l=e.getAttribute("data-latex");l&&katex.render(l,e,{throwOnError:false,displayMode:false})});document.querySelectorAll("[data-math=block]").forEach(function(e){var l=e.getAttribute("data-latex");l&&katex.render(l,e,{throwOnError:false,displayMode:true})});</script>'
-    : "";
+
+  // v0.11.0 B2-1：内联 vendor 资源。
+  // PDF 路径尤其必要——Edge headless 抓取临时 HTML 时若走 CDN，
+  // 网络不可达则公式/图表静默空白，且 --virtual-time-budget 到点即截断。
+  const assets = hasMermaid || hasMath ? await collectInlineAssets(true) : null;
+  const useInline = !!assets?.ok;
+
+  let mermaidScript = "";
+  if (hasMermaid) {
+    if (assets?.mermaidJs) {
+      // PDF 场景的临时 HTML 用完即删（Rust 写在 %TEMP%/lightmd-export/），
+      // 旁置资源需改 Rust 侧且临时目录有残留风险，故 mermaid 直接内联
+      // （3.2MB 只影响临时文件与 Edge 解析时间，不影响最终 PDF 体积）。
+      mermaidScript =
+        `<script>${assets.mermaidJs}</script>` + buildMermaidInitScript(mermaidTheme);
+    } else {
+      mermaidScript =
+        '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>' +
+        buildMermaidInitScript(mermaidTheme);
+    }
+  }
+
+  const katexScript =
+    hasMath && useInline && assets?.katexCss && assets?.katexJs
+      ? `<style>${assets.katexCss}</style>` +
+        `<script>${assets.katexJs}</script>` +
+        buildKatexRenderScript()
+      : hasMath
+        ? '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.17/dist/katex.min.css">' +
+          '<script src="https://cdn.jsdelivr.net/npm/katex@0.17/dist/katex.min.js"></script>' +
+          buildKatexRenderScript()
+        : "";
 
   // 将 HTML 中的图片 src 转为 data URL
   // Edge headless 打开临时 HTML 文件时，相对/本地路径的图片无法正确加载
