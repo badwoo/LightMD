@@ -991,6 +991,7 @@ export class TableView implements NodeView {
       return;
     }
     if (this.toolbar) {
+      this.refreshDeleteRowButton();
       this.positionToolbar();
       return;
     }
@@ -1028,19 +1029,11 @@ export class TableView implements NodeView {
       btn.style.cssText =
         "padding:3px 6px;border:1px solid transparent;background:none;cursor:pointer;border-radius:3px;";
 
-      // v0.11.0 B1-2：表头行时禁用「删除行」按钮。
-      // deleteRow 已改为在表头内返回 null（拒绝删除），此处进一步给出**可见反馈**——
-      // 按钮置灰 + 光标 not-allowed，避免用户点击后毫无响应而困惑
-      // （与右键菜单 buildContextMenuItems 在表头隐藏该项的既有策略对齐）。
-      if (op === deleteRow) {
-        const $head = this.getCurrentCellPos();
-        if ($head && isInHead($head)) {
-          btn.disabled = true;
-          btn.style.opacity = "0.35";
-          btn.style.cursor = "not-allowed";
-          btn.title = `${title}（表头行不可删除）`;
-        }
-      }
+      // v0.11.0 B1-2：表头行时「删除行」按钮需置灰（deleteRow 已改为在表头内
+      // 返回 null 拒绝删除，此处给出**可见反馈**，与右键菜单在表头隐藏该项对齐）。
+      // 注意：禁用态**不能只在创建时算一次**——工具栏在表格内会被复用，必须由
+      // refreshDeleteRowButton() 按当前选区实时刷新（见该方法注释）。
+      if (op === deleteRow) btn.dataset.action = "deleteRow";
 
       if (danger) btn.style.color = "#d32f2f";
       btn.addEventListener("mouseenter", () => (btn.style.background = "var(--bg-hover,#f0f0f0)"));
@@ -1064,13 +1057,47 @@ export class TableView implements NodeView {
 
     this.dom.appendChild(toolbar);
     this.toolbar = toolbar;
+    this.refreshDeleteRowButton();
     this.positionToolbar();
+
+    // v0.11.0 B1-2 返修：工具栏存活期间跟踪选区变化（含键盘方向键在表格内移动），
+    // 保证「删除行」禁用态始终跟随当前单元格，而不是僵在创建那一刻。
+    document.addEventListener("selectionchange", this.onSelectionChange);
 
     // 延迟注册 document click listener，避免当前 click 立即触发隐藏
     setTimeout(() => {
       document.addEventListener("click", this.onDocClick);
     }, 0);
   }
+
+  /**
+   * v0.11.0 B1-2 返修：按**当前选区**刷新「删除行」按钮的禁用态与说明文案。
+   *
+   * 缺陷背景：首版只在工具栏**创建那一刻**由 `isInHead` 算一次禁用态，但
+   * `showToolbar()` 在工具栏已存在时只做 `positionToolbar()` 就返回，而
+   * `onDocClick` 对「点击落在表格内」明确不销毁工具栏 → 状态会僵在首次创建时：
+   *   · 先点表头 → 按钮永久置灰，之后切到表体行**也删不掉**（正常功能受阻）；
+   *   · 先点表体 → 切到表头后按钮仍可点，点了静默无效（注释承诺的可见反馈没兑现）。
+   * 现改为每次显示工具栏 + 每次 selectionchange 都重算，两种顺序都正确。
+   */
+  private refreshDeleteRowButton() {
+    const btn = this.toolbar?.querySelector<HTMLButtonElement>(
+      'button[data-action="deleteRow"]',
+    );
+    if (!btn) return;
+    const baseTitle = t("table.deleteRow");
+    const $pos = this.getCurrentCellPos();
+    const disabled = !!$pos && isInHead($pos);
+    btn.disabled = disabled;
+    btn.style.opacity = disabled ? "0.35" : "";
+    btn.style.cursor = disabled ? "not-allowed" : "pointer";
+    btn.title = disabled ? `${baseTitle}（表头行不可删除）` : baseTitle;
+  }
+
+  private onSelectionChange = () => {
+    if (!this.toolbar) return;
+    this.refreshDeleteRowButton();
+  };
 
   private onDocClick = (e: MouseEvent) => {
     if (!this.toolbar) return;
@@ -1087,6 +1114,7 @@ export class TableView implements NodeView {
       this.toolbar = null;
     }
     document.removeEventListener("click", this.onDocClick);
+    document.removeEventListener("selectionchange", this.onSelectionChange);
   }
 
   /** 工具栏定位：表格上方居中（absolute 相对于 dom wrapper） */
