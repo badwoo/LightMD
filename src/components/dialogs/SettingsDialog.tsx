@@ -120,6 +120,10 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   // 这些字段保持"保存后生效"行为
   const [fontSize, setFontSize] = useState(settings.fontSize);
   const [fontFamily, setFontFamily] = useState(settings.fontFamily);
+  // v0.11.0 B4-10：排版三项（同样"保存后生效"，与字号/字体一致）
+  const [lineHeight, setLineHeight] = useState(settings.lineHeight);
+  const [paragraphSpacing, setParagraphSpacing] = useState(settings.paragraphSpacing);
+  const [contentMaxWidth, setContentMaxWidth] = useState(settings.contentMaxWidth);
   const [autoSaveInterval, setAutoSaveInterval] = useState(settings.autoSaveIntervalMs / 1000);
   const [customCss, setCustomCss] = useState(settings.customCss);
 
@@ -231,6 +235,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const handleSave = () => {
     settings.setFontSize(fontSize);
     settings.setFontFamily(fontFamily);
+    // v0.11.0 B4-10：排版三项一并保存
+    settings.setTypography({ lineHeight, paragraphSpacing, contentMaxWidth });
     settings.setAutoSaveInterval(autoSaveInterval * 1000);
     settings.setCustomCss(customCss);
     requestClose();
@@ -334,6 +340,63 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 <option value='"Fira Code", monospace'>{t("settings.fontFamily.firaCode")}</option>
                 <option value='"Cascadia Code", monospace'>{t("settings.fontFamily.cascadiaCode")}</option>
               </select>
+            </div>
+
+            {/* v0.11.0 B4-10：排版三项（行高 / 段间距 / 内容区宽度） */}
+            <div className="settings-field">
+              <label>{t("settings.lineHeight")}</label>
+              <div className="settings-range">
+                <input
+                  type="range"
+                  min={0}
+                  max={24}
+                  step={1}
+                  value={Math.round(lineHeight * 10)}
+                  onChange={(e) => setLineHeight(Number(e.target.value) / 10)}
+                  data-testid="settings-line-height"
+                />
+                <span className="range-value">
+                  {lineHeight > 0 ? lineHeight.toFixed(1) : t("settings.typography.default")}
+                </span>
+              </div>
+            </div>
+
+            <div className="settings-field">
+              <label>{t("settings.paragraphSpacing")}</label>
+              <div className="settings-range">
+                <input
+                  type="range"
+                  min={0}
+                  max={20}
+                  step={1}
+                  value={Math.round(paragraphSpacing * 10)}
+                  onChange={(e) => setParagraphSpacing(Number(e.target.value) / 10)}
+                  data-testid="settings-paragraph-spacing"
+                />
+                <span className="range-value">
+                  {paragraphSpacing > 0
+                    ? paragraphSpacing.toFixed(1)
+                    : t("settings.typography.default")}
+                </span>
+              </div>
+            </div>
+
+            <div className="settings-field">
+              <label>{t("settings.contentMaxWidth")}</label>
+              <div className="settings-range">
+                <input
+                  type="range"
+                  min={0}
+                  max={1600}
+                  step={20}
+                  value={contentMaxWidth}
+                  onChange={(e) => setContentMaxWidth(Number(e.target.value))}
+                  data-testid="settings-content-max-width"
+                />
+                <span className="range-value">
+                  {contentMaxWidth > 0 ? `${contentMaxWidth}px` : t("settings.typography.default")}
+                </span>
+              </div>
             </div>
           </section>
 

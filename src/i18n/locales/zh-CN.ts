@@ -20,6 +20,10 @@ export const zhCN: Record<string, string> = {
   "settings.theme.night": "🌌 夜空",
   "settings.theme.solarized": "🎨 Solarized",
   "settings.fontSize": "字体大小",
+  "settings.lineHeight": "行高",
+  "settings.paragraphSpacing": "段间距",
+  "settings.contentMaxWidth": "内容区宽度",
+  "settings.typography.default": "默认",
   "settings.fontFamily": "字体",
   "settings.fontFamily.systemDefault": "系统默认",
   "settings.fontFamily.microsoftYaHei": "微软雅黑",
@@ -148,6 +152,7 @@ export const zhCN: Record<string, string> = {
   "statusbar.lineColumn": "行 {line} 列 {column}",
   "statusbar.selected": "已选 {count} 字",
   "statusbar.untitled": "无标题",
+  "statusbar.scrollProgress": "阅读进度",
   // ─── 侧边栏 ────────────────────────────────────
   "sidebar.favorites": "收藏",
   "sidebar.noFavorites": "暂无收藏",

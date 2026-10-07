@@ -19,6 +19,10 @@ export const enUS: Record<string, string> = {
   "settings.theme.night": "🌌 Night",
   "settings.theme.solarized": "🎨 Solarized",
   "settings.fontSize": "Font Size",
+  "settings.lineHeight": "Line Height",
+  "settings.paragraphSpacing": "Paragraph Spacing",
+  "settings.contentMaxWidth": "Content Width",
+  "settings.typography.default": "Default",
   "settings.fontFamily": "Font Family",
   "settings.fontFamily.systemDefault": "System Default",
   "settings.fontFamily.microsoftYaHei": "Microsoft YaHei",
@@ -147,6 +151,7 @@ export const enUS: Record<string, string> = {
   "statusbar.lineColumn": "Line {line} Col {column}",
   "statusbar.selected": "{count} selected",
   "statusbar.untitled": "Untitled",
+  "statusbar.scrollProgress": "Reading progress",
   // ─── Sidebar ───────────────────────────────────
   "sidebar.favorites": "Favorites",
   "sidebar.noFavorites": "No favorites",

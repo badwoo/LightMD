@@ -23,6 +23,16 @@
 }
 
 /* ─── v0.8.3 需求3：光标行列 + 选中字数 ───────────── */
+/* v0.11.0 B4-10：阅读进度百分比（等宽数字，滚动时不引起底栏抖动） */
+.statusbar-progress {
+  display: inline-flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-right: 10px;
+  opacity: 0.75;
+}
+
 .statusbar-cursor {
   display: inline-flex;
   align-items: center;

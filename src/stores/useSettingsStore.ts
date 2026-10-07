@@ -190,6 +190,13 @@ interface SettingsState {
   theme: Theme;
   fontSize: number;
   fontFamily: string;
+  // v0.11.0 B4-10：排版三项（此前只有字号/字体两项，行高与段间距硬编码在 CSS 里）
+  /** 行高倍数（1.4 ~ 2.4，步进 0.1）；0 = 跟随主题默认值 */
+  lineHeight: number;
+  /** 段间距倍数（0.6 ~ 2.0，步进 0.1）；0 = 跟随主题默认值 */
+  paragraphSpacing: number;
+  /** 内容区最大宽度（px，0 = 跟随主题/全宽）；阅读长文时限制行长可显著提升可读性 */
+  contentMaxWidth: number;
   autoSaveIntervalMs: number;
   defaultExportFormat: "html" | "pdf";
   customCss: string;
@@ -282,6 +289,8 @@ interface SettingsState {
   setAiEnabled: (v: boolean) => void;
   setTheme: (theme: Theme) => void;
   setFontSize: (size: number) => void;
+  /** v0.11.0 B4-10：排版三项设置（部分更新） */
+  setTypography: (patch: { lineHeight?: number; paragraphSpacing?: number; contentMaxWidth?: number }) => void;
   setFontFamily: (family: string) => void;
   setAutoSaveInterval: (ms: number) => void;
   setDefaultExportFormat: (format: "html" | "pdf") => void;
@@ -407,6 +416,10 @@ export const useSettingsStore = create<SettingsState>()(
       theme: "light",
       fontSize: 16,
       fontFamily: "var(--font-sans)",
+      // v0.11.0 B4-10：0 = 跟随主题默认值（保持既有观感不变）
+      lineHeight: 0,
+      paragraphSpacing: 0,
+      contentMaxWidth: 0,
       // v0.8.2 需求7：自动保存默认间隔 60 秒（60000ms）
       autoSaveIntervalMs: 60000,
       defaultExportFormat: "html",
@@ -501,6 +514,17 @@ export const useSettingsStore = create<SettingsState>()(
         })),
       setTheme: (theme) => set({ theme }),
       setFontSize: (fontSize) => set({ fontSize }),
+      // v0.11.0 B4-10：排版三项（部分更新，未传的字段保持原值）
+      setTypography: (patch) =>
+        set({
+          ...(patch.lineHeight !== undefined ? { lineHeight: patch.lineHeight } : {}),
+          ...(patch.paragraphSpacing !== undefined
+            ? { paragraphSpacing: patch.paragraphSpacing }
+            : {}),
+          ...(patch.contentMaxWidth !== undefined
+            ? { contentMaxWidth: patch.contentMaxWidth }
+            : {}),
+        }),
       setFontFamily: (fontFamily) => set({ fontFamily }),
       setAutoSaveInterval: (autoSaveIntervalMs) => set({ autoSaveIntervalMs: clamp(autoSaveIntervalMs, 0, 600000) }),
       setDefaultExportFormat: (defaultExportFormat) => set({ defaultExportFormat }),

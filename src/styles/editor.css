@@ -1,14 +1,19 @@
 /* ProseMirror 编辑器内容样式 */
+/* v0.11.0 B4-10：三项排版设置接入 CSS 变量。
+   变量由 EditorContainer 写到 :root（与 B4-1 的字号/字体同一机制），
+   值为 0 时用 var() 的兜底值 → 保持主题默认观感不变。 */
 .ProseMirror {
   flex: 1;
   padding: 40px 60px;
-  max-width: 860px;
+  /* 内容区最大宽度：限制行长可显著提升长文可读性（0 = 跟随默认 860px） */
+  max-width: var(--editor-content-max-width, 860px);
   margin: 0 auto;
   width: 100%;
   outline: none;
   font-size: var(--editor-font-size, 16px);
   font-family: var(--editor-font-family, var(--font-sans));
-  line-height: 1.8;
+  /* 行高：0 = 主题默认 1.8 */
+  line-height: var(--editor-line-height, 1.8);
   color: var(--text-primary);
   /* 补充需求修复：移除 overflow-y: auto，让滚动发生在 .editor-container 上
      这样中间整个阅读区（包括 ProseMirror 两侧空白）都可以滚动 */
@@ -1060,4 +1065,16 @@
 .split-preview img {
   max-width: 100%;
   border-radius: 4px;
+}
+
+/* ── v0.11.0 B4-10：段间距设置 ──────────────────────────────────
+   此前段间距硬编码在各段落规则里（margin: 0.8em 0 等），
+   用户无法调整。现统一由 --editor-paragraph-spacing 乘算，
+   0 时用兜底 1（= 保持既有观感）。 */
+.ProseMirror > p,
+.ProseMirror > blockquote p,
+.ProseMirror > ul p,
+.ProseMirror > ol p {
+  margin-top: calc(0.8em * var(--editor-paragraph-spacing, 1));
+  margin-bottom: calc(0.8em * var(--editor-paragraph-spacing, 1));
 }

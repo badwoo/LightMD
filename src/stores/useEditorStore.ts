@@ -97,6 +97,8 @@ interface EditorState {
    */
   translateUndoSnapshot: TranslateUndoSnapshot | null;
   cursorLine: number;
+  // v0.11.0 B4-10：阅读进度（0~100，状态栏显示；0 = 不可用/无滚动）
+  scrollProgress: number;
   /** v0.8.3 需求3：光标列号（1 起，源码模式与阅读模式均生效） */
   cursorColumn: number;
   /** v0.8.3 需求3：当前选中字符数（无选区为 0） */
@@ -139,6 +141,8 @@ interface EditorState {
   /** v0.6.1 问题2：设置/清除翻译取消快照（v0.6.3 P0-2：绑定文档上下文） */
   setTranslateUndoSnapshot: (v: TranslateUndoSnapshot | null) => void;
   setCursorLine: (line: number) => void;
+  /** v0.11.0 B4-10：设置阅读进度（0~100） */
+  setScrollProgress: (pct: number) => void;
   /** v0.8.3 需求3：设置光标列号 */
   setCursorColumn: (column: number) => void;
   /** v0.8.3 需求3：设置选中字符数 */
@@ -196,6 +200,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   suppressAutoSave: false,
   translateUndoSnapshot: null,
   cursorLine: 0,
+  // v0.11.0 B4-10
+  scrollProgress: 0,
   cursorColumn: 0,
   selectedChars: 0,
   wordCount: { words: 0, chars: 0, charsNoSpaces: 0, lines: 0, paragraphs: 0, readingTimeMin: 0 },
@@ -231,6 +237,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setSuppressAutoSave: (v) => set({ suppressAutoSave: v }),
   setTranslateUndoSnapshot: (v) => set({ translateUndoSnapshot: v }),
   setCursorLine: (line) => set({ cursorLine: line }),
+  // v0.11.0 B4-10：钳制到 0~100，避免异常值影响 UI
+  setScrollProgress: (pct) =>
+    set({ scrollProgress: Math.max(0, Math.min(100, Math.round(pct))) }),
   setCursorColumn: (column) => set({ cursorColumn: column }),
   setSelectedChars: (count) => set({ selectedChars: count }),
   setWordCount: (count) => set({ wordCount: count }),

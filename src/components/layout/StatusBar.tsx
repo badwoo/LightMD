@@ -79,6 +79,8 @@ export function StatusBar() {
   const t = useT();
   const isDirty = useEditorStore((s) => s.isDirty);
   const cursorLine = useEditorStore((s) => s.cursorLine);
+  // v0.11.0 B4-10：阅读进度（长文档阅读时可知还剩多少）
+  const scrollProgress = useEditorStore((s) => s.scrollProgress);
   // v0.8.3 需求3：光标列号 + 选中字符数
   const cursorColumn = useEditorStore((s) => s.cursorColumn);
   const selectedChars = useEditorStore((s) => s.selectedChars);
@@ -502,6 +504,14 @@ export function StatusBar() {
             )}
           </div>
         )}
+        {/* v0.11.0 B4-10：阅读进度百分比（0 = 无可滚动内容时按 100% 显示） */}
+        <span
+          className="statusbar-progress"
+          data-testid="statusbar-progress"
+          title={t("statusbar.scrollProgress")}
+        >
+          {scrollProgress}%
+        </span>
         {/* v0.8.3 需求3：实时显示光标所在行/列，选中文本时追加选中字数 */}
         {cursorLine > 0 && (
           <span className="statusbar-cursor" data-testid="statusbar-cursor">

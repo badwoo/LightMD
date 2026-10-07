@@ -355,6 +355,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   const setDirty = useEditorStore((s) => s.setDirty);
   const setCursorLine = useEditorStore((s) => s.setCursorLine);
+  // v0.11.0 B4-10：阅读进度（状态栏显示）
+  const setScrollProgress = useEditorStore((s) => s.setScrollProgress);
   // v0.8.3 需求3：光标列号 / 选中字符数
   const setCursorColumn = useEditorStore((s) => s.setCursorColumn);
   const setSelectedChars = useEditorStore((s) => s.setSelectedChars);
@@ -370,6 +372,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const showSearchReplace = useEditorStore((s) => s.showSearchReplace);
   const setShowSearchReplace = useEditorStore((s) => s.setShowSearchReplace);
   const fontSize = useSettingsStore((s) => s.fontSize);
+  // v0.11.0 B4-10：排版三项（0 = 跟随主题默认）
+  const lineHeight = useSettingsStore((s) => s.lineHeight);
+  const paragraphSpacing = useSettingsStore((s) => s.paragraphSpacing);
+  const contentMaxWidth = useSettingsStore((s) => s.contentMaxWidth);
   const fontFamily = useSettingsStore((s) => s.fontFamily);
   const typewriterMode = useSettingsStore((s) => s.typewriterMode);
   const theme = useSettingsStore((s) => s.theme);
@@ -3894,6 +3900,58 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       editorDom.style.setProperty("--editor-font-family", fontFamily);
     }
   }, [fontSize, fontFamily]);
+
+  // v0.11.0 B4-10：排版三项（行高 / 段间距 / 内容区最大宽度）注入 CSS 变量。
+  // 机制与上面字号/字体一致（写到 :root，iframe 预览的 collectCssVars 也能取到）。
+  // 值为 0 表示「跟随主题默认」→ 此时清空属性，让 CSS 的 var() 兜底值生效。
+  useEffect(() => {
+    const root = document.documentElement;
+    const setOrClear = (name: string, value: number, unit: string) => {
+      if (value > 0) root.style.setProperty(name, `${value}${unit}`);
+      else root.style.removeProperty(name);
+    };
+    setOrClear("--editor-line-height", lineHeight, "");
+    setOrClear("--editor-paragraph-spacing", paragraphSpacing, "");
+    setOrClear("--editor-content-max-width", contentMaxWidth, "px");
+  }, [lineHeight, paragraphSpacing, contentMaxWidth]);
+
+  // v0.11.0 B4-10：阅读进度上报（状态栏显示百分比）。
+  //
+  // 缺陷背景：此前无任何滚动进度可视化 —— 长文档阅读时完全不知道还剩多少。
+  // 注意与 fileScrollProgress（跨会话位置恢复）区分：那是**位置**（像素/行号），
+  // 本项是**百分比**（仅供 UI 展示），两者互不干扰。
+  //
+  // 用 rAF 节流：scroll 事件在拖动滚动条时可达 60+/s，直接 setState 会造成
+  // 持续重渲染；且只在百分比变化时（整数）才 dispatch，进一步降低更新次数。
+  useEffect(() => {
+    const container = editorRef.current;
+    if (!container) return;
+    let raf = 0;
+    let lastPct = -1;
+    const report = () => {
+      raf = 0;
+      const { scrollTop, clientHeight, scrollHeight } = container;
+      // 无可滚动空间（内容不足一屏）→ 视为 100%（已读完）
+      const scrollable = scrollHeight - clientHeight;
+      const pct = scrollable <= 1 ? 100 : Math.min(100, (scrollTop / scrollable) * 100);
+      const rounded = Math.round(pct);
+      // 仅整数变化时才写 store（0.4% 以下的抖动不触发重渲染）
+      if (rounded !== lastPct) {
+        lastPct = rounded;
+        setScrollProgress(rounded);
+      }
+    };
+    const onScroll = () => {
+      if (raf === 0) raf = requestAnimationFrame(report);
+    };
+    // 初次挂载也要上报一次（否则未滚动时状态栏无值）
+    report();
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      if (raf !== 0) cancelAnimationFrame(raf);
+    };
+  }, [setScrollProgress]);
 
   // ─── G10：ProseMirror spellcheck 属性同步 ──────
   // 浏览器原生 spellcheck 通过 contenteditable 元素的 spellcheck 属性控制
