@@ -19,49 +19,46 @@
 import { Plugin, PluginKey } from "prosemirror-state";
 import type { EditorState, Transaction } from "prosemirror-state";
 import type { Node as PMNode } from "prosemirror-model";
+// v0.11.0 B4-5：复用 markdown-it 侧的 slugify，保证 TOC 链接与正文标题 id 同口径
+import { slugify, type TocHeading } from "../markdown/heading-anchor";
 import type { EditorView } from "prosemirror-view";
 
 export const tocUpdateKey = new PluginKey("tocUpdate");
 
-/** 标题项（与 heading-anchor.ts 的 TocHeading 同构） */
-export interface TocHeadingItem {
-  level: number;
-  text: string;
-  id: string;
-}
-
-/** 标题锚点 slug 化（与 heading-anchor.ts 同一口径，保证 id 稳定可比） */
-function slugify(text: string): string {
-  return text
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-}
+/** 标题项（与 markdown/heading-anchor 的 TocHeading 同构） */
+export type TocHeadingItem = TocHeading;
 
 /**
- * 扫描文档中的全部标题（排除 toc 节点内部的 nav）。
+ * 标题锚点 slug 化：**直接复用 markdown-it 侧的 slugify**。
+ *
+ * v0.11.0 B4-5 修正：本模块原先自带一份 slugify 副本且**去重口径与
+ * heading-anchor 不一致** —— heading-anchor 首次重名加 `-1`，本模块加 `-2`。
+ * 后果：阅读模式 TOC 里第二个「Same」链接指向 `#same-2`，而正文渲染出的
+ * 标题 id 是 `#same-1` → **点击跳不过去**。现改为共用同一实现与口径。
+ */
+const sharedSlugify = slugify;
+
+/**
+ * 扫描文档中的全部标题。
+ *
+ * 去重口径与 heading-anchor.collectHeadings 完全一致：
+ * 首次出现不加后缀，第二次 `-1`，第三次 `-2`……
  *
  * @returns 标题列表；无标题返回空数组
  */
 export function collectHeadings(doc: PMNode): TocHeadingItem[] {
   const out: TocHeadingItem[] = [];
-  const used = new Set<string>();
-  doc.descendants((node, pos) => {
+  // 原始 slug → 已使用次数（与 heading-anchor 的 usedIds 同口径）
+  const usedIds = new Map<string, number>();
+
+  doc.descendants((node) => {
     if (node.type.name !== "heading") return true;
-    // 跳过 toc 节点内部的元素（正常 toc 是 atom 节点，此处双保险）
     const text = node.textContent.replace(/\s+/g, " ").trim();
-    let id = slugify(text);
-    if (!id) id = `section-${out.length + 1}`;
-    // 重名去重（与 heading-anchor 一致）
-    let unique = id;
-    let n = 2;
-    while (used.has(unique)) unique = `${id}-${n++}`;
-    used.add(unique);
-    out.push({ level: Number(node.attrs.level) || 1, text, id: unique });
-    void pos;
+    const rawId = sharedSlugify(text) || "heading";
+    const used = usedIds.get(rawId) || 0;
+    const id = used === 0 ? rawId : `${rawId}-${used}`;
+    usedIds.set(rawId, used + 1);
+    out.push({ level: Number(node.attrs.level) || 1, text, id });
     return true;
   });
   return out;

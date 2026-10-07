@@ -196,6 +196,19 @@ const nodeSpecs: Record<string, NodeSpec> = {
     group: "block",
     attrs: {
       level: { default: 1 },
+      // v0.11.0 B4-5：标题锚点 id。
+      //
+      // 缺陷背景（P1）：锚点此前只存在于 markdown-it 的**渲染输出**
+      // （heading-anchor 插件写 token.attrs），而阅读模式走 PM 的 toDOM
+      // → 渲染出的 <h1>~<h3> **没有 id 属性** → 文内 `[链接](#标题)`
+      // 在阅读模式点不动；文档内锚点跳转只在 markdown-it 路径（分屏/导出）有效。
+      //
+      // 修复：把 id 提升为节点 attr，三处口径统一 —— parser 从 token.attrs
+      // 读入写入节点、toDOM 输出、serializer 忽略（不写回 Markdown 源码，
+      // 因为 `## 标题` 的标准语法不带 id，自定义 id 属扩展）。
+      //
+      // 默认空串：旧文档/无标题文本时为空，toDOM 据此不输出 id 属性。
+      id: { default: "" },
     },
     defining: true,
     parseDOM: [
@@ -207,6 +220,9 @@ const nodeSpecs: Record<string, NodeSpec> = {
       { tag: "h6", attrs: { level: 6 } },
     ],
     toDOM(node: Node): DOMOutputSpec {
+      // id 为空时不输出该属性（保持与旧渲染结果一致）
+      const id = String(node.attrs.id || "");
+      if (id) return [`h${node.attrs.level}`, { id }, 0];
       return [`h${node.attrs.level}`, 0];
     },
   },

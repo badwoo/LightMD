@@ -18,6 +18,7 @@ import {
   buildTocUpdateTransaction,
   buildTocHeadingsAttr,
 } from "../core/plugins/toc-update";
+import { slugify } from "../core/markdown/heading-anchor";
 
 const schema = lightMDSchema;
 
@@ -33,12 +34,19 @@ describe("v0.11.0 B4-7 TOC 自动更新", () => {
     expect(collectHeadings(markdownToDoc("just text\n"))).toEqual([]);
   });
 
-  it("重名标题 id 自动去重（与 heading-anchor 同口径）", () => {
+  it("重名标题 id 自动去重（v0.11.0 B4-5：与 heading-anchor 统一为 -1）", () => {
+    // 缺陷背景（B4-5 发现）：本模块原先自带 slugify 副本且去重口径与
+    // markdown-it 侧 heading-anchor 不一致 —— 那边首次重名加 `-1`，
+    // 这边加 `-2` → 阅读模式 TOC 里第二个「Same」链接指向 #same-2，
+    // 而正文渲染出的标题 id 是 #same-1 → **点击跳不过去**。
+    // 现共用 heading-anchor 的 slugify 与 `-1` 口径。
     const doc = markdownToDoc("# Same\n\n# Same\n");
     const hs = collectHeadings(doc);
     expect(hs.length).toBe(2);
-    expect(hs[0].id).not.toBe(hs[1].id);
-    expect(hs[1].id).toMatch(/-2$/);
+    expect(hs[0].id).toBe("same");
+    expect(hs[1].id).toBe("same-1");
+    // 与 markdown-it 侧口径一致
+    expect(hs[1].id).toBe(slugify("Same") + "-1");
   });
 
   it("标题文本压缩空白（多行标题不产生换行 id）", () => {

@@ -450,11 +450,25 @@ function parseHeading(tokens: Token[], index: number): ParseResult {
   const level = parseInt(openToken.tag?.slice(1) || "1", 10);
   let content = "";
 
+  // v0.11.0 B4-5：读取 heading-anchor 插件算出的锚点 id 写入节点 attr。
+  // 缺陷背景（P1）：id 此前只写进 token.attrs（影响 markdown-it 渲染），
+  // 阅读模式走 PM toDOM 时标题**没有 id** → 文内锚点链接在阅读模式点不动。
+  // 取值口径与 heading-anchor.collectHeadings 一致（含同名去重）。
+  // 注：Token 类型未声明 attrGet（那是 Token 类的原型方法），故直接读 attrs。
+  const idAttr = (() => {
+    const attrs = openToken.attrs as [string, string][] | null | undefined;
+    if (!attrs) return "";
+    for (const pair of attrs) {
+      if (pair[0] === "id") return pair[1] ?? "";
+    }
+    return "";
+  })();
+
   for (let i = index + 1; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.type === "heading_close") {
       return {
-        node: schema.nodes.heading.create({ level }, parseInline(content)),
+        node: schema.nodes.heading.create({ level, id: idAttr }, parseInline(content)),
         nextIndex: i + 1,
       };
     }
