@@ -132,19 +132,128 @@ export function resolveMarginMm(options: PdfExportOptions): number {
 /**
  * 生成页码 margin box 规则
  *
- * @param format 页码格式
- * @returns 形如 `@bottom-center { content: counter(page); }` 的 CSS 片段（无换行起止）
+ * v0.11.0 B2-2：**已停用**，恒返回空串。
+ *
+ * 缺陷背景（P1）：本函数此前生成 `@bottom-center { content: counter(page) }`，
+ * 但导出走 Chromium `--print-to-pdf`（src-tauri/commands/export.rs），
+ * **Chromium 不支持 CSS 分页上下文（margin box）** → `@page` 内的
+ * `@top-center` / `@bottom-center` 全部被静默忽略，PdfExportDialog 的
+ * 「页眉/页脚/页码」4 个排版选项中 3 个实际无效。
+ *
+ * 本次决策（用户拍板）：**降级为「仅页脚、不含页码」**。
+ * 原因：Chromium 打印时 `position: fixed` 元素会在**每页重复**（见
+ * generateFixedMarginBoxCss），故页眉页脚可正常实现；但页码依赖 counter(page)
+ * 且 margin box 不可用，在现有导出引擎下无法正确实现。
+ * 与其提供一个看似可选、实则无效的开关，不如停用并在 UI 中说明。
+ *
+ * 保留本函数（返回空串）而非删除，是为了让 PdfExportDialog 的类型与
+ * 既有测试不必大改；未来若改用 WebView2 PrintToPdf（支持 margin box），
+ * 可直接恢复实现。
  */
 function buildPageNumberRule(format: PageNumberFormat): string {
-  switch (format) {
-    case "bottom-center":
-      return `  @bottom-center {\n    content: counter(page);\n  }`;
-    case "bottom-right":
-      return `  @bottom-right {\n    content: counter(page);\n  }`;
-    case "none":
-    default:
-      return "";
+  void format;
+  return "";
+}
+
+/**
+ * v0.11.0 B2-2：把 {title}/{date} 变量替换为纯文本。
+ *
+ * 与 buildContentExpression 的区别：**不处理 {page}** —— margin box 不可用后
+ * 页码无法实现，文本中的 {page} 直接剔除（而非留下一个永远不替换的占位符）。
+ */
+function buildPlainText(text: string, title: string, dateStr: string): string {
+  const safeTitle = title.replace(/\{page\}/g, "");
+  return text
+    .replace(/\{title\}/g, safeTitle)
+    .replace(/\{date\}/g, dateStr)
+    .replace(/\{page\}/g, "");
+}
+
+/**
+ * v0.11.0 B2-2：生成页眉/页脚的**常规文档流元素**样式（替代失效的 margin box）。
+ *
+ * 原理：Chromium 打印时 `position: fixed` 的元素会在每一页重复渲染，
+ * 因此用 fixed 定位 + 负 offset 拉到页边距区域，即可实现「每页都有的页眉页脚」。
+ * 这解决了此前 `@page { @top-center }` 被静默忽略的问题。
+ *
+ * @param options PDF 导出选项
+ * @param title 文档标题（{title}/{date} 变量替换）
+ * @param dateStr 日期字符串
+ * @returns CSS 片段（无页眉页脚时返回空串）
+ */
+export function generateFixedMarginBoxCss(
+  options: PdfExportOptions,
+  title: string,
+  dateStr: string = formatDate(),
+): string {
+  const marginMm = resolveMarginMm(options);
+  // 页眉页脚距页边的距离（mm），落在页边距区内
+  const offsetMm = Math.max(4, Math.min(12, marginMm / 3));
+
+  const hasHeader = options.headerText.trim().length > 0;
+  const hasFooter = options.footerText.trim().length > 0;
+  if (!hasHeader && !hasFooter) return "";
+
+  const rules: string[] = [];
+  if (hasHeader) {
+    rules.push(`.pdf-header {
+  position: fixed;
+  top: -${offsetMm}mm;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 9pt;
+  color: #666;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}`);
   }
+  if (hasFooter) {
+    rules.push(`.pdf-footer {
+  position: fixed;
+  bottom: -${offsetMm}mm;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 9pt;
+  color: #666;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}`);
+  }
+  return rules.join("\n");
+}
+
+/**
+ * v0.11.0 B2-2：生成页眉/页脚的 HTML 片段（与 generateFixedMarginBoxCss 配套）。
+ *
+ * 注意：CSS `content` 属性只对 ::before/::after 伪元素生效，页眉页脚内容
+ * 必须放进真实 DOM 节点，否则 Chromium 打印时输出空白。
+ *
+ * @returns HTML 片段（无页眉页脚时返回空串）
+ */
+export function generateFixedMarginBoxHtml(
+  options: PdfExportOptions,
+  title: string,
+  dateStr: string = formatDate(),
+): string {
+  const parts: string[] = [];
+  if (options.headerText.trim()) {
+    const text = buildPlainText(options.headerText, title, dateStr);
+    parts.push(`<div class="pdf-header">${escapeHtmlText(text)}</div>`);
+  }
+  if (options.footerText.trim()) {
+    const text = buildPlainText(options.footerText, title, dateStr);
+    parts.push(`<div class="pdf-footer">${escapeHtmlText(text)}</div>`);
+  }
+  return parts.join("\n");
+}
+
+/** HTML 文本转义（页眉页脚内容进 DOM，需防注入） */
+function escapeHtmlText(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /**
@@ -177,35 +286,18 @@ export function generatePrintCss(
   const size = PAPER_SIZE_CSS[options.paperSize];
   const marginMm = resolveMarginMm(options);
 
+  // v0.11.0 B2-2：@page 内**只保留 size 与 margin**。
+  // 此前还在此生成 @top-center / @bottom-center（页眉/页脚）与 counter(page)
+  // （页码），但导出走 Chromium --print-to-pdf，不支持分页上下文 margin box
+  // → 全部被静默忽略。现页眉页脚改由 generateFixedMarginBoxCss/Html 以
+  // position:fixed 常规元素实现（Chromium 打印时每页重复）。
   const rules: string[] = [];
   rules.push(`  size: ${size};`);
   rules.push(`  margin: ${marginMm}mm;`);
 
-  // 页眉：仅当用户填写了文本时生成
-  if (options.headerText.trim()) {
-    const headerContent = buildContentExpression(options.headerText, title, dateStr);
-    rules.push(`  @top-center {\n    content: ${headerContent};\n  }`);
-  }
-
-  // 页脚：仅当用户填写了文本时生成
-  if (options.footerText.trim()) {
-    const footerContent = buildContentExpression(options.footerText, title, dateStr);
-    rules.push(`  @bottom-center {\n    content: ${footerContent};\n  }`);
-  }
-
-  // 页码：仅当格式非 none 且未占用对应位置时生成
-  // 注意：若页脚已使用 @bottom-center 且页码也是 bottom-center，
-  // 页码规则应覆盖页脚（用户明确选择页码格式时优先级更高）
+  // 兼容保留：buildPageNumberRule 恒返回空串（页码已降级停用）
   const pageNumberRule = buildPageNumberRule(options.pageNumberFormat);
-  if (pageNumberRule) {
-    // 移除页脚中相同位置的规则以避免冲突
-    if (options.pageNumberFormat === "bottom-center") {
-      // 移除已添加的 @bottom-center 页脚规则
-      const idx = rules.findIndex((r) => r.includes("@bottom-center"));
-      if (idx >= 0) rules.splice(idx, 1);
-    }
-    rules.push(pageNumberRule);
-  }
+  if (pageNumberRule) rules.push(pageNumberRule);
 
   return `@page {\n${rules.join("\n")}\n}`;
 }
@@ -227,6 +319,9 @@ export function generateFullPrintStylesheet(
   dateStr: string = formatDate(),
 ): string {
   const pageCss = generatePrintCss(options, title, dateStr);
+  // v0.11.0 B2-2：页眉/页脚改用 fixed 常规元素（Chromium 打印每页重复），
+  // 不再依赖 @page margin box（Chromium 不支持，原实现静默失效）
+  const marginBoxCss = generateFixedMarginBoxCss(options, title, dateStr);
   // body 基础样式：避免 @page margin:0 导致内容贴边
   // 由于 @page 已设置 margin，body 不再需要额外 padding
   const bodyCss = `body {
@@ -235,5 +330,6 @@ export function generateFullPrintStylesheet(
   line-height: 1.6;
   color: #1a1a1a;
 }`;
-  return `${pageCss}\n${bodyCss}`;
+  const parts = [pageCss, marginBoxCss, bodyCss].filter(Boolean);
+  return parts.join("\n");
 }

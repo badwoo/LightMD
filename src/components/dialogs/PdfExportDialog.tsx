@@ -94,21 +94,13 @@ export function PdfExportDialog({ onClose, onConfirm, title }: PdfExportDialogPr
             <small className="pdf-export-hint">{tt("export.pdf.varsHint")}</small>
           </div>
 
-          {/* 页码格式 */}
-          <div className="pdf-export-field">
-            <label>{tt("export.pdf.pageNumber")}</label>
-            <select
-              className="pdf-export-select"
-              value={options.pageNumberFormat}
-              onChange={(e) =>
-                updateOption("pageNumberFormat", e.target.value as PageNumberFormat)
-              }
-            >
-              <option value="none">{tt("export.pdf.none")}</option>
-              <option value="bottom-center">{tt("export.pdf.bottomCenter")}</option>
-              <option value="bottom-right">{tt("export.pdf.bottomRight")}</option>
-            </select>
-          </div>
+          {/* v0.11.0 B2-2：页码格式选项已移除。
+            缺陷背景（P1）：此前该下拉框可选「底部居中 / 底部右」等格式，但导出走
+            Chromium --print-to-pdf，**不支持 CSS 分页上下文（margin box）**，
+            `counter(page)` 规则被静默忽略 → 用户设置页码后导出结果里根本没有页码，
+            属于「看似可选、实则无效」的欺骗性 UI。
+            本次决策（用户拍板）：降级为「仅页脚、不含页码」，直接移除该选项。
+            未来若改用 WebView2 PrintToPdf（支持 margin box）再恢复。 */}
 
           {/* 边距 */}
           <div className="pdf-export-field">

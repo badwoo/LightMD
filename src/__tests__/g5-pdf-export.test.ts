@@ -17,6 +17,7 @@ import { describe, it, expect } from "vitest";
 import {
   generatePrintCss,
   generateFullPrintStylesheet,
+  generateFixedMarginBoxHtml,
   buildContentExpression,
   resolveMarginMm,
   formatDate,
@@ -201,17 +202,18 @@ describe("G5 PDF 导出排版增强", () => {
   // ─── generatePrintCss 完整 CSS 生成 ─────────────────
 
   describe("generatePrintCss 完整 CSS 生成", () => {
-    it("默认选项生成 A4 + 20mm 边距 + 底部居中页码", () => {
+    it("默认选项生成 A4 + 20mm 边距（页码已降级停用）", () => {
       const css = generatePrintCss(DEFAULT_PDF_EXPORT_OPTIONS, "测试文档", "2026-07-04");
       expect(css).toContain("@page");
       expect(css).toContain("size: A4");
       expect(css).toContain("margin: 20mm");
-      // 默认页眉 = {title}，应被替换
-      expect(css).toContain("@top-center");
-      expect(css).toContain("测试文档");
-      // 默认页码格式 bottom-center
-      expect(css).toContain("@bottom-center");
-      expect(css).toContain("counter(page)");
+      // v0.11.0 B2-2：@page 内不再生成 margin box。
+      // 原因：导出走 Chromium --print-to-pdf，不支持 CSS 分页上下文
+      // （margin box）→ 此前生成的 @top-center / counter(page) 全被静默忽略，
+      // 属「看似可选、实则无效」的欺骗性 UI。
+      expect(css).not.toContain("@top-center");
+      expect(css).not.toContain("@bottom-center");
+      expect(css).not.toContain("counter(page)");
     });
 
     it("纸张大小 Letter", () => {
@@ -254,35 +256,34 @@ describe("G5 PDF 导出排版增强", () => {
         pageNumberFormat: "none",
       };
       const css = generatePrintCss(opts, "标题", "2026-07-04");
-      // 不应包含独立的页码 counter(page) 规则
-      // 注意：页脚可能仍含 counter(page)（如果 footerText 含 {page}）
-      // 因此检查不包含 @bottom-center 的独立页码规则
-      expect(css).not.toMatch(/@bottom-center\s*\{[^}]*content:\s*counter\(page\)/);
+      // v0.11.0 B2-2：全部格式均不生成 counter(page)
+      expect(css).not.toContain("counter(page)");
     });
 
-    it("页码格式 bottom-right 生成 @bottom-right 规则", () => {
+    it("页码格式 bottom-right：v0.11.0 B2-2 起不再生成规则（诚实降级）", () => {
       const opts: PdfExportOptions = {
         ...DEFAULT_PDF_EXPORT_OPTIONS,
         pageNumberFormat: "bottom-right",
         footerText: "",
       };
       const css = generatePrintCss(opts, "标题", "2026-07-04");
-      expect(css).toContain("@bottom-right");
-      expect(css).toContain("counter(page)");
+      // Chromium 不支持 margin box → 保留该规则只会让用户以为页码生效
+      expect(css).not.toContain("@bottom-right");
+      expect(css).not.toContain("counter(page)");
     });
 
-    it("页码格式 bottom-center 生成 @bottom-center 页码规则", () => {
+    it("页码格式 bottom-center：v0.11.0 B2-2 起不再生成规则（诚实降级）", () => {
       const opts: PdfExportOptions = {
         ...DEFAULT_PDF_EXPORT_OPTIONS,
         pageNumberFormat: "bottom-center",
         footerText: "",
       };
       const css = generatePrintCss(opts, "标题", "2026-07-04");
-      expect(css).toContain("@bottom-center");
-      expect(css).toMatch(/@bottom-center\s*\{[^}]*counter\(page\)/);
+      expect(css).not.toContain("@bottom-center");
+      expect(css).not.toMatch(/counter\(page\)/);
     });
 
-    it("空页眉不生成 @top-center 规则", () => {
+    it("空页眉不生成页眉规则", () => {
       const opts: PdfExportOptions = {
         ...DEFAULT_PDF_EXPORT_OPTIONS,
         headerText: "",
@@ -291,7 +292,7 @@ describe("G5 PDF 导出排版增强", () => {
       expect(css).not.toContain("@top-center");
     });
 
-    it("空页脚不生成 @bottom-center 页脚规则", () => {
+    it("空页脚不生成页脚规则", () => {
       const opts: PdfExportOptions = {
         ...DEFAULT_PDF_EXPORT_OPTIONS,
         footerText: "",
@@ -301,32 +302,34 @@ describe("G5 PDF 导出排版增强", () => {
       expect(css).not.toContain("@bottom-center");
     });
 
-    it("页码 bottom-center 与页脚冲突时移除页脚规则", () => {
-      // 当 pageNumberFormat = bottom-center 且 footerText 非空时
-      // 页码规则应覆盖页脚（移除页脚的 @bottom-center，保留页码的 @bottom-center）
+    it("页码与页脚冲突：v0.11.0 B2-2 起 @page 内无两者（改由 fixed 元素承载）", () => {
+      // 此前页码规则会 splice 掉页脚规则（页脚被静默丢弃）。
+      // 现页码停用、页眉页脚改由 generateFixedMarginBoxCss/Html 以
+      // position:fixed 常规元素实现，两者不再互相干扰，也不再丢内容。
       const opts: PdfExportOptions = {
         ...DEFAULT_PDF_EXPORT_OPTIONS,
         footerText: "页脚文本",
         pageNumberFormat: "bottom-center",
       };
       const css = generatePrintCss(opts, "标题", "2026-07-04");
-      // 应只包含一个 @bottom-center（页码），且内容为 counter(page)
-      const matches = css.match(/@bottom-center/g) || [];
-      expect(matches.length).toBe(1);
-      expect(css).toMatch(/@bottom-center\s*\{[^}]*counter\(page\)/);
+      expect(css).not.toContain("@bottom-center");
+      // 页脚文本改由 fixed 元素承载，不应丢失
+      const fixedHtml = generateFixedMarginBoxHtml(opts, "标题", "2026-07-04");
+      expect(fixedHtml).toContain("页脚文本");
     });
 
-    it("页码 bottom-right 不影响页脚 @bottom-center", () => {
+    it("页码 bottom-right 不影响页脚内容", () => {
       const opts: PdfExportOptions = {
         ...DEFAULT_PDF_EXPORT_OPTIONS,
         footerText: "页脚文本",
         pageNumberFormat: "bottom-right",
       };
       const css = generatePrintCss(opts, "标题", "2026-07-04");
-      // 应同时包含 @bottom-center（页脚）和 @bottom-right（页码）
-      expect(css).toContain("@bottom-center");
-      expect(css).toContain("@bottom-right");
-      expect(css).toContain("页脚文本");
+      // @page 内两者都不再出现；页脚内容由 fixed 元素承载
+      expect(css).not.toContain("@bottom-center");
+      expect(css).not.toContain("@bottom-right");
+      const fixedHtml = generateFixedMarginBoxHtml(opts, "标题", "2026-07-04");
+      expect(fixedHtml).toContain("页脚文本");
     });
 
     it("CSS 包含 @page 起始和闭合括号", () => {

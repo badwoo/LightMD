@@ -17,6 +17,7 @@ import { notifySuccess, notifyError } from "../../services/notificationService";
 import { getPrismCss } from "../../utils/highlight";
 import {
   generateFullPrintStylesheet,
+  generateFixedMarginBoxHtml,
   type PdfExportOptions,
 } from "../../utils/pdfExport";
 import { exportElementAsPng } from "../../utils/exportImage";
@@ -403,12 +404,18 @@ async function exportPDFWithOptions(
   const baseName = title.replace(/\.md$/i, "");
 
   // G5：根据用户选项生成 @page 打印 CSS
-  // 包含：size（纸张大小）、margin（边距）、@top-center（页眉）、@bottom-center/right（页脚/页码）
+  // v0.11.0 B2-2：页眉/页脚改用 fixed 常规元素（Chromium 打印每页重复），
+  // 不再依赖 @page margin box（Chromium --print-to-pdf 不支持，原实现静默失效）；
+  // 页码已降级停用（无法在现有导出引擎下实现）。
   const printCss = generateFullPrintStylesheet(options, baseName);
+  // 页眉/页脚的真实 DOM 片段（CSS content 属性只对伪元素生效，故需节点）
+  const marginBoxHtml = generateFixedMarginBoxHtml(options, baseName);
 
   // 组合样式：打印 CSS + 主题样式 + PrismJS 高亮 CSS
   // 注意：@page 规则必须放在 <style> 中且作用于整个文档
-  const styles = `<style>${printCss}\n${includeCSS ? EXPORT_CSS + "\n" + prismCss : ""}</style>`;
+  // v0.11.0 B2-2 补充：includeCSS=false 时不再无条件注入 printCss
+  //（此前无论用户是否勾选「包含样式」都会拼上 printCss，语义不一致）
+  const styles = `<style>${printCss}${includeCSS ? "\n" + EXPORT_CSS + "\n" + prismCss : ""}</style>`;
 
   // 检测是否包含 mermaid 图表，注入 mermaid 脚本
   const hasMermaid = body.includes('class="mermaid"');
@@ -431,7 +438,7 @@ async function exportPDFWithOptions(
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><title>${escapeHtml(title)}</title>${styles}${mermaidScript}${katexScript}</head>
-<body>${bodyWithImages}</body>
+<body>${marginBoxHtml}${bodyWithImages}</body>
 </html>`;
 
   const defaultDir = getDefaultDir(filePath);
