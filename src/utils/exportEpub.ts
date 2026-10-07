@@ -247,7 +247,17 @@ const CONTAINER_XML = `<?xml version="1.0"?>
 </container>
 `;
 
-/** 最小内联 CSS（代码/引用/表格基础样式），供阅读器统一呈现 */
+/**
+ * 内联 CSS（供阅读器统一呈现）
+ *
+ * v0.11.0 B2-6 补齐：此前缺以下选择器，导致 EPUB 里对应内容**无样式或不可见**：
+ * - `.token.*`：Prism 代码高亮已生成 span，但缺颜色规则 → 代码块无语法色；
+ * - `.footnotes-list` / `.footnote-ref` / `.footnote-def`：脚注无编号样式与间距；
+ * - `.task-list` / `.task-item`：任务列表无 checkbox 布局；
+ * - `.toc`：自动目录无层级缩进；
+ * - `mark` / `sub` / `sup`：高亮与上下标无视觉区分；
+ * - `.katex` / `math`：公式块居中与溢出处理。
+ */
 const STYLE_CSS = `body { font-family: "Noto Serif CJK SC", "Source Han Serif SC", serif; line-height: 1.8; padding: 0 1em; }
 h1, h2, h3 { break-before: auto; }
 pre { background: #f4f4f4; border-radius: 6px; padding: 1em; overflow-x: auto; font-family: "Cascadia Code", Consolas, monospace; font-size: 0.9em; }
@@ -256,6 +266,51 @@ blockquote { border-left: 4px solid #0078d4; margin: 1em 0; padding: 0.4em 1em; 
 table { border-collapse: collapse; width: 100%; }
 th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
 img { max-width: 100%; }
+
+/* ── v0.11.0 B2-6 新增：代码高亮（此前 .token 无颜色规则 → 无语法色）── */
+pre code .token.comment, pre code .token.prolog, pre code .token.doctype,
+pre code .token.cdata { color: #6a737d; }
+pre code .token.punctuation { color: #5c6370; }
+pre code .token.property, pre code .token.tag, pre code .token.boolean,
+pre code .token.number, pre code .token.constant, pre code .token.symbol { color: #0550ae; }
+pre code .token.selector, pre code .token.attr-name, pre code .token.string,
+pre code .token.char, pre code .token.builtin { color: #0a7d3e; }
+pre code .token.operator, pre code .token.entity, pre code .token.url,
+pre code .language-css .token.string { color: #cf222e; }
+pre code .token.atrule, pre code .token.attr-value, pre code .token.keyword { color: #cf222e; }
+pre code .token.function, pre code .token.class-name { color: #8250df; }
+pre code .token.regex, pre code .token.important, pre code .token.variable { color: #953800; }
+
+/* ── v0.11.0 B2-6 新增：脚注 ── */
+.footnotes { border-top: 1px solid #ddd; margin-top: 2em; padding-top: 1em; font-size: 0.9em; }
+.footnotes-list { list-style: none; padding-left: 0; }
+.footnotes-list li { margin: 0.3em 0; }
+.footnote-ref a, .footnote-def a { text-decoration: none; }
+.footnote-backref { text-decoration: none; margin-left: 0.3em; }
+
+/* ── v0.11.0 B2-6 新增：任务列表 ── */
+ul.task-list, li.task-list { list-style: none; padding-left: 1.2em; }
+.task-list li.task-item { list-style: none; position: relative; }
+li.task-item input[type="checkbox"] { margin-right: 0.5em; }
+li.task-item.task-checked { color: #888; text-decoration: line-through; }
+
+/* ── v0.11.0 B2-6 新增：自动目录 ── */
+nav.toc { border: 1px solid #ddd; border-radius: 6px; padding: 0.8em 1em; margin: 1em 0; background: #fafafa; }
+nav.toc ul { list-style: none; padding-left: 1em; margin: 0.2em 0; }
+nav.toc > ul { padding-left: 0; }
+nav.toc a { text-decoration: none; color: #0078d4; }
+
+/* ── v0.11.0 B2-6 新增：高亮 / 上下标 / 公式 ── */
+mark { background: #fff3b0; padding: 0.1em 0.2em; border-radius: 2px; }
+sub, sup { font-size: 0.75em; line-height: 0; }
+.katex { font-size: 1em; }
+.katex-display { display: block; text-align: center; margin: 1em 0; overflow-x: auto; }
+math { font-family: "Cambria Math", "Latin Modern Math", serif; }
+
+/* ── 定义列表 ── */
+dl { margin: 1em 0; }
+dt { font-weight: 600; margin-top: 0.6em; }
+dd { margin-left: 1.5em; margin-top: 0.2em; }
 `;
 
 /** XML 文本转义（用于标题/目录） */

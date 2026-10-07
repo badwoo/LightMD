@@ -167,18 +167,24 @@ describe("R2: DOCX 公式/图表 → ImageRun", () => {
     vi.spyOn(SVGSVGElement.prototype, "getBoundingClientRect").mockReturnValue(fakeRect);
   });
 
-  it("mathBlock 渲染为 ImageRun", async () => {
+  it("mathBlock 渲染为 ImageRun（v0.11.0 B2-5 起包在 Paragraph 内）", async () => {
     const elements = await convertBlocksToDocxElements([{ kind: "mathBlock", latex: "E=mc^2" }]);
     expect(elements.length).toBe(1);
-    expect(elements[0]).toBeInstanceOf(ImageRun);
+    // v0.11.0 B2-5（P0）：ImageRun 是 **run 级**元素（ParagraphChild），
+    // 直接 push 进要求 block 级的 elements/sections.children 会让
+    // Packer.toBlob 抛错或产出损坏的 docx → 必须包一层 Paragraph。
+    expect(elements[0]).toBeInstanceOf(Paragraph);
+    const para = elements[0] as Paragraph;
+    expect((para as unknown as { root: unknown[] }).root.length).toBeGreaterThan(0);
   });
 
-  it("mermaid 代码块渲染为 ImageRun", async () => {
+  it("mermaid 代码块渲染为 ImageRun（v0.11.0 B2-5 起包在 Paragraph 内）", async () => {
     const elements = await convertBlocksToDocxElements([
       { kind: "codeBlock", content: "graph TD; A-->B;", language: "mermaid" },
     ]);
     expect(elements.length).toBe(1);
-    expect(elements[0]).toBeInstanceOf(ImageRun);
+    // 同上：run 级元素必须包 Paragraph
+    expect(elements[0]).toBeInstanceOf(Paragraph);
   });
 
   it("截图失败时降级：mathBlock → LaTeX 文本段落，mermaid → 代码块段落", async () => {

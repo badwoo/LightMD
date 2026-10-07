@@ -106,10 +106,18 @@ export async function replaceMermaidBlocksInDom(
   const { default: mermaid } = await import("mermaid");
   mermaid.initialize({
     startOnLoad: false,
-    securityLevel: "loose",
+    // v0.11.0 B2-6：**antiscript** 而非 loose。
+    // 此函数用于 DOCX/PNG/EPUB 导出：产物会被用户传播，而导出内容可能来自
+    // 不可信文档；loose 允许 mermaid 标签中的 HTML/脚本执行。
+    // antiscript 在保留可读性的同时禁掉脚本执行。
+    securityLevel: "antiscript",
     // mermaid 主题类型为字面量联合，调用方仅传 dark/default 两种（跟随应用主题）
     theme: (opts?.theme || "default") as "dark" | "default",
-    flowchart: { htmlLabels: false },
+    // v0.11.0 B2-6：改用**顶层** htmlLabels（mermaid 11 已废弃图种内的设置）。
+    // 此前只配了 flowchart.htmlLabels，sequence / class / state 等图种仍默认走
+    // foreignObject → 序列化为非法 XHTML（epubcheck 报错、严格阅读器拒开）。
+    // 顶层设置对所有图种生效。
+    htmlLabels: false,
   });
 
   let done = 0;

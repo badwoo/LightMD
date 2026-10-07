@@ -30,12 +30,20 @@ function getDefaultDir(filePath: string | null | undefined): string | undefined 
 }
 
 /**
- * 将 DOM 元素导出为 PNG 图片
+ * 把 DOM 元素导出为 PNG 图片
  *
- * @param element 要截图的 DOM 元素（通常是预览容器）
- * @param filename 下载文件名（不含扩展名）
- * @param opts.filePath 当前编辑文件路径，用于推导默认保存目录
- * @returns 成功返回 true，失败返回 false
+ * v0.11.0 B2-3：字体处理改为「显式内联 KaTeX 字体」而非跳过。
+ *
+ * 缺陷背景（P0）：原实现 `skipFonts: true`，注释理由是「字体嵌入需 fetch
+ * @font-face，失败会导致 SVG foreignObject 渲染空白」。但公式依赖 KaTeX 的
+ * Web 字体（index.html 引入 /vendor/katex），跳过字体 → **截图内公式回退/错形**。
+ * 同时 DOCX 路径（exportDocx.ts:92）没有设 skipFonts → 两条导出路径字体行为不一致。
+ *
+ * 修复：skipFonts 保持 true（避免 html-to-image 自动 fetch 跨域字体失败），
+ * 改为**显式传入 fontEmbedCSS** —— 复用 B2-1 已实现的 vendorAssets 字体内联能力
+ * （含字体 base64），字体因此确定性地嵌入，不依赖 html-to-image 的自动 fetch。
+ * 读不到字体时降级为「无 fontEmbedCSS」，并在返回 false 时给出明确提示，
+ * 而非静默输出错形图片。
  */
 export async function exportElementAsPng(
   element: HTMLElement,
@@ -46,18 +54,36 @@ export async function exportElementAsPng(
     // 动态加载库，避免首屏体积
     const { toPng } = await import("html-to-image");
 
+    // v0.11.0 B2-3：预取 KaTeX CSS（字体已内联为 data URL）作为 fontEmbedCSS
+    let fontEmbedCSS: string | undefined;
+    try {
+      const { renderKatexCss } = await import("./vendorAssets");
+      const css = await renderKatexCss();
+      if (css) fontEmbedCSS = css;
+    } catch (err) {
+      // 读不到字体不阻断导出，仅公式可能错形（下方会提示）
+      console.warn("[导出PNG] 字体 CSS 预取失败，公式可能错形:", err);
+    }
+
     // 长文档截图：html-to-image 内部会处理元素高度
     // pixelRatio=2 提高清晰度，但内存占用较高，对超长文档（>10000px）需注意
-    // skipFonts=true 跳过字体嵌入：字体嵌入需要 fetch @font-face 文件，
-    // 跨域或系统字体加载失败会导致 SVG foreignObject 无法渲染，输出空白
     const dataUrl = await toPng(element, {
       pixelRatio: 2,
       backgroundColor: "#fff",
       cacheBust: true,
+      // v0.11.0 B2-3：保持跳过自动字体嵌入（避免跨域 fetch 失败导致整图空白），
+      // 改由 fontEmbedCSS 显式提供 KaTeX 字体（数据已 base64 内联，无跨域问题）
       skipFonts: true,
+      ...(fontEmbedCSS ? { fontEmbedCSS } : {}),
     });
 
     const finalName = filename.endsWith(".png") ? filename : `${filename}.png`;
+
+    // v0.11.0 B2-3：字体未就绪时给出明确提示，而非静默输出错形图片
+    if (!fontEmbedCSS) {
+      const { notifyWarning } = await import("../services/notificationService");
+      notifyWarning("未能加载公式字体，导出的图片中公式可能显示异常");
+    }
 
     // Tauri 环境：使用 save 对话框选择保存路径，writeFile 写入二进制
     if (isTauri()) {
