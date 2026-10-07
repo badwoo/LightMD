@@ -45,8 +45,9 @@ import {
   FORMAT_BUTTONS as formatButtons,
   formatButtonTitle,
 } from "./sourceFormat";
-import { getMarkdownIt } from "../../core/markdown/parser";
-import { highlightCodeBlocksInHtml, getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
+import { getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
+// R1(v0.10.0)：分屏预览统一走渲染管线（与导出 HTML/PDF/PNG 同一配置源 + 同一 mermaid 包装/高亮步骤）
+import { renderMarkdownHtml } from "../../core/renderPipeline";
 import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc } from "../../utils/imagePath";
 import { resolveLinkAction, anchorMatchesHeading } from "../../utils/linkNav";
@@ -228,9 +229,10 @@ function applyDiff(text: string, entry: HistoryEntry, reverse: boolean): string 
 
 function renderMarkdownToHtml(markdown: string): string {
   try {
-    // E14(v0.9.2):分屏预览跟随段内换行设置(gfm=即换行 / commonmark=标准语义)
-    const breaks = useSettingsStore.getState().paragraphBreaks !== "commonmark";
-    return getMarkdownIt(breaks).render(markdown);
+    // R1(v0.10.0)：分屏预览统一走渲染管线——markdown-it 配置（typographer false +
+    // validateLink 白名单 + HTML 白名单）与编辑器/导出同源，mermaid 包装与 Prism 高亮
+    // 步骤也与导出管线共用（此前为分屏/导出各复制一份，是渲染漂移温床）
+    return renderMarkdownHtml(markdown);
   } catch {
     return `<p>${translate("editor.renderFailed")}</p>`;
   }
@@ -4285,18 +4287,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         return renderCodeFilePreview(unmaskBase64Images(debouncedSourceContent, base64TokensRef.current), currentLanguage);
       }
       // v0.6.6 问题4：unmask 还原 base64 后再渲染，短标记会导致预览图裂
+      // R1：mermaid 包装与 Prism 高亮已并入 renderMarkdownHtml（管线统一）
       let html = renderMarkdownToHtml(unmaskBase64Images(debouncedSourceContent, base64TokensRef.current));
       // 将相对路径图片 src 转换为 Tauri webview 可访问的 asset:// URL
       html = html.replace(/(<img\s[^>]*src=")([^"]+)(")/g, (_match, prefix: string, src: string, suffix: string) => {
         return `${prefix}${resolveImageSrc(src, filePath)}${suffix}`;
       });
-      // 将 markdown-it 生成的 mermaid 代码块转换为 mermaid 渲染格式
-      html = html.replace(
-        /<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g,
-        '<pre class="mermaid">$1</pre>'
-      );
-      // 对代码块进行 PrismJS 语法高亮（跳过 mermaid 代码块）
-      html = highlightCodeBlocksInHtml(html);
       return html;
     },
     [debouncedSourceContent, viewMode, isMdFile, filePath, currentLanguage]

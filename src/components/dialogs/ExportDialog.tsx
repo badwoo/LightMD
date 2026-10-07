@@ -14,12 +14,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { isTauri, fileService } from "../../services/fileService";
 import { notifySuccess, notifyError } from "../../services/notificationService";
-import { highlightCodeBlocksInHtml, getPrismCss } from "../../utils/highlight";
+import { getPrismCss } from "../../utils/highlight";
 import {
   generateFullPrintStylesheet,
   type PdfExportOptions,
 } from "../../utils/pdfExport";
 import { exportElementAsPng } from "../../utils/exportImage";
+// R2(v0.10.0)：导出前公式/图表渲染（PNG 保真；EPUB/DOCX 的替换在各自工具内实现）
+import {
+  replaceMathPlaceholdersInDom,
+  replaceMermaidBlocksInDom,
+} from "../../utils/exportMathRender";
 import { markdownToDocx } from "../../utils/exportDocx";
 import { useT, t } from "../../i18n";
 import { PdfExportDialog } from "./PdfExportDialog";
@@ -40,6 +45,8 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
   );
   const [includeCSS, setIncludeCSS] = useState(true);
   const [exporting, setExporting] = useState(false);
+  // R2：导出进度文案（公式/图表逐个渲染时更新，显示在导出按钮上）
+  const [progressText, setProgressText] = useState("");
   // G5：PDF 选项对话框显示状态
   const [showPdfOptions, setShowPdfOptions] = useState(false);
   const tt = useT();
@@ -52,18 +59,23 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
     }
 
     setExporting(true);
+    setProgressText("");
     try {
       if (format === "html") {
         await exportHTML(markdown, title, includeCSS, filePath);
       } else if (format === "image") {
-        await exportImage(markdown, title, filePath);
+        await exportImage(markdown, title, filePath, setProgressText);
       } else if (format === "word") {
         const baseName = title.replace(/\.md$/i, "");
-        await markdownToDocx(markdown, baseName, filePath);
+        await markdownToDocx(markdown, baseName, filePath, (done, total) =>
+          setProgressText(`公式/图表 ${done}/${total}`),
+        );
       } else if (format === "epub") {
         const baseName = title.replace(/\.md$/i, "");
         const { exportEpub } = await import("../../utils/exportEpub");
-        await exportEpub(markdown, baseName, filePath);
+        await exportEpub(markdown, baseName, filePath, (done, total) =>
+          setProgressText(`公式/图表 ${done}/${total}`),
+        );
       } else if (format === "latex") {
         const baseName = title.replace(/\.md$/i, "");
         const { exportLatex } = await import("../../utils/exportLatex");
@@ -74,6 +86,7 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
       notifyError(t("export.exportFailed", { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setExporting(false);
+      setProgressText("");
       // 非 PDF 格式导出后直接关闭对话框（PDF 由 handlePdfOptionsConfirm 处理关闭）
       onClose();
     }
@@ -206,7 +219,9 @@ export function ExportDialog({ onClose, markdown, title, filePath }: ExportDialo
               disabled={exporting}
             >
               {exporting
-                ? tt("export.exporting")
+                ? progressText
+                  ? `${tt("export.exporting")} · ${progressText}`
+                  : tt("export.exporting")
                 : format === "pdf"
                   ? tt("export.pdf.configure")
                   : tt("export.exportFormat", { format: formatLabel(format, tt) })}
@@ -292,22 +307,11 @@ li.task-item { display: flex; align-items: flex-start; gap: 6px; margin: 0.3em 0
 `;
 
 export async function renderMarkdownToHTML(md: string): Promise<string> {
-  // E14(v0.9.2):三处 markdown-it 实例统一走 parser 工厂,插件配置单一来源;
-  // breaks 跟随段内换行设置,typographer 维持导出管线历史行为 true(R1 统一)
-  const { createMarkdownIt } = await import("../../core/markdown/parser");
-  const { useSettingsStore } = await import("../../stores/useSettingsStore");
-  const breaks = useSettingsStore.getState().paragraphBreaks !== "commonmark";
-  const mdParser = createMarkdownIt({ breaks, typographer: true, validateLink: false });
-  const html = mdParser.render(md);
-  // 将 mermaid 代码块包装为可渲染的容器
-  let result = html.replace(
-    /<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g,
-    '<pre class="mermaid">$1</pre>'
-  );
-  // 对代码块进行 PrismJS 语法高亮（跳过 mermaid 代码块）
-  // 确保导出的 HTML/PDF 代码高亮与阅读/分屏模式一致
-  result = highlightCodeBlocksInHtml(result);
-  return result;
+  // R1(v0.10.0):导出 HTML/PDF/PNG 统一走 renderPipeline——typographer 恒 false
+  // (消除弯引号漂移)、validateLink 白名单强制(javascript: 不再进入导出 HTML)。
+  // 保留本函数导出：exportEpub 复用此管线产物
+  const { renderMarkdownHtml } = await import("../../core/renderPipeline");
+  return renderMarkdownHtml(md);
 }
 
 /** 获取默认导出目录（基于当前文件路径） */
@@ -464,14 +468,15 @@ async function exportPDFWithOptions(
  * 1. 创建隐藏的临时 div（宽度 860px，与 EXPORT_CSS 的 max-width 一致）
  * 2. 渲染 markdown + 主题样式到 div
  * 3. 将所有 <img> 的 src 转为 dataURL（避免跨域/相对路径导致截图空白或报错）
- * 4. 等待图片加载完成 + 浏览器布局
- * 5. 调用 exportElementAsPng 截图
- * 6. 移除临时 div
+ * 4. R2：将 data-math 占位替换为 KaTeX 渲染结果、pre.mermaid 替换为 SVG
+ *    （html-to-image 不等异步脚本，必须在截图前同步完成替换）
+ * 5. 等待图片加载完成 + 浏览器布局
+ * 6. 调用 exportElementAsPng 截图
+ * 7. 移除临时 div
  *
- * 注意：Mermaid/KaTeX 在图片中作为代码块或原始 HTML 显示（不渲染图表），
- * 因为 html-to-image 截图时不会等待异步脚本执行。
+ * @param onProgress 渲染进度回调（R2：mermaid/公式逐个替换时上报）
  */
-async function exportImage(md: string, title: string, filePath?: string | null) {
+async function exportImage(md: string, title: string, filePath?: string | null, onProgress?: (text: string) => void) {
   const body = await renderMarkdownToHTML(md);
   const theme = useSettingsStore.getState().theme;
   const prismCss = getPrismCss(theme === "dark");
@@ -496,6 +501,17 @@ async function exportImage(md: string, title: string, filePath?: string | null) 
   try {
     // 将所有 <img> 的 src 转为 dataURL，避免 html-to-image 内部 fetch 跨域失败
     await convertImagesToDataUrl(container, filePath);
+
+    // R2：公式与图表截图前渲染——KaTeX 同步替换；mermaid 异步逐个渲染并上报进度
+    const mathCount = replaceMathPlaceholdersInDom(container);
+    if (mathCount > 0) onProgress?.(`公式 ${mathCount} 个`);
+    const mermaidBlocks = container.querySelectorAll("pre.mermaid").length;
+    if (mermaidBlocks > 0) {
+      await replaceMermaidBlocksInDom(container, {
+        theme: theme === "dark" ? "dark" : "default",
+        onProgress: (done, total) => onProgress?.(`图表 ${done}/${total}`),
+      });
+    }
 
     // 等待所有图片加载完成（data URL 也需要 decode），避免截图空白
     const images = Array.from(container.querySelectorAll("img"));

@@ -18,11 +18,10 @@
  * - hr → Paragraph with bottom border
  * - 行内格式：bold/italic/strike/code/link
  *
- * 不支持的元素（简化处理）：
- * - mermaid 图表 → 转为代码块
- * - 数学公式 → 转为纯文本（latex 源码）
- * - 任务列表 → 转为普通列表项前缀 [✓]/[ ]
- * - 脚注 → 转为行内文本
+ * R2（v0.10.0）公式/图表保真：
+ * - mathBlock → KaTeX 渲染 → html-to-image 截为 PNG → ImageRun（失败降级 LaTeX 源码文本）
+ * - fence language=mermaid → mermaid.render SVG → 截为 PNG → ImageRun（失败降级代码块）
+ * - 渲染依赖主文档的 KaTeX CSS（index.html /vendor/katex）与 mermaid 包（主 bundle 已含）
  */
 
 import { notifyError, notifySuccess } from "../services/notificationService";
@@ -46,6 +45,110 @@ function getDefaultDir(filePath: string | null | undefined): string | undefined 
 // ─── Block[] → docx 元素转换 ──────────────────────
 
 import type { Block, InlineRun } from "./exportBlocks";
+// R2：公式/图表渲染与进度类型（mermaid 走统一替换器，KaTeX 本文件内直接渲染）
+import katex from "katex";
+import { replaceMermaidBlocksInDom, type ExportRenderProgress } from "./exportMathRender";
+
+/** R2 进度回调类型再导出（ExportDialog/调用方使用） */
+export type { ExportRenderProgress };
+
+// ─── R2：公式/图表 → PNG ImageRun ──────────────────────
+
+/** dataURL → Uint8Array（docx ImageRun 需要） */
+function dataUrlToBytes(dataUrl: string): Uint8Array {
+  const base64 = dataUrl.substring(dataUrl.indexOf(",") + 1);
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * 将元素截为 PNG dataURL（html-to-image，与 exportElementAsPng 同款能力）。
+ * 元素挂载到视口内隐藏容器（visibility:hidden → 截图前转 visible），
+ * 依赖主文档样式表（KaTeX 字体等由 html-to-image 自动内联）。
+ *
+ * @returns dataURL 与像素尺寸；失败返回 null（调用方降级）
+ */
+async function renderElementToPng(el: HTMLElement): Promise<{ dataUrl: string; width: number; height: number } | null> {
+  const { toPng } = await import("html-to-image");
+  const wrapper = document.createElement("div");
+  wrapper.style.position = "fixed";
+  wrapper.style.left = "0";
+  wrapper.style.top = "0";
+  wrapper.style.zIndex = "-1";
+  wrapper.style.background = "#ffffff";
+  wrapper.style.visibility = "hidden";
+  wrapper.appendChild(el);
+  document.body.appendChild(wrapper);
+  try {
+    wrapper.style.visibility = "visible";
+    // 等一帧确保布局与字体应用完成
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    const rect = el.getBoundingClientRect();
+    const width = Math.ceil(rect.width);
+    const height = Math.ceil(rect.height);
+    if (width <= 0 || height <= 0) return null;
+    const dataUrl = await toPng(el, { width, height, pixelRatio: 2, backgroundColor: "#ffffff" });
+    return { dataUrl, width, height };
+  } catch (err) {
+    console.warn("[导出Word] 公式/图表截图失败，降级为文本:", err);
+    return null;
+  } finally {
+    wrapper.remove();
+  }
+}
+
+/** 数学公式 → PNG ImageRun（KaTeX 渲染；失败返回 null 降级为 LaTeX 文本） */
+async function renderLatexToImageRun(latex: string): Promise<unknown | null> {
+  try {
+    const { ImageRun } = await import("docx");
+    const el = document.createElement("div");
+    el.style.color = "#1a1a1a";
+    el.style.fontSize = "16px";
+    // 限制宽度避免超宽公式撑爆页面（DOCX 正文区约 6.5in ≈ 624px）
+    el.style.maxWidth = "620px";
+    el.innerHTML = katex.renderToString(latex, { throwOnError: false, displayMode: true });
+    const shot = await renderElementToPng(el);
+    if (!shot) return null;
+    return new ImageRun({
+      type: "png",
+      data: dataUrlToBytes(shot.dataUrl),
+      transformation: { width: shot.width / 2, height: shot.height / 2 }, // pixelRatio:2 → 缩回逻辑像素
+    });
+  } catch (err) {
+    console.warn("[导出Word] KaTeX 渲染失败，降级为 LaTeX 文本:", err);
+    return null;
+  }
+}
+
+/** mermaid 代码 → PNG ImageRun（统一替换器渲染 SVG；失败返回 null 降级为代码块） */
+async function renderMermaidToImageRun(code: string, theme?: string): Promise<unknown | null> {
+  try {
+    const { ImageRun } = await import("docx");
+    const holder = document.createElement("div");
+    holder.style.color = "#1a1a1a";
+    holder.style.fontSize = "16px";
+    const pre = document.createElement("pre");
+    pre.className = "mermaid";
+    pre.textContent = code;
+    holder.appendChild(pre);
+    const replaced = await replaceMermaidBlocksInDom(holder, { theme });
+    if (replaced === 0) return null;
+    const svg = holder.querySelector("svg");
+    if (!svg) return null;
+    const shot = await renderElementToPng(svg as unknown as HTMLElement);
+    if (!shot) return null;
+    return new ImageRun({
+      type: "png",
+      data: dataUrlToBytes(shot.dataUrl),
+      transformation: { width: shot.width / 2, height: shot.height / 2 },
+    });
+  } catch (err) {
+    console.warn("[导出Word] mermaid 渲染失败，降级为代码块:", err);
+    return null;
+  }
+}
 
 /**
  * 将 InlineRun[] 转换为 docx TextRun[] 数组
@@ -91,11 +194,13 @@ async function inlineRunsToTextRuns(runs: InlineRun[]): Promise<any[]> {
  *
  * @param blocks Block[] 中间结构
  * @param indentLevel 缩进级别（用于 blockquote 嵌套）
+ * @param onProgress R2：公式/图表渲染进度回调（done/total，失败也计数）
  * @returns docx 元素数组（用于 Document 的 sections.children）
  */
 export async function convertBlocksToDocxElements(
   blocks: Block[],
   indentLevel: number = 0,
+  onProgress?: ExportRenderProgress,
 ): Promise<unknown[]> {
   const docx = await import("docx");
   const {
@@ -109,6 +214,18 @@ export async function convertBlocksToDocxElements(
     WidthType,
     ShadingType,
   } = docx;
+
+  // R2：进度总数 = 公式块 + mermaid 代码块数
+  const renderTotal = blocks.filter(
+    (b) =>
+      b.kind === "mathBlock" ||
+      (b.kind === "codeBlock" && b.language === "mermaid"),
+  ).length;
+  let renderDone = 0;
+  const reportProgress = () => {
+    renderDone++;
+    onProgress?.(renderDone, renderTotal);
+  };
 
   const elements: unknown[] = [];
 
@@ -192,6 +309,15 @@ export async function convertBlocksToDocxElements(
         break;
       }
       case "codeBlock": {
+        // R2：mermaid 代码块 → SVG 渲染 → PNG ImageRun（保真）；失败降级为普通代码块
+        if (block.language === "mermaid") {
+          const imageRun = await renderMermaidToImageRun(block.content);
+          reportProgress();
+          if (imageRun) {
+            elements.push(imageRun);
+            break;
+          }
+        }
         // 代码块：每行一个 TextRun，monospace 字体 + 灰色背景
         const lines = block.content.replace(/\n$/, "").split("\n");
         const codeRuns: any[] = [];
@@ -214,7 +340,13 @@ export async function convertBlocksToDocxElements(
         break;
       }
       case "mathBlock": {
-        // 数学公式：保留 latex 源码（无法在 docx 中渲染 KaTeX）
+        // R2：KaTeX 渲染 → PNG ImageRun（保真）；失败降级为 LaTeX 源码文本（既有行为）
+        const imageRun = await renderLatexToImageRun(block.latex);
+        reportProgress();
+        if (imageRun) {
+          elements.push(imageRun);
+          break;
+        }
         elements.push(
           new Paragraph({
             children: [
@@ -306,11 +438,13 @@ export async function convertBlocksToDocxElements(
  * 修复 v0.3.0：Tauri 环境下使用 save 对话框选择保存路径，writeFile 写入二进制
  *
  * @param opts.filePath 当前编辑文件路径，用于推导默认保存目录
+ * @param onProgress R2：公式/图表渲染进度回调（done/total，失败也计数）
  */
 export async function markdownToDocx(
   markdown: string,
   filename: string,
   filePath?: string | null,
+  onProgress?: ExportRenderProgress,
 ): Promise<boolean> {
   try {
     const { Document, Packer, AlignmentType, LevelFormat } = await import("docx");
@@ -319,8 +453,8 @@ export async function markdownToDocx(
     const { parseMarkdownToBlocks } = await import("./exportBlocks");
     const blocks = parseMarkdownToBlocks(markdown);
 
-    // 2. Block[] → docx 元素
-    const children = await convertBlocksToDocxElements(blocks);
+    // 2. Block[] → docx 元素（R2：公式/图表渲染进度透传）
+    const children = await convertBlocksToDocxElements(blocks, 0, onProgress);
 
     // 3. 构造 Document（含有序列表 numbering 配置）
     const doc = new Document({

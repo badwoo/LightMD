@@ -365,8 +365,8 @@ describe("问题5：导出图片/word 支持路径选择（Tauri save 对话框�
   it("ExportDialog.tsx 调用 markdownToDocx 时传入 filePath", () => {
     const tsxPath = path.resolve(__dirname, "../components/dialogs/ExportDialog.tsx");
     const src = fs.readFileSync(tsxPath, "utf-8");
-    // 验证 markdownToDocx 调用时传 filePath
-    expect(src).toMatch(/markdownToDocx\(markdown,\s*baseName,\s*filePath\)/);
+    // 验证 markdownToDocx 调用时传 filePath（R2 起追加分隔的 onProgress 回调参数）
+    expect(src).toMatch(/markdownToDocx\(markdown,\s*baseName,\s*filePath,/);
   });
 });
 
