@@ -356,6 +356,22 @@ export async function exportLatex(
     const latex = markdownToLatex(markdown, filename.replace(/\.md$/i, ""));
     const finalName = filename.replace(/\.md$/i, "") + ".tex";
 
+    // v0.11.0 B5-1 返修：与 DOCX 对齐 —— 未识别 token 必须上报，不能静默丢内容。
+    //（此前只有 DOCX 走 detailed 版解析并提示，LaTeX 用简化版 → 同样的内容
+    //  在 LaTeX 导出里无声消失且用户毫不知情。）
+    try {
+      const { parseMarkdownToBlocksDetailed } = await import("./exportBlocks");
+      const { unknownTokens } = parseMarkdownToBlocksDetailed(markdown);
+      if (unknownTokens.length > 0) {
+        const { notifyWarning } = await import("../services/notificationService");
+        notifyWarning(
+          `部分内容无法导出到 LaTeX：${unknownTokens.join("、")}。已导出其余内容。`,
+        );
+      }
+    } catch (err) {
+      console.warn("[导出LaTeX] 未识别内容检查失败（不影响导出）:", err);
+    }
+
     if (isTauri()) {
       try {
         const { save } = await import("@tauri-apps/plugin-dialog");

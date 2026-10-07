@@ -20,6 +20,25 @@
  * - image（转为带 imageSrc 的占位 run，下游自行决定渲染方式）
  */
 
+/**
+ * v0.11.0 B2-4 返修：**结构/容器**类 token —— 它们落到 default 分支属正常，
+ * 内容由专门分支或后续迭代导出，不应计入 unknownTokens（否则含脚注的文档
+ * 每次导出都会弹「部分内容无法导出」误报，脚注内容其实是导出的）。
+ */
+const STRUCTURAL_TOKENS = new Set([
+  "footnote_block_open",
+  "footnote_block_close",
+  "footnote_open",
+  "footnote_close",
+  "footnote_anchor",
+  "footnote_tail",
+  "footnote_ref",
+  "inline",
+  "text",
+  "softbreak",
+  "hardbreak",
+]);
+
 import MarkdownIt from "markdown-it";
 // R1(v0.10.0):实例统一由 renderPipeline 创建（内部走 parser 工厂），配置单一来源
 import { getDocxLatexMarkdownIt } from "../core/renderPipeline";
@@ -102,7 +121,7 @@ export type Block =
   | { kind: "taskList"; items: ListItem[] }
   | { kind: "defList"; items: DefItem[] }
   | { kind: "codeBlock"; content: string; language: string }
-  | { kind: "table"; header: InlineRun[][][]; rows: InlineRun[][][] }
+  | { kind: "table"; header: InlineRun[][][]; rows: InlineRun[][][]; aligns?: ("left" | "center" | "right" | null)[] }
   | { kind: "blockquote"; blocks: Block[] }
   | { kind: "hr" }
   | { kind: "toc"; headings: { level: number; text: string; id: string }[] }
@@ -536,9 +555,16 @@ function parseDefList(
 function parseTable(
   tokens: Token[],
   startIdx: number,
-): { header: InlineRun[][][]; rows: InlineRun[][][]; nextIndex: number } {
+): {
+  header: InlineRun[][][];
+  rows: InlineRun[][][];
+  aligns: ("left" | "center" | "right" | null)[];
+  nextIndex: number;
+} {
   const header: InlineRun[][][] = [];
   const rows: InlineRun[][][] = [];
+  // v0.11.0 B5-3：列对齐（markdown-it 把 `:--:` 解析到 th/td 的 style="text-align:xx"）
+  const aligns: ("left" | "center" | "right" | null)[] = [];
   let currentRow: InlineRun[][] = [];
   let currentCell: InlineRun[] = [];
   let isHeader = false;
@@ -579,6 +605,13 @@ function parseTable(
     }
     if (t.type === "th_open" || t.type === "td_open") {
       currentCell = [];
+      // v0.11.0 B5-3：每列只记录一次对齐（所有行共享同一列对齐）
+      if (aligns.length <= currentRow.length) {
+        const attrs = (t.attrs as [string, string][] | null | undefined) || [];
+        const style = attrs.find((a) => a[0] === "style")?.[1] || "";
+        const m = /text-align:\s*(left|center|right)/.exec(style);
+        aligns[currentRow.length] = m ? (m[1] as "left" | "center" | "right") : null;
+      }
       continue;
     }
     if (t.type === "th_close" || t.type === "td_close") {
@@ -595,7 +628,7 @@ function parseTable(
     }
   }
 
-  return { header, rows, nextIndex: i + 1 };
+  return { header, rows, aligns, nextIndex: i + 1 };
 }
 
 /**
@@ -659,7 +692,34 @@ export function parseBlockTokensDetailed(
   /** 记录未识别 token（跳过其配对 close token，避免逐个标记） */
   const markUnknown = (type: string): void => {
     if (type.endsWith("_close")) return; // close 由对应 open 处理
+    // v0.11.0 B2-4 返修：以下 token 属**结构/容器**类，内容由其它分支或后续迭代
+    // 正常导出，报「未识别」是误报。此前含脚注的文档导出 DOCX 必弹
+    // 「无法导出 footnote_block_open / footnote_open / footnote_anchor」，
+    // 而脚注内容其实导出成功 —— 噪音抵消了本项「不静默丢内容」的核心价值。
+    if (STRUCTURAL_TOKENS.has(type)) return;
     unknown.add(type);
+  };
+
+  // v0.11.0 B2-4 返修：toc token **不带 children/meta**（标题只在渲染期由
+  // heading-anchor 插件写入 env），故首版 case "toc" 恒得到空标题表 →
+  // DOCX/LaTeX 的 [toc] 静默消失。改为直接从 token 流收集标题（惰性缓存）。
+  let headingItemsCache: { level: number; text: string; id: string }[] | null = null;
+  const headingItems = (): { level: number; text: string; id: string }[] => {
+    if (headingItemsCache) return headingItemsCache;
+    const out: { level: number; text: string; id: string }[] = [];
+    for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (!t || t.type !== "heading_open") continue;
+      const level = parseInt(t.tag?.slice(1) || "1", 10);
+      const inline = tokens[k + 1];
+      const text = inline && inline.type === "inline" ? (inline.content || "").trim() : "";
+      const idPair = (t.attrs as [string, string][] | null | undefined)?.find(
+        (a) => a[0] === "id",
+      );
+      out.push({ level, text, id: idPair ? idPair[1] : "" });
+    }
+    headingItemsCache = out;
+    return out;
   };
 
   while (i < end) {
@@ -691,13 +751,16 @@ export function parseBlockTokensDetailed(
         const headingsRaw =
           (token.meta && (token.meta as { headings?: unknown }).headings) ?? null;
         let headings: { level: number; text: string; id: string }[] = [];
-        if (Array.isArray(headingsRaw)) {
+        if (Array.isArray(headingsRaw) && headingsRaw.length > 0) {
           headings = headingsRaw as { level: number; text: string; id: string }[];
         } else if (items.length > 0) {
           // 兜底：至少保留目录内的文本条目，不让内容消失
           headings = items
             .filter((r) => r.text.trim().length > 0)
             .map((r) => ({ level: 1, text: r.text.trim(), id: "" }));
+        } else {
+          // v0.11.0 B2-4 返修：主要路径 —— 从 token 流收集真实标题层级
+          headings = headingItems();
         }
         blocks.push({ kind: "toc", headings });
         i++;
@@ -770,7 +833,7 @@ export function parseBlockTokensDetailed(
       }
       case "table_open": {
         const result = parseTable(tokens, i);
-        blocks.push({ kind: "table", header: result.header, rows: result.rows });
+        blocks.push({ kind: "table", header: result.header, rows: result.rows, aligns: result.aligns });
         i = result.nextIndex;
         break;
       }

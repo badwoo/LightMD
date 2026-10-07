@@ -69,10 +69,27 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
-/** ePub 章节拆分：按 h1 / h2 切分 */
+/**
+ * ePub 章节拆分：按 h1 / h2 切分（无 h1/h2 时退到 h3），并为每章收集
+ * h3~h6 子标题供目录分层（v0.11.0 B2-6 返修：此前目录只有一层）。
+ */
 interface RawChapter {
   title: string;
   html: string;
+  /** 章内 h3~h6 子标题（用于 nav.xhtml 分层目录） */
+  subs: { level: number; text: string; id: string }[];
+}
+
+/** 从章节 DOM 中收集 h3~h6 子标题（取 id 以生成锚点链接） */
+function collectSubHeadings(root: HTMLElement): { level: number; text: string; id: string }[] {
+  const out: { level: number; text: string; id: string }[] = [];
+  root.querySelectorAll("h3, h4, h5, h6").forEach((h) => {
+    const level = parseInt(h.tagName.slice(1), 10);
+    const text = (h.textContent || "").trim();
+    if (!text) return;
+    out.push({ level, text, id: h.id || "" });
+  });
+  return out;
 }
 
 function splitChapters(body: HTMLElement): RawChapter[] {
@@ -81,7 +98,7 @@ function splitChapters(body: HTMLElement): RawChapter[] {
   ) as Element[];
 
   if (childNodes.length === 0) {
-    return [{ title: "", html: body.innerHTML }];
+    return [{ title: "", html: body.innerHTML, subs: [] }];
   }
 
   const hasH1 = childNodes.some((n) => n.tagName === "H1");
@@ -89,10 +106,12 @@ function splitChapters(body: HTMLElement): RawChapter[] {
     ? "H1"
     : childNodes.some((n) => n.tagName === "H2")
       ? "H2"
-      : null;
+      : childNodes.some((n) => n.tagName === "H3")
+        ? "H3"
+        : null;
 
   if (!splitTag) {
-    return [{ title: "", html: body.innerHTML }];
+    return [{ title: "", html: body.innerHTML, subs: [] }];
   }
 
   const doc = body.ownerDocument;
@@ -100,11 +119,14 @@ function splitChapters(body: HTMLElement): RawChapter[] {
   let current: HTMLElement | null = null;
   let title = "";
 
+  const pushCurrent = () => {
+    if (!current) return;
+    chapters.push({ title, html: current.innerHTML, subs: collectSubHeadings(current) });
+  };
+
   for (const node of childNodes) {
     if (node.tagName === splitTag) {
-      if (current) {
-        chapters.push({ title, html: current.innerHTML });
-      }
+      pushCurrent();
       current = doc.createElement("div");
       current.appendChild(node.cloneNode(true));
       title = node.textContent?.trim() || "";
@@ -117,7 +139,7 @@ function splitChapters(body: HTMLElement): RawChapter[] {
       current.appendChild(node.cloneNode(true));
     }
   }
-  if (current) chapters.push({ title, html: current.innerHTML });
+  pushCurrent();
 
   return chapters;
 }
@@ -165,12 +187,29 @@ ${content}
 `;
 }
 
-/** 构造 nav.xhtml 目录 */
-function buildNavXhtml(chapters: { title: string }[]): string {
+/** 构造 nav.xhtml 目录（v0.11.0 B2-6 返修：支持 h3~h6 分层 + 引入样式表） */
+function buildNavXhtml(
+  chapters: { title: string; subs?: { level: number; text: string; id: string }[] }[],
+): string {
   const items = chapters
     .map((c, i) => {
       const title = escapeXml(c.title || `Chapter ${i + 1}`);
-      return `    <li><a href="chap${i + 1}.xhtml">${title}</a></li>`;
+      const subs = c.subs || [];
+      if (subs.length === 0) {
+        return `    <li><a href="chap${i + 1}.xhtml">${title}</a></li>`;
+      }
+      // 子标题按层级缩进（最小层级作为第一层），有 id 时链接到章内锚点
+      const minLevel = Math.min(...subs.map((s) => s.level));
+      const subItems = subs
+        .map((s) => {
+          const indent = "  ".repeat(Math.max(0, s.level - minLevel));
+          const href = s.id
+            ? `chap${i + 1}.xhtml#${encodeURIComponent(s.id)}`
+            : `chap${i + 1}.xhtml`;
+          return `      ${indent}<li><a href="${href}">${escapeXml(s.text)}</a></li>`;
+        })
+        .join("\n");
+      return `    <li><a href="chap${i + 1}.xhtml">${title}</a>\n    <ol>\n${subItems}\n    </ol></li>`;
     })
     .join("\n");
   const ol = chapters.length > 0 ? `<ol>\n${items}\n  </ol>` : "";
@@ -180,6 +219,7 @@ function buildNavXhtml(chapters: { title: string }[]): string {
 <head>
 <meta charset="utf-8"/>
 <title>目录</title>
+<link rel="stylesheet" type="text/css" href="style.css"/>
 </head>
 <body>
 <nav epub:type="toc" id="toc">
@@ -292,7 +332,10 @@ pre code .token.regex, pre code .token.important, pre code .token.variable { col
 ul.task-list, li.task-list { list-style: none; padding-left: 1.2em; }
 .task-list li.task-item { list-style: none; position: relative; }
 li.task-item input[type="checkbox"] { margin-right: 0.5em; }
-li.task-item.task-checked { color: #888; text-decoration: line-through; }
+/* v0.11.0 B2-6 返修：task-checked 渲染在**内层 div.task-content** 上
+ * （见 core/markdown/task-list-plugin.ts），写成 li.task-item.task-checked
+ * 永远匹配不到 → 已完成项没有删除线。下面的选择器覆盖两种形态。 */
+.task-content.task-checked, li.task-item.task-checked { color: #888; text-decoration: line-through; }
 
 /* ── v0.11.0 B2-6 新增：自动目录 ── */
 nav.toc { border: 1px solid #ddd; border-radius: 6px; padding: 0.8em 1em; margin: 1em 0; background: #fafafa; }

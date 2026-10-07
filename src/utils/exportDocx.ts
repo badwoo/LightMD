@@ -48,6 +48,8 @@ import type { Block, InlineRun } from "./exportBlocks";
 // R2：公式/图表渲染与进度类型（mermaid 走统一替换器，KaTeX 本文件内直接渲染）
 import katex from "katex";
 import { replaceMermaidBlocksInDom, type ExportRenderProgress } from "./exportMathRender";
+// v0.11.0 B2-5 返修：相对路径图片需要按文档目录解析
+import { resolveRelativePath } from "./imagePath";
 
 /** R2 进度回调类型再导出（ExportDialog/调用方使用） */
 export type { ExportRenderProgress };
@@ -100,7 +102,10 @@ async function renderElementToPng(el: HTMLElement): Promise<{ dataUrl: string; w
 }
 
 /** 数学公式 → PNG ImageRun（KaTeX 渲染；失败返回 null 降级为 LaTeX 文本） */
-async function renderLatexToImageRun(latex: string): Promise<unknown | null> {
+async function renderLatexToImageRun(
+  latex: string,
+  displayMode: boolean = true,
+): Promise<unknown | null> {
   try {
     const { ImageRun } = await import("docx");
     const el = document.createElement("div");
@@ -108,7 +113,7 @@ async function renderLatexToImageRun(latex: string): Promise<unknown | null> {
     el.style.fontSize = "16px";
     // 限制宽度避免超宽公式撑爆页面（DOCX 正文区约 6.5in ≈ 624px）
     el.style.maxWidth = "620px";
-    el.innerHTML = katex.renderToString(latex, { throwOnError: false, displayMode: true });
+    el.innerHTML = katex.renderToString(latex, { throwOnError: false, displayMode });
     const shot = await renderElementToPng(el);
     if (!shot) return null;
     return new ImageRun({
@@ -178,21 +183,51 @@ async function loadImageBytes(src: string): Promise<Uint8Array | null> {
       // 非 base64（纯文本）→ UTF-8 字节
       return new TextEncoder().encode(decodeURIComponent(payload));
     }
+    // v0.11.0 B2-5 返修：Markdown 里的图片绝大多数是**相对路径**
+    // （`![图](assets/img.png)`，也是应用自身插入图片的形态）。原实现把 src
+    // 直接交给 readFile → 相对路径必然找不到 → 图片退化为 `[图片: alt]` 占位文字。
+    // 现以当前导出文档所在目录为基准解析为绝对路径。
+    const resolved = resolveExportImagePath(src);
     // 本地路径：Tauri fs 读取
     const { isTauri } = await import("../services/fileService");
     if (isTauri()) {
       const { readFile } = await import("@tauri-apps/plugin-fs");
-      const bytes = await readFile(src);
+      const bytes = await readFile(resolved);
       return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayBuffer);
     }
     // 浏览器环境：fetch（相对路径基于当前 origin，可能读不到 → 降级）
-    const resp = await fetch(src);
+    const resp = await fetch(resolved);
     if (!resp.ok) return null;
     return new Uint8Array(await resp.arrayBuffer());
   } catch (err) {
     console.warn("[导出Word] 图片读取失败，降级为占位文字:", src, err);
     return null;
   }
+}
+
+/**
+ * v0.11.0 B2-5 返修：本次导出任务的文档目录，用于把 Markdown 里的**相对路径**
+ * 图片解析为可读的绝对路径。
+ *
+ * 用模块级变量而非层层传参：一次导出是整体操作，而 inlineRunsToTextRuns 的调用点
+ * 遍布段落/标题/表格/列表/定义列表，逐个加参数会显著放大改动面且容易漏改。
+ */
+let exportImageBaseDir: string | null = null;
+
+/** 相对路径 → 以文档目录为基准的绝对路径；已是绝对路径或协议 URL 时原样返回 */
+function resolveExportImagePath(src: string): string {
+  const normalized = src.replace(/\\/g, "/");
+  // 绝对路径 / 协议 URL / data URL 不动
+  if (
+    /^[a-zA-Z]:\//.test(normalized) ||
+    normalized.startsWith("/") ||
+    normalized.startsWith("//") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(normalized)
+  ) {
+    return src;
+  }
+  if (!exportImageBaseDir) return src;
+  return resolveRelativePath(exportImageBaseDir.replace(/\\/g, "/").replace(/\/+$/, ""), normalized);
 }
 
 /** 常见图片类型的 docx type 映射 */
@@ -263,9 +298,16 @@ async function inlineRunsToTextRuns(runs: InlineRun[]): Promise<any[]> {
     // 简化：链接转为带颜色的文本（docx 超链接需要 ExternalHyperlink，实现复杂）
     if (r.href) props.color = "0078d4";
 
-    // v0.11.0 B2-5：行内公式转 OMML（Word 原生公式对象）。
-    // 此处保持为可读文本（Word 里是纯文本），但**不再退化为 LaTeX 源码带 $ 符号**。
+    // v0.11.0 B5-4 返修：行内公式与块级公式口径统一 —— 渲染为图片（KaTeX 截图）。
+    // 原实现把 LaTeX 源码当斜体文本输出（且注释误称"转 OMML"），
+    // Word 里看到的是 `\frac{1}{2}` 这样的源码而非公式。
+    // 渲染失败时才退回可读文本，不丢内容。
     if (r.math) {
+      const mathRun = await renderLatexToImageRun(r.math, false);
+      if (mathRun) {
+        result.push(mathRun);
+        continue;
+      }
       result.push(new TextRun({ ...props, text: r.math, italics: true }));
       continue;
     }
@@ -553,38 +595,46 @@ export async function convertBlocksToDocxElements(
         // 使用 any[] 绕过 docx 库 TableRow 实例类型在 TS 中的使用限制
         // （TableRow 是值而非类型，无法直接作为类型注解）
         const rows: any[] = [];
+        // v0.11.0 B5-3 返修：① 表头**不再无条件加粗**（原文档未加粗时被强行加粗）；
+        // ② 单元格改走 inlineRunsToTextRuns，保留行内格式（粗体/斜体/行内码/链接等，
+        //    此前只取 r.text → 行内格式全丢）；③ 应用 markdown 表格的列对齐。
+        const aligns = block.aligns || [];
+        const cellParagraph = async (cellRuns: InlineRun[], colIdx: number) => {
+          const align = aligns[colIdx];
+          return new Paragraph({
+            children: await inlineRunsToTextRuns(cellRuns),
+            ...(align
+              ? {
+                  alignment:
+                    align === "center"
+                      ? AlignmentType.CENTER
+                      : align === "right"
+                        ? AlignmentType.RIGHT
+                        : AlignmentType.LEFT,
+                }
+              : {}),
+          });
+        };
         // 表头（三维结构：header[行][单元格][run]）
         for (const headerRow of block.header) {
-          const headerCells = headerRow.map(
-            (cellRuns) =>
-              new TableCell({
-                children: [
-                  new Paragraph({
-                    children: cellRuns.map(
-                      (r) =>
-                        new TextRun({
-                          text: r.text,
-                          bold: true,
-                        }),
-                    ),
-                  }),
-                ],
-                shading: { type: ShadingType.CLEAR, fill: "f5f5f5", color: "auto" },
-              }),
+          const headerCells = await Promise.all(
+            headerRow.map(
+              async (cellRuns, colIdx) =>
+                new TableCell({
+                  children: [await cellParagraph(cellRuns, colIdx)],
+                  shading: { type: ShadingType.CLEAR, fill: "f5f5f5", color: "auto" },
+                }),
+            ),
           );
           rows.push(new TableRow({ tableHeader: true, children: headerCells }));
         }
         // 表体（三维结构：rows[行][单元格][run]）
         for (const row of block.rows) {
-          const cells = row.map(
-            (cellRuns) =>
-              new TableCell({
-                children: [
-                  new Paragraph({
-                    children: cellRuns.map((r) => new TextRun({ text: r.text })),
-                  }),
-                ],
-              }),
+          const cells = await Promise.all(
+            row.map(
+              async (cellRuns, colIdx) =>
+                new TableCell({ children: [await cellParagraph(cellRuns, colIdx)] }),
+            ),
           );
           rows.push(new TableRow({ children: cells }));
         }
@@ -715,6 +765,8 @@ export async function markdownToDocx(
     const { blocks, unknownTokens } = parseMarkdownToBlocksDetailed(markdown);
 
     // 2. Block[] → docx 元素（R2：公式/图表渲染进度透传）
+    // v0.11.0 B2-5 返修：本次导出的文档目录交给模块级上下文，供相对路径图片解析
+    exportImageBaseDir = getDefaultDir(filePath) ?? null;
     const children = await convertBlocksToDocxElements(blocks, 0, onProgress);
 
     // 3. 构造 Document（含有序/无序列表 numbering 配置）
