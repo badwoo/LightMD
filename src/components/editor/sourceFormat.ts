@@ -184,6 +184,13 @@ const SOURCE_ACTION_BY_ID: Record<string, string> = {
   // E8(v0.9.3):下划线源码模式以 <u> 包裹(Markdown 无原生语法)
   "format.underline": "underline",
   "format.math": "math",
+  // v0.11.0 返修（B3-2）：这三条此前只有 shortcuts.ts 的 scope 改成了
+  // `rich-source`，本表却缺映射 → parseShortcut 返回 null → 源码 textarea 里
+  // Ctrl+Shift+8/9/. 仍然完全无反应（验收①未达成）。buildFormatReplacement
+  // 早已支持 ul/ol/quote，只差这三行。
+  "format.bulletList": "ul",
+  "format.orderedList": "ol",
+  "format.blockquote": "quote",
   "format.heading1": "heading1",
   "format.heading2": "heading2",
   "format.heading3": "heading3",

@@ -466,6 +466,15 @@ const MARK_OUTER_ORDER: Record<string, number> = {
 function inlineToMarkdown(node: Node, context?: "table"): string {
   const parts: string[] = [];
 
+  // v0.11.0 B3-4：`~`/`^` 的转义判定需要**整段行内文本**作为上下文——
+  // 标记可能被 mark 拆散到多个文本节点，但回读时仍能跨节点配对。
+  let pairContext = "";
+  node.forEach((c) => {
+    if (c.isText) pairContext += c.text || "";
+    else if (c.type.name === "image") pairContext += (c.attrs.alt as string) || "";
+    else pairContext += c.textContent;
+  });
+
   node.forEach((child) => {
     if (child.type.name === "text") {
       let text = child.text || "";
@@ -474,7 +483,7 @@ function inlineToMarkdown(node: Node, context?: "table"): string {
       // v0.9.0 C1：非 code 文本走转义层（code 内容是字面文本不转义；
       // 表格上下文的管道转义见 applyMark/code 与 escapeText 的 inTableCell）
       const hasCode = marks.some((m) => m.type.name === "code");
-      if (!hasCode) text = escapeText(text, context === "table");
+      if (!hasCode) text = escapeText(text, context === "table", pairContext);
 
       // 从外到内按优先级应用标记（B2/B3/B4 修复）
       const ordered = [...marks].sort(
@@ -603,10 +612,24 @@ function escapeTitle(title: string): string {
  * - "_"：CommonMark 词内下划线无法构成强调，仅转义词外的
  * - "=="、"!["、实体引用 &name;、autolink 形态 <scheme:、链接形态 ](：
  *   按语法形态条件转义
- * - "~"、"^"、"$"：低频且易与插件语法冲突，直接转义
+ * - "~"、"^"：只在**真的能被子/上标插件配对**时转义（见 PAIRABLE_SUB/SUP）
+ * - "$"：无条件转义（两个裸 $ 会配成行内公式，金额场景无法区分）
  * - 表格上下文中 "|" 转义（GFM）
+ *
+ * @param text 待转义文本
+ * @param inTableCell 表格上下文（额外转义 `|`）
+ * @param pairContext 整段行内文本，用于 `~`/`^` 的跨节点配对判定；
+ *                    省略时退化为按本节点文本判定
  */
-function escapeText(text: string, inTableCell = false): string {
+/**
+ * sub/sup 的**真实配对**判定，与 markdown-it-sub / markdown-it-sup 的实现对齐：
+ * 分隔符之间必须非空、且不含未转义空白（`\\.` 允许转义字符，含转义空格）。
+ * 只要文本里存在这样一对，该标记就有被回读成子/上标的风险，需要转义。
+ */
+const PAIRABLE_SUB = /~([^\s~]|\\.)+~/;
+const PAIRABLE_SUP = /\^([^\s^]|\\.)+\^/;
+
+function escapeText(text: string, inTableCell = false, pairContext?: string): string {
   if (!text) return text;
   let out = text.replace(/\\/g, "\\\\");
 
@@ -652,20 +675,28 @@ function escapeText(text: string, inTableCell = false): string {
   // autolink 形态的 <（防 <scheme:...> 被解析为链接）
   out = out.replace(/<(?=[a-zA-Z][a-zA-Z0-9.+-]*:)/g, "\\<");
 
-  // v0.11.0 B3-4：波浪线 / 脱字符改为「成对出现才转义」。
+  // v0.11.0 B3-4（返修）：波浪线 / 脱字符**只在真的能配对时**才转义。
   //
-  // 缺陷背景（P1）：此前是无条件裸替换（`out.replace(/~/g, "\\~")` 等），
-  // 导致 `x^2` 存成 `x\^2`、`a ~ b` 存成 `a \~ b` —— 单字符在 CommonMark 中
-  // 根本构不成任何标记（`~sub~`/`^sup^` 都需配对），属无必要转义，且每次编辑
-  // 该块都会重现，用户看到自己没写过的反斜杠 + git diff 噪音。
-  // 对照：`*`（count>=2 才转）、`_`（词内判断）本来就有条件判断，只有这三条是裸的。
+  // 缺陷背景（P1）：最初是无条件裸替换 → `x^2` 存成 `x\^2`、`a ~ b` 存成 `a \~ b`，
+  // 凭空多出反斜杠 + git diff 噪音。
   //
-  // 判定与 markRules 的正则一致（`(~)([^~]+)\1` / `(\^)([^^]+)\1`）：
-  // 出现 2 次及以上才可能被解析成标记，此时转义。
-  if ((out.match(/~/g) || []).length >= 2) {
+  // 首版修复改成「节点内出现 ≥2 次就转义」，**口径仍然不对**：判定必须与
+  // markdown-it-sub / markdown-it-sup 的真实配对规则一致。两处插件的规则是
+  // （见 node_modules/markdown-it-sub|sup/index.mjs）：分隔符之间必须**非空**，
+  // 且不能含未转义空白，否则 `content.match(/(^|[^\\])(\\\\)*\s/)` 直接否决配对。
+  //
+  // 本机实测（markdown-it + sub/sup 探针）：
+  //   `x^2 + y^2` → 2 个 `^`，中间含空格 → **不配对** → 不该转义（首版却转了）
+  //   `x^2+y^2`   → 中间无空白 → 配对成上标 → **必须转义**
+  //   `a ~ b ~ c` → 含空格 → 不配对；`a~b~c` → 配对成下标 → 必须转义
+  //
+  // 判定使用 pairContext（整段行内文本）而非单个文本节点，避免
+  // `a~**b**~c` 这类「标记被 mark 拆到不同节点、回读时仍能跨节点配对」的漏转义。
+  const pairSource = pairContext ?? out;
+  if (PAIRABLE_SUB.test(pairSource)) {
     out = out.replace(/~/g, "\\~");
   }
-  if ((out.match(/\^/g) || []).length >= 2) {
+  if (PAIRABLE_SUP.test(pairSource)) {
     out = out.replace(/\^/g, "\\^");
   }
   // `$` 保留无条件转义：两个裸 `$` 会配对成行内公式（$x$），是真实风险，
