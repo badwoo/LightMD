@@ -29,6 +29,8 @@ import { footnoteHoverPlugin } from "./plugins/footnote-hover";
 import { tocUpdatePlugin } from "./plugins/toc-update";
 // v0.11.0 B4-8：Emoji 短码渲染层显示为图形（不改 doc 与序列化）
 import { emojiRenderPlugin } from "./plugins/emoji-render";
+// v0.11.0 B4-9：阅读模式图片灯箱（点击放大/遮罩关闭/键盘导航）
+import { imageLightboxPlugin } from "./plugins/image-lightbox";
 import { CodeBlockView } from "./plugins/code-block";
 import { MermaidBlockView } from "./plugins/mermaid-block";
 import { MathInlineView, MathBlockView } from "./plugins/math-block";
@@ -238,6 +240,8 @@ export function createEditor(options: EditorOptions): EditorView | null {
       tocUpdatePlugin(),
       // v0.11.0 B4-8：Emoji 短码渲染为图形（惰性取 md 实例，含 emoji 插件）
       emojiRenderPlugin(() => getMarkdownIt(true)),
+      // v0.11.0 B4-9：图片灯箱（仅阅读模式生效）
+      imageLightboxPlugin(),
       searchHighlightPlugin,
       autoPairPlugin(),
       smartPastePlugin(),
