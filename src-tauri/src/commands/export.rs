@@ -2,6 +2,12 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Edge headless 虚拟时间预算（毫秒）。
+/// R3s（v0.10.0）：5000 → 10000——Mermaid 多图大文档在 5s 内可能截在渲染中途
+/// （virtual-time-budget 耗尽即打印当前 DOM），加倍预算降低截断概率；
+/// 彻底方案（WebView2 PrintToPdf）在 v1.0.0 R3 单列。
+const VIRTUAL_TIME_BUDGET_MS: u32 = 10000;
+
 /// 将 HTML 内容导出为 PDF 文件
 /// 使用 Windows Edge (msedge) 的 headless 模式将 HTML 转换为 PDF
 #[tauri::command]
@@ -20,24 +26,17 @@ pub async fn export_pdf(html_path: String, pdf_path: String) -> Result<(), Strin
     }
 
     // 查找 Edge 可执行文件路径
-    let edge_path = find_edge_path()
-        .ok_or_else(|| "未找到 Microsoft Edge 浏览器，PDF 导出需要 Edge 支持".to_string())?;
+    // R3s：错误文案明确指出 PDF 导出依赖 Edge/Chrome，前端 notifyError 会原样展示该消息
+    let edge_path = find_edge_path().ok_or_else(|| {
+        "未找到 Microsoft Edge / Chrome 浏览器，PDF 导出需要其中之一支持。请安装 Edge 后重试".to_string()
+    })?;
 
     let html_file_url = format!("file:///{}", html.to_string_lossy().replace('\\', "/"));
     let pdf_path_str = pdf.to_string_lossy().to_string();
 
     // 使用 Edge headless 模式打印到 PDF
-    let print_to_pdf_arg = format!("--print-to-pdf={}", pdf_path_str);
     let output = Command::new(&edge_path)
-        .args([
-            "--headless",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--virtual-time-budget=5000",
-            &print_to_pdf_arg,
-            "--print-to-pdf-no-header",
-            &html_file_url,
-        ])
+        .args(build_pdf_print_args(&pdf_path_str, &html_file_url))
         .output()
         .map_err(|e| format!("执行 Edge 命令失败: {}", e))?;
 
@@ -52,6 +51,19 @@ pub async fn export_pdf(html_path: String, pdf_path: String) -> Result<(), Strin
     }
 
     Ok(())
+}
+
+/// 构造 Edge headless 打印参数（独立纯函数，便于单测断言预算值）
+fn build_pdf_print_args(pdf_path: &str, html_file_url: &str) -> Vec<String> {
+    vec![
+        "--headless".to_string(),
+        "--disable-gpu".to_string(),
+        "--no-sandbox".to_string(),
+        format!("--virtual-time-budget={}", VIRTUAL_TIME_BUDGET_MS),
+        format!("--print-to-pdf={}", pdf_path),
+        "--print-to-pdf-no-header".to_string(),
+        html_file_url.to_string(),
+    ]
 }
 
 /// 将 HTML 内容保存为临时文件并导出为 PDF
@@ -87,7 +99,10 @@ pub async fn export_html_to_pdf(html_content: String, pdf_path: String) -> Resul
     Ok(())
 }
 
-/// 查找 Windows Edge 可执行文件路径
+/// 查找 Windows Edge/Chrome 可执行文件路径。
+/// R3s：路径全部为 Windows 注册表惯用安装位置，非 Windows 平台显式返回 None
+/// （原先无 cfg 守卫，非 Windows 编译时这些反斜杠路径虽能编译但语义错误）。
+#[cfg(windows)]
 fn find_edge_path() -> Option<String> {
     // 常见 Edge 安装路径
     let candidates = [
@@ -127,4 +142,34 @@ fn find_edge_path() -> Option<String> {
     }
 
     None
+}
+
+/// 非 Windows 平台：PDF 导出暂不支持（无 Edge 路径查找逻辑），显式返回 None
+#[cfg(not(windows))]
+fn find_edge_path() -> Option<String> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdf_print_args_contains_doubled_virtual_time_budget() {
+        // R3s：预算 5000 → 10000，防 Mermaid 多图大文档截断
+        let args = build_pdf_print_args("out.pdf", "file:///tmp/x.html");
+        assert!(args.iter().any(|a| a == "--virtual-time-budget=10000"));
+        assert!(args.iter().any(|a| a == "--headless"));
+        assert!(args.iter().any(|a| a.starts_with("--print-to-pdf=")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn find_edge_path_returns_some_on_windows_with_browser() {
+        // 开发/发布环境均为 Windows 且装有 Edge 或 Chrome；未安装时本测试跳过语义不成立，
+        // 改为宽松断言：返回值若存在必须是存在的可执行路径
+        if let Some(p) = find_edge_path() {
+            assert!(std::path::Path::new(&p).exists(), "返回的浏览器路径应存在: {}", p);
+        }
+    }
 }

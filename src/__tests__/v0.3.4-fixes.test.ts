@@ -144,9 +144,9 @@ describe("问题2：重命名联动更新收藏和最近文件", () => {
 // ─── 问题 3：导出 PDF 格式文件时报错 ──────────────────────
 
 describe("问题3：PDF 导出报错修复", () => {
-  it("export.rs 包含 --virtual-time-budget=5000 等待渲染完成", () => {
+  it("export.rs 包含 --virtual-time-budget=10000 等待渲染完成（R3s：5000→10000 防 Mermaid 多图截断）", () => {
     const src = readSrc("../../src-tauri/src/commands/export.rs");
-    expect(src).toMatch(/--virtual-time-budget=5000/);
+    expect(src).toMatch(/--virtual-time-budget=10000/);
   });
 
   it("export.rs 仍包含 --print-to-pdf 和 --print-to-pdf-no-header", () => {
