@@ -68,6 +68,17 @@
   border-color: var(--accent-color);
 }
 
+/* R4：正则表达式非法时输入框红框提示 */
+.search-input-invalid,
+.search-input-invalid:focus {
+  border-color: #e5484d;
+}
+
+/* R4：正则非法红字提示（复用 .search-count 位置） */
+.search-count.search-count-invalid {
+  color: #e5484d;
+}
+
 .search-option-btn,
 .search-nav-btn,
 .search-toggle-btn,

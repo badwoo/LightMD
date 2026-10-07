@@ -287,21 +287,22 @@ describe("v0.8.4 需求11 过滤态禁用拖拽", () => {
 
 // ─── 过滤顺序：先 filter 后 MAX 截断 ────────────────────────────────────
 describe("v0.8.4 需求11 过滤顺序", () => {
-  it("超过 100 条时，位于截断线之后但命中关键字的标题仍应出现", () => {
-    // 构造 110 个标题：第 105 个为 DeepNeedle，其余为 Pad 编号（不含 needle）
+  it("超过 1000 条时，位于截断线之后但命中关键字的标题仍应出现", () => {
+    // 构造 1100 个标题：第 1050 个为 DeepNeedle，其余为 Pad 编号（不含 needle）
+    // （R5：MAX_OUTLINE_ITEMS 100 → 1000，截断断言同步抬升）
     const lines: string[] = [];
-    for (let i = 1; i <= 110; i++) {
-      lines.push(i === 105 ? "# DeepNeedle" : `# Pad${String(i).padStart(3, "0")}`);
+    for (let i = 1; i <= 1100; i++) {
+      lines.push(i === 1050 ? "# DeepNeedle" : `# Pad${String(i).padStart(4, "0")}`);
     }
     const md = lines.join("\n") + "\n";
     const { input } = setup(md);
-    // 未过滤：仅渲染前 100 条（Pad001..Pad100），并显示剩余 10 条提示
-    expect(screen.queryByText("Pad100")).not.toBeNull();
-    expect(screen.queryByText("Pad101")).toBeNull();
-    expect(screen.getByText("还有 10 个标题...")).toBeTruthy();
-    // 输入小写关键字：DeepNeedle 原位于第 105 条（截断线之外），先过滤后截断应命中
+    // 未过滤：仅渲染前 1000 条（Pad0001..Pad1000），并显示剩余 100 条提示
+    expect(screen.queryByText("Pad1000")).not.toBeNull();
+    expect(screen.queryByText("Pad1001")).toBeNull();
+    expect(screen.getByText("仅渲染前 1000 项，还有 100 个标题...")).toBeTruthy();
+    // 输入小写关键字：DeepNeedle 原位于第 1050 条（截断线之外），先过滤后截断应命中
     fireEvent.change(input!, { target: { value: "deepneedle" } });
     expect(screen.getByText("DeepNeedle")).toBeTruthy();
-    expect(screen.queryByText(/Pad\d{3}/)).toBeNull();
+    expect(screen.queryByText(/Pad\d{4}/)).toBeNull();
   });
 });
