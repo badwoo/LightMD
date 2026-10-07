@@ -21,6 +21,8 @@ import {
   type PdfExportOptions,
 } from "../../utils/pdfExport";
 import { exportElementAsPng } from "../../utils/exportImage";
+// v0.11.0 B4-3：主题明暗判定单源（night 也是暗色）
+import { isDarkTheme, mermaidThemeName } from "../../utils/themeTone";
 // v0.11.0 B2-1：导出资源内联（离线可用；此前走 CDN → 离线公式图表全空白）
 import {
   collectInlineAssets,
@@ -333,14 +335,14 @@ async function exportHTML(md: string, title: string, includeCSS: boolean, filePa
   const body = await renderMarkdownToHTML(md);
   // 获取当前主题，生成对应的 PrismJS 高亮 CSS
   const theme = useSettingsStore.getState().theme;
-  const prismCss = getPrismCss(theme === "dark");
+  const prismCss = getPrismCss(isDarkTheme(theme));
   const styles = includeCSS ? `<style>${EXPORT_CSS}\n${prismCss}</style>` : "";
   // 检测是否包含 mermaid 图表，注入 mermaid 脚本
   const hasMermaid = body.includes('class="mermaid"');
   // 检测是否包含数学公式，注入 KaTeX 脚本
   const hasMath = body.includes('data-math="inline"') || body.includes('data-math="block"');
   // 修复：mermaid 主题根据当前主题动态选择，原硬编码 "default" 在暗色主题下图表渲染异常
-  const mermaidTheme = theme === "dark" ? "dark" : "default";
+  const mermaidTheme = mermaidThemeName(theme);
   const baseName = title.replace(/\.md$/i, "");
   const defaultDir = getDefaultDir(filePath);
 
@@ -460,7 +462,7 @@ async function exportPDFWithOptions(
 ) {
   const body = await renderMarkdownToHTML(md);
   const theme = useSettingsStore.getState().theme;
-  const prismCss = getPrismCss(theme === "dark");
+  const prismCss = getPrismCss(isDarkTheme(theme));
   const baseName = title.replace(/\.md$/i, "");
 
   // G5：根据用户选项生成 @page 打印 CSS
@@ -480,7 +482,7 @@ async function exportPDFWithOptions(
   // 检测是否包含 mermaid 图表，注入 mermaid 脚本
   const hasMermaid = body.includes('class="mermaid"');
   const hasMath = body.includes('data-math="inline"') || body.includes('data-math="block"');
-  const mermaidTheme = theme === "dark" ? "dark" : "default";
+  const mermaidTheme = mermaidThemeName(theme);
 
   // v0.11.0 B2-1：内联 vendor 资源。
   // PDF 路径尤其必要——Edge headless 抓取临时 HTML 时若走 CDN，
@@ -569,7 +571,7 @@ async function exportPDFWithOptions(
 async function exportImage(md: string, title: string, filePath?: string | null, onProgress?: (text: string) => void) {
   const body = await renderMarkdownToHTML(md);
   const theme = useSettingsStore.getState().theme;
-  const prismCss = getPrismCss(theme === "dark");
+  const prismCss = getPrismCss(isDarkTheme(theme));
 
   // 创建临时隐藏 div
   // 使用 fixed + visibility:hidden 替代 left:-9999px，确保元素在视口内能正确渲染
@@ -598,7 +600,7 @@ async function exportImage(md: string, title: string, filePath?: string | null, 
     const mermaidBlocks = container.querySelectorAll("pre.mermaid").length;
     if (mermaidBlocks > 0) {
       await replaceMermaidBlocksInDom(container, {
-        theme: theme === "dark" ? "dark" : "default",
+        theme: mermaidThemeName(theme),
         onProgress: (done, total) => onProgress?.(`图表 ${done}/${total}`),
       });
     }

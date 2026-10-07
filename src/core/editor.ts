@@ -12,7 +12,7 @@ import { keymap } from "prosemirror-keymap";
 import { baseKeymap } from "prosemirror-commands";
 import type { Node as PMNode } from "prosemirror-model";
 import { lightMDSchema } from "./schema";
-import { markdownToDoc } from "./markdown/parser";
+import { markdownToDoc, getMarkdownIt } from "./markdown/parser";
 import { docToMarkdown } from "./markdown/serializer";
 import { buildInputRules } from "./inputrules";
 import { buildKeymap, dynamicShortcutsPlugin } from "./keymap";
@@ -25,6 +25,10 @@ import { imagePastePlugin } from "./plugins/image-paste";
 import { clipboardPastePlugin } from "./plugins/clipboard-paste";
 import { focusModePlugin } from "./plugins/focus-mode";
 import { footnoteHoverPlugin } from "./plugins/footnote-hover";
+// v0.11.0 B4-7：TOC 目录自动更新（此前用解析期快照，阅读模式改标题后不更新）
+import { tocUpdatePlugin } from "./plugins/toc-update";
+// v0.11.0 B4-8：Emoji 短码渲染层显示为图形（不改 doc 与序列化）
+import { emojiRenderPlugin } from "./plugins/emoji-render";
 import { CodeBlockView } from "./plugins/code-block";
 import { MermaidBlockView } from "./plugins/mermaid-block";
 import { MathInlineView, MathBlockView } from "./plugins/math-block";
@@ -230,6 +234,10 @@ export function createEditor(options: EditorOptions): EditorView | null {
       clipboardPastePlugin(),
       focusModePlugin,
       footnoteHoverPlugin,
+      // v0.11.0 B4-7：TOC 自动更新（appendTransaction + 300ms debounce）
+      tocUpdatePlugin(),
+      // v0.11.0 B4-8：Emoji 短码渲染为图形（惰性取 md 实例，含 emoji 插件）
+      emojiRenderPlugin(() => getMarkdownIt(true)),
       searchHighlightPlugin,
       autoPairPlugin(),
       smartPastePlugin(),

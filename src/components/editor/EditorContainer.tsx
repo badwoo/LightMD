@@ -10,6 +10,8 @@
  */
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { createEditor, getMarkdownFromDoc, clearSerializationCache } from "../../core/editor";
+// v0.11.0 B4-3：主题明暗判定单源（night 也是暗色，此前被 `theme === "dark"` 漏判）
+import { isDarkTheme, mermaidThemeName } from "../../utils/themeTone";
 import { markdownToDoc } from "../../core/markdown/parser";
 // v0.11.0 B3-3：源码模式插入脚注时求未占用 label（避免重复 label 覆盖内容）
 import { nextFootnoteLabelFromText } from "../../core/pmCommands";
@@ -3797,7 +3799,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const endY = Math.min(height, rawEndY);
 
       // 修复：暗色主题下遮罩颜色适配，避免 rgba(0,0,0,0.45) 在深色背景上过暗
-      const dimColor = theme === "dark" ? "rgba(0,0,0,0.28)" : "rgba(0,0,0,0.45)";
+      const dimColor = isDarkTheme(theme) ? "rgba(0,0,0,0.28)" : "rgba(0,0,0,0.45)";
 
       // 若段落不在可视区域（如光标在文档开头但已滚动到中间），默认高亮屏幕中央的一行
       // 修复：原代码整个视口遮罩，用户看不到高亮内容；改为高亮屏幕中央
@@ -3873,8 +3875,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, [sourceContent]);
 
   // ─── 字体 ──────────────────────────────────────
+  // v0.11.0 B4-1：字号/字体同时写到 **:root**（原先只写在 .ProseMirror 元素上）。
+  //
+  // 缺陷背景（P1）：collectCssVars 从 `document.documentElement`（即 :root）读取
+  // `--editor-font-size/family` 来生成 iframe 的分屏预览样式，但变量只设在
+  // .ProseMirror 上 → 取不到，回落 "16px"/"sans-serif" → **改设置后左右两侧
+  // 字号不一致**（所见非所得）。
+  //
+  // 修复：写到 :root，:root 与 .ProseMirror 都能取到；collectCssVars 无需改动。
+  // 同时保留 .ProseMirror 上的设置（局部覆盖，语义更明确）。
   useEffect(() => {
-    const editorDom = editorRef.current?.querySelector(".ProseMirror") as HTMLElement;
+    const root = document.documentElement;
+    root.style.setProperty("--editor-font-size", `${fontSize}px`);
+    root.style.setProperty("--editor-font-family", fontFamily);
+    const editorDom = editorRef.current?.querySelector(".ProseMirror") as HTMLElement | null;
     if (editorDom) {
       editorDom.style.setProperty("--editor-font-size", `${fontSize}px`);
       editorDom.style.setProperty("--editor-font-family", fontFamily);
@@ -3911,7 +3925,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // ─── 主题变化时更新 mermaid 主题 ──────────────────
   // 修复：原 mermaid 主题硬编码为 'default'，暗色主题下图表渲染异常
   useEffect(() => {
-    setMermaidTheme(theme === "dark");
+    setMermaidTheme(isDarkTheme(theme));
   }, [theme]);
 
   // ─── ProseMirror 滚动处理（阅读模式）──────────────────
@@ -4266,14 +4280,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // iframe 引用，用于分屏预览（隔离 DOM，减少主文档节点数）
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   // iframe 初始化状态追踪：首次进入分屏完整加载脚本，后续只更新 body
-  const previewIframeInitRef = useRef<{ mermaid: boolean; math: boolean }>({ mermaid: false, math: false });
+  const previewIframeInitRef = useRef<{ mermaid: boolean; math: boolean; theme: string }>({
+    mermaid: false,
+    math: false,
+    theme: "",
+  });
 
   // 追踪是否刚切换到分屏模式
   useEffect(() => {
     if (viewMode === "split" && prevViewModeRef.current !== "split") {
       justEnteredSplitRef.current = true;
       // 进入分屏时重置 iframe 初始化状态，确保首次完整加载
-      previewIframeInitRef.current = { mermaid: false, math: false };
+      previewIframeInitRef.current = { mermaid: false, math: false, theme: "" };
     }
   }, [viewMode]);
 
@@ -4374,9 +4392,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
     // 判断是否需要完整重写（首次进入、或脚本需求变化时）
     const init = previewIframeInitRef.current;
+    // v0.11.0 B4-3/B4-4：主题明暗判定走单源（night 也是暗色），
+    // 并作为 needFullRewrite 的判据之一 —— 主题变化需重写以更新脚本里的
+    // mermaid 主题参数（增量分支已另加 initialize 重载，双保险）。
+    const mermaidTheme = mermaidThemeName(theme);
+    const themeChanged = init.theme !== theme;
     const needFullRewrite = !init.mermaid && !init.math
       || (hasMermaid && !init.mermaid)
-      || (hasMath && !init.math);
+      || (hasMath && !init.math)
+      || themeChanged;
 
     // 与阅读模式（editor.css .ProseMirror）保持一致的元素样式
     const sharedStyles = `
@@ -4431,7 +4455,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (needFullRewrite) {
       // 完整写入：包含脚本标签和完整样式
       // 注入 PrismJS 语法高亮 CSS，使分屏模式代码高亮与阅读模式一致
-      const prismCss = getPrismCss(theme === "dark");
+      const prismCss = getPrismCss(isDarkTheme(theme));
       doc.open();
       // v0.9.5 问题3：链接点击桥接——iframe 内相对路径/外部链接点击 postMessage 回主文档。
       // 锚点(#开头)不拦截,交给 iframe 原生 hash 导航滚动(渲染层已生成标题 id)
@@ -4454,7 +4478,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       ${hasMath ? '<script src="/vendor/katex/katex.min.js"></script>' : ''}
       </head><body>${previewHtml}
       ${hasMermaid ? `<script>
-        mermaid.initialize({ startOnLoad: true, theme: ${theme === "dark" ? "'dark'" : "'default'"}, securityLevel: 'loose' });
+        mermaid.initialize({ startOnLoad: true, theme: ${isDarkTheme(theme) ? "'dark'" : "'default'"}, securityLevel: 'loose' });
       </script>` : ''}
       ${hasMath ? `<script>
         // 渲染行内公式
@@ -4476,8 +4500,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       </script>` : ''}
       </body></html>`);
       doc.close();
-      // 记录已加载的脚本状态
-      previewIframeInitRef.current = { mermaid: hasMermaid, math: hasMath };
+      // 记录已加载的脚本状态与主题（供下次增量更新比对是否需重写）
+      previewIframeInitRef.current = { mermaid: hasMermaid, math: hasMath, theme };
     } else {
       // 增量更新：只替换 body 内容，不重新加载脚本
       // 替换 body 内容（样式通过 :root 变量自动更新）
@@ -4485,6 +4509,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 重新触发 mermaid 渲染（脚本已加载，直接调用 run）
       if (hasMermaid && (doc as any).defaultView?.mermaid) {
         try {
+          // v0.11.0 B4-4：**主题变化时必须先重新 initialize 再 run**。
+          // 缺陷背景（P1）：原实现只调 mermaid.run，而 mermaid 的主题在
+          // initialize 时确定 → 切换主题后图表配色滞后（仍用旧主题的 SVG）。
+          // 判据用 previewIframeInitRef.theme（上次写入的主题）。
+          if (init.theme !== mermaidTheme) {
+            (doc as any).defaultView.mermaid.initialize({
+              startOnLoad: false,
+              theme: mermaidTheme,
+            });
+          }
           (doc as any).defaultView.mermaid.run({ nodes: doc.querySelectorAll('pre.mermaid') });
         } catch { /* 忽略 mermaid 渲染错误 */ }
       }
