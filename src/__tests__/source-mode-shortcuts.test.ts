@@ -145,10 +145,12 @@ describe("wrapSelection - 选中文本包裹", () => {
     expect(r.replacement).toBe("**hello**");
     expect(r.cursorOffset).toBe(9); // 9 = "**hello**".length
   });
-  it("无选中文本时插入占位，光标停在占位之前", () => {
+  // v0.12.0 需求1：无选中不再把占位文字写进文档，只插语法符号（占位走 ghostText）
+  it("无选中文本时只插语法符号，占位文案走 ghostText，光标居中", () => {
     const r = wrapSelection("", "**", "**", "粗体文本");
-    expect(r.replacement).toBe("**粗体文本**");
-    expect(r.cursorOffset).toBe(2); // 2 = "**".length，便于直接键入替换占位
+    expect(r.replacement).toBe("****");
+    expect(r.cursorOffset).toBe(2); // 2 = "**".length，光标居中便于直接键入
+    expect(r.ghostText).toBe("粗体文本");
   });
   it("斜体：选中包裹 *text*，光标到末尾", () => {
     const r = wrapSelection("ab", "*", "*", "斜体文本");

@@ -33,6 +33,8 @@ export interface StoredUntitledTab {
   id: string;
   name: string;
   content: string;
+  /** v0.12.0 需求7：创建时间戳（ms）。存量数据缺失时 undefined → 侧栏不显示日期 */
+  createdAt?: number;
 }
 
 /**
@@ -47,6 +49,8 @@ export function saveUntitledTabs(tabs: TabInfo[]): void {
         id: tab.id!,
         name: tab.name,
         content: tab.content ?? "",
+        // v0.12.0 需求7：记录创建时间，重启恢复时与重启前一致
+        ...(typeof tab.createdAt === "number" ? { createdAt: tab.createdAt } : {}),
       }));
     if (payload.length === 0) {
       clearUntitledTabs();
@@ -72,6 +76,10 @@ export function loadUntitledTabs(): StoredUntitledTab[] {
       id: item.id,
       name: item.name,
       content: typeof item.content === "string" ? item.content : "",
+      // v0.12.0 需求7：创建时间透传（无效值/缺失 → 不写该字段，渲染层显示空）
+      ...(typeof item.createdAt === "number" && item.createdAt > 0
+        ? { createdAt: item.createdAt }
+        : {}),
     }));
   } catch {
     return [];

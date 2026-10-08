@@ -169,7 +169,8 @@ describe("问题3：表格列宽拖拽 cell 左边缘热区", () => {
 
   it("stopEvent 在 cell 左边缘 8px 内也返回 true", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
-    const stopEventSection = src.match(/stopEvent\(event:\s*Event\)[\s\S]*?\n\s*\}/);
+    // v0.12.0 需求6 适配：stopEvent 新增分支后，非贪婪匹配需锚定方法级缩进（\n  }）
+    const stopEventSection = src.match(/stopEvent\(event:\s*Event\)[\s\S]*?\n  \}/);
     expect(stopEventSection).not.toBeNull();
     // 应同时检测左边缘和右边缘
     expect(stopEventSection![0]).toMatch(/rect\.left/);

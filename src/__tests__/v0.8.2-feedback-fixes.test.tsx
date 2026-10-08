@@ -170,7 +170,8 @@ describe("v0.8.2 修复2：点击子文件夹不再卡死（渲染期 setState �
     });
     // 收起：先滑出（保留内容），动画时长后才卸载
     expect(container.querySelector(".filetree-children-slide-out")).not.toBeNull();
-    act(() => vi.advanceTimersByTime(600));
+    // v0.12.0 需求10：收起时长放慢至 630ms，推进 700ms 覆盖
+    act(() => vi.advanceTimersByTime(700));
     expect(container.querySelector(".filetree-children-slide-out")).toBeNull();
   });
 

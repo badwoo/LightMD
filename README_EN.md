@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.11.0**
+**Current Version: v0.12.0**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -162,10 +162,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.11.0 installers:
+Visit the [Releases](../../releases) page to download the 0.12.0 installers:
 
-- **`LightMD_0.11.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.11.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.12.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.12.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -216,6 +216,21 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.12.0 (2026-10-08)
+
+**Reading & editing experience — 11 requirements**
+
+- **Document zoom** — `Ctrl+wheel` or the bottom-right zoom ruler (appears on hover; push up to zoom in, pull down to zoom out; click a tick to jump, draggable) works in reading / edit / split modes, 50%–200%, persisted across restarts
+- **Format Painter (all three modes)** — via the new reading-mode context menu or the toolbar brush button: single-click entry applies once (Word default), **double-click entry stays active** for repeated application (status-bar hint with remaining count, auto-exit at zero, `Esc` to quit); overwrite-style apply (clears then applies, never stacks); works across modes
+- **Block selection & mouse drag** — in reading mode click a code block / Mermaid diagram / math block / table to select the whole block (`outline` border), `Delete` or right-click "Delete XX" to remove it; drag from the `⋮⋮` handle at the block's left edge to reorder blocks (insertion indicator line shown), one `Ctrl+Z` restores everything
+- **Placeholder ghost text** — clicking Bold/Heading with no selection inserts only the syntax markers (`****`, `# `); the placeholder word appears as grey ghost text and is replaced as soon as you type — never written to the file
+- **Viewport focus kept on resize** — collapsing the sidebar, dragging the window / split divider, or toggling the outline pane keeps the first visible paragraph at the same screen position (including the split-preview iframe)
+- **3-line focus window** — focus mode in edit / split modes highlights previous / current / next line
+- **No heading-marker jitter** — source markers (`#`, `>`, ```` ``` ````) are now absolutely positioned, so text never shifts horizontally
+- **"Open Files" creation time** — grey `YYYY-MM-DD HH:mm` on the right of each entry (temp files keep their timestamp across restarts)
+- **"About LightMD" in settings** — shows the app version and the GitHub link (opens in the system browser)
+- **Folder expand animation 50% slower** (0.45s → 0.675s)
 
 ### v0.11.0 (2026-10-07)
 

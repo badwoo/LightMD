@@ -131,6 +131,11 @@ export const zhCN: Record<string, string> = {
   "settings.customCss": "自定义 CSS",
   "settings.customCss.placeholder": `/* 自定义编辑器样式 */\n/* 例如: */\n/* h1 { color: red; } */`,
   "settings.customCss.hint": "保存后立即生效，作用于编辑器与阅读视图。",
+  // v0.12.0 需求8：设置底部「关于 LightMD」
+  "settings.about": "关于 LightMD",
+  "settings.about.version": "版本 {version}",
+  // v0.12.0 需求5：文档缩放尺
+  "zoomRuler.label": "文档缩放（Ctrl+滚轮，向上放大）",
   "settings.cancel": "取消",
   "settings.save": "保存设置",
   "settings.on": "开启",
@@ -618,6 +623,17 @@ export const zhCN: Record<string, string> = {
   "menu.insertTable": "插入表格",
   "menu.insertCodeblock": "插入代码块",
   "menu.insertMermaid": "插入 Mermaid",
+  // v0.12.0 需求2：格式刷 + PM 右键菜单项
+  "menu.formatPainter": "格式刷",
+  "menu.highlight": "高亮",
+  "menu.underline": "下划线",
+  "menu.deleteCodeBlock": "删除代码块",
+  "menu.deleteMermaid": "删除图表",
+  "menu.deleteMathBlock": "删除公式",
+  "menu.deleteTable": "删除表格",
+  "menu.deleteNode": "删除块",
+  "formatPainter.hintOnce": "格式刷：单击目标应用",
+  "formatPainter.hintPersistent": "格式刷：持续应用中（剩余 {count} 次），按 Esc 退出",
   // ─── SlashCommand 命令菜单 ────────────────────────────────────
   "command.group.basic": "基本块",
   "command.group.list": "列表",

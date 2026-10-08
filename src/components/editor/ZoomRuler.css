@@ -1,0 +1,77 @@
+/**
+ * v0.12.0 需求5：文档缩放尺样式
+ *
+ * 位置：.editor-main-area 右下角（absolute）。默认 opacity:0，
+ * 尺子自身即热区（hover / focus-within 显现），150ms 过渡。
+ */
+
+.zoom-ruler {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 5px;
+  border-radius: 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  user-select: none;
+}
+
+.zoom-ruler:hover,
+.zoom-ruler:focus-within {
+  opacity: 1;
+}
+
+.zoom-ruler-value {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* 竖向滑条：writing-mode + direction 控制方向（向上 = 增大） */
+.zoom-ruler-range {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 12px;
+  height: 120px;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* 轨道：底色 + 每 5% 一格的刻度齿（120px / 30 格 = 4px 周期） */
+.zoom-ruler-range::-webkit-slider-runnable-track {
+  width: 12px;
+  height: 120px;
+  border-radius: 6px;
+  background-color: var(--bg-secondary);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--text-tertiary) 0px,
+    var(--text-tertiary) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+
+/* 滑块：小块（与轨道同宽，视觉为"推块"） */
+.zoom-ruler-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent-color);
+  border: none;
+}

@@ -104,7 +104,9 @@ describe("E8: 下划线 mark 与 Ctrl+U 命令", () => {
       replacement: "<u>x</u>",
       cursorOffset: 8,
     });
-    expect(buildFormatReplacement("underline", "")?.replacement).toBe("<u>下划线文本</u>");
+    // v0.12.0 需求1：无选中只插 <u></u>，占位走 ghostText（不落盘）
+    expect(buildFormatReplacement("underline", "")?.replacement).toBe("<u></u>");
+    expect(buildFormatReplacement("underline", "")?.ghostText).toBe("下划线文本");
   });
 });
 

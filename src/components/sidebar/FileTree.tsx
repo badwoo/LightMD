@@ -43,6 +43,8 @@ import { shouldResetTempSelection } from "../../utils/tempSelection";
 // v0.8.4 需求7：排序纯函数（sortNodes 混排）+ 徽标描述（sortModeBadge，按钮/菜单图标用）
 import { sortNodes, sortModeBadge, type SortMode } from "../../utils/fileSort";
 import { getManualOrder, applyManualOrder, renameInOrder, reorderList, setManualOrder } from "../../utils/dragOrder";
+// v0.12.0 需求7：条目日期格式化（真实文件 createdMs / 临时标签 createdAt）
+import { formatFileTime } from "../../utils/datetime";
 import "./FileTree.css";
 
 /** 将 Rust 返回的 FileEntry (snake_case) 转为 store 的 FileNode (camelCase) */
@@ -179,9 +181,11 @@ export const SECTION_OUT_TOTAL_MS =
 /** v0.8.2：条目关闭动画总时长（滑出 + 停顿 + 收起），到点后移除快照 */
 export const ITEM_OUT_TOTAL_MS =
   ITEM_SLIDE_OUT_MS + ITEM_COLLAPSE_DELAY_MS + ITEM_COLLAPSE_MS;
-/** v0.8.2 动画优化：文件树「文件夹展开/收起」子节点动画时长（ms），与 CSS 同步 */
-export const TREE_SLIDE_EXPAND_MS = 450;
-export const TREE_SLIDE_COLLAPSE_MS = 420;
+/** v0.8.2 动画优化：文件树「文件夹展开/收起」子节点动画时长（ms），与 CSS 同步。
+ * v0.12.0 需求10：动画放慢 50%，450 → 675 / 420 → 630（CSS 中
+ * filetree-children-slide 0.675s、slide-out 0.63s 需同步，否则容器与子节点错位） */
+export const TREE_SLIDE_EXPAND_MS = 675;
+export const TREE_SLIDE_COLLAPSE_MS = 630;
 /** v0.8.5 需求4：搜索面板展开动画时长（ms），与 FileTree.css search-panel-in 同步 */
 export const SEARCH_PANEL_IN_MS = 220;
 /** v0.8.5 需求4：搜索面板收回动画时长（ms），与 FileTree.css search-panel-out 同步；
@@ -1283,16 +1287,18 @@ export function FileTree() {
 
         addRecentFile({ path: node.path, name: node.name });
 
-        // v0.4.0：如果文件不在任一已打开文件夹下，添加为临时文件
-        if (!isPathInOpenFolders(node.path)) {
-          addTempFile({ name: node.name, path: node.path, isDir: false, size: 0 });
-        }
+        // v0.12.0 需求7：无条件写入条目并携带磁盘创建时间。
+        // 原实现仅在"文件不在任一已打开文件夹下"时写入——但条目现由
+        // syncTempFilesWithTabs（以 openTabs 为唯一真相源）统一对齐，本调用实际是
+        // createdMs 的透传通道：写入后 sync 会把该字段透传到对齐结果；
+        // 若后续无对应标签（打开失败等），sync 会自动移除条目，不产生幽灵条目。
+        addTempFile({ name: node.name, path: node.path, isDir: false, size: 0, createdMs: node.createdMs });
       } catch (err) {
         showError(t("filetree.openFileFailed"));
         console.error(err);
       }
     },
-    [addRecentFile, addTempFile, isPathInOpenFolders, t]
+    [addRecentFile, addTempFile, t]
   );
 
   // v0.4.3 Issue 2：点击搜索结果打开文件
@@ -2386,6 +2392,8 @@ export function FileTree() {
       // v0.8.2：统一按条目 key 判定激活（与真实文件条目同一套标准）
       const itemKey = `untitled-${tab.id ?? idx}`;
       const isActive = itemKey === activeItemKey;
+      // v0.12.0 需求7：创建日期文本（无值 → 空串，不渲染）
+      const createdText = formatFileTime(tab.createdAt);
       items.push({
         key: itemKey,
         el: (
@@ -2409,6 +2417,8 @@ export function FileTree() {
               <OpenBookIcon color="#e0a458" />
             </span>
             <span className="filetree-name">{tab.name}</span>
+            {/* v0.12.0 需求7：创建日期（名称同行右侧，灰色小字；窄栏时名称截断不挤掉它） */}
+            {createdText ? <span className="filetree-time">{createdText}</span> : null}
             {tab.isDirty ? <span className="filetree-untitled-dirty">●</span> : null}
             <button
               className="filetree-temp-close"
@@ -2434,6 +2444,8 @@ export function FileTree() {
       const isActive = itemKey === activeItemKey;
       const isSelected = selectedTempIdx === idx;
       const isRenaming = tempRenamingPath === file.path;
+      // v0.12.0 需求7：磁盘创建日期文本（无值 → 空串，不渲染）
+      const createdText = formatFileTime(file.createdMs);
       items.push({
         key: itemKey,
         el: (
@@ -2481,6 +2493,8 @@ export function FileTree() {
             ) : (
               <span className="filetree-name">{file.name}</span>
             )}
+            {/* v0.12.0 需求7：磁盘创建日期（名称同行右侧，灰色小字） */}
+            {createdText ? <span className="filetree-time">{createdText}</span> : null}
             {/* 关闭按钮 */}
             <button
               className="filetree-temp-close"

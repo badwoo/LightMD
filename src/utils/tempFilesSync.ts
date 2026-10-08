@@ -28,6 +28,8 @@ export interface TempFileLike {
   path: string;
   isDir: boolean;
   size: number;
+  /** v0.12.0 需求7：磁盘创建时间（ms），侧栏条目右侧显示日期用；0/缺失 → 不显示 */
+  createdMs?: number;
 }
 
 export interface TempFilesSyncResult<T extends TempFileLike> {
@@ -61,6 +63,8 @@ export function syncTempFilesWithTabs<T extends TempFileLike>(
       path: tab.path,
       isDir: false,
       size: old?.size ?? 0,
+      // v0.12.0 需求7：磁盘创建时间从旧条目透传（由文件树打开文件时写入）
+      createdMs: old?.createdMs ?? 0,
     } as T);
   }
 
@@ -69,7 +73,12 @@ export function syncTempFilesWithTabs<T extends TempFileLike>(
     for (let i = 0; i < next.length; i++) {
       const a = next[i];
       const b = tempFiles[i];
-      if (a.path !== b.path || a.name !== b.name || a.size !== b.size) {
+      if (
+        a.path !== b.path ||
+        a.name !== b.name ||
+        a.size !== b.size ||
+        (a.createdMs ?? 0) !== (b.createdMs ?? 0)
+      ) {
         changed = true;
         break;
       }

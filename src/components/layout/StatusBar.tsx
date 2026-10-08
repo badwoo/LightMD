@@ -9,6 +9,9 @@ import { translateService } from "../../services/translateService";
 import { translateErrorKey } from "../editor/TranslateBubble";
 // v0.7.0 修复3：AI 任务状态（任务进行中 AI 抽屉保持展开）
 import { useAiAssistStore } from "../../stores/aiAssistStore";
+// v0.12.0 需求2：格式刷状态栏提示（持续模式显示剩余次数）
+import { useFormatPainterStore } from "../../stores/useFormatPainterStore";
+import { formatPainterHintText } from "../../utils/formatPainter";
 import "./StatusBar.css";
 
 /** v0.7.0：AI 助手任务命令派发（续写/润色/摘要，EditorContainer 统一接线执行）
@@ -95,6 +98,10 @@ export function StatusBar() {
   // v0.7.4 功能8：AI 相关设置（齿轮面板实时读写）
   const aiSettings = useSettingsStore((s) => s.translate);
   const setTranslateConfig = useSettingsStore((s) => s.setTranslateConfig);
+  // v0.12.0 需求2：格式刷提示（idle 时 formatPainterHintText 返回 null，不占位）
+  const formatPainterMode = useFormatPainterStore((s) => s.mode);
+  const formatPainterRemaining = useFormatPainterStore((s) => s.remaining);
+  const formatPainterHint = formatPainterHintText(formatPainterMode, formatPainterRemaining);
   const setShowSearch = useEditorStore((s) => s.setShowSearch);
   // 问题5：底部栏搜索按钮切换开关（已开启则关闭）
   const showSearch = useEditorStore((s) => s.showSearch);
@@ -463,6 +470,12 @@ export function StatusBar() {
           </span>
         </div>
       </span>
+      {/* v0.12.0 需求2：格式刷提示（非激活态返回 null 不占位） */}
+      {formatPainterHint && (
+        <span className="statusbar-format-painter" data-testid="statusbar-format-painter">
+          {formatPainterHint}
+        </span>
+      )}
       <span className="statusbar-item">
         {wordCount.words > 0 && (
           <div className="statusbar-word-wrap" ref={wordWrapRef}>

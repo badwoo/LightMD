@@ -20,6 +20,8 @@ import { highlightCode, SUPPORTED_HIGHLIGHT_LANGUAGES } from "../../utils/highli
 import { detectLanguage } from "../../utils/detect-language";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { t } from "../../i18n/state";
+// v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除）
+import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
 
 /** 行号层固定宽度（em） */
 const LINE_NUMBERS_WIDTH_EM = 3;
@@ -336,12 +338,16 @@ export class CodeBlockView implements NodeView {
     return false;
   }
 
-  // E17(v0.9.4)：语言下拉内的交互不交给 ProseMirror 处理
-  // （否则点击/键盘会移动编辑器选区或触发输入）
-  stopEvent(event: Event): boolean {
+  // ─── v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除；双击进编辑） ───
+  selectNode = () => applyBlockSelected(this.dom);
+  deselectNode = () => clearBlockSelected(this.dom);
+  // 与既有"语言下拉交互拦下"合并：下拉内事件照旧拦下（不交给 PM，原生交互生效），
+  // 其余事件交给 handleBlockStopEvent（仅拦左键单击建 NodeSelection，其它放行）
+  stopEvent = (event: Event): boolean => {
     const target = event.target as globalThis.Node | null;
-    return !!target && this.langSelect.contains(target);
-  }
+    if (target && this.langSelect.contains(target)) return true;
+    return handleBlockStopEvent(this.dom, this.view, this.getPos, event);
+  };
 
   destroy() {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);

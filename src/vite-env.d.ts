@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 
+// v0.12.0 需求8：vite define 注入的应用版本号（来源 package.json，见 vite.config.ts）
+declare const __APP_VERSION__: string;
+
 // markdown-it 插件类型声明（这些插件没有内置类型声明）
 declare module "markdown-it-mark" {
   import type MarkdownIt from "markdown-it";

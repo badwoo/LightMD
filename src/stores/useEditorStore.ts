@@ -43,6 +43,14 @@ export interface TabInfo {
    * 保存前弹「覆盖 / 另存为 / 取消」三选一（N22）。
    */
   isExternallyChanged?: boolean;
+  /**
+   * v0.12.0 需求7：文件条目创建时间戳（ms）。
+   * 临时（未落盘）标签在 createUntitledTab 时写入 Date.now()，并随
+   * untitledTabs 持久化（重启后与重启前一致）；真实文件不使用本字段
+   * （其创建时间来自 FileNode.createdMs）。
+   * 可选：兼容存量标签与测试 mock，缺失时侧栏不显示日期。
+   */
+  createdAt?: number;
 }
 
 /**
@@ -375,6 +383,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isDirty: false,
       isUntitled: true,
       returnToId,
+      // v0.12.0 需求7：记录创建时间（侧栏条目右侧显示日期；随 untitledTabs 持久化）
+      createdAt: Date.now(),
     };
     return { openTabs: [...s.openTabs, tab], activeTabIdx: s.openTabs.length };
   }),

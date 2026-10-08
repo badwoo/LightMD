@@ -250,7 +250,8 @@ describe("问题5：表格行高拖拽", () => {
 
   it("stopEvent 同时阻止列宽和行高热区事件", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
-    const stopEventSection = src.match(/stopEvent\(event:\s*Event\)[\s\S]*?\n\s*\}/);
+    // v0.12.0 需求6 适配：stopEvent 新增分支后，非贪婪匹配需锚定方法级缩进（\n  }）
+    const stopEventSection = src.match(/stopEvent\(event:\s*Event\)[\s\S]*?\n  \}/);
     expect(stopEventSection).not.toBeNull();
     // v0.4.5 修复：变量名变更 offsetX → offsetXRight/offsetXLeft
     // 列宽热区：右边缘 8px（兼容新旧变量名）

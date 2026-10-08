@@ -71,6 +71,70 @@ export function findParagraphRange(text: string, cursorPos: number): ParagraphRa
   return { start, end };
 }
 
+/** v0.12.0 需求9：专注模式多行聚焦区间（编辑/分屏模式用） */
+export interface FocusRowRange {
+  /** 区间起始字符位置（含） */
+  start: number;
+  /** 区间结束字符位置（不含） */
+  end: number;
+  /** 区间包含的硬换行行数（1 起） */
+  rows: number;
+}
+
+/**
+ * v0.12.0 需求9：取光标所在行 ± radius 行的合并区间（「上一行/当前行/下一行」全亮区）。
+ *
+ * 与 findParagraphRange 的区别：后者只返回光标所在单行；本函数向上下各扩
+ * radius 行（默认 1 → 3 行窗），文档边界处自动收缩（首行 → 2 行、单行文档 → 1 行）。
+ * 区间右端点取「下 radius 行」的行末换行符位置（不含），因此行间换行符包含在
+ * 区间内部——若不含，换行处的空白仍是遮罩、亮区视觉断裂。
+ *
+ * 软换行说明：按 \n 切分，同一 \n 段内的自动折行整体位于区间内，属符合预期
+ * （亮区 = 光标所在硬行段 ±radius 个硬行段）。
+ *
+ * @param text 文档全文
+ * @param cursorPos 光标字符位置
+ * @param radius 上下扩展的行数（默认 1；0 时退化为 findParagraphRange 语义）
+ */
+export function findFocusRowRange(text: string, cursorPos: number, radius = 1): FocusRowRange {
+  const pos = Math.max(0, Math.min(cursorPos, text.length));
+  // 需要越过的换行符个数：向前第 want 个 \n 界定「上 radius 行」的起点，
+  // 向后第 want 个 \n 界定「下 radius 行」的末尾（光标恰在 \n 上时计入当前行末尾）
+  const want = Math.max(0, Math.floor(radius)) + 1;
+
+  // 向前：第 want 个 \n 的后一位 = 区间起点（不足则收缩到文档开头）
+  let start = 0;
+  let seen = 0;
+  for (let i = pos - 1; i >= 0; i--) {
+    if (text[i] === "\n") {
+      seen++;
+      if (seen === want) {
+        start = i + 1;
+        break;
+      }
+    }
+  }
+
+  // 向后：第 want 个 \n 的位置 = 区间终点（不含；不足则收缩到文档末尾）
+  let end = text.length;
+  seen = 0;
+  for (let i = pos; i < text.length; i++) {
+    if (text[i] === "\n") {
+      seen++;
+      if (seen === want) {
+        end = i;
+        break;
+      }
+    }
+  }
+
+  // 防御性处理：若起点越过终点（不应发生），返回光标位置
+  if (start > end) {
+    return { start: pos, end: pos, rows: 1 };
+  }
+  return { start, end, rows: countNewlines(text.substring(start, end)) + 1 };
+}
+
 /**
  * 计算段落起止行号（基于 0 的行号）
  *

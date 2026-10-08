@@ -19,6 +19,8 @@ import type { Transaction } from "prosemirror-state";
 import { lightMDSchema as schema } from "../schema";
 // 直接从 state.ts 导入 t，避免触发 i18n/index.ts 的 useSettingsStore 副作用订阅
 import { t } from "../../i18n/state";
+// v0.12.0 需求6：块级选中（单击选中整个表格 → Delete 删除）
+import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
 
 // ─── TableCellView —— td/th 的轻量 NodeView（F1 修复） ────────────────
 
@@ -655,6 +657,8 @@ export class TableView implements NodeView {
     cellEl: HTMLElement;
     /** 拖拽开始时所有列的初始宽度，Issue 8 修复后用于计算相邻列调整 */
     startWidths: number[];
+    /** v0.12.0 需求5：拖拽开始时的文档缩放比例（拖拽 delta 视觉值 → 布局值换算） */
+    zoom: number;
   } | null = null;
   // 行高拖拽状态
   private rowResizing: {
@@ -662,6 +666,8 @@ export class TableView implements NodeView {
     startY: number;
     startHeight: number;
     rowEl: HTMLElement;
+    /** v0.12.0 需求5：拖拽开始时的文档缩放比例 */
+    zoom: number;
   } | null = null;
 
   constructor(node: Node, view: EditorView, getPos: () => number | undefined) {
@@ -749,6 +755,25 @@ export class TableView implements NodeView {
   // ─── 列宽拖拽 ──────────────────────────────────────
 
   /**
+   * v0.12.0 需求5：当前文档缩放比例（读 :root 的 --doc-zoom，默认 1）。
+   *
+   * 背景：缩放用 CSS zoom 实现后，getBoundingClientRect 返回**视觉坐标**（被 zoom 放大），
+   * 而 style.width/attrs 是**布局值**。所有"读 rect → 写 style/attrs"的路径必须
+   * 除以该比例换算，否则 zoom ≠ 1 时列宽/行高会被二次放大。
+   * 直接读 :root 变量（不依赖 zoom computed 继承语义，jsdom 下回退 1）。
+   */
+  private docZoomRatio(): number {
+    try {
+      const v = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--doc-zoom"),
+      );
+      return Number.isFinite(v) && v > 0 ? v : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  /**
    * mousemove 视觉提示：检测鼠标是否靠近 cell 左/右边缘，显示 col-resize 光标
    * v0.4.5 修复：同时检测 cell 左边缘和右边缘，实现内部列框线拖拽
    * 性能考量：仅修改 cursor style，不触发 DOM 重建，开销极小
@@ -827,15 +852,20 @@ export class TableView implements NodeView {
   private startResize(colIdx: number, clientX: number, cellEl: HTMLElement) {
     // 记录所有列的初始宽度，拖拽时用于计算相邻列调整（Issue 8 修复）
     // v0.4.4 修复：Math.round 取整，确保 startWidths 之和 = table.style.width（整数像素）
+    // v0.12.0 需求5：rect 是视觉值 → 除以 zoom 换算为布局值（写回 style.width 用布局值）
+    const zoom = this.docZoomRatio();
     const firstRow = this.contentDOM.querySelector("tr");
     const allCells = firstRow ? Array.from(firstRow.querySelectorAll("td, th")) : [];
-    const startWidths = allCells.map((c) => Math.round(c.getBoundingClientRect().width));
+    const startWidths = allCells.map((c) =>
+      Math.round(c.getBoundingClientRect().width / zoom),
+    );
 
     this.resizing = {
       colIdx,
       startX: clientX,
       cellEl,
       startWidths,
+      zoom,
     };
 
     // 创建垂直指示线（贯穿整个视口高度）
@@ -870,7 +900,8 @@ export class TableView implements NodeView {
     // 关键修复：设置 table.style.width = newWidths 之和，让 table.width = cellWidthSum。
     // table-layout:fixed 下，当 table.width = cell width 之和时，浏览器按 cell width 绝对值
     // 分配列宽，不缩放。之前用 width:auto 在某些情况下会导致表格坍缩。
-    const deltaX = e.clientX - this.resizing.startX;
+    // v0.12.0 需求5：拖拽 delta 是视觉值 → 除以 zoom 换算为布局值（与 startWidths 同系）
+    const deltaX = (e.clientX - this.resizing.startX) / (this.resizing.zoom || 1);
     const { colIdx, startWidths } = this.resizing;
     const newWidths = computeResizedWidths(startWidths, colIdx, deltaX);
     // 保持 table.width = newWidths 之和，避免等比例缩放
@@ -889,8 +920,9 @@ export class TableView implements NodeView {
 
   private onMouseUp = (e: MouseEvent) => {
     if (!this.resizing) return;
-    const { colIdx, startWidths, startX, cellEl } = this.resizing;
-    const deltaX = e.clientX - startX;
+    const { colIdx, startWidths, startX, cellEl, zoom } = this.resizing;
+    // v0.12.0 需求5：delta 视觉值 → 布局值（与 startWidths 同系）
+    const deltaX = (e.clientX - startX) / (zoom || 1);
 
     // 清理拖拽状态
     this.resizing = null;
@@ -917,11 +949,14 @@ export class TableView implements NodeView {
   // ─── 行高拖拽 ──────────────────────────────────────
 
   private startRowResize(rowIdx: number, clientY: number, rowEl: HTMLElement) {
+    // v0.12.0 需求5：rect 高度是视觉值 → 除以 zoom 换算为布局值（写回 attrs 用布局值）
+    const zoom = this.docZoomRatio();
     this.rowResizing = {
       rowIdx,
       startY: clientY,
-      startHeight: rowEl.getBoundingClientRect().height,
+      startHeight: rowEl.getBoundingClientRect().height / zoom,
       rowEl,
+      zoom,
     };
 
     // 创建水平指示线
@@ -948,7 +983,8 @@ export class TableView implements NodeView {
     if (!this.rowResizing) return;
     e.preventDefault();
     this.updateRowResizeIndicator(e.clientY);
-    const deltaY = e.clientY - this.rowResizing.startY;
+    // v0.12.0 需求5：delta 视觉值 → 布局值（与 startHeight 同系）
+    const deltaY = (e.clientY - this.rowResizing.startY) / (this.rowResizing.zoom || 1);
     const newHeight = Math.max(20, this.rowResizing.startHeight + deltaY);
     // 实时更新该行所有 cell 的高度
     const cells = this.rowResizing.rowEl.querySelectorAll("td, th");
@@ -959,8 +995,9 @@ export class TableView implements NodeView {
 
   private onRowMouseUp = (e: MouseEvent) => {
     if (!this.rowResizing) return;
-    const { rowIdx, startHeight, startY, rowEl } = this.rowResizing;
-    const deltaY = e.clientY - startY;
+    const { rowIdx, startHeight, startY, rowEl, zoom } = this.rowResizing;
+    // v0.12.0 需求5：delta 视觉值 → 布局值
+    const deltaY = (e.clientY - startY) / (zoom || 1);
     const newHeight = Math.max(20, startHeight + deltaY);
 
     this.rowResizing = null;
@@ -1123,8 +1160,11 @@ export class TableView implements NodeView {
     const tableRect = this.contentDOM.getBoundingClientRect();
     const wrapperRect = this.dom.getBoundingClientRect();
     // 工具栏顶部 = table 顶部 - wrapper 顶部 - 工具栏高度（约 32px）- 4px 间距
-    const top = tableRect.top - wrapperRect.top - 36;
-    // 水平居中于 wrapper
+    // v0.12.0 需求5：两个 rect 是视觉值，而工具栏 absolute 于 zoom 坐标系内
+    // （px 为布局值）→ 差值需除以 zoom 换算
+    const zoom = this.docZoomRatio();
+    const top = (tableRect.top - wrapperRect.top) / zoom - 36;
+    // 水平居中于 wrapper（两 offsetWidth 同系，无需换算）
     const left = Math.max(0, (this.dom.offsetWidth - this.toolbar.offsetWidth) / 2);
     this.toolbar.style.top = `${top}px`;
     this.toolbar.style.left = `${left}px`;
@@ -1232,13 +1272,19 @@ export class TableView implements NodeView {
   // stopEvent：在 cell 左/右边缘 8px 或底边缘 6px 范围内的 mousedown 阻止 ProseMirror 处理
   // 否则 PM 会先设置选区，干扰列宽/行高拖拽逻辑
   // v0.4.5 修复：同时检测 cell 左边缘，配合 onMouseDown 的左边缘拖拽逻辑
+  // v0.12.0 需求6：非边缘的左键单击 → 选中整个表格（handleBlockStopEvent）；
+  //   块内交互控件（工具栏按钮等）放行，不抢交互；已选中本表时再次单击放行进编辑
   stopEvent(event: Event): boolean {
     if (event.type === "mousedown" && event instanceof MouseEvent) {
       if (event.button !== 0) return false;
       const target = event.target as HTMLElement | null;
       if (!target) return false;
+      if (target.closest("button, select, input, a, .table-toolbar")) return false;
       const cell = target.closest("td, th") as HTMLElement | null;
-      if (!cell) return false;
+      if (!cell) {
+        // 点击表格边框/外沿（非 cell 区域）：交给通用块级选中判定
+        return handleBlockStopEvent(this.dom, this.view, this.getPos, event);
+      }
       const rect = cell.getBoundingClientRect();
       // v0.4.5 修复：同时检测左边缘和右边缘
       const offsetXRight = event.clientX - rect.right;
@@ -1248,9 +1294,15 @@ export class TableView implements NodeView {
       if (Math.abs(offsetXRight) <= 8) return true;
       if (Math.abs(offsetXLeft) <= 8) return true;
       if (Math.abs(offsetY) <= 6) return true;
+      // 单元格内左键单击 → 选中整个表格（双击/已选中时放行进编辑）
+      return handleBlockStopEvent(this.dom, this.view, this.getPos, event);
     }
     return false;
   }
+
+  // v0.12.0 需求6：块级选中（单击选中整个表格 → Delete 删除；双击进单元格编辑）
+  selectNode = () => applyBlockSelected(this.dom);
+  deselectNode = () => clearBlockSelected(this.dom);
 
   // ignoreMutation 返回 true：让 ProseMirror 忽略 NodeView 内部的 DOM 变化
   // （applyColumnWidths 修改 td/th 的 style.width 不应触发 PM 重新渲染）

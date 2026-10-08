@@ -14,6 +14,8 @@
 import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
 import mermaid from "mermaid";
+// v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除）
+import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
 
 // 初始化 mermaid 配置（只执行一次）
 let mermaidInitialized = false;
@@ -204,6 +206,12 @@ export class MermaidBlockView implements NodeView {
     }
     return false;
   }
+
+  // ─── v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除；双击进编辑） ───
+  selectNode = () => applyBlockSelected(this.dom);
+  deselectNode = () => clearBlockSelected(this.dom);
+  stopEvent = (event: Event) =>
+    handleBlockStopEvent(this.dom, this.view, this.getPos, event);
 
   destroy() {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);

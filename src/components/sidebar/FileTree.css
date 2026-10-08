@@ -401,11 +401,11 @@
 }
 
 .filetree-children-slide {
-  animation: tree-node-slide-in 0.45s ease;
+  animation: tree-node-slide-in 0.675s ease;
 }
 
 .filetree-children-slide-out {
-  animation: tree-node-slide-out 0.42s ease forwards;
+  animation: tree-node-slide-out 0.63s ease forwards;
 }
 
 /* v0.8.4 需求6：子节点动画方向由"水平滑入/滑出"改为"垂直展开/收回"——
@@ -504,6 +504,17 @@
   color: var(--text-tertiary);
   margin-left: 8px;
   flex-shrink: 0;
+}
+
+/* v0.12.0 需求7：「打开的文件」条目创建日期（名称同行右侧，灰色低调）。
+   名称 .filetree-name 的 flex:1 把日期推到行尾；flex-shrink:0 + nowrap
+   保证侧栏收窄时截断名称（省略号）而不是把日期挤掉 */
+.filetree-time {
+  margin-left: 6px;
+  color: var(--text-secondary);
+  font-size: 0.85em;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* ─── 内联重命名输入框 ──────────────────────────────── */

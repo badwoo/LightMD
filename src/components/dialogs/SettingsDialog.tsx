@@ -13,6 +13,8 @@ import { translateService } from "../../services/translateService";
 import { useT } from "../../i18n";
 // v0.9.0 自定义快捷键设置弹窗（编辑器分类最后一栏入口）
 import { ShortcutSettingsDialog } from "./ShortcutSettingsDialog";
+// v0.12.0 需求8：关于 LightMD 的 GitHub 链接经 shell 外部打开
+import { openExternalHref } from "../../utils/openExternal";
 import "./SettingsDialog.css";
 
 /** v0.6.0：翻译服务商预设（切换时自动填充 baseUrl/默认模型；models 供模型角色下拉选择） */
@@ -1014,6 +1016,25 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               spellCheck={false}
             />
             <small className="settings-hint">{t("settings.customCss.hint")}</small>
+          </section>
+
+          {/* v0.12.0 需求8：关于 LightMD —— 版本号来自 vite define 注入的 package.json version */}
+          <section className="settings-section">
+            <h3>{t("settings.about")}</h3>
+            <small className="settings-hint">{t("settings.about.version", { version: __APP_VERSION__ })}</small>
+            <div className="settings-about-link-row">
+              <a
+                className="settings-about-link"
+                href="https://github.com/badwoo/LightMD"
+                onClick={(e) => {
+                  // 经 shell 在系统浏览器打开，不离开应用（浏览器 dev 环境退化为 window.open）
+                  e.preventDefault();
+                  void openExternalHref("https://github.com/badwoo/LightMD");
+                }}
+              >
+                https://github.com/badwoo/LightMD
+              </a>
+            </div>
           </section>
         </div>
 

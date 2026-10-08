@@ -1,0 +1,278 @@
+/**
+ * v0.12.0 需求11：块级拖拽移动（鼠标拖动块调整位置）
+ *
+ * 为什么自制拖拽而非 PM 原生 DnD：
+ * Tauri/WebView2 会拦截 HTML5 原生拖放（项目 fileDragMouse 同因自制），
+ * 且需求要求「仅手柄区域响应 + 2px 插入指示线」，自制方案完全可控。
+ *
+ * 交互（方案 A）：
+ * - 选中块（单击 / Esc selectParentNode）后，块左侧外缘出现 ⋮⋮ 手柄
+ *   （::before 伪元素，纯视觉提示，不进 PM DOM）；
+ * - 在**手柄热区**（块左缘外扩 18px）按住左键拖动 → 拖动期间显示插入指示线；
+ * - 松开：把块移动到指示位置（一次事务 = 一次撤销单元）；
+ * - 仅顶层块（depth<=1）且在 DRAGGABLE_BLOCKS 白名单内；
+ *   列表项/引用内部不开放（与既有 Alt+↑/↓ 键盘移动一致，避免破坏 schema）。
+ *
+ * 与图片拖拽（行内 image draggable）互不冲突：本插件只处理「已选中的顶层块」。
+ */
+import { NodeSelection, Plugin, PluginKey } from "prosemirror-state";
+import type { EditorState, Transaction } from "prosemirror-state";
+import type { EditorView } from "prosemirror-view";
+import type { Node as PMNode } from "prosemirror-model";
+
+export const blockDragKey = new PluginKey("blockDrag");
+
+/** 允许鼠标拖拽的顶层块类型；明确排除 toc（由 [toc] 自动生成，移动无意义） */
+export const DRAGGABLE_BLOCKS = new Set([
+  "paragraph",
+  "heading",
+  "blockquote",
+  "bullet_list",
+  "ordered_list",
+  "code_block",
+  "mermaid_block",
+  "math_block",
+  "table",
+  "horizontal_rule",
+]);
+
+/** 手柄热区宽度（块左缘外扩视觉 px，zoom 时按比例换算） */
+export const BLOCK_DRAG_HANDLE_WIDTH = 18;
+
+/** 是否允许拖拽该位置的块：白名单类型 + 顶层 */
+export function isDraggableBlock(doc: PMNode, pos: number): boolean {
+  if (pos < 0 || pos > doc.content.size) return false;
+  const node = doc.nodeAt(pos);
+  if (!node || !DRAGGABLE_BLOCKS.has(node.type.name)) return false;
+  // 顶层判定：pos 位于 doc 直接子节点上（$pos.depth === 0 表示父为 doc）
+  return doc.resolve(pos).depth === 0;
+}
+
+/**
+ * 纯函数：由鼠标落点计算插入位置。
+ *
+ * - 落点在某顶层块内：按上半/下半决定插到该块前/后（before(1) / after(1)）；
+ * - 落点在块间边界（$pos.depth === 0）：直接使用边界位置；
+ * - 结果为原位（插到自身前/后）或非法 → null（松开不移动）。
+ */
+export function computeDropInsertPos(
+  doc: PMNode,
+  coordsPos: number,
+  inUpperHalf: boolean,
+  srcPos: number,
+): number | null {
+  if (coordsPos < 0 || coordsPos > doc.content.size) return null;
+  const srcNode = doc.nodeAt(srcPos);
+  if (!srcNode) return null;
+  const srcEnd = srcPos + srcNode.nodeSize;
+
+  const $pos = doc.resolve(coordsPos);
+  const insertPos = $pos.depth === 0 ? coordsPos : (inUpperHalf ? $pos.before(1) : $pos.after(1));
+  if (insertPos === srcPos || insertPos === srcEnd) return null;
+  return insertPos;
+}
+
+/**
+ * 纯函数：把 srcPos 处的顶层块移动到 insertPos（返回事务；结构非法时返回 null）。
+ * 一次事务完成删除 + 插入（history 记为一次撤销单元）；
+ * 删除发生在 insertPos 之前时插入点经 mapping 修正（assoc=1 取删除区间右侧）。
+ */
+export function buildBlockMoveTr(
+  state: EditorState,
+  srcPos: number,
+  insertPos: number,
+): Transaction | null {
+  const node = state.doc.nodeAt(srcPos);
+  if (!node) return null;
+  const tr = state.tr.delete(srcPos, srcPos + node.nodeSize);
+  const mapped = tr.mapping.map(insertPos, 1);
+  try {
+    tr.insert(mapped, node);
+  } catch {
+    // 结构不合法（理论上不会发生：插入点为顶层边界）→ 取消移动
+    return null;
+  }
+  tr.setSelection(NodeSelection.create(tr.doc, mapped));
+  return tr;
+}
+
+/** 当前缩放比例（视觉坐标 → 布局坐标换算；jsdom 下回退 1） */
+function docZoomRatio(): number {
+  try {
+    const v = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--doc-zoom"),
+    );
+    return Number.isFinite(v) && v > 0 ? v : 1;
+  } catch {
+    return 1;
+  }
+}
+
+/** 拖拽中的插入指示线（模块级：同一时间仅一个拖拽） */
+let dragIndicator: HTMLElement | null = null;
+
+function ensureIndicator(): HTMLElement {
+  if (!dragIndicator) {
+    dragIndicator = document.createElement("div");
+    dragIndicator.className = "block-drag-indicator";
+    document.body.appendChild(dragIndicator);
+  }
+  return dragIndicator;
+}
+
+function removeIndicator(): void {
+  if (dragIndicator) {
+    dragIndicator.remove();
+    dragIndicator = null;
+  }
+}
+
+interface BlockDragState {
+  view: EditorView;
+  /** 源块起点 */
+  srcPos: number;
+  /** 当前指示的插入位置（文档坐标）；null = 无效/原位（松开不移动） */
+  insertPos: number | null;
+}
+
+/**
+ * 开始块级拖拽（mousedown 在手柄热区内时调用）。
+ * 用 document 级 mousemove/mouseup 跟踪；拖动只做 posAtCoords + 单块 rect 测量
+ * （不做全文档测量），大文档下开销可控。
+ */
+export function beginBlockDrag(view: EditorView, srcPos: number, startEvent: MouseEvent): void {
+  const node = view.state.doc.nodeAt(srcPos);
+  if (!node) return;
+  const state: BlockDragState = { view, srcPos, insertPos: null };
+
+  document.body.style.cursor = "grabbing";
+  document.body.style.userSelect = "none";
+
+  const updateFromEvent = (e: MouseEvent) => {
+    const coords = view.posAtCoords({ left: e.clientX, top: e.clientY });
+    if (!coords) {
+      state.insertPos = null;
+      removeIndicator();
+      return;
+    }
+    const doc = view.state.doc;
+    const $pos = doc.resolve(coords.pos);
+
+    // 目标块几何与"上半/下半"判定（指示线画在目标块的 top/bottom）
+    let inUpperHalf = true;
+    let lineY = 0;
+    let lineLeft = 0;
+    let lineWidth = 0;
+    if ($pos.depth > 0) {
+      const before = $pos.before(1);
+      const dom = view.nodeDOM(before) as HTMLElement | null;
+      if (!dom || !dom.getBoundingClientRect) {
+        state.insertPos = null;
+        removeIndicator();
+        return;
+      }
+      const rect = dom.getBoundingClientRect();
+      inUpperHalf = e.clientY < rect.top + rect.height / 2;
+      lineY = inUpperHalf ? rect.top : rect.bottom;
+      lineLeft = rect.left;
+      lineWidth = rect.width;
+    } else {
+      const next = view.nodeDOM(coords.pos);
+      const el =
+        (next instanceof HTMLElement ? next : null) ?? (view.dom as HTMLElement);
+      const rect = el.getBoundingClientRect();
+      lineY = next ? rect.top : rect.bottom;
+      lineLeft = rect.left;
+      lineWidth = rect.width;
+    }
+
+    const insertPos = computeDropInsertPos(doc, coords.pos, inUpperHalf, srcPos);
+    if (insertPos === null) {
+      state.insertPos = null;
+      removeIndicator();
+      return;
+    }
+    state.insertPos = insertPos;
+    const ind = ensureIndicator();
+    ind.style.top = `${lineY - 1}px`;
+    ind.style.left = `${lineLeft}px`;
+    ind.style.width = `${lineWidth}px`;
+    ind.style.display = "block";
+  };
+
+  const onMove = (e: MouseEvent) => {
+    e.preventDefault();
+    updateFromEvent(e);
+  };
+
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    removeIndicator();
+
+    const insertPos = state.insertPos;
+    if (insertPos === null) return;
+    const tr = buildBlockMoveTr(view.state, srcPos, insertPos);
+    if (tr) view.dispatch(tr);
+  };
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+  startEvent.preventDefault();
+}
+
+/**
+ * 拖拽插件：在编辑器内 mousedown 时判定「手柄热区 + 已选中的可拖块」→ 开始拖拽。
+ * 其余 mousedown 一律放行（不影响选文字/点击）；mousemove 仅在热区显示 grab 光标。
+ */
+export function blockDragPlugin(): Plugin {
+  return new Plugin({
+    key: blockDragKey,
+    props: {
+      handleDOMEvents: {
+        mousedown(view, event) {
+          if (event.button !== 0) return false;
+          const sel = view.state.selection;
+          if (!(sel instanceof NodeSelection)) return false;
+          if (!isDraggableBlock(view.state.doc, sel.from)) return false;
+          const dom = view.nodeDOM(sel.from) as HTMLElement | null;
+          if (!dom || !dom.getBoundingClientRect) return false;
+          const rect = dom.getBoundingClientRect();
+          // 热区：块左缘外扩 BLOCK_DRAG_HANDLE_WIDTH（视觉 px → zoom 换算）
+          const handleW = BLOCK_DRAG_HANDLE_WIDTH * docZoomRatio();
+          const inHandle =
+            event.clientX >= rect.left - handleW &&
+            event.clientX <= rect.left + 2 &&
+            event.clientY >= rect.top &&
+            event.clientY <= rect.bottom;
+          if (!inHandle) return false;
+          beginBlockDrag(view, sel.from, event);
+          return true;
+        },
+        // hover 到手柄热区时显示 grab 光标（伪元素不能单独设 cursor，按坐标判定）
+        mousemove(view, event) {
+          const dom0 = view.dom as HTMLElement;
+          const sel = view.state.selection;
+          if (!(sel instanceof NodeSelection) || !isDraggableBlock(view.state.doc, sel.from)) {
+            if (dom0.style.cursor) dom0.style.cursor = "";
+            return false;
+          }
+          const dom = view.nodeDOM(sel.from) as HTMLElement | null;
+          if (!dom || !dom.getBoundingClientRect) return false;
+          const rect = dom.getBoundingClientRect();
+          const handleW = BLOCK_DRAG_HANDLE_WIDTH * docZoomRatio();
+          const inHandle =
+            event.clientX >= rect.left - handleW &&
+            event.clientX <= rect.left + 2 &&
+            event.clientY >= rect.top &&
+            event.clientY <= rect.bottom;
+          const want = inHandle ? "grab" : "";
+          if (dom0.style.cursor !== want) dom0.style.cursor = want;
+          return false;
+        },
+      },
+    },
+  });
+}

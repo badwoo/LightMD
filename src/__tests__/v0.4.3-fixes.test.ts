@@ -46,7 +46,8 @@ describe("Issue 1：表格列宽拖拽（table width = newWidths 之和）", () 
     expect(startResizeSection![0]).not.toMatch(/tableStartWidth/);
     expect(startResizeSection![0]).not.toMatch(/offsetWidth/);
     // v0.4.4：Math.round 确保整数像素
-    expect(startResizeSection![0]).toMatch(/Math\.round\(c\.getBoundingClientRect\(\)\.width\)/);
+    // v0.12.0 需求5：rect 为视觉值，除以 zoom 换算为布局值（zoom=1 时行为不变）
+    expect(startResizeSection![0]).toMatch(/Math\.round\(c\.getBoundingClientRect\(\)\.width \/ zoom\)/);
   });
 
   it("applyColumnWidths 设置 table width 为 widths 之和", () => {

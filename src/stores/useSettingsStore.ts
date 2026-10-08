@@ -289,6 +289,11 @@ interface SettingsState {
   setAiEnabled: (v: boolean) => void;
   setTheme: (theme: Theme) => void;
   setFontSize: (size: number) => void;
+  /** v0.12.0 需求5：文档整体缩放（百分比 50~200，持久化；CSS zoom 实现，与字号独立） */
+  docZoom: number;
+  setDocZoom: (zoom: number) => void;
+  /** v0.12.0 需求5：按步进增减缩放（钳制 50~200；Ctrl+滚轮 / 尺子拖动用） */
+  adjustDocZoom: (delta: number) => void;
   /** v0.11.0 B4-10：排版三项设置（部分更新） */
   setTypography: (patch: { lineHeight?: number; paragraphSpacing?: number; contentMaxWidth?: number }) => void;
   setFontFamily: (family: string) => void;
@@ -340,6 +345,11 @@ function clamp(value: number, min: number, max: number): number {
   if (Number.isNaN(value)) return min;
   return Math.max(min, Math.min(max, value));
 }
+
+/** v0.12.0 需求5：文档缩放范围（百分比）与步进（Ctrl+滚轮一档 5%） */
+export const DOC_ZOOM_MIN = 50;
+export const DOC_ZOOM_MAX = 200;
+export const DOC_ZOOM_STEP = 5;
 
 /**
  * v0.8.2 需求7：设置持久化数据迁移（导出为纯函数便于单测）。
@@ -415,6 +425,9 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       theme: "light",
       fontSize: 16,
+      // v0.12.0 需求5：文档整体缩放默认 100%（CSS zoom；与字号 fontSize 独立，
+      // 字号影响换行与持久化语义，缩放是纯视图变换）
+      docZoom: 100,
       fontFamily: "var(--font-sans)",
       // v0.11.0 B4-10：0 = 跟随主题默认值（保持既有观感不变）
       lineHeight: 0,
@@ -514,6 +527,10 @@ export const useSettingsStore = create<SettingsState>()(
         })),
       setTheme: (theme) => set({ theme }),
       setFontSize: (fontSize) => set({ fontSize }),
+      // v0.12.0 需求5：缩放钳制到 DOC_ZOOM_MIN~DOC_ZOOM_MAX（整数百分比）
+      setDocZoom: (zoom) => set({ docZoom: clamp(Math.round(zoom), DOC_ZOOM_MIN, DOC_ZOOM_MAX) }),
+      adjustDocZoom: (delta) =>
+        set((s) => ({ docZoom: clamp(Math.round(s.docZoom + delta), DOC_ZOOM_MIN, DOC_ZOOM_MAX) })),
       // v0.11.0 B4-10：排版三项（部分更新，未传的字段保持原值）
       setTypography: (patch) =>
         set({
@@ -635,6 +652,10 @@ export const useSettingsStore = create<SettingsState>()(
         const shortcuts = sameShortcutMap(rawShortcuts, cleanedShortcuts)
           ? (rawShortcuts as Record<string, string>)
           : cleanedShortcuts;
+        // v0.12.0 需求5：缩放值防御——旧数据缺字段回默认 100；
+        // 非法值（手改 localStorage / 脏数据）回默认而非钳制到 min，避免误改用户视图
+        const rawZoom =
+          typeof p.docZoom === "number" && Number.isFinite(p.docZoom) ? p.docZoom : current.docZoom;
         return {
           ...current,
           ...p,
@@ -643,6 +664,7 @@ export const useSettingsStore = create<SettingsState>()(
           translate: mergedTranslate,
           // v0.7.5 功能6：窗口记忆字段缺失/非法时回退 null（回落默认居中）
           aiChatWindow: normalizeAiChatRect(p.aiChatWindow ?? current.aiChatWindow),
+          docZoom: clamp(Math.round(rawZoom), DOC_ZOOM_MIN, DOC_ZOOM_MAX),
         };
       },
       // hydration 完成后同步 i18n 模块缓存

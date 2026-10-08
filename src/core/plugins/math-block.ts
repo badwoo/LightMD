@@ -18,6 +18,8 @@
 import type { NodeView, EditorView } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
 import katex from "katex";
+// v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除；行内公式不需要）
+import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
 
 /** 行内公式 NodeView */
 export class MathInlineView implements NodeView {
@@ -146,9 +148,19 @@ export class MathBlockView implements NodeView {
   private rafId: number | null = null;
   private previewLayer: HTMLElement;
   private handleDblClick: () => void;
+  // v0.12.0 需求6：块级选中需要 view/getPos（原实现未保存，无法建 NodeSelection）
+  private view: EditorView;
+  private getPos: () => number | undefined;
+  // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除；双击进编辑）
+  selectNode = () => applyBlockSelected(this.dom);
+  deselectNode = () => clearBlockSelected(this.dom);
+  stopEvent = (event: Event) =>
+    handleBlockStopEvent(this.dom, this.view, this.getPos, event);
 
-  constructor(node: PMNode, _view: EditorView, _getPos: () => number | undefined) {
+  constructor(node: PMNode, view: EditorView, getPos: () => number | undefined) {
     this.node = node;
+    this.view = view;
+    this.getPos = getPos;
 
     // 外层容器
     this.dom = document.createElement("div");

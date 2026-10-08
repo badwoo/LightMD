@@ -106,12 +106,13 @@ describe("buildMenuItems - 菜单项配置构建", () => {
   it("有选中时菜单项顺序正确", () => {
     const items = buildMenuItems(true, true, true);
     const actions = getItemActions(items);
-    // 预期顺序：undo, redo, cut, copy, paste, bold, italic, strikethrough, code, translate, aiContinue, aiPolish, aiSummary, link, image, table, codeblock, mermaid
+    // 预期顺序：undo, redo, cut, copy, paste, bold, italic, strikethrough, code, formatPainter, translate, aiContinue, aiPolish, aiSummary, link, image, table, codeblock, mermaid
     // v0.6.0：md 文件且有选区时含 AI 翻译项
     // v0.7.0：行内格式组后新增 AI 助手组
+    // v0.12.0 需求2：行内格式组末尾新增「格式刷」
     expect(actions).toEqual([
       "undo", "redo", "cut", "copy", "paste",
-      "bold", "italic", "strikethrough", "code", "translate",
+      "bold", "italic", "strikethrough", "code", "formatPainter", "translate",
       "aiContinue", "aiPolish", "aiSummary",
       "link", "image", "table", "codeblock", "mermaid",
     ]);

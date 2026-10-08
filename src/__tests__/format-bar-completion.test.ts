@@ -108,30 +108,33 @@ describe("buildFormatReplacement - 新增格式 action", () => {
     expect(r.replacement).toBe("#### 标题");
     expect(r.cursorOffset).toBe(7); // 5 + 2
   });
-  it("h4 无选中 → '#### 标题四'，光标在 '#### ' 之后", () => {
+  it("h4 无选中 → '#### '，标题占位走 ghostText（v0.12.0 需求1）", () => {
     const r = buildFormatReplacement("h4", "")!;
-    expect(r.replacement).toBe("#### 标题四");
+    expect(r.replacement).toBe("#### ");
     expect(r.cursorOffset).toBe(5);
+    expect(r.ghostText).toBe("标题四");
   });
   it("h5 选中 → '##### text'", () => {
     const r = buildFormatReplacement("h5", "x")!;
     expect(r.replacement).toBe("##### x");
     expect(r.cursorOffset).toBe(7); // 6 + 1
   });
-  it("h5 无选中 → '##### 标题五'", () => {
+  it("h5 无选中 → '##### '，标题占位走 ghostText（v0.12.0 需求1）", () => {
     const r = buildFormatReplacement("h5", "")!;
-    expect(r.replacement).toBe("##### 标题五");
+    expect(r.replacement).toBe("##### ");
     expect(r.cursorOffset).toBe(6);
+    expect(r.ghostText).toBe("标题五");
   });
   it("h6 选中 → '###### text'", () => {
     const r = buildFormatReplacement("h6", "title")!;
     expect(r.replacement).toBe("###### title");
     expect(r.cursorOffset).toBe(12); // 7 + 5
   });
-  it("h6 无选中 → '###### 标题六'", () => {
+  it("h6 无选中 → '###### '，标题占位走 ghostText（v0.12.0 需求1）", () => {
     const r = buildFormatReplacement("h6", "")!;
-    expect(r.replacement).toBe("###### 标题六");
+    expect(r.replacement).toBe("###### ");
     expect(r.cursorOffset).toBe(7);
+    expect(r.ghostText).toBe("标题六");
   });
 
   // 粗斜体
@@ -140,10 +143,11 @@ describe("buildFormatReplacement - 新增格式 action", () => {
     expect(r.replacement).toBe("***x***");
     expect(r.cursorOffset).toBe(7); // 3 + 1 + 3
   });
-  it("bolditalic 无选中 → '***粗斜体***'，光标在 *** 之后", () => {
+  it("bolditalic 无选中 → '******'，占位走 ghostText（v0.12.0 需求1）", () => {
     const r = buildFormatReplacement("bolditalic", "")!;
-    expect(r.replacement).toBe("***粗斜体***");
+    expect(r.replacement).toBe("******");
     expect(r.cursorOffset).toBe(3);
+    expect(r.ghostText).toBe("粗斜体");
   });
 
   // 删除线
@@ -152,10 +156,11 @@ describe("buildFormatReplacement - 新增格式 action", () => {
     expect(r.replacement).toBe("~~del~~");
     expect(r.cursorOffset).toBe(7); // 2 + 3 + 2
   });
-  it("strikethrough 无选中 → '~~删除线~~'，光标在 ~~ 之后", () => {
+  it("strikethrough 无选中 → '~~~~'，占位走 ghostText（v0.12.0 需求1）", () => {
     const r = buildFormatReplacement("strikethrough", "")!;
-    expect(r.replacement).toBe("~~删除线~~");
+    expect(r.replacement).toBe("~~~~");
     expect(r.cursorOffset).toBe(2);
+    expect(r.ghostText).toBe("删除线");
   });
 });
 
@@ -166,10 +171,11 @@ describe("buildFormatReplacement - 原有 action 兼容", () => {
     expect(r.replacement).toBe("**x**");
     expect(r.cursorOffset).toBe(5);
   });
-  it("bold 无选中 → '**粗体文本**'，光标在 ** 之后", () => {
+  it("bold 无选中 → '****'，占位走 ghostText（v0.12.0 需求1）", () => {
     const r = buildFormatReplacement("bold", "")!;
-    expect(r.replacement).toBe("**粗体文本**");
+    expect(r.replacement).toBe("****");
     expect(r.cursorOffset).toBe(2);
+    expect(r.ghostText).toBe("粗体文本");
   });
   it("italic 选中 → '*text*'", () => {
     const r = buildFormatReplacement("italic", "x")!;
@@ -186,10 +192,11 @@ describe("buildFormatReplacement - 原有 action 兼容", () => {
     expect(r.replacement).toBe("# 标题");
     expect(r.cursorOffset).toBe(4); // 2 + 2
   });
-  it("h1 无选中 → '# 标题一'", () => {
+  it("h1 无选中 → '# '，标题占位走 ghostText（v0.12.0 需求1）", () => {
     const r = buildFormatReplacement("h1", "")!;
-    expect(r.replacement).toBe("# 标题一");
+    expect(r.replacement).toBe("# ");
     expect(r.cursorOffset).toBe(2);
+    expect(r.ghostText).toBe("标题一");
   });
   it("math → 块级公式模板", () => {
     const r = buildFormatReplacement("math", "")!;

@@ -783,6 +783,8 @@ function App() {
         isUntitled: true,
         // 内容未落盘 → 视为未保存，关闭时需确认
         isDirty: item.content.length > 0,
+        // v0.12.0 需求7：创建时间从持久化数据透传（存量缺失 → undefined，不显示）
+        createdAt: item.createdAt,
       });
     }
     // 激活首个临时标签，并同步编辑器内容
@@ -994,6 +996,8 @@ function App() {
             isUntitled: true,
             pinned: !!tab.pinned,
             isDirty: stored.content.length > 0,
+            // v0.12.0 需求7：创建时间从持久化数据透传
+            createdAt: stored.createdAt,
           });
           continue;
         }

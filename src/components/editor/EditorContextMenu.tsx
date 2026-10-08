@@ -88,6 +88,8 @@ export function buildMenuItems(
       { type: "item", action: "italic", label: "斜体", shortcut: getShortcutLabel("format.italic") },
       { type: "item", action: "strikethrough", label: "删除线", shortcut: getShortcutLabel("format.strikethrough") },
       { type: "item", action: "code", label: "行内代码", shortcut: getShortcutLabel("format.inlineCode") },
+      // v0.12.0 需求2：格式刷（单击应用一次；双击入口在格式栏按钮/阅读模式菜单）
+      { type: "item", action: "formatPainter", label: "格式刷" },
     );
     // v0.6.0：AI 翻译（md 文件 + 总开关开启；快捷键 F6）
     if (isMdFile && translateEnabled) {

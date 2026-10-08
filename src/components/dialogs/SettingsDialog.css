@@ -294,6 +294,23 @@ label.settings-switch {
   line-height: 1.4;
 }
 
+/* v0.12.0 需求8：设置底部「关于 LightMD」链接 */
+.settings-about-link-row {
+  margin-top: 6px;
+}
+
+.settings-about-link {
+  color: var(--accent-color);
+  font-size: 12px;
+  text-decoration: none;
+  word-break: break-all;
+  cursor: pointer;
+}
+
+.settings-about-link:hover {
+  text-decoration: underline;
+}
+
 /* v0.9.0 第二轮修复（问题5）：开关按钮 + 行内功能描述。
    功能描述改为小字号灰色提示，紧跟在按钮后面（同一行，长文本自动换行）。 */
 .settings-switch-row {

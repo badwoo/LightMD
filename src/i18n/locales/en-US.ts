@@ -130,6 +130,11 @@ export const enUS: Record<string, string> = {
   "settings.customCss": "Custom CSS",
   "settings.customCss.placeholder": `/* Custom editor styles */\n/* e.g.: */\n/* h1 { color: red; } */`,
   "settings.customCss.hint": "Takes effect immediately after saving; applies to both editor and reading views.",
+  // v0.12.0 feature 8: "About LightMD" section at settings bottom
+  "settings.about": "About LightMD",
+  "settings.about.version": "Version {version}",
+  // v0.12.0 feature 5: document zoom ruler
+  "zoomRuler.label": "Document zoom (Ctrl+wheel, scroll up to zoom in)",
   "settings.cancel": "Cancel",
   "settings.save": "Save",
   "settings.on": "On",
@@ -611,6 +616,17 @@ export const enUS: Record<string, string> = {
   "menu.insertTable": "Insert Table",
   "menu.insertCodeblock": "Insert Code Block",
   "menu.insertMermaid": "Insert Mermaid",
+  // v0.12.0 feature 2: format painter + PM context menu items
+  "menu.formatPainter": "Format Painter",
+  "menu.highlight": "Highlight",
+  "menu.underline": "Underline",
+  "menu.deleteCodeBlock": "Delete Code Block",
+  "menu.deleteMermaid": "Delete Diagram",
+  "menu.deleteMathBlock": "Delete Formula",
+  "menu.deleteTable": "Delete Table",
+  "menu.deleteNode": "Delete Block",
+  "formatPainter.hintOnce": "Format Painter: click a target to apply",
+  "formatPainter.hintPersistent": "Format Painter: persistent mode ({count} left), press Esc to exit",
   // ─── SlashCommand command menu ───────────────────────────────────
   "command.group.basic": "Basic Blocks",
   "command.group.list": "Lists",

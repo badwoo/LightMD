@@ -14,6 +14,11 @@
   font-family: var(--editor-font-family, var(--font-sans));
   /* 行高：0 = 主题默认 1.8 */
   line-height: var(--editor-line-height, 1.8);
+  /* v0.12.0 需求5：文档整体缩放（--doc-zoom 为比例值，由 EditorContainer 写入 :root）。
+     用 zoom 而非 transform:scale —— zoom 是布局属性，光标/测量/滚动/选区自动跟随；
+     经实测（Edge headless，与 WebView2 同内核）：内容按比例放大，100% 宽与 max-width
+     自动被容器限制、无横向溢出。 */
+  zoom: var(--doc-zoom, 1);
   color: var(--text-primary);
   /* 补充需求修复：移除 overflow-y: auto，让滚动发生在 .editor-container 上
      这样中间整个阅读区（包括 ProseMirror 两侧空白）都可以滚动 */
@@ -171,7 +176,19 @@
 }
 
 /* 语法标记显示 */
-.marker-reveal {
+/* v0.12.0 需求3：块级语法标记（光标进入标题/引用/代码块时显示源码符号）。
+   改用节点装饰 + ::before 伪元素绝对定位——完全脱离文档流，
+   光标进出块时文本零位移（修复"标题符号抖动"）；标记文本经 data-md-block-open 传入。
+   注意：不能用负 margin 替代（仍参与行盒计算、Chromium 下仍会重排）。 */
+.ProseMirror .pm-block-marker {
+  position: relative;
+}
+
+.ProseMirror .pm-block-marker::before {
+  content: attr(data-md-block-open);
+  position: absolute;
+  right: 100%;
+  margin-right: 0.35em;
   color: var(--marker-color);
   opacity: 0.5;
   pointer-events: none;
@@ -204,6 +221,61 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+}
+
+/* ─── v0.12.0 需求6：块级选中描边 ────────────────
+   必须用 outline 而非 border：border 会改变表格布局 → 触发列宽重算，
+   与 TableView 的列宽保持机制冲突 */
+.ProseMirror .pm-block-selected {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* ─── v0.12.0 需求11：块级拖拽手柄（选中块的左侧外缘 ⋮⋮） ─────────
+   ::before 伪元素不进 ProseMirror 的 DOM 管理（undo/redo 与 tr.mapping 不受影响）；
+   仅顶层块显示；拖拽热区由 block-drag 插件按坐标判定（此处纯视觉提示）。
+   与需求3的语法 marker 互斥：marker 装饰仅空选区（光标）时出现，选中态不渲染。 */
+.ProseMirror > .pm-block-selected,
+.ProseMirror > .ProseMirror-selectednode {
+  position: relative;
+}
+
+.ProseMirror > .pm-block-selected::before,
+.ProseMirror > .ProseMirror-selectednode::before {
+  content: "⋮⋮";
+  position: absolute;
+  left: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+  opacity: 0.55;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: normal;
+  font-style: normal;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity var(--transition-fast);
+}
+
+.ProseMirror > .pm-block-selected:hover::before,
+.ProseMirror > .ProseMirror-selectednode:hover::before {
+  opacity: 1;
+  color: var(--text-secondary);
+}
+
+/* v0.12.0 需求11：拖拽期间的插入指示线（2px 水平线，主题强调色）
+   位置/宽度由 block-drag 插件内联设置 */
+.block-drag-indicator {
+  position: fixed;
+  height: 2px;
+  background: var(--accent-color);
+  border-radius: 1px;
+  box-shadow: 0 0 4px var(--accent-color);
+  z-index: 9999;
+  pointer-events: none;
+  display: none;
 }
 
 /* 专注模式 */
@@ -728,6 +800,21 @@
 }
 
 .format-btn:active { background: var(--bg-tertiary); }
+
+/* v0.12.0 需求2：格式刷激活态底色（armed 时按钮持续高亮） */
+.format-btn.active {
+  background: var(--accent-color);
+  color: #fff;
+  border-color: var(--accent-color);
+}
+
+/* v0.12.0 需求2：格式刷 armed 全局光标（刷子形状 SVG data URI）——
+   覆盖编辑器主区域，提示"下一步单击的目标将套用格式" */
+body.format-painter-armed .editor-main-area,
+body.format-painter-armed .ProseMirror,
+body.format-painter-armed .source-editor {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'><path d='M5 13l1.5-4.5L13 2l5 5-6.5 6.5L7 15z' fill='%230078d4' stroke='%23ffffff' stroke-width='1'/><path d='M5 13l2 2-3 3-1 1z' fill='%23f0b060' stroke='%23ffffff' stroke-width='0.5'/></svg>") 5 15, crosshair;
+}
 
 .format-btn-undo-redo { font-size: 14px; padding: 2px 7px; font-weight: 600; }
 

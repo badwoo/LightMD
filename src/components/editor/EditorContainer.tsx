@@ -17,11 +17,13 @@ import { markdownToDoc } from "../../core/markdown/parser";
 import { nextFootnoteLabelFromText } from "../../core/pmCommands";
 import { focusModeKey } from "../../core/plugins/focus-mode";
 import { setMermaidTheme } from "../../core/plugins/mermaid-block";
-import { TextSelection } from "prosemirror-state";
+import { TextSelection, NodeSelection } from "prosemirror-state";
 import { undo, redo } from "prosemirror-history";
+// v0.12.0 需求2：PM 右键菜单的行内格式命令
+import { toggleMark } from "prosemirror-commands";
 import type { EditorView } from "prosemirror-view";
 import { useEditorStore, isTranslateSnapshotForFile, type ViewMode } from "../../stores/useEditorStore";
-import { useSettingsStore, isAiChatRectVisible } from "../../stores/useSettingsStore";
+import { useSettingsStore, isAiChatRectVisible, DOC_ZOOM_STEP } from "../../stores/useSettingsStore";
 import { useAutoSave } from "../../hooks/useAutoSave";
 import { useResizable } from "../../hooks/useResizable";
 import { useT, t as translate } from "../../i18n";
@@ -32,10 +34,22 @@ import { TableDialog } from "../dialogs/TableDialog";
 import { ImageInsertDialog } from "../dialogs/ImageInsertDialog";
 import { ImageEditDialog } from "../dialogs/ImageEditDialog";
 import { EditorContextMenu } from "./EditorContextMenu";
+// v0.12.0 需求2：阅读模式（PM）右键菜单（首次为 PM 模式引入自定义菜单）
+import { PmContextMenu } from "./PmContextMenu";
 import { SlashCommand, findSlashTrigger, isInCodeBlock, type InsertMode } from "./SlashCommand";
 // v0.8.0 修复 P1-3：textarea 侧行内代码/公式的上下文判定（与 PM 侧 inDisabledNode 对齐）
 import { isInInlineCodeOrMath } from "../../utils/inlineContext";
 import { SlashCommandPm } from "./SlashCommandPm";
+// v0.12.0 需求2：格式刷（三模式通用 + 双击持续）——快照采集/应用纯函数 + 状态 store
+import {
+  collectSourceSnapshot,
+  collectPmSnapshot,
+  buildPmSnapshotTr,
+  wrapRangeWithMarks,
+  applyBlockTypeToLine,
+  type FormatSnapshot,
+} from "../../utils/formatPainter";
+import { useFormatPainterStore } from "../../stores/useFormatPainterStore";
 import type { SlashState } from "../../core/plugins/slash-command";
 import { PAIR_MAP, PAIR_CLOSERS } from "../../core/plugins/auto-pair";
 import { isHttpUrl } from "../../core/plugins/smart-paste";
@@ -48,6 +62,10 @@ import {
   MERMAID_TEMPLATES,
   FORMAT_BUTTONS as formatButtons,
   formatButtonTitle,
+  // v0.12.0 需求1：格式 ghost 的清除时机判定（纯函数）+ 标题占位文案
+  shouldClearFormatGhost,
+  HEADING_GHOST_TEXTS,
+  getLineRange,
 } from "./sourceFormat";
 import { getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
 // R1(v0.10.0)：分屏预览统一走渲染管线（与导出 HTML/PDF/PNG 同一配置源 + 同一 mermaid 包装/高亮步骤）
@@ -55,9 +73,12 @@ import { renderMarkdownHtml } from "../../core/renderPipeline";
 import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc } from "../../utils/imagePath";
 import { resolveLinkAction, anchorMatchesHeading } from "../../utils/linkNav";
-import { isTauri } from "../../services/fileService";
+// v0.12.0 需求8：外部链接打开工具（原 isTauri 分支逻辑抽出，设置弹窗「关于」复用）
+import { openExternalHref } from "../../utils/openExternal";
 import { calculateWordCount } from "../../utils/wordCount";
-import { findParagraphRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight, syncTextareaMetrics, buildSourceGhostHtml } from "../../utils/focus-paragraph";
+import { findFocusRowRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight, syncTextareaMetrics, buildSourceGhostHtml } from "../../utils/focus-paragraph";
+// v0.12.0 需求4：窗口/侧栏尺寸变化时的滚动视口锚点（保持阅读焦点）
+import { captureAnchor, restoreAnchor, captureLineAnchor, restoreLineAnchor, type ViewportAnchor } from "../../utils/viewportAnchor";
 import { isTypewriterTriggerKey, isModifierKey, computeTypewriterScrollTop, shouldSkipScrollForCharInput, computeScrollPercent, isCursorOutsideViewport, computeSyncScrollTop, shouldSkipInitialScrollToCenter, computeRestoreScrollTop, computeViewportCenter, createScrollKeyBaseline, markScrollKeyDown, consumeScrollKeyUp } from "../../utils/typewriter";
 // v0.8.0 修复 P10：模式切换的编辑锚点定位（光标可见→按同比例对齐；不可见→回退滚动百分比）
 import { computeViewportRatio, computeAnchorScrollTop, lineIndexOfOffset } from "../../utils/modeAnchor";
@@ -88,6 +109,8 @@ import {
 import { MiniContextMenu } from "./MiniContextMenu";
 import { translateTooltipKey, AI_BUBBLE_DEFS, type AiAssistTask } from "../../core/plugins/translateTooltip";
 import { ModeSwitchButton } from "./ModeSwitchButton";
+// v0.12.0 需求5：右下角文档缩放尺（hover 显现，拖动/点击调整缩放）
+import { ZoomRuler } from "./ZoomRuler";
 import { TranslateUndoToast } from "./TranslateUndoToast";
 import { useFullTranslateStore } from "../../stores/fullTranslateStore";
 // v0.7.0：AI 助手（续写 ghost / 润色 / 摘要气泡 + 服务 + 状态）
@@ -318,6 +341,16 @@ interface EditorContainerProps {
   onContentChange?: (markdown: string) => void;
 }
 
+/** v0.12.0 需求2：PM 右键菜单行内格式 action → schema mark 名 */
+const PM_MARK_BY_ACTION: Record<string, string> = {
+  bold: "strong",
+  italic: "em",
+  strikethrough: "strike",
+  code: "code",
+  highlight: "mark",
+  underline: "underline",
+};
+
 /**
  * v0.8.0 修复3：编辑锚点行号 → 字符偏移（源码模式）
  * 返回第 lineIndex 行（0-based）起始处的字符偏移，供模式切换时锚点定位光标落到该行。
@@ -356,6 +389,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const t = useT();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  // v0.12.0 需求4：主内容区 ref（Ctrl+滚轮缩放监听 + ZoomRuler 锚定）
+  const mainAreaRef = useRef<HTMLDivElement>(null);
+  // v0.12.0 需求4：textarea 行锚点（浮点行索引；scroll/尺寸变化/缩放时维护与还原）
+  const lineAnchorRef = useRef<number | null>(null);
   // 专注模式遮罩层 ref（源码模式下使用）
   const focusOverlayRef = useRef<HTMLDivElement>(null);
   const onContentChangeRef = useRef(onContentChange);
@@ -393,6 +430,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const paragraphSpacing = useSettingsStore((s) => s.paragraphSpacing);
   const contentMaxWidth = useSettingsStore((s) => s.contentMaxWidth);
   const fontFamily = useSettingsStore((s) => s.fontFamily);
+  // v0.12.0 需求5：文档整体缩放（百分比；阅读/分屏右用 CSS zoom、编辑 textarea 用字号换算）
+  const docZoom = useSettingsStore((s) => s.docZoom);
+  const setDocZoom = useSettingsStore((s) => s.setDocZoom);
+  const adjustDocZoom = useSettingsStore((s) => s.adjustDocZoom);
   const typewriterMode = useSettingsStore((s) => s.typewriterMode);
   const theme = useSettingsStore((s) => s.theme);
   // G10：拼写检查开关，控制 textarea 与 ProseMirror contenteditable 的 spellcheck 属性
@@ -1341,6 +1382,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // v0.7.3 改进10(U3)：任何用户编辑（含自动配对/粘贴/撤销）都会使 source
     // 续写 ghost 位置语义失效——取消任务并清除 overlay（与 PM 模式 docChanged 失效一致）
     sourceGhostHandlersRef.current.invalidate();
+    // v0.12.0 需求1：任何真实输入使格式 ghost 完成使命（键入即替换占位提示）
+    formatGhostHandlersRef.current.clear("input");
     const textarea = e.target;
     let newContent = textarea.value;
     let cursorPos = textarea.selectionStart;
@@ -1510,6 +1553,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; hasSelection: boolean }>({
     open: false, x: 0, y: 0, hasSelection: false,
   });
+  // v0.12.0 需求2：PM 模式右键菜单状态（选区信息在 rAF 内主动读取后填入）
+  const [pmContextMenu, setPmContextMenu] = useState<{
+    open: boolean;
+    x: number;
+    y: number;
+    hasSelection: boolean;
+    nodeKind: string | null;
+  }>({ open: false, x: 0, y: 0, hasSelection: false, nodeKind: null });
+  // v0.12.0 需求2：格式刷状态（订阅以驱动光标样式 / Esc 监听 / 状态栏提示）
+  const formatPainterMode = useFormatPainterStore((s) => s.mode);
   // ─── Mermaid 模板下拉状态 ────────────────────────
   const [mermaidMenuOpen, setMermaidMenuOpen] = useState(false);
   // ─── SlashCommand 菜单 open 状态 ───────────────────
@@ -1594,18 +1647,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 相对路径链接点击无任何反应。统一分发:内部文件 → lightmd:open-path 事件
   // (App 层 openFileByPath 复用打开链路);http(s)/mailto → 外部打开;
   // 锚点 → 编辑器内滚动到标题
-  const openExternalHref = useCallback(async (href: string) => {
-    if (isTauri()) {
-      try {
-        const { open } = await import("@tauri-apps/plugin-shell");
-        await open(href);
-      } catch (err) {
-        console.error("外部链接打开失败:", err);
-      }
-    } else {
-      window.open(href, "_blank", "noopener");
-    }
-  }, []);
+  // v0.12.0 需求8：外部打开逻辑抽出为 utils/openExternal（设置弹窗「关于」复用），
+  // openExternalHref 现为模块级静态函数，无需 useCallback 包装
 
   const scrollEditorToAnchor = useCallback((anchor: string) => {
     const container = editorRef.current;
@@ -1631,7 +1674,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         scrollEditorToAnchor(action.anchor);
       }
     },
-    [filePath, openExternalHref, scrollEditorToAnchor]
+    [filePath, scrollEditorToAnchor]
   );
 
   // 阅读模式：ProseMirror 容器内链接点击(捕获阶段,先于 PM 的选区处理)
@@ -1716,6 +1759,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (action === "paragraph") {
       const { replacement: newText, cursorOffset } = removeLinePrefixFn(currentContent, start);
       if (newText === currentContent) return; // 非标题行，无变化
+      // v0.12.0 需求1：Ctrl+0 转段落 → 清除可能残留的标题格式 ghost
+      formatGhostHandlersRef.current.clear("input");
       const diff = computeDiff(currentContent, newText);
       pushUndoEntry({ ...diff, cursorPos: start, scrollTop });
       setSourceContent(newText);
@@ -1761,6 +1806,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       };
       requestAnimationFrame(restore);
       setTimeout(restore, 50);
+      // v0.12.0 需求1：无选中文本且当前行除已有前缀外为空 → 显示标题占位 ghost
+      // （已有内容的行不显示，避免"标题一"被误解为要追加的文字）
+      const { start: lineStart, end: lineEnd } = getLineRange(currentContent, start);
+      const lineBody = currentContent.substring(lineStart, lineEnd).replace(/^#{1,6}\s*/, "");
+      if (start === end && lineBody.trim() === "") {
+        formatGhostRef.current = { text: HEADING_GHOST_TEXTS[level - 1], pos: newCursorPos };
+        sourceGhostHandlersRef.current.invalidate();
+        requestAnimationFrame(() => formatGhostHandlersRef.current.render());
+      } else {
+        formatGhostHandlersRef.current.clear("input");
+      }
       return;
     }
 
@@ -1791,6 +1847,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
     requestAnimationFrame(restore);
     setTimeout(restore, 50);
+
+    // v0.12.0 需求1：无选区行内格式 → 文档只插语法符号，占位提示走格式 ghost；
+    // 预填类（代码块/表格/Mermaid/列表/引用等模板）或其它情况 → 清除残留 ghost
+    if (result.ghostText) {
+      formatGhostRef.current = { text: result.ghostText, pos: newCursorPos };
+      // AI ghost 让位（格式操作是用户主动动作，异步任务不打断视觉）
+      sourceGhostHandlersRef.current.invalidate();
+      requestAnimationFrame(() => formatGhostHandlersRef.current.render());
+    } else {
+      formatGhostHandlersRef.current.clear("input");
+    }
   });
 
   // ─── N2：智能粘贴 URL→链接（源码模式） ──────────
@@ -1831,6 +1898,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         return;
       }
       // 其余按键：用户主动编辑 → ghost 位置语义可能失效，交给变更处理器统一判定
+    }
+
+    // v0.12.0 需求1：Esc 清除格式 ghost（不回滚已插入的语法符号，用户 Ctrl+Z 自行撤销；
+    // AI ghost 活跃时已由上方分支消费本次 Esc）
+    if (e.key === "Escape" && formatGhostRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      formatGhostHandlersRef.current.clear("escape");
+      return;
     }
 
     // N1：自动配对补全（先于快捷键解析：仅单字符、无修饰键）
@@ -2276,6 +2352,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     invalidate: () => void;
   }>({ accept: () => false, cancel: () => false, invalidate: () => {} });
 
+  // ─── v0.12.0 需求1：格式 ghost（占位提示，不写入文档） ───
+  // 无选区点击格式按钮（粗体/斜体/H1~H6 等）时，文档只插入语法符号（如 `****`），
+  // 占位提示（如"粗体文本"）由 overlay 以灰色幽灵文本渲染；用户直接键入即替换之，
+  // 不键入则永不落盘（修复"占位文字残留进文件"）。
+  // 与 AI ghost 共用 overlay：AI ghost 优先（异步任务不被打断视觉），
+  // 格式操作触发时经 sourceGhostHandlersRef.invalidate() 让 AI ghost 让位。
+  const formatGhostRef = useRef<{ text: string; pos: number } | null>(null);
+
   /** 执行气泡型 AI 任务（润色/摘要/源码续写）：openBubble → 流式 → finish/fail */
   const runAiBubble = useCallback((
     task: AiTask,
@@ -2427,10 +2511,53 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     sourceGhostTextRef.current = "";
   }, []);
 
+  /** v0.12.0 需求1：渲染格式 ghost（占位提示）到 overlay；AI ghost 活跃时让位不渲染 */
+  const renderFormatGhost = useCallback(() => {
+    const overlay = sourceGhostOverlayRef.current;
+    const textarea = sourceTextareaRef.current;
+    const ghost = formatGhostRef.current;
+    if (!overlay || !textarea || !ghost) return;
+    // AI ghost 优先（异步任务不被打断视觉）
+    if (sourceGhostActiveRef.current) return;
+    syncTextareaMetrics(textarea, overlay);
+    // hintText 为空（格式 ghost 无需"Tab 采纳"提示）
+    overlay.innerHTML = buildSourceGhostHtml(textarea.value, ghost.pos, ghost.text, "", false);
+    overlay.scrollTop = textarea.scrollTop;
+  }, []);
+
+  /** v0.12.0 需求1：按清除时机判定清除格式 ghost（kind 见 shouldClearFormatGhost） */
+  const clearFormatGhost = useCallback((kind: string) => {
+    if (!shouldClearFormatGhost(kind)) return;
+    if (!formatGhostRef.current) return;
+    formatGhostRef.current = null;
+    // 仅当 AI ghost 未占用 overlay 时清空可见内容
+    if (!sourceGhostActiveRef.current) {
+      const overlay = sourceGhostOverlayRef.current;
+      if (overlay) overlay.innerHTML = "";
+    }
+  }, []);
+
+  // 每次渲染转发最新实现（handleFormatAction 为挂载时创建一次的 ref 函数，避免闭包过期）
+  const formatGhostHandlersRef = useRef<{ render: () => void; clear: (kind: string) => void }>({
+    render: () => {},
+    clear: () => {},
+  });
+  formatGhostHandlersRef.current = { render: renderFormatGhost, clear: clearFormatGhost };
+
+  // v0.12.0 需求1：切文件 / 切模式时清除格式 ghost（防跨文档、跨模式残留）
+  useEffect(() => {
+    formatGhostHandlersRef.current.clear("file-switch");
+  }, [filePath]);
+  useEffect(() => {
+    formatGhostHandlersRef.current.clear("mode-switch");
+  }, [viewMode]);
+
   /** 执行 source 模式续写 ghost：流式更新 overlay，完成后保留 ghost 等待 Tab 采纳 / Esc 放弃 */
   const runSourceAiGhost = useCallback((head: string, pos: number) => {
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
+    // v0.12.0 需求1：AI ghost 优先——启动时清除格式 ghost（占位提示让位给续写预览）
+    formatGhostRef.current = null;
     sourceGhostActiveRef.current = true;
     sourceGhostPosRef.current = pos;
     // v0.7.5 优化3：立即渲染「续写中…」占位 ghost（与 PM 模式一致），
@@ -3660,6 +3787,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       case "code":
         handleFormatAction.current(action);
         return;
+      // v0.12.0 需求2：格式刷（单击入口；采集 textarea 选区）
+      case "formatPainter":
+        armFormatPainterRef.current(false);
+        return;
       case "link": openLinkDialog(); return;
       case "image": setImageDialogOpen(true); return;
       case "table": setTableDialogOpen(true); return;
@@ -3684,6 +3815,250 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         return;
     }
   }, [handleUndo, handleRedo, openLinkDialog, insertTextAtCursor]);
+
+  // ─── v0.12.0 需求2：格式刷（三模式通用 + 双击持续） ───────────────
+  // 采集（源侧）→ armed → 下一次「单击」应用（目标侧，覆盖式）；Esc 退出。
+  // 跨模式可用：PM 采集 → 切编辑模式应用（反向亦可），快照为模式无关中间表示。
+
+  /** 采集当前选区格式并 arm（persistent=true 为双击持续模式；持续态下再次双击 = 结束） */
+  const armFormatPainter = useCallback((persistent: boolean) => {
+    const store = useFormatPainterStore.getState();
+    if (persistent && store.mode === "persistent") {
+      // 持续模式下再次双击入口 → 立即结束（计划状态机：Persistent --再次双击--> Idle）
+      store.exit();
+      return;
+    }
+    // 阅读模式：PM 选区采集（文本选区或 NodeSelection 块范围）
+    if (viewMode === "preview" && viewRef.current) {
+      const { state } = viewRef.current;
+      const { from, to } = state.selection;
+      if (from === to) return; // 无可采集内容
+      const snapshot = collectPmSnapshot(state, from, to);
+      if (persistent) store.armPersistent(snapshot);
+      else store.armOnce(snapshot);
+      return;
+    }
+    // 编辑/分屏：textarea 选区采集
+    const textarea = sourceTextareaRef.current;
+    if (!textarea) return;
+    const { selectionStart: start, selectionEnd: end } = textarea;
+    if (start === end) return;
+    const snapshot = collectSourceSnapshot(sourceContentRef.current, start, end);
+    if (persistent) store.armPersistent(snapshot);
+    else store.armOnce(snapshot);
+  }, [viewMode]);
+
+  // 经 ref 转发（handleContextMenuAction / 格式栏按钮的闭包可能早于本定义创建，避免闭包过期）
+  const armFormatPainterRef = useRef<(persistent: boolean) => void>(() => {});
+  armFormatPainterRef.current = armFormatPainter;
+
+  /** 应用格式刷到 PM 点击处所在段落（覆盖式：先清后套；块级 setBlockType 一并处理） */
+  const applyFormatPainterToPm = useCallback((clientX: number, clientY: number) => {
+    const view = viewRef.current;
+    const snapshot = useFormatPainterStore.getState().snapshot;
+    if (!view || !snapshot) return false;
+    const coords = view.posAtCoords({ left: clientX, top: clientY });
+    if (!coords) return false;
+    const $pos = view.state.doc.resolve(coords.pos);
+    if ($pos.depth < 1) return false;
+    const from = $pos.start($pos.depth);
+    const to = $pos.end($pos.depth);
+    const tr = buildPmSnapshotTr(view.state, from, to, snapshot);
+    if (!tr) return false;
+    view.dispatch(tr);
+    view.focus();
+    return true;
+  }, []);
+
+  /** 应用格式刷到源码点击处所在行（块级前缀替换 + 行内容包裹，覆盖式） */
+  const applyFormatPainterToSource = useCallback((cursorPos: number) => {
+    const snapshot = useFormatPainterStore.getState().snapshot;
+    const textarea = sourceTextareaRef.current;
+    if (!snapshot || !textarea) return false;
+    const text = sourceContentRef.current;
+    const scrollTop = textarea.scrollTop;
+    const { start: lineStart, end: lineEnd } = getLineRange(text, cursorPos);
+
+    // 1) 块级：替换行首前缀
+    let next = text;
+    let nextLineStart = lineStart;
+    let nextLineEnd = lineEnd;
+    if (snapshot.blockType !== null) {
+      const blockRes = applyBlockTypeToLine(text, lineStart, lineEnd, snapshot.blockType);
+      if (blockRes) {
+        next = blockRes.text;
+        nextLineStart = blockRes.start;
+        nextLineEnd = blockRes.end;
+      }
+    }
+    // 2) 行内：对行内容（掐掉前缀）包裹（先剥后包，不叠加）
+    if (snapshot.marks.length > 0) {
+      const line = next.slice(nextLineStart, nextLineEnd);
+      const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/.exec(line);
+      const contentStart = nextLineStart + (prefixMatch ? prefixMatch[0].length : 0);
+      if (nextLineEnd > contentStart) {
+        const wrapped = wrapRangeWithMarks(next, contentStart, nextLineEnd, snapshot.marks);
+        if (wrapped) {
+          next = wrapped.text;
+          nextLineEnd = wrapped.end;
+        }
+      }
+    }
+    if (next === text) return false;
+
+    const diff = computeDiff(text, next);
+    pushUndoEntry({ ...diff, cursorPos: lineEnd, scrollTop });
+    setSourceContent(next);
+    sourceContentRef.current = next;
+    onContentChangeRef.current?.(next);
+    setDirtyRef.current(true);
+    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+    lastContentRef.current = unmaskBase64Images(next, base64TokensRef.current);
+    const caret = nextLineEnd;
+    requestAnimationFrame(() => {
+      const ta = sourceTextareaRef.current;
+      if (ta) {
+        ta.focus();
+        ta.setSelectionRange(caret, caret);
+        ta.scrollTop = scrollTop;
+      }
+    });
+    return true;
+  }, []);
+
+  // armed 时单击应用：PM（阅读模式；点击处所在段落为应用目标）
+  useEffect(() => {
+    if (viewMode !== "preview") return;
+    const container = editorRef.current;
+    if (!container) return;
+    const onClick = (e: MouseEvent) => {
+      if (useFormatPainterStore.getState().mode === "idle") return;
+      if (applyFormatPainterToPm(e.clientX, e.clientY)) {
+        useFormatPainterStore.getState().consume();
+      }
+    };
+    container.addEventListener("click", onClick);
+    return () => container.removeEventListener("click", onClick);
+  }, [viewMode, applyFormatPainterToPm]);
+
+  // armed 时单击应用：源码（编辑/分屏；点击处所在行为应用目标）
+  useEffect(() => {
+    if (!isSourceMode) return;
+    const ta = sourceTextareaRef.current;
+    if (!ta) return;
+    const onClick = () => {
+      if (useFormatPainterStore.getState().mode === "idle") return;
+      const pos = ta.selectionStart ?? 0;
+      if (applyFormatPainterToSource(pos)) {
+        useFormatPainterStore.getState().consume();
+      }
+    };
+    ta.addEventListener("click", onClick);
+    return () => ta.removeEventListener("click", onClick);
+  }, [isSourceMode, viewMode, applyFormatPainterToSource]);
+
+  // Esc 退出格式刷（window 捕获阶段；与 PM 菜单的 Esc 关闭并存互不阻塞）
+  useEffect(() => {
+    if (formatPainterMode === "idle") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      useFormatPainterStore.getState().exit();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [formatPainterMode]);
+
+  // armed 全局光标（刷子形状，见 editor.css 的 .format-painter-armed）
+  useEffect(() => {
+    document.body.classList.toggle("format-painter-armed", formatPainterMode !== "idle");
+    return () => document.body.classList.remove("format-painter-armed");
+  }, [formatPainterMode]);
+
+  // 切文件 / 切模式 → 自动退出（防快照跨文档误用）
+  useEffect(() => {
+    useFormatPainterStore.getState().exit();
+  }, [filePath, viewMode]);
+
+  // v0.12.0 需求2：阅读模式右键菜单（首次为 PM 模式引入）。
+  // 选区在 rAF 内主动读取——mermaid 等 NodeView 的 stopEvent 可能拦过 mousedown，
+  // React 事件对象的时序不保证拿到最新选区。
+  useEffect(() => {
+    if (viewMode !== "preview" || !isMdFile) return;
+    const container = editorRef.current;
+    if (!container) return;
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      const { clientX: x, clientY: y } = e;
+      requestAnimationFrame(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        const sel = view.state.selection;
+        const isNode = sel instanceof NodeSelection;
+        setPmContextMenu({
+          open: true,
+          x,
+          y,
+          hasSelection: !isNode && sel.from !== sel.to,
+          nodeKind: isNode ? sel.node.type.name : null,
+        });
+      });
+    };
+    container.addEventListener("contextmenu", onContextMenu);
+    return () => container.removeEventListener("contextmenu", onContextMenu);
+  }, [viewMode, isMdFile]);
+
+  /** PM 右键菜单 action 分发 */
+  const handlePmMenuAction = useCallback((action: string) => {
+    const view = viewRef.current;
+    switch (action) {
+      case "bold":
+      case "italic":
+      case "strikethrough":
+      case "code":
+      case "highlight":
+      case "underline": {
+        const mtype = view?.state.schema.marks[PM_MARK_BY_ACTION[action]];
+        if (view && mtype) {
+          toggleMark(mtype)(view.state, view.dispatch, view);
+          view.focus();
+        }
+        return;
+      }
+      case "formatPainter":
+        armFormatPainter(false);
+        return;
+      case "deleteNode":
+        if (view) {
+          view.dispatch(view.state.tr.deleteSelection());
+          view.focus();
+        }
+        return;
+      case "translate":
+        startTranslateRef.current();
+        return;
+      case "link":
+        openLinkDialog();
+        return;
+      case "image":
+        setImageDialogOpen(true);
+        return;
+      case "table":
+        setTableDialogOpen(true);
+        return;
+      case "codeblock":
+        insertMarkdownIntoPM("\n```\n\n```\n");
+        return;
+      case "mermaid":
+        insertMarkdownIntoPM(MERMAID_TEMPLATES[0].syntax);
+        return;
+      case "aiContinue":
+        startAiAssistRef.current("continue");
+        return;
+      case "aiSummary":
+        startAiAssistRef.current("summary");
+        return;
+    }
+  }, [armFormatPainter, insertMarkdownIntoPM, openLinkDialog]);
 
   // ─── Mermaid 模板插入 ──────────────────────────────
   const handleMermaidTemplateSelect = useCallback((syntax: string) => {
@@ -3814,7 +4189,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       return;
     }
 
-    /** 计算光标所在段落的 [startY, endY) 视口 Y 坐标，并更新 overlay 遮罩 */
+    /** 计算聚焦行区间（v0.12.0：光标行 ±1 行）的 [startY, endY) 视口 Y 坐标，并更新 overlay 遮罩 */
     const updateOverlay = () => {
       const ta = sourceTextareaRef.current;
       const ov = focusOverlayRef.current;
@@ -3823,8 +4198,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const text = ta.value;
       const cursorPos = ta.selectionStart;
 
-      // 调用纯函数查找段落字符区间
-      const range = findParagraphRange(text, cursorPos);
+      // 调用纯函数查找聚焦行字符区间（v0.12.0 需求9：光标行 ±1 行 = 3 行全亮窗）
+      const range = findFocusRowRange(text, cursorPos, 1);
 
       // 使用 mirror div 测量段落起止位置的实际 Y 坐标（准确处理软换行）
       const { startY: rawStartY, endY: rawEndY } = measureTextareaRangeY(ta, range.start, range.end);
@@ -3838,14 +4213,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 修复：暗色主题下遮罩颜色适配，避免 rgba(0,0,0,0.45) 在深色背景上过暗
       const dimColor = isDarkTheme(theme) ? "rgba(0,0,0,0.28)" : "rgba(0,0,0,0.45)";
 
-      // 若段落不在可视区域（如光标在文档开头但已滚动到中间），默认高亮屏幕中央的一行
+      // 若聚焦行不在可视区域（如光标在文档开头但已滚动到中间），默认高亮屏幕中央的 3 行窗
       // 修复：原代码整个视口遮罩，用户看不到高亮内容；改为高亮屏幕中央
+      // v0.12.0 需求9：单行窗 → 3 行窗（中心行 ±1.5 行高）
       if (endY <= 0 || startY >= height) {
         const cs = getComputedStyle(ta);
         const lineHeight = resolveLineHeight(cs);
         const centerY = height / 2;
-        const centerStartY = Math.max(0, centerY - lineHeight / 2);
-        const centerEndY = Math.min(height, centerY + lineHeight / 2);
+        const centerStartY = Math.max(0, centerY - lineHeight * 1.5);
+        const centerEndY = Math.min(height, centerY + lineHeight * 1.5);
         ov.style.backgroundImage = `linear-gradient(to bottom,
           ${dimColor} 0px,
           ${dimColor} ${centerStartY}px,
@@ -3945,6 +4321,92 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setOrClear("--editor-paragraph-spacing", paragraphSpacing, "");
     setOrClear("--editor-content-max-width", contentMaxWidth, "px");
   }, [lineHeight, paragraphSpacing, contentMaxWidth]);
+
+  // v0.12.0 需求5：文档缩放比例注入 --doc-zoom（:root，值为比例：1 = 100%）。
+  // 消费方：阅读 .ProseMirror 的 CSS zoom、分屏 iframe body 的 zoom（经 collectCssVars）、
+  // 编辑 textarea 的字号 calc（见 textarea 内联样式）、table-editor 的 rect→布局值换算。
+  useEffect(() => {
+    document.documentElement.style.setProperty("--doc-zoom", String(docZoom / 100));
+  }, [docZoom]);
+
+  // v0.12.0 需求5：Ctrl+滚轮调整文档缩放（阅读/编辑/分屏三模式通用）。
+  // 监听挂在 .editor-main-area（不影响侧栏/标签栏）；
+  // passive:false + preventDefault 阻止 WebView2 的页面级缩放与默认滚动。
+  // 向上滚（deltaY < 0）= 放大，向下滚 = 缩小。
+  useEffect(() => {
+    const container = mainAreaRef.current;
+    if (!container) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      adjustDocZoom(e.deltaY < 0 ? DOC_ZOOM_STEP : -DOC_ZOOM_STEP);
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onWheel);
+  }, [adjustDocZoom]);
+
+  // ─── v0.12.0 需求4：视口锚点（窗口/侧栏尺寸变化时保持阅读焦点） ─────────
+  // 尺寸变化会重排文本；scrollTop（像素）不变时视口内容漂移。
+  // 方案：变化前记录"视口首个可见块 + 偏移"，ResizeObserver 回调（重排完成后）
+  // 用差值补偿 scrollTop；rAF 双保险避开侧栏 width transition（250ms）的中间帧。
+  // 副作用：补偿触发 scroll → fileScrollProgress 自动记录新百分比，无需处理。
+  useEffect(() => {
+    if (viewMode !== "preview" || !isMdFile) return;
+    const container = editorRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    const selector = ".ProseMirror > *";
+    let anchor = captureAnchor(container, selector);
+    // 用户滚动后基准更新为当前视口
+    const onScroll = () => { anchor = captureAnchor(container, selector); };
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => {
+        restoreAnchor(container, anchor);
+        anchor = captureAnchor(container, selector);
+      });
+    });
+    ro.observe(container);
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      ro.disconnect();
+      container.removeEventListener("scroll", onScroll);
+    };
+  }, [viewMode, isMdFile, forceUpdateKey]);
+
+  // v0.12.0 需求4：编辑/分屏左侧 textarea 的行锚点（textarea 无子元素，
+  // 块锚点不适用——用 scrollTop 换算的浮点行索引，行高变化后仍可还原）
+  useEffect(() => {
+    if (!isSourceMode) return;
+    const ta = sourceTextareaRef.current;
+    if (!ta || typeof ResizeObserver === "undefined") return;
+    lineAnchorRef.current = captureLineAnchor(ta);
+    const onScroll = () => { lineAnchorRef.current = captureLineAnchor(ta); };
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => {
+        restoreLineAnchor(ta, lineAnchorRef.current);
+        lineAnchorRef.current = captureLineAnchor(ta);
+      });
+    });
+    ro.observe(ta);
+    ta.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      ro.disconnect();
+      ta.removeEventListener("scroll", onScroll);
+    };
+  }, [isSourceMode, viewMode, forceUpdateKey]);
+
+  // v0.12.0 需求5：缩放（字号换算）变化后按行锚点还原 textarea 滚动位置。
+  // 字号变大后行高变大，像素 scrollTop 不变会让视口跳到更靠后的内容；
+  // 用"变化前的行索引 × 新行高"还原，视觉上视口顶部行保持不动。
+  useEffect(() => {
+    if (!isSourceMode) return;
+    const ta = sourceTextareaRef.current;
+    if (!ta) return;
+    const raf = requestAnimationFrame(() => {
+      restoreLineAnchor(ta, lineAnchorRef.current);
+      lineAnchorRef.current = captureLineAnchor(ta);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [docZoom, isSourceMode]);
 
   // v0.11.0 B4-10：阅读进度上报（状态栏显示百分比）。
   //
@@ -4457,6 +4919,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       fontMono: v("--font-mono", "'Cascadia Code', 'Consolas', monospace"),
       fontSize: v("--editor-font-size", "16px"),
       fontFamily: v("--editor-font-family", "sans-serif"),
+      // v0.12.0 需求5：文档缩放比例（注入 iframe :root，body 用 var 引用）
+      docZoom: v("--doc-zoom", "1"),
     };
   }, []);
 
@@ -4502,12 +4966,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         --hr-color: ${cv.hrColor}; --link-color: ${cv.linkColor};
         --border-color: ${cv.borderColor}; --accent-color: ${cv.accentColor};
         --font-mono: ${cv.fontMono};
+        /* v0.12.0 需求5：文档缩放比例（body zoom 引用，增量更新时由 setProperty 刷新） */
+        --doc-zoom: ${cv.docZoom};
       }
       body {
         margin: 0; padding: 40px 60px; max-width: 860px; margin: 0 auto;
         background: ${cv.bgPrimary}; color: ${cv.textPrimary};
         font-size: ${cv.fontSize}; font-family: ${cv.fontFamily};
         line-height: 1.8; word-break: break-word;
+        zoom: var(--doc-zoom, 1);
       }
       h1,h2,h3,h4,h5,h6 { color: ${cv.headingColor}; margin: 1.2em 0 0.6em; line-height: 1.3; }
       h1 { font-size: 2em; } h2 { font-size: 1.5em; } h3 { font-size: 1.25em; } h4 { font-size: 1.1em; }
@@ -4594,6 +5061,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     } else {
       // 增量更新：只替换 body 内容，不重新加载脚本
       // 替换 body 内容（样式通过 :root 变量自动更新）
+      // v0.12.0 需求5：缩放变化也走增量分支 —— 刷新 :root 的 --doc-zoom（body zoom 引用它）
+      doc.documentElement.style.setProperty("--doc-zoom", cv.docZoom);
       doc.body.innerHTML = previewHtml;
       // 重新触发 mermaid 渲染（脚本已加载，直接调用 run）
       if (hasMermaid && (doc as any).defaultView?.mermaid) {
@@ -4657,7 +5126,47 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         requestAnimationFrame(setScroll);
       }
     }
-  }, [previewHtml, viewMode, theme, collectCssVars]);
+  }, [previewHtml, viewMode, theme, collectCssVars, docZoom]);
+
+  // v0.12.0 需求4：分屏 iframe 尺寸变化时保持预览焦点。
+  // iframe 的 contentDocument 有独立滚动盒，不在主文档 ResizeObserver 的观察范围内：
+  // ① 对 iframe 元素本身观察（宽度变化会传导，含拖分割条/侧栏折叠）；
+  // ② 滚动监听挂在 contentWindow 上（doc.open() 重写文档后 window 对象仍稳定，
+  //    而 scroller 元素会被替换 —— 每次捕获/恢复时动态获取 scrollingElement）。
+  useEffect(() => {
+    if (viewMode !== "split") return;
+    const iframe = previewIframeRef.current;
+    if (!iframe || typeof ResizeObserver === "undefined") return;
+
+    const getScroller = (): Element | null => {
+      const doc = iframe.contentDocument;
+      return (doc?.scrollingElement ?? doc?.documentElement) ?? null;
+    };
+    const capture = (): ViewportAnchor | null => {
+      const s = getScroller();
+      return s ? captureAnchor(s, "body > *") : null;
+    };
+    let anchor: ViewportAnchor | null = capture();
+
+    const win = iframe.contentWindow;
+    const onScroll = () => { anchor = capture(); };
+    win?.addEventListener("scroll", onScroll, { passive: true });
+
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => {
+        const s = getScroller();
+        if (!s) return;
+        restoreAnchor(s, anchor);
+        anchor = capture();
+      });
+    });
+    ro.observe(iframe);
+
+    return () => {
+      ro.disconnect();
+      win?.removeEventListener("scroll", onScroll);
+    };
+  }, [viewMode]);
 
   // ─── 分屏模式：左右滚动联动 ──────────────────
   useEffect(() => {
@@ -4707,7 +5216,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   // ─── 格式工具栏 ────────────────────────────────
   // link/image/table 打开对应对话框；mermaid 打开模板下拉；其余走 handleFormatAction
-  const onFormatBtnClick = useCallback((action: string) => {
+  // v0.12.0 需求2：detail=2（双击）用于格式刷的"持续应用"入口
+  const onFormatBtnClick = useCallback((action: string, detail = 1) => {
     if (action === "undo") { handleUndo(); return; }
     if (action === "redo") { handleRedo(); return; }
     if (action.startsWith("sep")) return;
@@ -4715,6 +5225,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (action === "image") { setImageDialogOpen(true); return; }
     if (action === "table") { setTableDialogOpen(true); return; }
     if (action === "mermaid") { setMermaidMenuOpen((v) => !v); return; }
+    if (action === "formatPainter") {
+      // 单击 = once（Word 默认）；双击 = persistent（再次双击结束，见 armFormatPainter）
+      armFormatPainterRef.current(detail >= 2);
+      return;
+    }
     handleFormatAction.current(action);
   }, [handleUndo, handleRedo, openLinkDialog]);
 
@@ -4768,9 +5283,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             return (
               <button
                 key={btn.action}
-                className={`format-btn ${btn.isUndoRedo ? "format-btn-undo-redo" : ""}`}
+                className={`format-btn ${btn.isUndoRedo ? "format-btn-undo-redo" : ""} ${
+                  btn.action === "formatPainter" && formatPainterMode !== "idle" ? "active" : ""
+                }`}
                 title={formatButtonTitle(btn)}
-                onClick={() => onFormatBtnClick(btn.action)}
+                onClick={(e) => onFormatBtnClick(btn.action, e.detail)}
               >
                 {btn.label}
               </button>
@@ -4780,7 +5297,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       )}
 
       {/* ─── 主内容区域 ──────────────────────────── */}
-      <div className="editor-main-area">
+      <div className="editor-main-area" ref={mainAreaRef}>
+        {/* v0.12.0 需求5：右下角缩放尺（hover 显现；拖动/点击调整 docZoom） */}
+        <ZoomRuler value={docZoom} onChange={setDocZoom} />
         {/* v0.6.1 问题5：模式切换悬浮按钮（阅读=羽毛笔→分屏 / 分屏=书本→阅读） */}
         {(viewMode === "preview" || viewMode === "split") && isMdFile && (
           <ModeSwitchButton
@@ -4942,7 +5461,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             style={{
               flex: isSourceMode ? 1 : 0,
               display: isSourceMode ? "block" : "none",
-              fontSize: `${fontSize}px`,
+              // v0.12.0 需求5：编辑模式用字号换算实现缩放（不 zoom textarea——textarea
+              // 是自带滚动的一体容器，zoom 会分裂 rect(视觉)/scrollTop(布局) 坐标系，
+              // 打坏专注遮罩与打字机测量；字号放大后行高/换行/测量体系天然一致）。
+              fontSize: `calc(${fontSize}px * var(--doc-zoom, 1))`,
               fontFamily: `${fontFamily}, "Cascadia Code", "Consolas", monospace`,
               // v0.4.0：split 模式下右边框由分割条替代，避免双线
               borderRight: viewMode === "split" ? "none" : "none",
@@ -5021,7 +5543,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       <TableDialog
         open={tableDialogOpen}
         onInsert={(md) => {
-          insertTextAtCursor(md);
+          // v0.12.0 需求2：PM 模式（阅读模式右键菜单入口）走 PM 插入，与 Link/Image 一致
+          if (viewMode === "preview" && viewRef.current) insertMarkdownIntoPM(md);
+          else insertTextAtCursor(md);
           setTableDialogOpen(false);
         }}
         onClose={() => setTableDialogOpen(false)}
@@ -5067,6 +5591,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         translateEnabled={translateEnabled}
         onAction={handleContextMenuAction}
         onClose={() => setContextMenu((s) => ({ ...s, open: false }))}
+      />
+
+      {/* v0.12.0 需求2：阅读模式（PM）右键菜单（首次为 PM 模式引入自定义菜单） */}
+      <PmContextMenu
+        open={pmContextMenu.open}
+        x={pmContextMenu.x}
+        y={pmContextMenu.y}
+        hasSelection={pmContextMenu.hasSelection}
+        nodeKind={pmContextMenu.nodeKind}
+        isMdFile={isMdFile}
+        translateEnabled={translateEnabled}
+        onAction={handlePmMenuAction}
+        onClose={() => setPmContextMenu((s) => ({ ...s, open: false }))}
       />
 
       {/* SlashCommand 菜单：仅源码模式 + Markdown 文件 + 行首 / 触发时渲染 */}

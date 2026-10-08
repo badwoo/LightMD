@@ -20,12 +20,21 @@ export interface FormatResult {
   replacement: string;
   /** 替换后光标相对原选区起点的偏移量 */
   cursorOffset: number;
+  /**
+   * v0.12.0 需求1：无选区时的占位提示文本（不写入文档！）。
+   * 由 source ghost overlay 以灰色幽灵文本渲染：用户直接键入即替换之，
+   * 不键入则永不落盘（修复"粗体文本/标题一 残留进文件"）。
+   * 仅行内格式与标题使用；块级模板（代码块/表格/引用等）仍预填真文本
+   * ——新建块需要可见模板指引，属既有语义保留。
+   */
+  ghostText?: string;
 }
 
 /**
  * 包裹选中文本：在前后插入成对的标记符号
  * - 有选中文本时：完整包裹，光标移到包裹后末尾
- * - 无选中文本时：插入占位文本，光标移到占位文本之前（便于直接键入替换）
+ * - 无选中文本时：仅插入语法符号（如 `**`），占位文字改走 ghostText
+ *   （v0.12.0 需求1：不再把占位文字写进文档，光标居中便于直接键入）
  */
 export function wrapSelection(
   selected: string,
@@ -37,9 +46,9 @@ export function wrapSelection(
     const replacement = `${before}${selected}${after}`;
     return { replacement, cursorOffset: replacement.length };
   }
-  const replacement = `${before}${placeholder}${after}`;
-  // 无选中时光标停在 placeholder 之前，方便用户直接覆盖输入
-  return { replacement, cursorOffset: before.length };
+  // v0.12.0 需求1：replacement 只含语法符号；placeholder 作为 ghostText 渲染
+  const replacement = `${before}${after}`;
+  return { replacement, cursorOffset: before.length, ghostText: placeholder };
 }
 
 /**
@@ -100,6 +109,12 @@ export function removeLinePrefix(text: string, cursorPos: number): FormatResult 
 }
 
 /**
+ * v0.12.0 需求1：标题占位 Ghost 文案（H1~H6，索引 0 = 一级标题）。
+ * buildFormatReplacement 与 EditorContainer 的 heading 行首路径共用，保证文案一致。
+ */
+export const HEADING_GHOST_TEXTS = ["标题一", "标题二", "标题三", "标题四", "标题五", "标题六"] as const;
+
+/**
  * 构造指定 action 的格式化结果（按钮点击路径）
  *
  * 统一入口：handleFormatAction 与右键菜单都通过此函数生成 replacement + cursorOffset。
@@ -129,17 +144,30 @@ export function buildFormatReplacement(action: string, selected: string): Format
         cursorOffset: selected ? 4 + selected.length + 5 : 5,
       };
     case "h1":
-      return { replacement: `# ${selected || "标题一"}`, cursorOffset: selected ? (2 + selected.length) : 2 };
+      return selected
+        ? { replacement: `# ${selected}`, cursorOffset: 2 + selected.length }
+        // v0.12.0 需求1：无选区仅插入前缀，标题占位走 ghostText（不落盘）
+        : { replacement: "# ", cursorOffset: 2, ghostText: HEADING_GHOST_TEXTS[0] };
     case "h2":
-      return { replacement: `## ${selected || "标题二"}`, cursorOffset: selected ? (3 + selected.length) : 3 };
+      return selected
+        ? { replacement: `## ${selected}`, cursorOffset: 3 + selected.length }
+        : { replacement: "## ", cursorOffset: 3, ghostText: HEADING_GHOST_TEXTS[1] };
     case "h3":
-      return { replacement: `### ${selected || "标题三"}`, cursorOffset: selected ? (4 + selected.length) : 4 };
+      return selected
+        ? { replacement: `### ${selected}`, cursorOffset: 4 + selected.length }
+        : { replacement: "### ", cursorOffset: 4, ghostText: HEADING_GHOST_TEXTS[2] };
     case "h4":
-      return { replacement: `#### ${selected || "标题四"}`, cursorOffset: selected ? (5 + selected.length) : 5 };
+      return selected
+        ? { replacement: `#### ${selected}`, cursorOffset: 5 + selected.length }
+        : { replacement: "#### ", cursorOffset: 5, ghostText: HEADING_GHOST_TEXTS[3] };
     case "h5":
-      return { replacement: `##### ${selected || "标题五"}`, cursorOffset: selected ? (6 + selected.length) : 6 };
+      return selected
+        ? { replacement: `##### ${selected}`, cursorOffset: 6 + selected.length }
+        : { replacement: "##### ", cursorOffset: 6, ghostText: HEADING_GHOST_TEXTS[4] };
     case "h6":
-      return { replacement: `###### ${selected || "标题六"}`, cursorOffset: selected ? (7 + selected.length) : 7 };
+      return selected
+        ? { replacement: `###### ${selected}`, cursorOffset: 7 + selected.length }
+        : { replacement: "###### ", cursorOffset: 7, ghostText: HEADING_GHOST_TEXTS[5] };
     case "ul":
       return { replacement: `- ${selected || "列表项"}`, cursorOffset: selected ? (2 + selected.length) : 2 };
     case "task":
@@ -164,6 +192,25 @@ export function buildFormatReplacement(action: string, selected: string): Format
     default:
       return null;
   }
+}
+
+/**
+ * v0.12.0 需求1：格式 ghost（占位提示）的清除时机判定（纯函数，便于单测）。
+ *
+ * 清除（返回 true）：
+ * - "input"：任何真实输入（用户开始键入，占位提示完成使命）；
+ * - "escape"：用户按 Esc 放弃提示（不回滚已插入的语法符号，用户可 Ctrl+Z 撤销）；
+ * - "file-switch" / "mode-switch"：切文件/切模式（防跨文档残留）。
+ * 保留（返回 false）：
+ * - 方向键移动光标 / 点击移动光标 —— 用户可能想移到别处继续，提示继续有效。
+ */
+export function shouldClearFormatGhost(kind: string): boolean {
+  return (
+    kind === "input" ||
+    kind === "escape" ||
+    kind === "file-switch" ||
+    kind === "mode-switch"
+  );
 }
 
 /**
@@ -293,6 +340,8 @@ export const FORMAT_BUTTONS: FormatButton[] = [
   { action: "bolditalic", label: "BI", title: "粗斜体" },
   { action: "strikethrough", label: "S", title: "删除线" },
   { action: "code", label: "<>", title: "行内代码" },
+  // v0.12.0 需求2：格式刷（单击应用一次，双击持续应用）
+  { action: "formatPainter", label: "🖌", title: "格式刷（单击应用一次，双击持续应用）" },
   { action: "codeblock", label: "```", title: "代码块" },
   { action: "ul", label: "•", title: "无序列表" },
   { action: "task", label: "☑", title: "任务列表" },

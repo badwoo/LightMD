@@ -36,6 +36,8 @@ import { MermaidBlockView } from "./plugins/mermaid-block";
 import { MathInlineView, MathBlockView } from "./plugins/math-block";
 import { TaskItemView } from "./plugins/task-list";
 import { TableView, TableCellView } from "./plugins/table-editor";
+// v0.12.0 需求11：块级鼠标拖拽移动（自制拖拽，规避 Tauri 对 HTML5 DnD 的拦截）
+import { blockDragPlugin } from "./plugins/block-drag";
 import { autoPairPlugin } from "./plugins/auto-pair";
 import { smartPastePlugin } from "./plugins/smart-paste";
 import { createTranslateTooltipPlugin, type AiAssistTask } from "./plugins/translateTooltip";
@@ -254,6 +256,8 @@ export function createEditor(options: EditorOptions): EditorView | null {
       ...(onSlashStateChange ? [createSlashCommandPlugin(onSlashStateChange)] : []),
       // v0.7.0：AI 续写幽灵文本（meta 驱动，常驻注册，无任务时零开销）
       aiGhostPlugin(aiGhostHint),
+      // v0.12.0 需求11：块级鼠标拖拽移动（选中块后从左侧手柄热区拖动）
+      blockDragPlugin(),
     ],
   });
 
