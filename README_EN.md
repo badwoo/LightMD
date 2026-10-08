@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.9.5**
+**Current Version: v0.11.0**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -162,10 +162,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.9.0 installers:
+Visit the [Releases](../../releases) page to download the 0.11.0 installers:
 
-- **`LightMD_0.9.5_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.9.5_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.11.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.11.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -216,6 +216,24 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.11.0 (2026-10-07)
+
+**Defect-convergence release — 42 fixes and additions**
+
+- **Data safety**: `Shift+Enter` inside code / math blocks no longer splits the block and rewrites content to disk; table "delete row" on the header row no longer loses data; Typora-style image sizing `![alt|300](src)` now works in split preview and all export formats
+- **Export fidelity**: exported HTML is truly self-contained (KaTeX fully inlined, mermaid side-loaded to `_assets/`) and works offline; PDF header/footer present on every page and no longer leaks temp paths; DOCX no longer silently drops task lists / definition lists / images / list numbering / formulas; PNG export embeds formula fonts correctly
+- **Reading experience**: image lightbox in reading mode (zoom / navigate / `Esc`); typography settings (content width / line height / paragraph spacing) now take effect; reading progress in the status bar; heading anchors work in reading mode; `[toc]` updates live; emoji short codes render as graphics
+- **Editing consistency**: command palette gains 7 missing format commands; `Ctrl+Shift+8/9/.` work in source mode; `Alt+↑/↓` is now a real block move (old semantics moved to `Alt+Shift+↑/↓`); `~`/`^` only escape when a pair can actually form
+
+### v0.10.0 (2026-10-07)
+
+**Unified rendering & export**
+
+- **Unified render pipeline** — split preview and all export formats share one markdown-it config: straight quotes are no longer rewritten to curly quotes; `javascript:` and other dangerous schemes are blocked in every export path (security fix)
+- **Formula & diagram fidelity in exports** — PNG / DOCX / ePub render KaTeX math (native MathML in ePub) and Mermaid diagrams as vector graphics; per-item progress during export
+- **Regex search & replace** — `.*` toggle for regex matching, `$1` / `$&` capture-group references, invalid regex reported inline
+- **Outline limit 100 → 1000**; PDF export hardened (longer virtual-time budget, clearer browser errors)
 
 ### v0.9.5 (2026-10-02)
 
