@@ -14,6 +14,7 @@ import {
   restoreAnchor,
   captureLineAnchor,
   restoreLineAnchor,
+  findFirstOffsetAtOrBelow,
 } from "../utils/viewportAnchor";
 
 /** 覆盖元素 rect（jsdom 默认全 0） */
@@ -180,5 +181,40 @@ describe("v0.12.0 需求4：行锚点（textarea）", () => {
     ta.scrollTop = 10;
     restoreLineAnchor(ta, null);
     expect(ta.scrollTop).toBe(10);
+  });
+});
+
+describe("v0.12.0 返修（问题2）：textarea 内容锚点的二分查找", () => {
+  /**
+   * 构造"Y 单调不减"的模拟测量函数：每行 4 个字符、行高 30，
+   * 即 Y(offset) = floor(offset / 4) * 30。
+   */
+  const measureY = (offset: number) => Math.floor(offset / 4) * 30;
+
+  it("目标 Y=0 → 返回第一个 Y >= 0 的偏移（0）", () => {
+    expect(findFirstOffsetAtOrBelow(100, 0, measureY)).toBe(0);
+  });
+
+  it("目标 Y 落在行内 → 返回该行起始偏移", () => {
+    // 行 Y 序列 0,30,60,90…（每 4 个字符一行）
+    // Y=30 → 偏移 4；Y=65 落在 60 与 90 之间 → 首个 >= 65 的是 90 → 偏移 12
+    expect(findFirstOffsetAtOrBelow(100, 30, measureY)).toBe(4);
+    expect(findFirstOffsetAtOrBelow(100, 65, measureY)).toBe(12);
+  });
+
+  it("目标 Y 超出全部内容 → 返回最后一个偏移", () => {
+    expect(findFirstOffsetAtOrBelow(100, 9999, measureY)).toBe(99);
+  });
+
+  it("空文档（length=0）→ 0", () => {
+    expect(findFirstOffsetAtOrBelow(0, 10, measureY)).toBe(0);
+  });
+
+  it("单调性：结果偏移的 Y 一定 >= 目标，且前一个偏移的 Y < 目标", () => {
+    for (const target of [0, 7, 30, 31, 59, 60, 90, 120]) {
+      const off = findFirstOffsetAtOrBelow(200, target, measureY);
+      expect(measureY(off)).toBeGreaterThanOrEqual(target);
+      if (off > 0) expect(measureY(off - 1)).toBeLessThan(target);
+    }
   });
 });

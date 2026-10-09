@@ -1,21 +1,60 @@
 /**
  * v0.12.0 需求5：文档缩放尺样式
  *
- * 位置：.editor-main-area 右下角（absolute）。默认 opacity:0，
- * 尺子自身即热区（hover / focus-within 显现），150ms 过渡。
+ * 结构（v0.12.0 返修 · 问题3）：
+ *   .zoom-ruler-wrap   右下角热区（含气泡 + 尺身；悬停其上任一处 → 尺子显现）
+ *     .zoom-ruler-badge  圆形透明百分比气泡（非 100% 驻留；调整中放大）
+ *     .zoom-ruler        尺身（默认 opacity:0；hover / adjusting 时显现）
  *
- * v0.12.0 返修：
- * - 100% 刻度居中：刻度齿分上下两段绘制（下半 50~100 每 5% 一齿、上半 100~200
- *   每 5% 一齿），中缝 100% 刻度线加深（.zoom-ruler-mid）；
- * - 调整中显示圆形透明气泡（.zoom-ruler-bubble，尺寸随百分比增大）；
- * - 停止后显示低透明度小百分比（.zoom-ruler-idle-value，100% 时不渲染）。
+ * 关键修正：此前尺身与百分比同处一个 opacity:0 的容器，Ctrl+滚轮调整时鼠标不在
+ * 尺子上 → 整个容器不可见，导致"调整时看不到尺子和百分比"。现在显现由
+ * wrap:hover / wrap.adjusting 控制，调整中强制显现。
  */
 
-.zoom-ruler {
+.zoom-ruler-wrap {
   position: absolute;
   right: 10px;
   bottom: 10px;
   z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+}
+
+/* ─── 百分比气泡（圆形透明） ─── */
+.zoom-ruler-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.5;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.15s ease, width 0.12s ease, height 0.12s ease, font-size 0.12s ease;
+}
+
+/* 悬停热区（含气泡）→ 气泡变清晰，提示"尺子可在这里唤出" */
+.zoom-ruler-wrap:hover .zoom-ruler-badge {
+  opacity: 0.9;
+}
+
+/* 调整中：更醒目（尺寸/字号由内联样式按百分比放大） */
+.zoom-ruler-badge.adjusting {
+  opacity: 0.9;
+}
+
+/* ─── 尺身 ─── */
+.zoom-ruler {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -27,49 +66,13 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
   opacity: 0;
   transition: opacity 0.15s ease;
-  user-select: none;
 }
 
-.zoom-ruler:hover,
+/* 悬停热区（尺子或气泡上）→ 显现；调整中（拖动 / Ctrl+滚轮）强制显现 */
+.zoom-ruler-wrap:hover .zoom-ruler,
+.zoom-ruler-wrap.adjusting .zoom-ruler,
 .zoom-ruler:focus-within {
   opacity: 1;
-}
-
-/* ─── 调整中：圆形透明气泡（尺寸/字号由内联样式按百分比控制） ─── */
-.zoom-ruler-bubble {
-  position: absolute;
-  right: calc(100% + 10px);
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  opacity: 0.85;
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  pointer-events: none;
-  white-space: nowrap;
-  transition: width 0.12s ease, height 0.12s ease, font-size 0.12s ease;
-}
-
-/* ─── 停止后：低透明度小百分比（100% 时不渲染） ─── */
-.zoom-ruler-idle-value {
-  position: absolute;
-  right: calc(100% + 8px);
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 10px;
-  line-height: 1;
-  color: var(--text-secondary);
-  opacity: 0.45;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-  white-space: nowrap;
 }
 
 /* ─── 轨道包装：上下两段刻度齿 + 100% 中线 ─── */

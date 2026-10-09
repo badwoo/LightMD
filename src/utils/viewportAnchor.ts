@@ -18,7 +18,7 @@
  * 副作用：补偿触发 scroll 事件 → fileScrollProgress 自动记录新百分比，
  * 无需额外处理。内容不足一屏（无可滚动空间）时跳过，不抖动不报错。
  */
-import { resolveLineHeight } from "./focus-paragraph";
+import { resolveLineHeight, measureOffsetViewportY } from "./focus-paragraph";
 
 /** 块锚点：某顶层元素在"尺寸变化前"相对容器视口顶部的偏移 */
 export interface ViewportAnchor {
@@ -101,4 +101,80 @@ export function restoreLineAnchor(
   const target = paddingTop + lineIndex * lineHeight;
   const max = textarea.scrollHeight - textarea.clientHeight;
   textarea.scrollTop = Math.max(0, Math.min(max, target));
+}
+
+// ─── v0.12.0 返修：textarea 内容锚点（编辑/分屏模式窗口缩放保持焦点） ──────────
+
+/**
+ * textarea 内容锚点：视口顶部那一行内容的**字符偏移** + 其视口 Y 偏移。
+ *
+ * 为什么不用行索引锚点（captureLineAnchor）：行索引 = scrollTop / lineHeight，是
+ * **视觉行**序号。textarea 的 `white-space: pre-wrap` 会软换行，宽度变化后同一视觉行
+ * 序号指向完全不同的内容（行索引在本行高不变时还原结果 = 原 scrollTop，等于没补偿）。
+ * 字符偏移锚点直接绑定"视口顶部看到的是哪一段内容"，宽度重排 / 行高变化后都能准确回到。
+ */
+export interface TextContentAnchor {
+  /** 视口顶部（第一个可见）字符偏移 */
+  offset: number;
+  /** 该偏移字符相对视口顶部的 Y（通常 0 ~ +lineHeight；可为微小负值） */
+  viewportY: number;
+}
+
+/**
+ * 纯逻辑：在 [0, length) 上二分查找"Y 首次 >= targetY"的偏移。
+ * Y(offset) 随偏移单调不减（文本自上而下流式排列）。测量函数由调用方注入，便于单测。
+ */
+export function findFirstOffsetAtOrBelow(
+  length: number,
+  targetY: number,
+  measureY: (offset: number) => number,
+): number {
+  if (length <= 0) return 0;
+  let lo = 0;
+  let hi = length - 1;
+  if (measureY(hi) < targetY) return hi;
+  if (measureY(lo) >= targetY) return lo;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (measureY(mid) >= targetY) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+/**
+ * 捕获 textarea 内容锚点（视口顶部字符偏移 + 其视口 Y）。
+ * 内容不足一屏 / 空文本 / 无法测量时返回 null（调用方跳过补偿）。
+ */
+export function captureTextAnchor(textarea: HTMLTextAreaElement): TextContentAnchor | null {
+  if (textarea.scrollHeight <= textarea.clientHeight) return null;
+  const text = textarea.value;
+  if (!text) return null;
+  const offset = findFirstOffsetAtOrBelow(
+    text.length,
+    0,
+    (o) => measureOffsetViewportY(textarea, o) ?? -Infinity,
+  );
+  const y = measureOffsetViewportY(textarea, offset);
+  if (y === null) return null;
+  return { offset, viewportY: y };
+}
+
+/**
+ * 恢复 textarea 内容锚点：量该偏移字符的新视口 Y，把偏差补回 scrollTop（clamp）。
+ * 偏移越界（内容被替换/缩短）或无法测量时安全返回。
+ */
+export function restoreTextAnchor(
+  textarea: HTMLTextAreaElement,
+  anchor: TextContentAnchor | null | undefined,
+): void {
+  if (!anchor) return;
+  const text = textarea.value;
+  if (!text || anchor.offset >= text.length) return;
+  const y = measureOffsetViewportY(textarea, anchor.offset);
+  if (y === null) return;
+  const delta = y - anchor.viewportY;
+  if (Math.abs(delta) < 0.5) return;
+  const max = textarea.scrollHeight - textarea.clientHeight;
+  textarea.scrollTop = Math.max(0, Math.min(max, textarea.scrollTop + delta));
 }

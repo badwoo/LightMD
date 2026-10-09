@@ -94,25 +94,42 @@ describe("v0.12.0 需求5：ZoomRuler 组件（返修：100% 居中 + 气泡 + �
     expect(onChange).toHaveBeenLastCalledWith(75);
   });
 
-  it("调整中显示气泡；停止后显示淡百分比；100% 停止后两者都不显示", () => {
+  it("百分比气泡：非 100% 常驻、100% 不显示；调整中放大（返回 100% 后隐藏）", () => {
     vi.useFakeTimers();
     try {
       const { rerender } = render(<ZoomRuler value={125} onChange={() => {}} />);
-      // 挂载即"调整中" → 气泡可见、淡百分比不可见
-      expect(screen.getByTestId("zoom-ruler-bubble").textContent).toBe("125%");
-      expect(screen.queryByTestId("zoom-ruler-idle-value")).toBeNull();
-      // 600ms 停顿 → 调整结束：气泡消失、淡百分比出现
+      // 非 100% → 气泡驻留（挂载不算"调整过"，为 idle 态样式）
+      const badge = screen.getByTestId("zoom-ruler-badge");
+      expect(badge.textContent).toBe("125%");
+      expect(badge.className).toContain("zoom-ruler-badge");
+      expect(badge.className).not.toContain("adjusting");
+      // 拖动（值变化）→ 进入调整中：气泡放大（内联尺寸）+ wrap 加 adjusting 类
+      rerender(<ZoomRuler value={150} onChange={() => {}} />);
+      const adj = screen.getByTestId("zoom-ruler-badge");
+      expect(adj.className).toContain("adjusting");
+      expect(adj.getAttribute("style")).toContain("width");
+      expect(screen.getByTestId("zoom-ruler").className).toContain("adjusting");
+      // 停止调整 600ms 后退出调整态（气泡仍在，但不再放大）
       act(() => { vi.advanceTimersByTime(700); });
-      expect(screen.queryByTestId("zoom-ruler-bubble")).toBeNull();
-      expect(screen.getByTestId("zoom-ruler-idle-value").textContent).toBe("125%");
-      // 保持 100% → 淡百分比也不显示
+      const idle = screen.getByTestId("zoom-ruler-badge");
+      expect(idle.className).not.toContain("adjusting");
+      // 非调整态不注入内联尺寸（回到 CSS 默认小气泡）
+      expect(idle.getAttribute("style") || "").not.toContain("width");
+      // 回到 100% → 气泡隐藏（用户要求：仅 100% 不显示）
       rerender(<ZoomRuler value={100} onChange={() => {}} />);
       act(() => { vi.advanceTimersByTime(700); });
-      expect(screen.queryByTestId("zoom-ruler-bubble")).toBeNull();
-      expect(screen.queryByTestId("zoom-ruler-idle-value")).toBeNull();
+      expect(screen.queryByTestId("zoom-ruler-badge")).toBeNull();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("尺身显现由 wrap hover / adjusting 控制（Ctrl+滚轮调整时也可见）", () => {
+    const css = readSrc("components/editor/ZoomRuler.css");
+    // 调整中强制显现尺身（此前在 opacity:0 的容器里，调整时完全看不见）
+    expect(css).toContain(".zoom-ruler-wrap.adjusting .zoom-ruler");
+    // 悬停热区覆盖气泡 → 悬停气泡即可唤出尺子
+    expect(css).toContain(".zoom-ruler-wrap:hover .zoom-ruler");
   });
 });
 

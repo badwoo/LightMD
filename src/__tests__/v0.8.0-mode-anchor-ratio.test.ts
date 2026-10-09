@@ -84,21 +84,27 @@ describe("v0.8.0 修复 P10 lineIndexOfOffset（不分配数组的行号统计�
   });
 });
 
-describe("v0.8.0 修复 P10 接线（源码断言，防回归）", () => {
-  it("恢复时按 anchorRatio 同比例对齐，且不再强制滚动到视口上 1/3", () => {
-    expect(editorSrc).toContain("computeAnchorScrollTop(");
-    // 旧的强制定位写法（cursorY - clientHeight / 3）必须消失
+describe("v0.12.0 返修（问题4）接线（源码断言，防回归）", () => {
+  it("滚动位置一律按百分比恢复（三模式阅读进度一致），不再用锚点反算 scrollTop", () => {
+    expect(editorSrc).toContain("computeRestoreScrollTop(percent");
+    // v0.12.0 返修：模式切换改按"阅读进度百分比"恢复滚动 →
+    // 旧的"光标行放在视口同比例位置"反算（computeAnchorScrollTop）已从应用代码移除
+    expect(editorSrc).not.toContain("computeAnchorScrollTop(");
+    // 旧的强制定位写法（cursorY - clientHeight / 3）必须始终消失
     expect(editorSrc).not.toContain("container.clientHeight / 3");
     expect(editorSrc).not.toContain("textarea.clientHeight / 3");
   });
 
-  it("锚点仅在光标可见（anchorRatio 非空）时生效，否则回退百分比", () => {
-    expect(editorSrc).toContain("anchorLine != null && anchorRatio != null");
-    expect(editorSrc).toContain("computeRestoreScrollTop(percent");
+  it("编辑位置（光标）仍按内容映射恢复：行号 + 行内列偏移且 clamp 到行长度", () => {
+    // 编辑/分屏侧：行首 + 列偏移
+    expect(editorSrc).toContain("sourceLineToPos(sourceContentRef.current, anchorLine)");
+    expect(editorSrc).toContain("Math.min(anchorColumn, lineLen)");
+    // 阅读→编辑即时落光标同样带列偏移
+    expect(editorSrc).toContain("Math.min(anchorColumn, lineLen)");
   });
 
-  it("三条切换路径都捕捉编辑锚点（阅读→源码 / 源码→阅读 / 编辑分屏）", () => {
-    const ratioCalls = editorSrc.match(/computeViewportRatio\(/g) || [];
-    expect(ratioCalls.length).toBeGreaterThanOrEqual(3);
+  it("三条切换路径都捕捉编辑位置锚点（阅读→源码 / 源码→阅读 / 编辑分屏）", () => {
+    const occurrences = editorSrc.match(/anchorColumn/g) || [];
+    expect(occurrences.length).toBeGreaterThanOrEqual(6);
   });
 });

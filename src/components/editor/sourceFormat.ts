@@ -66,6 +66,38 @@ export const PREFIX_GHOST_TEXTS = {
   image: "图片描述",
 } as const;
 
+/** v0.12.0 需求1 返修：代码块占位提示（无选区时块内容为空，提示走 ghost 不落盘） */
+export const CODEBLOCK_GHOST_TEXT = "代码内容";
+
+/**
+ * v0.12.0 需求1 返修：计算"格式 ghost 落在格式符中间"所需的尾部符号与遮罩开关。
+ *
+ * 背景：粗体等行内格式在光标处插入成对符号（`**` + `**`），光标停在两对符号
+ * 中间。占位文字由 overlay 渲染，若不处理会**压住右侧符号**（用户反馈"重叠"）。
+ * 处理方式：把光标之后的尾部符号取出，由 overlay 渲染为可见普通色跟在占位文字后，
+ * 并用不透明底色遮住 textarea 里被压住的那些符号 → 视觉上即为 `**粗体文本**`。
+ *
+ * @param content 插入后的全文
+ * @param tailStart 尾部符号在全文中的起始偏移（= 光标位置）
+ * @param insertedTail 本次插入内容中位于光标之后的原始片段（可为多行模板）
+ * @returns tail 为需要可见渲染的尾符号（跨行模板为空）；maskTail 为是否启用底色遮罩
+ *   （仅当该行尾部再无其它内容时启用，否则底色会连带遮住用户已有文字）
+ */
+export function computeGhostTail(
+  content: string,
+  tailStart: number,
+  insertedTail: string,
+): { tail: string; maskTail: boolean } {
+  if (!insertedTail) return { tail: "", maskTail: false };
+  // 跨行模板（尾部以换行开头）：尾部符号不在同一行，无需可见尾符号/遮罩
+  const nl = insertedTail.indexOf("\n");
+  const tail = nl === -1 ? insertedTail : insertedTail.slice(0, nl);
+  if (!tail) return { tail: "", maskTail: false };
+  const lineEnd = tailStart + tail.length;
+  const maskTail = lineEnd >= content.length || content[lineEnd] === "\n";
+  return { tail, maskTail };
+}
+
 /**
  * 获取指定级别的标题前缀（如 level=3 返回 "### "）
  * level 自动 clamp 到 [1, 6]
@@ -154,9 +186,11 @@ export function buildFormatReplacement(action: string, selected: string): Format
     case "code":
       return wrapSelection(selected, "`", "`", "代码");
     case "codeblock":
+      // v0.12.0 需求1 返修：块内容留空，占位提示走 ghost（不再把"代码内容"写进文档）
       return {
-        replacement: `\n\`\`\`\n${selected || "代码内容"}\n\`\`\`\n`,
+        replacement: `\n\`\`\`\n${selected}\n\`\`\`\n`,
         cursorOffset: selected ? 4 + selected.length + 5 : 5,
+        ghostText: selected ? undefined : CODEBLOCK_GHOST_TEXT,
       };
     case "h1":
       return selected

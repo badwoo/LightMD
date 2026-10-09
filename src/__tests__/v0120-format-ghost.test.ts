@@ -13,6 +13,7 @@ import {
   wrapSelection,
   shouldClearFormatGhost,
   HEADING_GHOST_TEXTS,
+  computeGhostTail,
 } from "../components/editor/sourceFormat";
 
 describe("v0.12.0 需求1：行内格式 ghostText", () => {
@@ -95,9 +96,17 @@ describe("v0.12.0 需求1 返修：前缀/包裹类格式 ghostText（列表/任
     expect(buildFormatReplacement("quote", "abc")!.ghostText).toBeUndefined();
   });
 
-  it("块级多行模板保持预填（回归）：代码块/表格/公式/分割线", () => {
+  it("块级模板：代码块改为 ghost（内容不再落盘）；表格/公式/分割线仍预填", () => {
+    // v0.12.0 返修：代码块与行内格式一致——只插围栏结构，占位提示走 ghost
+    const cb = buildFormatReplacement("codeblock", "")!;
+    expect(cb.replacement).toBe("\n```\n\n```\n");
+    expect(cb.replacement).not.toContain("代码内容");
+    expect(cb.cursorOffset).toBe(5);
+    expect(cb.ghostText).toBe("代码内容");
+    // 有选区时内容为用户选中文本，无 ghost
+    expect(buildFormatReplacement("codeblock", "foo")!.ghostText).toBeUndefined();
+    // 表格/公式/分割线为结构模板，保持预填
     const cases: Array<[string, string]> = [
-      ["codeblock", "代码内容"],
       ["table", "列1"],
       ["math", "\\sum"],
       ["hr", "---"],
@@ -107,6 +116,38 @@ describe("v0.12.0 需求1 返修：前缀/包裹类格式 ghostText（列表/任
       expect(r.replacement, action).toContain(placeholder);
       expect(r.ghostText, action).toBeUndefined();
     }
+  });
+});
+
+describe("v0.12.0 需求1 返修：computeGhostTail（占位落在格式符中间）", () => {
+  it("行内成对符号：光标后的尾符号取出，行尾无其它内容 → 启用遮罩", () => {
+    // 空行插入 `****`，光标在 2 → 尾符号 `**`，行尾即文末
+    expect(computeGhostTail("****", 2, "**")).toEqual({ tail: "**", maskTail: true });
+    // 行尾还有换行（下一行有内容）同样安全
+    expect(computeGhostTail("****\nnext", 2, "**")).toEqual({ tail: "**", maskTail: true });
+  });
+
+  it("行内成对符号：行尾仍有用户内容 → 不启用遮罩（避免遮住已有文字）", () => {
+    expect(computeGhostTail("****abc", 2, "**")).toEqual({ tail: "**", maskTail: false });
+  });
+
+  it("斜体/行内代码：单字符尾符号", () => {
+    expect(computeGhostTail("**", 1, "*")).toEqual({ tail: "*", maskTail: true });
+    expect(computeGhostTail("``", 1, "`")).toEqual({ tail: "`", maskTail: true });
+  });
+
+  it("链接/图片：尾符号为 `](url)`（同一行，整体重绘）", () => {
+    expect(computeGhostTail("[](url)", 1, "](url)")).toEqual({ tail: "](url)", maskTail: true });
+    expect(computeGhostTail("![](url)", 2, "](url)")).toEqual({ tail: "](url)", maskTail: true });
+  });
+
+  it("跨行模板（代码块）：尾部以换行开头 → 无可见尾符号、不遮罩", () => {
+    expect(computeGhostTail("\n```\n\n```\n", 5, "\n```\n")).toEqual({ tail: "", maskTail: false });
+  });
+
+  it("无尾符号（列表/引用/标题前缀）→ 均为空", () => {
+    expect(computeGhostTail("- ", 2, "")).toEqual({ tail: "", maskTail: false });
+    expect(computeGhostTail("# ", 2, "")).toEqual({ tail: "", maskTail: false });
   });
 });
 

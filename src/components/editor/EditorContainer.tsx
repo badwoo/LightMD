@@ -67,6 +67,8 @@ import {
   shouldClearFormatGhost,
   HEADING_GHOST_TEXTS,
   getLineRange,
+  // v0.12.0 返修（问题1）：ghost 占位落在格式符中间的尾部符号计算
+  computeGhostTail,
 } from "./sourceFormat";
 import { getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
 // R1(v0.10.0)：分屏预览统一走渲染管线（与导出 HTML/PDF/PNG 同一配置源 + 同一 mermaid 包装/高亮步骤）
@@ -79,10 +81,12 @@ import { openExternalHref } from "../../utils/openExternal";
 import { calculateWordCount } from "../../utils/wordCount";
 import { findFocusRowRange, measureTextareaRangeY, measureTextareaCursorY, destroyMirror, resolveLineHeight, syncTextareaMetrics, buildSourceGhostHtml } from "../../utils/focus-paragraph";
 // v0.12.0 需求4：窗口/侧栏尺寸变化时的滚动视口锚点（保持阅读焦点）
-import { captureAnchor, restoreAnchor, captureLineAnchor, restoreLineAnchor, type ViewportAnchor } from "../../utils/viewportAnchor";
+// v0.12.0 返修（问题2）：textarea 改用**内容锚点**（字符偏移 + 视口 Y）；
+// 行锚点仅保留在 utils 中供单测（软换行宽度重排下不适用）
+import { captureAnchor, restoreAnchor, captureTextAnchor, restoreTextAnchor, type ViewportAnchor, type TextContentAnchor } from "../../utils/viewportAnchor";
 import { isTypewriterTriggerKey, isModifierKey, computeTypewriterScrollTop, shouldSkipScrollForCharInput, computeScrollPercent, isCursorOutsideViewport, computeSyncScrollTop, shouldSkipInitialScrollToCenter, computeRestoreScrollTop, computeViewportCenter, createScrollKeyBaseline, markScrollKeyDown, consumeScrollKeyUp } from "../../utils/typewriter";
-// v0.8.0 修复 P10：模式切换的编辑锚点定位（光标可见→按同比例对齐；不可见→回退滚动百分比）
-import { computeViewportRatio, computeAnchorScrollTop, lineIndexOfOffset } from "../../utils/modeAnchor";
+// v0.12.0 返修（问题4）：模式切换的编辑位置锚点（光标行 + 行内列）与滚动百分比恢复
+import { lineIndexOfOffset } from "../../utils/modeAnchor";
 // v0.6.6 问题4：源码显示层 base64 内联图片短标记（mask/unmask/光标补偿）
 import {
   maskBase64Images,
@@ -392,8 +396,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const viewRef = useRef<EditorView | null>(null);
   // v0.12.0 需求4：主内容区 ref（Ctrl+滚轮缩放监听 + ZoomRuler 锚定）
   const mainAreaRef = useRef<HTMLDivElement>(null);
-  // v0.12.0 需求4：textarea 行锚点（浮点行索引；scroll/尺寸变化/缩放时维护与还原）
-  const lineAnchorRef = useRef<number | null>(null);
+  // v0.12.0 返修（问题2）：textarea **内容锚点**（视口顶部字符偏移 + 视口 Y）。
+  // 此前用"行索引锚点"，但软换行下视觉行序号在宽度变化后指向不同内容 → 编辑/分屏
+  // 模式窗口缩放时焦点漂移（用户反馈"编辑和分屏模式下还不行"）。
+  const textAnchorRef = useRef<TextContentAnchor | null>(null);
+  /**
+   * v0.12.0 返修（问题4/5）：视口锚点补偿的抑制截止时间戳。
+   * 文件切换 / 模式切换 / 缩放恢复会主动设置滚动位置，此刻若 ResizeObserver 用
+   * "切换前"的锚点做补偿就会抢跑（用户看到的就是"进度没联动/丢失"）。
+   * 这些时点打时间标，窗口内的 RO 回调只重建锚点、不做补偿。
+   */
+  const anchorSuppressUntilRef = useRef(0);
   // 专注模式遮罩层 ref（源码模式下使用）
   const focusOverlayRef = useRef<HTMLDivElement>(null);
   const onContentChangeRef = useRef(onContentChange);
@@ -530,12 +543,6 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     percent: number;
     /** 光标所在行号（0-based）；null/undefined 表示无锚点 */
     anchorLine?: number | null;
-    /**
-     * v0.8.0 修复 P10：光标行在源视口中的相对位置（0~1）。
-     * 仅在"光标可见"时才有值；为 null 时不使用锚点，回退滚动百分比
-     * （用户要求：光标不可见时按阅读进度百分比定位，不强制滚动）。
-     */
-    anchorRatio?: number | null;
     /**
      * v0.12.0 返修（问题6）：行内列偏移（光标相对行首的字符数）。
      * 阅读 → 编辑切换时，PM 选区只精确到"行号 + 行内 doc 文本偏移"，
@@ -747,12 +754,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         // 带 ghost 文案的项（粗体/标题/列表等）显示灰色占位提示且不落盘；
         // 所有项（含代码块模板）都记录插入区间，未编辑时退格可整段删除（与格式栏一致）
         if (!selected) {
+          // v0.12.0 返修（问题1）：语法辅助栏的粗体/斜体等同样"占位落在格式符中间"
+          const gt = computeGhostTail(newContent, cursorPos, finalSyntax.slice(cursorPos - start));
           formatGhostRef.current = {
             text: opts?.ghost ?? "",
             pos: cursorPos,
             start,
             end: start + finalSyntax.length,
             content: newContent,
+            tail: gt.maskTail ? gt.tail : "",
+            maskTail: gt.maskTail,
           };
           sourceGhostHandlersRef.current.invalidate();
           requestAnimationFrame(() => formatGhostHandlersRef.current.render());
@@ -934,8 +945,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const percent = computeScrollPercent(container.scrollHeight, container.clientHeight, container.scrollTop);
       if (percent !== null) {
         pmScrollPercentRef.current = percent;
-        // v0.7.0 bug修复：按文件记录浏览进度（标签切换保留；重新打开由 App 层 clear 重置）
-        fileScrollProgress.set(progressKeyRef.current, percent);
+        // v0.12.0 返修（问题5）：正在恢复滚动位置时不写进度——恢复过程中的瞬时
+        // 像素值（如内容刚替换时的 0）会覆盖刚从快照注入的进度
+        if (!isRestoringScrollRef.current) {
+          // v0.7.0 bug修复：按文件记录浏览进度（标签切换保留；重新打开由 App 层 clear 重置）
+          fileScrollProgress.set(progressKeyRef.current, percent);
+        }
       }
     };
     // v0.8.3 WP5 需求7：passive 滚动监听——滚动处理不调用 preventDefault，
@@ -979,8 +994,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const percent = computeScrollPercent(textarea.scrollHeight, textarea.clientHeight, textarea.scrollTop);
       if (percent !== null) {
         textareaScrollPercentRef.current = percent;
-        // v0.7.0 bug修复：按文件记录浏览进度（同上）
-        fileScrollProgress.set(progressKeyRef.current, percent);
+        // v0.12.0 返修（问题5）：恢复期间不写进度（同上）
+        if (!isRestoringScrollRef.current) {
+          // v0.7.0 bug修复：按文件记录浏览进度（同上）
+          fileScrollProgress.set(progressKeyRef.current, percent);
+        }
       }
     };
     // v0.8.3 WP5：passive 监听（滚动路径上无需 preventDefault）——浏览器无需等待
@@ -1060,34 +1078,42 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 新文件的进度并恢复。重新打开场景 App 层已 clear → get 返回 null → 不恢复（顶部）。
   // 性能：Map.get 单次哈希查询；恢复仅在切换时执行一次（双 rAF 等布局稳定）。
   useEffect(() => {
-    // v0.8.3 WP4 需求6：进度键从"文件路径"改为"tab 键"（临时标签 = untitled:<id>），
+    // v0.8.3 WP4 需求6：进度键从"文件路径"改为"tab 键"（临时文本 = untitled:<id>），
     // 这样跨会话恢复的临时标签也能记住阅读位置。
     const percent = fileScrollProgress.get(progressKeyRef.current);
     if (percent === null) return;
-    // 标记恢复中，防打字机 effect 的 smooth 滚动覆盖（与 applyScroll 相同策略）
+    // 标记恢复中，防打字机 effect 的 smooth 滚动覆盖（与 applyScroll 相同策略）；
+    // v0.12.0 返修（问题5）：恢复完成前 scroll 处理器不写进度，避免中途瞬时 0 覆盖快照
     isRestoringScrollRef.current = true;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (isSourceMode) {
-          const textarea = sourceTextareaRef.current;
-          if (textarea) {
-            const newTop = computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight);
-            textarea.scrollTop = newTop ?? 0;
-          }
-          // 分屏模式 iframe 异步写入：记录待恢复百分比，iframe 写入 effect 末尾消费
-          if (viewMode === "split") {
-            pendingIframeScrollRef.current = percent;
-          }
-        } else {
-          const container = editorRef.current;
-          if (container) {
-            const newTop = computeRestoreScrollTop(percent, container.scrollHeight, container.clientHeight);
-            container.scrollTop = newTop ?? 0;
-          }
-        }
+
+    // v0.12.0 返修（问题5）：进度恢复的"内容未就绪重试"。
+    // 启动恢复时图片/公式/mermaid 是异步渲染的，若此刻内容还没撑开，
+    // computeRestoreScrollTop 返回 null，旧实现 `newTop ?? 0` 会把刚恢复的
+    // 进度当场清成 0（用户反馈"重载的文件阅读进度丢失"）。
+    // 现在：percent > 0 且暂不可滚动 → 短间隔重试（最多 ~0.6s），仍不可滚动才落到 0。
+    let attempts = 0;
+    const apply = () => {
+      attempts++;
+      const el = isSourceMode
+        ? sourceTextareaRef.current
+        : editorRef.current;
+      if (!el) {
         isRestoringScrollRef.current = false;
-      });
-    });
+        return;
+      }
+      const newTop = computeRestoreScrollTop(percent, el.scrollHeight, el.clientHeight);
+      if (newTop === null && percent > 0 && attempts < 8) {
+        setTimeout(apply, 80);
+        return;
+      }
+      el.scrollTop = newTop ?? 0;
+      if (isSourceMode && viewMode === "split") {
+        // 分屏模式 iframe 异步写入：记录待恢复百分比，iframe 写入 effect 末尾消费
+        pendingIframeScrollRef.current = percent;
+      }
+      isRestoringScrollRef.current = false;
+    };
+    requestAnimationFrame(() => requestAnimationFrame(apply));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceUpdateKey]);
 
@@ -1119,11 +1145,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const sourcePercent = fromPreview
         ? pmScrollPercentRef.current
         : textareaScrollPercentRef.current;
-      // v0.8.0 修复 P10：编辑 ↔ 分屏同样携带编辑锚点（光标在 textarea 中）；
-      // 光标可见时按同比例对齐（视觉位置不变），不可见时回退百分比
-      // v0.12.0 返修（问题6）：同时携带行内列偏移，恢复时不再丢到行首
+      // v0.12.0 返修（问题4/6）：携带"光标所在行 + 行内列偏移"作为编辑位置锚点
+      //（滚动位置一律按百分比恢复 → 三模式阅读进度一致）
       let anchorLine: number | null = null;
-      let anchorRatio: number | null = null;
       let anchorColumn: number | null = null;
       if (fromSource) {
         const textarea = sourceTextareaRef.current;
@@ -1132,18 +1156,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           lastTextareaCursorRef.current = cursorPos;
           anchorLine = lineIndexOfOffset(sourceContentRef.current, cursorPos);
           anchorColumn = cursorPos - (sourceContentRef.current.lastIndexOf("\n", cursorPos - 1) + 1);
-          anchorRatio = computeViewportRatio(
-            measureTextareaCursorY(textarea, cursorPos),
-            textarea.scrollTop,
-            textarea.clientHeight,
-          );
         }
       }
       pendingScrollRef.current = {
         targetMode: viewMode,
         percent: sourcePercent,
         anchorLine,
-        anchorRatio,
         anchorColumn,
       };
       return;
@@ -1176,27 +1194,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         // 修复"阅读到 abc 后切换模式，输入光标却回到行首"
         const anchorColumn = textBefore.length - (textBefore.lastIndexOf("\n") + 1);
 
-        // v0.8.0 修复 P10：记录光标在阅读视口中的相对位置（可见时）；
-        // 不可见（用户在别处浏览）则不记录 → 恢复时回退滚动百分比
-        let anchorRatio: number | null = null;
-        const scrollContainer = editorRef.current;
-        if (scrollContainer) {
-          const coords = view.coordsAtPos(from);
-          const containerRect = scrollContainer.getBoundingClientRect();
-          const contentY = coords.top - containerRect.top + scrollContainer.scrollTop;
-          anchorRatio = computeViewportRatio(
-            contentY,
-            scrollContainer.scrollTop,
-            scrollContainer.clientHeight,
-          );
-        }
-
-        // v0.8.0 修复 P1-2：锚点即"切换瞬间的光标行号"，天然属于当前文件+当前时刻
+        // v0.12.0 返修（问题4/6）：只携带"光标行号 + 行内列偏移"作为编辑位置锚点；
+        // 滚动位置由 applyScroll 按百分比恢复（三模式阅读进度一致）
         pendingScrollRef.current = {
           targetMode: viewMode,
           percent: sourcePercent,
           anchorLine: lineIndex,
-          anchorRatio,
           anchorColumn,
         };
 
@@ -1225,7 +1228,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           targetMode: viewMode,
           percent: sourcePercent,
           anchorLine: null,
-          anchorRatio: null,
+          anchorColumn: null,
         };
       }
 
@@ -1256,16 +1259,6 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           }
           const lineIndex = lineIndexOfOffset(sourceContent, cursorPos);
 
-          // v0.8.0 修复 P10：记录光标在源码视口中的相对位置（可见时）
-          let anchorRatio: number | null = null;
-          if (textarea) {
-            anchorRatio = computeViewportRatio(
-              measureTextareaCursorY(textarea, cursorPos),
-              textarea.scrollTop,
-              textarea.clientHeight,
-            );
-          }
-
           let currentLine = 0;
           let found = false;
           newDoc.descendants((node, pos) => {
@@ -1288,13 +1281,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           tr.setMeta("fileSwitch", true);
           view.dispatch(tr);
 
-          // v0.8.0 修复 P1-2：锚点用"切换瞬间 textarea 光标所在行"（lineIndex 已在上面算出）
-          // v0.8.0 修复 P10：同时带上光标在源码视口中的相对位置（不可见时为 null → 回退百分比）
+          // v0.12.0 返修（问题4）：锚点 = 切换瞬间 textarea 光标所在行（行号），
+          // 滚动位置由 applyScroll 按百分比恢复 → 三模式阅读进度一致
           pendingScrollRef.current = {
             targetMode: viewMode,
             percent: sourcePercent,
             anchorLine: lineIndex,
-            anchorRatio,
+            anchorColumn: null,
           };
 
           onContentChangeRef.current?.(sourceContent);
@@ -1312,7 +1305,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 双重 rAF 确保浏览器完成布局计算
   useEffect(() => {
     if (!pendingScrollRef.current) return;
-    const { targetMode, percent, anchorLine, anchorRatio, anchorColumn } = pendingScrollRef.current;
+    const { targetMode, percent, anchorLine, anchorColumn } = pendingScrollRef.current;
     pendingScrollRef.current = null;
     // 标记正在恢复滚动位置，阻止打字机 effect 的初始 scrollToCenter 覆盖
     // 根因：打字机 effect 的 scrollToCenter 使用 smooth 滚动，是异步多帧的，
@@ -1325,36 +1318,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         const container = editorRef.current;
         if (container) {
           viewRef.current?.focus();
-          // v0.8.0 修复 P10：锚点优先——把编辑锚点行放到视口中"与源模式相同的相对位置"。
-          // 仅当 anchorRatio 有值（切换时光标在源视口内可见）时才用锚点；
-          // 光标原本不可见时不强制滚动，直接回退滚动百分比（保持阅读进度）。
-          let anchored = false;
-          if (anchorLine != null && anchorRatio != null) {
-            const view = viewRef.current;
-            const doc = view?.state.doc;
-            if (view && doc) {
-              const pos = docBlockLineToPos(doc, anchorLine);
-              if (pos != null) {
-                const coords = view.coordsAtPos(pos);
-                const editorRect = container.getBoundingClientRect();
-                const cursorY = coords.top - editorRect.top + container.scrollTop;
-                const targetTop = computeAnchorScrollTop(
-                  cursorY,
-                  anchorRatio,
-                  container.clientHeight,
-                  container.scrollHeight,
-                );
-                if (targetTop != null) {
-                  container.scrollTop = targetTop;
-                  anchored = true;
-                }
-              }
-            }
-          }
-          // 无锚点/锚点不可见（首次打开、浏览中切换）回退滚动百分比
-          if (!anchored) {
-            const newTop = computeRestoreScrollTop(percent, container.scrollHeight, container.clientHeight);
-            container.scrollTop = newTop ?? 0;
+          // v0.12.0 返修（问题4）：滚动位置**一律按阅读进度百分比**恢复。
+          // 旧实现优先用"光标行放在视口同比例位置"的锚点：源码行号 → PM 块的映射
+          // （docBlockLineToPos）在含代码块/表格/列表的文档里并不等价，会落在别的块上，
+          // 用户切换后看到进度百分比与视口内容都偏移 → 感知为"阅读进度不联动"。
+          // 现在：进度（百分比）在三种模式下完全一致；光标位置由切换 effect 按内容映射
+          //（行 + 行内列）单独恢复，"编辑位置"同样一致。
+          const newTop = computeRestoreScrollTop(percent, container.scrollHeight, container.clientHeight);
+          container.scrollTop = newTop ?? 0;
+          // PM 焦点/选区映射可能让浏览器把光标滚入视口 → 下一帧再校正一次
+          if (newTop !== null) {
+            requestAnimationFrame(() => {
+              const c = editorRef.current;
+              if (c) c.scrollTop = newTop;
+            });
           }
         }
         // 清理 iframe 待恢复标记，避免残留值影响后续切换
@@ -1362,13 +1339,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       } else {
         const textarea = sourceTextareaRef.current;
         if (textarea) {
-          // v0.8.0 修复 P10：锚点优先——把锚点行放到视口中"与源模式相同的相对位置"。
-          // 仅在切换时光标可见（anchorRatio 有值）时使用；不可见则回退滚动百分比。
-          let anchored = false;
-          if (anchorLine != null && anchorRatio != null) {
+          // ① 光标位置：按内容映射恢复（行 + 行内列偏移，clamp 到源码行长度），
+          //    无锚点时保持现有光标不动
+          if (anchorLine != null) {
             let pos = sourceLineToPos(sourceContentRef.current, anchorLine);
-            // v0.12.0 返修（问题6）：恢复光标带上行内列偏移（clamp 到源码行长度），
-            // 避免"阅读到 abc 后切模式，光标被延迟恢复逻辑顶回行首"
             if (anchorColumn != null && anchorColumn > 0) {
               const text = sourceContentRef.current;
               const nl = text.indexOf("\n", pos);
@@ -1377,21 +1351,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             }
             textarea.focus();
             textarea.setSelectionRange(pos, pos);
-            const targetTop = computeAnchorScrollTop(
-              measureTextareaCursorY(textarea, pos),
-              anchorRatio,
-              textarea.clientHeight,
-              textarea.scrollHeight,
-            );
-            if (targetTop != null) {
-              textarea.scrollTop = targetTop;
-              anchored = true;
-            }
+            lastTextareaCursorRef.current = pos;
           }
-          // 无锚点/锚点不可见回退滚动百分比
-          if (!anchored) {
-            const newTop = computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight);
-            textarea.scrollTop = newTop ?? 0;
+          // ② 滚动位置：按百分比恢复（与另两个模式的阅读进度一致）
+          const newTop = computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight);
+          textarea.scrollTop = newTop ?? 0;
+          // focus/setSelectionRange 可能触发浏览器把光标滚入视口 → 下一帧校正
+          if (newTop !== null) {
+            requestAnimationFrame(() => {
+              const t2 = sourceTextareaRef.current;
+              if (t2) t2.scrollTop = newTop;
+            });
           }
         }
         // 修复：分屏模式下同步恢复 iframe 滚动位置
@@ -1907,12 +1877,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // 返修：记录语法符号区间 [start, start+replacement.length) 与全文快照——
     // ghost 渲染基于快照（防时序漂移），退格可整段删除格式符。
     if (result.ghostText) {
+      // v0.12.0 返修（问题1）：把光标之后的尾部语法符号交给 overlay 可见渲染，
+      // 并用底色遮住 textarea 中被占位压住的符号 → 占位文字恰好落在左右格式符中间
+      const gt = computeGhostTail(newContent, newCursorPos, replacement.slice(cursorOffset));
       formatGhostRef.current = {
         text: result.ghostText,
         pos: newCursorPos,
         start,
         end: start + replacement.length,
         content: newContent,
+        tail: gt.maskTail ? gt.tail : "",
+        maskTail: gt.maskTail,
       };
       // AI ghost 让位（格式操作是用户主动动作，异步任务不打断视觉）
       sourceGhostHandlersRef.current.invalidate();
@@ -2445,6 +2420,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     start: number;
     end: number;
     content: string;
+    /** v0.12.0 返修：光标之后的尾部语法符号（渲染为可见普通色，让占位落在格式符中间） */
+    tail?: string;
+    /** v0.12.0 返修：是否用底色遮住 textarea 中被占位压住的尾部符号 */
+    maskTail?: boolean;
   } | null>(null);
 
   /** 执行气泡型 AI 任务（润色/摘要/源码续写）：openBubble → 流式 → finish/fail */
@@ -2617,8 +2596,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       return;
     }
     syncTextareaMetrics(textarea, overlay);
-    // hintText 为空（格式 ghost 无需"Tab 采纳"提示）
-    overlay.innerHTML = buildSourceGhostHtml(ghost.content, ghost.pos, ghost.text, "", false);
+    // hintText 为空（格式 ghost 无需"Tab 采纳"提示）；
+    // v0.12.0 返修：携带尾部符号 + 遮罩开关 → 占位文字落在左右格式符中间
+    overlay.innerHTML = buildSourceGhostHtml(ghost.content, ghost.pos, ghost.text, "", false, {
+      tail: ghost.tail,
+      maskBg: ghost.maskTail,
+    });
     overlay.scrollTop = textarea.scrollTop;
   }, []);
 
@@ -4506,6 +4489,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     return () => container.removeEventListener("wheel", onWheel);
   }, [adjustDocZoom]);
 
+  // v0.12.0 返修（需求4/5）：视口锚点补偿的时间抑制 —— 文件切换/模式切换/缩放恢复
+  // 期间不补偿（只重建锚点），避免 RO 用"切换前"的锚点抢跑主动恢复。
+  useEffect(() => {
+    anchorSuppressUntilRef.current = performance.now() + 600;
+  }, [viewMode, filePath, forceUpdateKey]);
+  // v0.12.0 需求5：缩放恢复（行高/内容尺寸变化）同样抑制，交由下面的锚点效应补偿
+  useEffect(() => {
+    anchorSuppressUntilRef.current = performance.now() + 300;
+  }, [docZoom]);
+
   // ─── v0.12.0 需求4：视口锚点（窗口/侧栏尺寸变化时保持阅读焦点） ─────────
   // 尺寸变化会重排文本；scrollTop（像素）不变时视口内容漂移。
   // 方案：变化前记录"视口首个可见块 + 偏移"，ResizeObserver 回调（重排完成后）
@@ -4516,7 +4509,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 根因：窗口 resize 期间 Chromium 会把焦点光标（阅读模式 PM 选区常在文档末尾）
   // 程序性滚入视口——该滚动先于 RO 回调触发 scroll 事件，把锚点"刷新"成了末尾，
   // 随后的补偿反而把视口恢复到末尾。修复：window resize 事件先于 scroll 步骤
-  // 触发，用它打时间标，抑制窗口内的 scroll 锚点刷新；350ms 超时兜底防卡死。
+  // 触发，用它打时间标，抑制窗口内的 scroll 锚点刷新。
+  // v0.12.0 返修2（问题4/5）：再叠加两道闸门——
+  //  ① 仅在**容器宽度变化**时补偿（内容增高/异步渲染引发的 RO 不算，避免抢跑主动恢复）；
+  //  ② 主动恢复（切文件/切模式/缩放）后的 600ms 内只重建锚点、不补偿。
   useEffect(() => {
     if (viewMode !== "preview" || !isMdFile) return;
     const container = editorRef.current;
@@ -4524,6 +4520,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const selector = ".ProseMirror > *";
     let anchor = captureAnchor(container, selector);
     let suppressUntil = 0;
+    let lastWidth = container.clientWidth;
     const markResize = () => { suppressUntil = performance.now() + 350; };
     // 用户滚动后基准更新为当前视口（resize 抑制窗口内除外）
     const onScroll = () => {
@@ -4531,8 +4528,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       anchor = captureAnchor(container, selector);
     };
     const ro = new ResizeObserver(() => {
+      const w = container.clientWidth;
+      const widthChanged = w !== lastWidth;
+      lastWidth = w;
+      const suppressed = performance.now() < anchorSuppressUntilRef.current;
       requestAnimationFrame(() => {
-        restoreAnchor(container, anchor);
+        // 宽度未变（如内容增高/图片异步渲染）或处于主动恢复窗口 → 只重建锚点
+        if (!suppressed && widthChanged) restoreAnchor(container, anchor);
         anchor = captureAnchor(container, selector);
       });
     });
@@ -4546,46 +4548,60 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
   }, [viewMode, isMdFile, forceUpdateKey]);
 
-  // v0.12.0 需求4：编辑/分屏左侧 textarea 的行锚点（textarea 无子元素，
-  // 块锚点不适用——用 scrollTop 换算的浮点行索引，行高变化后仍可还原）
-  // 同样带 resize 抑制（光标 autoscroll 污染行锚点的机理与上方阅读模式一致）
+  // v0.12.0 返修（问题2）：textarea 改用**内容锚点**（视口顶部字符偏移 + 视口 Y）。
+  // - 捕获：滚动停止 150ms 后（debounce，避免滚动中每帧二分测量）与进入模式时；
+  // - 还原：仅在**宽度变化**且不在主动恢复窗口时补偿（软换行重排后准确回到原内容）；
+  // - resize 抑制：窗口缩放时浏览器会把光标滚入视口，其 scroll 事件不得刷新锚点。
   useEffect(() => {
     if (!isSourceMode) return;
     const ta = sourceTextareaRef.current;
     if (!ta || typeof ResizeObserver === "undefined") return;
-    lineAnchorRef.current = captureLineAnchor(ta);
+    textAnchorRef.current = captureTextAnchor(ta);
     let suppressUntil = 0;
+    let lastWidth = ta.clientWidth;
+    let captureTimer: ReturnType<typeof setTimeout> | null = null;
     const markResize = () => { suppressUntil = performance.now() + 350; };
-    const onScroll = () => {
+    const scheduleCapture = () => {
       if (performance.now() < suppressUntil) return;
-      lineAnchorRef.current = captureLineAnchor(ta);
+      if (captureTimer) clearTimeout(captureTimer);
+      captureTimer = setTimeout(() => { textAnchorRef.current = captureTextAnchor(ta); }, 150);
     };
     const ro = new ResizeObserver(() => {
+      const w = ta.clientWidth;
+      const widthChanged = w !== lastWidth;
+      lastWidth = w;
+      const suppressed = performance.now() < anchorSuppressUntilRef.current;
       requestAnimationFrame(() => {
-        restoreLineAnchor(ta, lineAnchorRef.current);
-        lineAnchorRef.current = captureLineAnchor(ta);
+        if (!suppressed && widthChanged) restoreTextAnchor(ta, textAnchorRef.current);
+        // 还原后重新捕获（延迟，避免与后续 RO 抢跑）
+        if (captureTimer) clearTimeout(captureTimer);
+        captureTimer = setTimeout(() => { textAnchorRef.current = captureTextAnchor(ta); }, 150);
+        // v0.12.0 返修：overlay 的内容宽度在渲染时固化（syncTextareaMetrics），
+        // 宽度变化后必须重绘，否则 ghost / 续写预览会按旧宽度换行（视觉竖排偏移）
+        if (widthChanged) formatGhostHandlersRef.current.render();
       });
     });
     ro.observe(ta);
     window.addEventListener("resize", markResize);
-    ta.addEventListener("scroll", onScroll, { passive: true });
+    ta.addEventListener("scroll", scheduleCapture, { passive: true });
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", markResize);
-      ta.removeEventListener("scroll", onScroll);
+      ta.removeEventListener("scroll", scheduleCapture);
+      if (captureTimer) clearTimeout(captureTimer);
     };
   }, [isSourceMode, viewMode, forceUpdateKey]);
 
-  // v0.12.0 需求5：缩放（字号换算）变化后按行锚点还原 textarea 滚动位置。
-  // 字号变大后行高变大，像素 scrollTop 不变会让视口跳到更靠后的内容；
-  // 用"变化前的行索引 × 新行高"还原，视觉上视口顶部行保持不动。
+  // v0.12.0 需求5：缩放（字号换算）变化后按内容锚点还原 textarea 滚动位置。
+  // 字号/缩放变化后行高与换行都变，像素 scrollTop 不变会让视口跳到别处；
+  // 用"视口顶部内容偏移"还原，视觉上视口顶部内容保持不动。
   useEffect(() => {
     if (!isSourceMode) return;
     const ta = sourceTextareaRef.current;
     if (!ta) return;
     const raf = requestAnimationFrame(() => {
-      restoreLineAnchor(ta, lineAnchorRef.current);
-      lineAnchorRef.current = captureLineAnchor(ta);
+      restoreTextAnchor(ta, textAnchorRef.current);
+      textAnchorRef.current = captureTextAnchor(ta);
     });
     return () => cancelAnimationFrame(raf);
   }, [docZoom, isSourceMode]);
@@ -5329,16 +5345,22 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       return s ? captureAnchor(s, "body > *") : null;
     };
     let anchor: ViewportAnchor | null = capture();
+    let lastWidth = iframe.clientWidth;
 
     const win = iframe.contentWindow;
     const onScroll = () => { anchor = capture(); };
     win?.addEventListener("scroll", onScroll, { passive: true });
 
     const ro = new ResizeObserver(() => {
+      const w = iframe.clientWidth;
+      const widthChanged = w !== lastWidth;
+      lastWidth = w;
+      const suppressed = performance.now() < anchorSuppressUntilRef.current;
       requestAnimationFrame(() => {
         const s = getScroller();
         if (!s) return;
-        restoreAnchor(s, anchor);
+        // v0.12.0 返修（问题2/4）：仅宽度变化时补偿，且避开主动恢复窗口
+        if (!suppressed && widthChanged) restoreAnchor(s, anchor);
         anchor = capture();
       });
     });

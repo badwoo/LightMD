@@ -207,6 +207,11 @@ export function resolveLineHeight(cs: CSSStyleDeclaration): number {
 
 /** mirror div 缓存：通过 WeakMap 与 textarea 关联，避免重复创建 */
 const mirrorCache = new WeakMap<HTMLTextAreaElement, HTMLDivElement>();
+/**
+ * v0.12.0 返修：mirror 内"全文文本节点"缓存。
+ * measureOffsetViewportY 用 Range 定位该节点中的字符，无需每次重建 innerHTML。
+ */
+const mirrorTextNodeCache = new WeakMap<HTMLTextAreaElement, Node>();
 
 /**
  * 获取或创建与 textarea 关联的 mirror div
@@ -343,6 +348,46 @@ export function measureTextareaRangeY(
 }
 
 /**
+ * v0.12.0 返修（问题2/4/5）：用 mirror + Range 测量某字符偏移的**视口 Y**坐标。
+ *
+ * 与 measureTextareaCursorY 等价，但**不重建 mirror 的 innerHTML**（直接用 Range
+ * 定位文本节点中的字符），因此适合「二分查找」这类需要连续多次测量的场景
+ * （重建 innerHTML 是 O(文本长度)，连续调用会明显卡顿）。
+ *
+ * @returns 相对 textarea 视口顶部的 Y（可负）；无法测量（空文本等）返回 null
+ */
+export function measureOffsetViewportY(
+  textarea: HTMLTextAreaElement,
+  offset: number
+): number | null {
+  const text = textarea.value;
+  if (!text) return null;
+  const p = Math.max(0, Math.min(offset, text.length - 1));
+  const mirror = getOrCreateMirror(textarea);
+  syncMirrorStyle(textarea, mirror);
+  // 复用文本节点：内容变化（node.data !== text）或节点已被替换时重建
+  let node: Node | null = mirrorTextNodeCache.get(textarea) ?? null;
+  if (!node || (node as Text).data !== text || node.parentNode !== mirror) {
+    mirror.textContent = text;
+    node = mirror.firstChild;
+    if (!node) return null;
+    mirrorTextNodeCache.set(textarea, node);
+  }
+  const range = document.createRange();
+  try {
+    range.setStart(node, p);
+    range.setEnd(node, Math.min(p + 1, text.length));
+  } catch {
+    return null;
+  }
+  const rect = range.getBoundingClientRect();
+  const mirrorRect = mirror.getBoundingClientRect();
+  const paddingTop = parseFloat(getComputedStyle(textarea).paddingTop) || 0;
+  // 文档坐标（含 padding-top）→ 视口坐标
+  return rect.top - mirrorRect.top - paddingTop - textarea.scrollTop;
+}
+
+/**
  * 销毁与 textarea 关联的 mirror div（textarea 卸载时调用）
  */
 export function destroyMirror(textarea: HTMLTextAreaElement): void {
@@ -351,6 +396,7 @@ export function destroyMirror(textarea: HTMLTextAreaElement): void {
     mirror.remove();
     mirrorCache.delete(textarea);
   }
+  mirrorTextNodeCache.delete(textarea);
 }
 
 /**
@@ -449,25 +495,40 @@ function escapeHtml(s: string): string {
  * overlay 样式需经 syncTextareaMetrics 与 textarea 对齐
  * （透明 via CSS color: transparent；ghost 部分覆盖为灰斜体 -> 见 AI ghost 样式）
  *
+ * v0.12.0 需求1 返修：新增 opts.tail / opts.maskBg，用于"格式 ghost 落在格式符中间"。
+ * 行内格式（如粗体）在光标处插入的成对符号 `**|**`，光标停在两对符号中间：
+ * - opts.tail：光标之后仍属于本次插入的**尾部符号**（渲染为可见普通色，跟在占位文字后）；
+ * - opts.maskBg：给 ghost 段加不透明底色，遮住 textarea 里被占位文字压住的那些符号
+ *   （仅当该行尾部无其他内容时启用，否则会把用户已有文字一起遮住——由调用方判定）。
+ * 不传 opts 时行为与旧版完全一致（AI 续写 ghost / 无尾符号的格式）。
+ *
  * @param text textarea 当前全文（raw，内部会转义）
  * @param pos 续写插入点（发起任务时的光标位置）
  * @param ghostText 流式累积的续写文本
  * @param hintText 采纳提示文案（i18n）
  * @param isPlaceholder v0.7.5：是否为"续写中…"占位态（加占位样式类，与正文 ghost 区分）
+ * @param opts v0.12.0 返修：格式 ghost 的尾部符号与遮罩开关
  */
 export function buildSourceGhostHtml(
   text: string,
   pos: number,
   ghostText: string,
   hintText: string,
-  isPlaceholder = false
+  isPlaceholder = false,
+  opts?: { tail?: string; maskBg?: boolean }
 ): string {
   const p = Math.max(0, Math.min(pos, text.length));
+  const tail = opts?.maskBg ? (opts.tail ?? "") : "";
   const before = text.substring(0, p);
-  const after = text.substring(p);
+  const after = text.substring(p + tail.length);
+  const cls =
+    `ai-ghost-text${isPlaceholder ? " ai-ghost-placeholder" : ""}` +
+    `${opts?.maskBg ? " format-ghost-mask" : ""}`;
   return (
     `<span style="color:transparent">${escapeHtml(before)}</span>` +
-    `<span class="ai-ghost-text${isPlaceholder ? " ai-ghost-placeholder" : ""}">${escapeHtml(ghostText)}</span>` +
+    `<span class="${cls}">${escapeHtml(ghostText)}` +
+    (tail ? `<span class="format-ghost-tail">${escapeHtml(tail)}</span>` : "") +
+    `</span>` +
     `<span class="ai-ghost-hint">${escapeHtml(hintText)}</span>` +
     `<span style="color:transparent">${escapeHtml(after)}</span>`
   );

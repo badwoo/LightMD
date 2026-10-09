@@ -1033,6 +1033,21 @@ body.format-painter-armed .source-editor {
   opacity: 0.85;
 }
 
+/* ─── v0.12.0 返修（问题1）：格式 ghost 落在格式符中间 ───
+   行内格式（粗体等）插入成对符号后，占位文字若不处理会压住右侧符号。
+   此处：①ghost 段加不透明底色，遮住 textarea 里被压住的尾部符号；
+   ②尾部符号由 overlay 以普通色重绘在占位文字之后 → 视觉为 `**粗体文本**`。
+   底色取编辑器背景色（.source-editor 同款 --bg-primary），故看不出"色块"。 */
+.ai-ghost-text.format-ghost-mask {
+  background: var(--bg-primary);
+}
+
+.format-ghost-tail {
+  color: var(--text-primary);
+  font-style: normal;
+  opacity: 1;
+}
+
 /* ─── 主内容区域 ──────────────────────────────── */
 /* v0.6.1：position:relative 作为全文翻译悬浮按钮的定位上下文 */
 .editor-main-area { flex: 1; display: flex; overflow: hidden; position: relative; }
