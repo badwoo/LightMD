@@ -84,18 +84,28 @@ describe("v0.11.0 B4-10 排版三项设置", () => {
 
   // v0.12.0 返修（问题4）：内容区宽度此前只作用于阅读模式 .ProseMirror，
   // 编辑模式把宽度硬编码为 960px → 用户调宽度对编辑模式无效。现统一消费同一变量。
+  // v0.12.1 需求3：变量改由 .source-editor 的**左右内边距**消费（textarea 铺满编辑区、
+  // 滚动条贴最右，正文靠 padding-inline 居中），不再是 max-width + margin:auto。
   it("编辑模式（.source-editor）也消费 --editor-content-max-width", () => {
     const sourceEditorIdx = editorCss.indexOf("\n.source-editor {");
-    const varIdx = editorCss.indexOf("max-width: var(--editor-content-max-width, 960px);");
     expect(sourceEditorIdx).toBeGreaterThan(-1);
-    expect(varIdx).toBeGreaterThan(sourceEditorIdx);
+    const block = editorCss.slice(sourceEditorIdx, editorCss.indexOf("}", sourceEditorIdx));
+    // v0.12.1 需求3：正文列 = 旧版逐像素一致（(W-CM)/2 + 60，W≤CM 时退化为 60）
+    expect(block).toMatch(
+      /padding-inline:\s*max\(\s*60px,\s*calc\(\(100% - var\(--editor-content-max-width, 960px\)\) \/ 2 \+ 60px\)\s*\)/,
+    );
+    // 旧实现在 textarea 上做 max-width 居中（滚动条停在正文右缘）→ 必须已移除
+    expect(block).not.toMatch(/max-width:/);
+    expect(block).not.toMatch(/margin:\s*0 auto/);
   });
 
-  it("编辑模式把宽度约束加在 wrapper 上（ghost/专注 overlay 与 textarea 同宽对齐）", () => {
-    // 仅 edit 模式参与（分屏宽度由分割比例决定）
-    expect(containerSrc).toMatch(
-      /viewMode === "edit"[\s\S]{0,160}?maxWidth: "var\(--editor-content-max-width, 960px\)", margin: "0 auto"/,
+  it("编辑模式不再把宽度约束加在 wrapper 上（滚动区域 = 整个编辑区，需求3）", () => {
+    // 旧实现：viewMode === "edit" 时给 wrapper 加 maxWidth + margin:auto
+    expect(containerSrc).not.toMatch(
+      /viewMode === "edit"[\s\S]{0,200}?maxWidth: "var\(--editor-content-max-width, 960px\)"/,
     );
+    // 取而代之：textarea 铺满 wrapper（CSS width:100% + padding 居中，见上一条）
+    expect(containerSrc).toMatch(/v0\.12\.1 需求3：编辑模式的可滚动区域/);
   });
 });
 

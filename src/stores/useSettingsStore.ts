@@ -217,6 +217,15 @@ interface SettingsState {
   spellcheckEnabled: boolean;
   /** N1: 自动配对补全开关（默认 true，输入括号/引号自动补全配对） */
   autoPairEnabled: boolean;
+  /**
+   * v0.12.1 需求4：自动配对的**分组开关**（总开关开启时生效）。
+   * - autoPairBrackets：括号 ( ) [ ] { }
+   * - autoPairQuotes：引号 " ' `
+   * - autoPairCjk：中文标点 “ ” ‘ ’ （ ） 【 】 《 》 「 」
+   */
+  autoPairBrackets: boolean;
+  autoPairQuotes: boolean;
+  autoPairCjk: boolean;
   /** E14(v0.9.2): 段内换行语义（默认 gfm=即换行;commonmark=渲染为空格） */
   paragraphBreaks: "gfm" | "commonmark";
   /** E9(v0.9.4): 粘贴 Markdown 自动转换（默认 true；关闭后粘贴一律字面处理） */
@@ -312,6 +321,8 @@ interface SettingsState {
   setSpellcheckEnabled: (v: boolean) => void;
   /** N1: 设置是否启用自动配对补全 */
   setAutoPairEnabled: (v: boolean) => void;
+  /** v0.12.1 需求4：按分组开关自动配对（括号 / 引号 / 中文标点） */
+  setAutoPairKind: (kind: "brackets" | "quotes" | "cjk", v: boolean) => void;
   /** E14(v0.9.2): 设置段内换行语义 */
   setParagraphBreaks: (v: "gfm" | "commonmark") => void;
   /** E9(v0.9.4): 设置粘贴 Markdown 自动转换 */
@@ -454,6 +465,10 @@ export const useSettingsStore = create<SettingsState>()(
       spellcheckEnabled: false,
       // N1：默认开启自动配对补全
       autoPairEnabled: true,
+      // v0.12.1 需求4：三个分组默认全开（与 v0.12.0 及之前的行为一致）
+      autoPairBrackets: true,
+      autoPairQuotes: true,
+      autoPairCjk: true,
       // E14：默认 GFM 段内换行(即换行,与既有行为一致)
       paragraphBreaks: "gfm",
       // E9：默认开启 Markdown 感知粘贴
@@ -564,6 +579,15 @@ export const useSettingsStore = create<SettingsState>()(
       setSpellcheckEnabled: (spellcheckEnabled) => set({ spellcheckEnabled }),
       // N1：设置是否启用自动配对补全
       setAutoPairEnabled: (autoPairEnabled) => set({ autoPairEnabled }),
+      // v0.12.1 需求4：分组开关
+      setAutoPairKind: (kind, v) =>
+        set(
+          kind === "brackets"
+            ? { autoPairBrackets: v }
+            : kind === "quotes"
+              ? { autoPairQuotes: v }
+              : { autoPairCjk: v },
+        ),
       // E14：设置段内换行语义(切换后重新打开文档生效)
       setParagraphBreaks: (paragraphBreaks) => set({ paragraphBreaks }),
       // E9：设置粘贴 Markdown 自动转换

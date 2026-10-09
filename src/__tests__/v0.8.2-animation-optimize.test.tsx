@@ -258,9 +258,10 @@ describe("v0.8.2 动画优化：文件树目录节点展开/收起动画", () =>
   });
 
   it("树节点容器：展开时 0→内容高展开、收起时锁定高度→0、播完才卸载", () => {
-    // v0.12.0 需求10：动画放慢 50%（450→675 / 420→630），断言同步更新
-    expect(fileTreeSrc).toContain("export const TREE_SLIDE_EXPAND_MS = 675;");
-    expect(fileTreeSrc).toContain("export const TREE_SLIDE_COLLAPSE_MS = 630;");
+    // v0.12.0 需求10 放慢 50%（450→675 / 420→630）
+    // v0.12.1 需求2 再放慢 50%（675→1013 / 630→945），断言同步更新
+    expect(fileTreeSrc).toContain("export const TREE_SLIDE_EXPAND_MS = 1013;");
+    expect(fileTreeSrc).toContain("export const TREE_SLIDE_COLLAPSE_MS = 945;");
     expect(fileTreeSrc).toContain("el.style.transition = `height ${TREE_SLIDE_EXPAND_MS}ms ease`;");
     expect(fileTreeSrc).toContain("el.style.transition = `height ${TREE_SLIDE_COLLAPSE_MS}ms ease`;");
     // 首次挂载即展开时不播动画（避免启动恢复时整棵树一起"长出来"）
@@ -268,10 +269,11 @@ describe("v0.8.2 动画优化：文件树目录节点展开/收起动画", () =>
   });
 
   it("CSS：子节点滑入/滑出关键帧与时长（与 JS 常量同步）", () => {
-    // v0.12.0 需求10：时长同步放慢 50%（0.45s→0.675s / 0.42s→0.63s）
-    expect(fileTreeCss).toMatch(/\.filetree-children-slide \{\s*animation: tree-node-slide-in 0\.675s ease;/);
+    // v0.12.0 需求10 放慢 50%（0.45s→0.675s / 0.42s→0.63s）
+    // v0.12.1 需求2 再放慢 50%（0.675s→1.013s / 0.63s→0.945s）
+    expect(fileTreeCss).toMatch(/\.filetree-children-slide \{\s*animation: tree-node-slide-in 1\.013s ease;/);
     expect(fileTreeCss).toMatch(
-      /\.filetree-children-slide-out \{\s*animation: tree-node-slide-out 0\.63s ease forwards;/,
+      /\.filetree-children-slide-out \{\s*animation: tree-node-slide-out 0\.945s ease forwards;/,
     );
     expect(fileTreeCss).toContain("@keyframes tree-node-slide-in");
     expect(fileTreeCss).toContain("@keyframes tree-node-slide-out");

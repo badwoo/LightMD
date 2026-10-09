@@ -41,6 +41,16 @@ export const enUS: Record<string, string> = {
   "settings.spellcheck": "Spell Check",
   // N1：自动配对补全开关
   "settings.autoPair": "Auto Pair",
+  // v0.12.1 requirement 4: per-kind pair switches (effective when master is on)
+  "settings.autoPair.kinds": "Pair scope",
+  "settings.autoPair.brackets": "Brackets ( ) [ ] { }",
+  "settings.autoPair.quotes": "Quotes \" ' `",
+  "settings.autoPair.cjk": "CJK punctuation “ ” ‘ ’ （ ） 【 】 《 》 「 」",
+  // v0.12.1 requirement 1: heading level badge + level menu
+  "heading.badge.title": "Click to choose heading level (current H{level})",
+  "heading.menu.title": "Heading level",
+  "heading.menu.hint": "Typing # also changes the level",
+  "heading.menu.current": "Current",
   "settings.paragraphBreaks": "Line Breaks in Paragraph",
   "settings.paragraphBreaks.gfm": "GFM (line break)",
   "settings.paragraphBreaks.commonmark": "CommonMark (2 spaces)",

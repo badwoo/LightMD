@@ -18,7 +18,7 @@ import { buildInputRules } from "./inputrules";
 import { buildKeymap, dynamicShortcutsPlugin } from "./keymap";
 // v0.8.3 需求3：光标行（结构化行号）与列的计算（纯函数，可单测）
 import { computeDocLine, computeBlockColumn } from "../utils/cursorPosition";
-import { wysiwygPlugin } from "./plugins/wysiwyg";
+import { wysiwygPlugin, createWysiwygPlugin } from "./plugins/wysiwyg";
 // E6(v0.9.4)：行内语法标记显示（光标进入 mark 区间显示源码符号）
 import { inlineMarkRevealPlugin } from "./plugins/inline-mark-reveal";
 import { imagePastePlugin } from "./plugins/image-paste";
@@ -193,13 +193,19 @@ export interface EditorOptions {
    * 重新计算 `this.editable`）。
    */
   editableGetter?: () => boolean;
+  /**
+   * v0.12.1 需求1：点击标题级别徽标（H1~H6）的回调。
+   * 参数：headingPos = 标题节点起始位置；currentLevel = 当前级别；anchor = 徽标视口矩形。
+   * EditorContainer 据此渲染级别下拉菜单（改级别 = setNodeMarkup）。
+   */
+  onHeadingBadgeClick?: (headingPos: number, currentLevel: number, anchor: DOMRect) => void;
 }
 
 /**
  * 创建配置完整的 ProseMirror EditorView
  */
 export function createEditor(options: EditorOptions): EditorView | null {
-  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, aiGhostHint, editableGetter } = options;
+  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, aiGhostHint, editableGetter, onHeadingBadgeClick } = options;
 
   if (!parent) return null;
 
@@ -229,7 +235,8 @@ export function createEditor(options: EditorOptions): EditorView | null {
       buildKeymap(),
       keymap(baseKeymap),
       buildInputRules(),
-      wysiwygPlugin,
+      // v0.12.1 需求1：标题级别徽标需要回调（点击展开 H1~H6 下拉菜单）
+      onHeadingBadgeClick ? createWysiwygPlugin({ onHeadingBadgeClick }) : wysiwygPlugin,
       // E6(v0.9.4)：块级 marker 之后注册行内 reveal，两者装饰互补
       inlineMarkRevealPlugin,
       imagePastePlugin,

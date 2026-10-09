@@ -19,6 +19,8 @@ import { matchShortcut } from "./shortcuts";
 // E2(v0.9.2):Tab 三处缺失的补齐
 import { tableTab, tableShiftTab } from "./tableNav";
 import { codeBlockIndent, codeBlockOutdent } from "./plugins/code-indent";
+// v0.12.1 需求4：Tab 跳出配对（光标夹在配对符号之间时）
+import { pairTabOut } from "./plugins/auto-pair";
 // v0.11.0 B3-8：真正的块移动（Alt+↑/↓）
 import { moveBlockUp, moveBlockDown } from "./blockMove";
 
@@ -169,9 +171,12 @@ export function buildKeymap() {
     },
 
     // Tab 缩进(E2:v0.9.2 补齐三处缺失——表格导航 > 代码块缩进 > 任务项/列表项嵌套)
+    // v0.12.1 需求4：**最优先**判断「Tab 跳出配对」——光标夹在 ()/"" 之间时
+    // 跳到闭符号右侧（VS Code/CodeMirror 同款习惯）；不在配对中则回落原有链。
     // chainCommands 顺序即优先级;各命令在不适用的上下文返回 false,
     // 全部不适用(普通段落)时交回浏览器默认行为,与既有行为一致
     Tab: chainCommands(
+      pairTabOut,
       tableTab,
       codeBlockIndent,
       sinkListItem(schema.nodes.task_item),

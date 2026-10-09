@@ -115,11 +115,13 @@ describe("v0.4.5 prefers-reduced-motion 支持", () => {
   });
 
   it("reduced-motion 下 .editor-empty-logo 禁用动画", () => {
-    // 匹配 media query 块
-    const media = css.match(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\}/);
-    expect(media).not.toBeNull();
-    expect(media![0]).toMatch(/\.editor-empty-logo/);
-    expect(media![0]).toMatch(/animation:\s*none/);
+    // 文件内可能存在多个 reduced-motion 块（v0.12.1 起标题级别菜单也声明了一个），
+    // 这里断言"存在某个块同时包含 .editor-empty-logo 与 animation: none"。
+    const blocks = [...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\n\}/g)];
+    expect(blocks.length).toBeGreaterThan(0);
+    const containing = blocks.map((m) => m[0]).filter((b) => /\.editor-empty-logo/.test(b));
+    expect(containing.length).toBeGreaterThan(0);
+    expect(containing.some((b) => /animation:\s*none/.test(b))).toBe(true);
   });
 });
 

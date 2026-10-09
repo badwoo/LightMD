@@ -1,12 +1,18 @@
 /**
- * v0.5.0 N1：自动配对补全
+ * v0.5.0 N1：自动配对补全（基线能力回归，v0.12.1 需求4 重写后同步更新）
  *
  * 验收标准：
  * 1. PM 端：无选区输入开符号 → 插入配对、光标居中；有选区 → 包裹并保持选中
  * 2. PM 端：输入闭符号且下一字符相同 → 跳过（光标右移）
  * 3. 开关关闭 / 代码块内 → 不处理（返回 false）
- * 4. textarea 端：EditorContainer 源码 keydown 接入 PAIR_MAP 配对逻辑
- * 5. 设置 store 提供开关（默认开启）+ SettingsDialog 有开关项
+ * 4. textarea 端：EditorContainer 通过 beforeinput/规划器接入配对逻辑
+ * 5. 设置 store 提供总开关（默认开启）+ 分组开关 + SettingsDialog 有开关项
+ *
+ * v0.12.1 需求4 变更（本文件随之更新的断言）：
+ * - 新增「光标右侧是单词字符则不配对」规则 → 原先在 `ab|cd` 中间输入 `(` 的用例
+ *   已改为"光标在行尾"这类真正的开符号场景；词中间的负向用例见
+ *   v0121-auto-pair-rules.test.ts（规则层）。
+ * - textarea 端补全入口由 keydown 改为 beforeinput（中文标点 IME 提交不派发单字符 keydown）。
  */
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -29,6 +35,14 @@ function mk(opts: { parent: HTMLElement; initialContent: string }): EditorView {
   return createEditor(opts) as EditorView;
 }
 
+type Handler = (
+  view: EditorView,
+  from: number,
+  to: number,
+  text: string,
+  deflt?: () => unknown
+) => boolean;
+
 describe("v0.5.0 N1：自动配对补全", () => {
   let parent: HTMLDivElement;
   let view: EditorView | null;
@@ -37,6 +51,9 @@ describe("v0.5.0 N1：自动配对补全", () => {
     parent = document.createElement("div");
     document.body.appendChild(parent);
     useSettingsStore.getState().setAutoPairEnabled(true);
+    useSettingsStore.getState().setAutoPairKind("brackets", true);
+    useSettingsStore.getState().setAutoPairKind("quotes", true);
+    useSettingsStore.getState().setAutoPairKind("cjk", true);
   });
 
   afterEach(() => {
@@ -75,18 +92,26 @@ describe("v0.5.0 N1：自动配对补全", () => {
     }
   });
 
-  it("PM：无选区输入 ( → 插入 () 且光标居中", () => {
+  it("PM：无选区在行尾输入 ( → 插入 () 且光标居中", () => {
     const v = mk({ parent, initialContent: "ab" });
     view = v;
-    const pos = posInParagraph(v, 1); // a|b
-    const handler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
+    const pos = posInParagraph(v, 2); // ab|
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
     const handled = handler(v, pos, pos, "(", () => v.state.tr);
     expect(handled).toBe(true);
     // 插入 "(" + ")" 配对，光标居中
-    expect(v.state.doc.textContent).toBe("a()b");
+    expect(v.state.doc.textContent).toBe("ab()");
     expect(v.state.selection.from).toBe(pos + 1);
+  });
+
+  it("PM：词中间（右侧是单词字符）不配对，交给默认输入", () => {
+    const v = mk({ parent, initialContent: "ab" });
+    view = v;
+    const pos = posInParagraph(v, 1); // a|b
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
+    // v0.12.1 需求4：右侧是单词字符 → 只插单字符（返回 false 走 PM 默认插入）
+    expect(handler(v, pos, pos, "(", () => v.state.tr)).toBe(false);
+    expect(v.state.doc.textContent).toBe("ab");
   });
 
   it("PM：有选区输入 ( → 包裹选中文本并保持选中", () => {
@@ -94,9 +119,7 @@ describe("v0.5.0 N1：自动配对补全", () => {
     view = v;
     const from = posInParagraph(v, 0);
     const to = posInParagraph(v, 2); // 选中 "ab"
-    const handler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
     const handled = handler(v, from, to, "(", () => v.state.tr);
     expect(handled).toBe(true);
     expect(v.state.doc.textContent).toBe("(ab)");
@@ -109,9 +132,7 @@ describe("v0.5.0 N1：自动配对补全", () => {
     const v = mk({ parent, initialContent: "()" });
     view = v;
     const pos = posInParagraph(v, 1); // (|) 光标在中间
-    const handler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
     const handled = handler(v, pos, pos, ")", () => v.state.tr);
     expect(handled).toBe(true);
     expect(v.state.doc.textContent).toBe("()"); // 未新增字符
@@ -122,10 +143,8 @@ describe("v0.5.0 N1：自动配对补全", () => {
     useSettingsStore.getState().setAutoPairEnabled(false);
     const v = mk({ parent, initialContent: "ab" });
     view = v;
-    const pos = posInParagraph(v, 1);
-    const handler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
+    const pos = posInParagraph(v, 2);
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
     expect(handler(v, pos, pos, "(", () => v.state.tr)).toBe(false);
     expect(v.state.doc.textContent).toBe("ab");
   });
@@ -142,19 +161,32 @@ describe("v0.5.0 N1：自动配对补全", () => {
       }
       return true;
     });
-    const handler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
+    expect(handler(v, target, target, "(", () => v.state.tr)).toBe(false);
+  });
+
+  it("PM：行内公式（math_inline）内不配对（v0.12.1 补齐旧 inDisabledNode 漏判）", () => {
+    const v = mk({ parent, initialContent: "文本 $x$ 结尾" });
+    view = v;
+    // math_inline 节点内部位置：找到节点后落到其内容里
+    let target = -1;
+    v.state.doc.descendants((node, p) => {
+      if (target < 0 && node.type.name === "math_inline") {
+        target = p + 1;
+        return false;
+      }
+      return true;
+    });
+    expect(target).toBeGreaterThan(-1);
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
     expect(handler(v, target, target, "(", () => v.state.tr)).toBe(false);
   });
 
   it("PM：普通字符与多字符输入不处理", () => {
     const v = mk({ parent, initialContent: "ab" });
     view = v;
-    const pos = posInParagraph(v, 1);
-    const handler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
+    const pos = posInParagraph(v, 2);
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
     expect(handler(v, pos, pos, "x", () => v.state.tr)).toBe(false);
     expect(handler(v, pos, pos, "ab", () => v.state.tr)).toBe(false);
   });
@@ -178,16 +210,14 @@ describe("v0.5.0 N1：自动配对补全", () => {
     }
   });
 
-  it("PM：输入中文开符号「（」补全成对且光标居中", () => {
+  it("PM：行尾输入中文开符号「（」补全成对且光标居中", () => {
     const v = mk({ parent, initialContent: "ab" });
     view = v;
-    const pos = posInParagraph(v, 1); // a|b
-    const handler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
+    const pos = posInParagraph(v, 2); // ab|
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
     const handled = handler(v, pos, pos, "（", () => v.state.tr);
     expect(handled).toBe(true);
-    expect(v.state.doc.textContent).toBe("a（）b");
+    expect(v.state.doc.textContent).toBe("ab（）");
     expect(v.state.selection.from).toBe(pos + 1);
   });
 
@@ -195,9 +225,7 @@ describe("v0.5.0 N1：自动配对补全", () => {
     const v = mk({ parent, initialContent: "（）" });
     view = v;
     const pos = posInParagraph(v, 1); // （|）
-    const handler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
+    const handler = autoPairPlugin().props.handleTextInput as Handler;
     const handled = handler(v, pos, pos, "）", () => v.state.tr);
     expect(handled).toBe(true);
     expect(v.state.doc.textContent).toBe("（）");
@@ -207,13 +235,12 @@ describe("v0.5.0 N1：自动配对补全", () => {
   it("PM：空配对 Backspace 删一对", () => {
     const v = mk({ parent, initialContent: "ab" });
     view = v;
-    const pos = posInParagraph(v, 1);
-    const inHandler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
-    inHandler(v, pos, pos, "（", () => v.state.tr); // a（）b，光标居中
+    const pos = posInParagraph(v, 2);
+    const inHandler = autoPairPlugin().props.handleTextInput as Handler;
+    inHandler(v, pos, pos, "（", () => v.state.tr); // ab（）光标居中
     const keyHandler = autoPairPlugin().props.handleKeyDown as (
-      view: EditorView, ev: KeyboardEvent
+      view: EditorView,
+      ev: KeyboardEvent
     ) => boolean;
     const handled = keyHandler(v, { key: "Backspace" } as KeyboardEvent);
     expect(handled).toBe(true);
@@ -223,47 +250,55 @@ describe("v0.5.0 N1：自动配对补全", () => {
   it("PM：配对内有内容时 Backspace 只删内容不吞闭符号（不拦截）", () => {
     const v = mk({ parent, initialContent: "ab" });
     view = v;
-    const pos = posInParagraph(v, 1);
-    const inHandler = autoPairPlugin().props.handleTextInput as (
-      view: EditorView, from: number, to: number, text: string, deflt?: () => unknown
-    ) => boolean;
-    inHandler(v, pos, pos, "（", () => v.state.tr); // a（）b
+    const pos = posInParagraph(v, 2);
+    const inHandler = autoPairPlugin().props.handleTextInput as Handler;
+    inHandler(v, pos, pos, "（", () => v.state.tr); // ab（）
     const cur = v.state.selection.from;
     // 配对内填入普通内容 x（handleTextInput 对非配对字符返回 false，由 PM 默认插入）
-    v.dispatch(v.state.tr.insertText("x", cur)); // a（x）b
-    expect(v.state.doc.textContent).toBe("a（x）b");
+    v.dispatch(v.state.tr.insertText("x", cur)); // ab（x）
+    expect(v.state.doc.textContent).toBe("ab（x）");
     const keyHandler = autoPairPlugin().props.handleKeyDown as (
-      view: EditorView, ev: KeyboardEvent
+      view: EditorView,
+      ev: KeyboardEvent
     ) => boolean;
     const handled = keyHandler(v, { key: "Backspace" } as KeyboardEvent);
     // 不拦截：默认 Backspace 仅删光标前单字符（x），闭符号「）」保留
     expect(handled).toBe(false);
-    expect(v.state.doc.textContent).toBe("a（x）b");
+    expect(v.state.doc.textContent).toBe("ab（x）");
   });
 
   it("设置 store：autoPairEnabled 默认开启，setter 生效并持久化字段存在", () => {
     const src = readSrc("src/stores/useSettingsStore.ts");
     expect(src).toMatch(/autoPairEnabled: true/);
     expect(src).toMatch(/setAutoPairEnabled/);
+    // v0.12.1 需求4：分组开关同样落库
+    expect(src).toMatch(/autoPairBrackets: true/);
+    expect(src).toMatch(/autoPairQuotes: true/);
+    expect(src).toMatch(/autoPairCjk: true/);
+    expect(src).toMatch(/setAutoPairKind/);
     useSettingsStore.getState().setAutoPairEnabled(false);
     expect(useSettingsStore.getState().autoPairEnabled).toBe(false);
   });
 
-  it("textarea 端：EditorContainer 接入 PAIR_MAP 配对逻辑", () => {
+  it("textarea 端：EditorContainer 的补全入口走 beforeinput + 规划器（v0.12.1 接线）", () => {
     const src = readSrc("src/components/editor/EditorContainer.tsx");
-    // 导入配对表并在 keydown 中处理
-    expect(src).toMatch(/import \{ PAIR_MAP, PAIR_CLOSERS \}/);
-    expect(src).toMatch(/PAIR_MAP\[key\]/);
-    expect(src).toMatch(/PAIR_CLOSERS\.has\(key\)/);
-    // 包裹选区：单次插入 开符号+选中文本+闭符号（一次 undo）
-    expect(src).toMatch(/insertText", false, key \+ selected \+ close/);
+    // 导入规划器与运行时配置
+    expect(src).toMatch(/from "\.\.\/\.\.\/utils\/sourceAutoPair"/);
+    expect(src).toMatch(/planSourceChar/);
+    expect(src).toMatch(/planSourceCompositionCommit/);
+    // beforeinput 才是补全入口（中文标点 IME 提交没有单字符 keydown）
+    expect(src).toMatch(/addEventListener\("beforeinput", onBeforeInput\)/);
+    expect(src).toMatch(/addEventListener\("compositionend", onCompositionEnd\)/);
+    expect(src).toMatch(/ie\.isComposing/);
   });
 
-  it("textarea 端：EditorContainer 接入 Backspace 空配对成对删除", () => {
+  it("textarea 端：EditorContainer 接入退格成对删除与 Tab 跳出", () => {
     const src = readSrc("src/components/editor/EditorContainer.tsx");
-    expect(src).toMatch(/e\.key === "Backspace"/);
-    expect(src).toMatch(/PAIR_MAP\[chBefore\]/);
-    expect(src).toMatch(/chAfter === close/);
+    expect(src).toMatch(/planSourceBackspace/);
+    expect(src).toMatch(/planSourceTab/);
+    expect(src).toMatch(/applySourcePairPlan/);
+    // 落地走一条 execCommand → 一次撤销
+    expect(src).toMatch(/document\.execCommand\("insertText", false, text\)/);
   });
 
   it("SettingsDialog 提供开关项 + i18n 文案（zh/en）", () => {
@@ -275,6 +310,16 @@ describe("v0.5.0 N1：自动配对补全", () => {
     );
     expect(readSrc("src/i18n/locales/en-US.ts")).toMatch(
       /"settings\.autoPair":\s*"Auto Pair"/
+    );
+    // v0.12.1 需求4：分组开关 UI + 文案
+    const dialog = readSrc("src/components/dialogs/SettingsDialog.tsx");
+    expect(dialog).toMatch(/data-testid="auto-pair-kinds"/);
+    expect(dialog).toMatch(/settings\.autoPair\.brackets/);
+    expect(readSrc("src/i18n/locales/zh-CN.ts")).toMatch(
+      /"settings\.autoPair\.brackets":\s*"括号/
+    );
+    expect(readSrc("src/i18n/locales/en-US.ts")).toMatch(
+      /"settings\.autoPair\.brackets":\s*"Brackets/
     );
   });
 });

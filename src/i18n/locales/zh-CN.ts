@@ -42,6 +42,16 @@ export const zhCN: Record<string, string> = {
   "settings.spellcheck": "拼写检查",
   // N1：自动配对补全开关
   "settings.autoPair": "自动配对补全",
+  // v0.12.1 需求4：配对范围分组开关（总开关开启时生效）
+  "settings.autoPair.kinds": "配对范围",
+  "settings.autoPair.brackets": "括号 ( ) [ ] { }",
+  "settings.autoPair.quotes": "引号 \" ' `",
+  "settings.autoPair.cjk": "中文标点 “ ” ‘ ’ （ ） 【 】 《 》 「 」",
+  // v0.12.1 需求1：标题级别徽标（替代标题的 # 语法标记）与级别下拉菜单
+  "heading.badge.title": "点击选择标题级别（当前 H{level}）",
+  "heading.menu.title": "标题级别",
+  "heading.menu.hint": "输入 # 数量同样可改级别",
+  "heading.menu.current": "当前",
   "settings.paragraphBreaks": "段内换行",
   "settings.paragraphBreaks.gfm": "GFM(即换行)",
   "settings.paragraphBreaks.commonmark": "CommonMark(需两空格)",

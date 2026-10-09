@@ -176,7 +176,7 @@
 }
 
 /* 语法标记显示 */
-/* v0.12.0 需求3：块级语法标记（光标进入标题/引用/代码块时显示源码符号）。
+/* v0.12.0 需求3：块级语法标记（光标进入引用/代码块时显示源码符号）。
    改用节点装饰 + ::before 伪元素绝对定位——完全脱离文档流，
    光标进出块时文本零位移（修复"标题符号抖动"）；标记文本经 data-md-block-open 传入。
    注意：不能用负 margin 替代（仍参与行盒计算、Chromium 下仍会重排）。 */
@@ -195,6 +195,180 @@
   user-select: none;
   font-weight: normal;
   font-style: normal;
+}
+
+/* ─── v0.12.1 需求1：标题级别徽标（替代 # 语法井号）─────────────
+   几何与旧伪元素完全一致（right:100% + margin-right .35em，脱离文档流），
+   但它是一个真实 <button>：可 hover、可点击展开 H1~H6 级别菜单。 */
+.ProseMirror .pm-heading-marker {
+  position: relative;
+}
+
+.ProseMirror .pm-heading-badge {
+  position: absolute;
+  right: 100%;
+  margin-right: 0.35em;
+  /* 与标题正文同一行、垂直居中；用 em 跟随缩放与字号设置 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.7em;
+  height: 1.35em;
+  padding: 0 0.28em;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--marker-color);
+  font-family: var(--font-sans);
+  font-size: 0.62em;
+  font-weight: 600;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.75;
+  /* 交互态过渡：hover/展开时"亮起来"，避免伪元素时代的死板观感 */
+  transition: opacity 150ms ease, background-color 150ms ease, border-color 150ms ease,
+    color 150ms ease;
+}
+
+.ProseMirror .pm-heading-badge:hover {
+  opacity: 1;
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+.ProseMirror .pm-heading-badge:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+/* ─── v0.12.1 需求1：标题级别下拉菜单（portal 到 body）─────────
+   展开动效走关键帧（scaleY + 位移 + 淡入），transform-origin 由内联样式指定，
+   缓动 easeOutExpo 观感 —— 快速起步、平滑收尾，符合"顺滑展开"的要求。 */
+.heading-level-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 152px;
+  padding: 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  animation: heading-menu-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes heading-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scaleY(0.86) scaleX(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1) scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heading-level-menu {
+    animation: none;
+  }
+}
+
+.heading-level-menu-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 4px;
+}
+
+.heading-level-menu-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.heading-level-menu-hint {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.heading-level-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.heading-level-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.heading-level-item:hover {
+  background: var(--bg-hover);
+}
+
+.heading-level-item.active {
+  background: var(--bg-hover);
+}
+
+/* 级别徽标：字号按级别递减，直观预览该级别的视觉大小 */
+.heading-level-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  font-weight: 600;
+  font-size: 10px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.heading-level-badge.lv1 { font-size: 13px; }
+.heading-level-badge.lv2 { font-size: 12px; }
+.heading-level-badge.lv3 { font-size: 11px; }
+.heading-level-badge.lv4 { font-size: 10px; }
+.heading-level-badge.lv5 { font-size: 9px; }
+.heading-level-badge.lv6 { font-size: 8px; }
+
+.heading-level-item.active .heading-level-badge {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+.heading-level-mark {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  letter-spacing: -1px;
+}
+
+.heading-level-current {
+  font-size: 10px;
+  color: var(--accent-color);
+  flex-shrink: 0;
 }
 
 /* E6(v0.9.4)：行内语法标记显示（光标进入 mark 区间时以伪元素显示源码符号） */
@@ -894,12 +1068,21 @@ body.format-painter-armed .source-editor {
 .source-editor {
   flex: 1;
   width: 100%;
-  padding: 40px 60px;
-  /* v0.12.0 返修（问题4）：内容区宽度设置（--editor-content-max-width）此前只作用于
-     阅读模式的 .ProseMirror，编辑模式固定 960px → 用户调宽度对编辑模式无效。
-     改用同一变量（兜底值仍为 960px，未设置时观感不变）。 */
-  max-width: var(--editor-content-max-width, 960px);
-  margin: 0 auto;
+  /* v0.12.1 需求3：编辑模式的可滚动区域 = 整个编辑区（滚动条贴最右），与阅读模式一致。
+     旧实现把「内容区宽度」加在 textarea 自己的 max-width 上并 margin:auto 居中 →
+       textarea（=滚动容器）只有 960px 宽，滚动条停在正文右缘。
+     现在 textarea 铺满整个编辑区（滚动条贴最右），改由左右**内边距**把正文居中。
+
+     取值的推导（要求正文列与旧版**逐像素一致**，仅滚动条位置改变）：
+       旧：盒子 = min(W, CM) 居中，盒子内 padding 60 → 正文列 = [margin+60, margin+CM-60-sb]
+       新：盒子 = W，正文列 = [pad, W-pad-sb]
+       令两者相等 ⇒ pad = (W - CM)/2 + 60（W ≤ CM 时退化为 60，与旧版一致）
+     故不能简单写 (100% - CM)/2 —— 那会把 60px 内边距算丢，正文列变宽 120px。 */
+  padding-block: 40px;
+  padding-inline: max(
+    60px,
+    calc((100% - var(--editor-content-max-width, 960px)) / 2 + 60px)
+  );
   border: none;
   outline: none;
   resize: none;

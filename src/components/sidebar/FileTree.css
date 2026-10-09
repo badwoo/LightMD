@@ -400,12 +400,15 @@
   min-height: 0;
 }
 
+/* v0.12.1 需求2：子节点动画**再放慢 50%**（0.675s → 1.013s / 0.63s → 0.945s），
+   与 FileTree.tsx 的 TREE_SLIDE_EXPAND_MS / TREE_SLIDE_COLLAPSE_MS 严格同步——
+   容器高度过渡与子节点动画时长不一致时会出现"容器到位、子节点还在飘"的错位。 */
 .filetree-children-slide {
-  animation: tree-node-slide-in 0.675s ease;
+  animation: tree-node-slide-in 1.013s ease;
 }
 
 .filetree-children-slide-out {
-  animation: tree-node-slide-out 0.63s ease forwards;
+  animation: tree-node-slide-out 0.945s ease forwards;
 }
 
 /* v0.8.4 需求6：子节点动画方向由"水平滑入/滑出"改为"垂直展开/收回"——

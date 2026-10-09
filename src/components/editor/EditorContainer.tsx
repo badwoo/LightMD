@@ -18,6 +18,7 @@ import { nextFootnoteLabelFromText } from "../../core/pmCommands";
 import { focusModeKey } from "../../core/plugins/focus-mode";
 import { setMermaidTheme } from "../../core/plugins/mermaid-block";
 import { TextSelection, NodeSelection } from "prosemirror-state";
+import type { EditorState, Transaction } from "prosemirror-state";
 import { undo, redo } from "prosemirror-history";
 // v0.12.0 需求2：PM 右键菜单的行内格式命令
 import { toggleMark } from "prosemirror-commands";
@@ -36,6 +37,7 @@ import { ImageEditDialog } from "../dialogs/ImageEditDialog";
 import { EditorContextMenu } from "./EditorContextMenu";
 // v0.12.0 需求2：阅读模式（PM）右键菜单（首次为 PM 模式引入自定义菜单）
 import { PmContextMenu } from "./PmContextMenu";
+import { HeadingLevelMenu } from "./HeadingLevelMenu";
 import { SlashCommand, findSlashTrigger, isInCodeBlock, type InsertMode } from "./SlashCommand";
 // v0.8.0 修复 P1-3：textarea 侧行内代码/公式的上下文判定（与 PM 侧 inDisabledNode 对齐）
 import { isInInlineCodeOrMath } from "../../utils/inlineContext";
@@ -52,7 +54,15 @@ import {
 } from "../../utils/formatPainter";
 import { useFormatPainterStore } from "../../stores/useFormatPainterStore";
 import type { SlashState } from "../../core/plugins/slash-command";
-import { PAIR_MAP, PAIR_CLOSERS } from "../../core/plugins/auto-pair";
+import { readAutoPairConfig } from "../../core/plugins/auto-pair";
+import {
+  planSourceChar,
+  planSourceBackspace,
+  planSourceTab,
+  planSourceCompositionCommit,
+  type SourcePairInput,
+  type SourcePairPlan,
+} from "../../utils/sourceAutoPair";
 import { isHttpUrl } from "../../core/plugins/smart-paste";
 import {
   buildFormatReplacement,
@@ -338,6 +348,50 @@ export function sourceUndoBoundaryMessage(undoStackLength: number): string | nul
 const TRANSLATE_SNAPSHOT_THROTTLE_MS = 10 * 60 * 1000;
 let lastTranslateSnapshot = { path: "", at: 0 };
 
+// ─── v0.12.1 需求4：textarea 自动配对落地 ─────────────────────────
+// 规划（判定哪些情形补全/跳过/退格删对/Tab 跳出）全部在 utils/sourceAutoPair 的纯函数里，
+// 与阅读模式（ProseMirror）共用 core/autoPairRules；此处只负责把计划落到 textarea 上。
+
+/**
+ * 按计划落地一次 textarea 编辑。
+ *
+ * 统一用 document.execCommand("insertText") 触发 input 事件 → React onChange →
+ * 应用的 diff 撤销栈记录**一条**记录 ⇒ 输入 `(` 补全成 `()` 只占一次撤销（需求4 硬要求）。
+ * 同一次同步任务内落地，浏览器只绘制最终结果，无中间态闪烁。
+ */
+export function applySourcePairPlan(ta: HTMLTextAreaElement, plan: SourcePairPlan): void {
+  if (plan.kind !== "edit") return;
+  const { from, to, text, caret, caretEnd } = plan.edit;
+  // 纯光标移动（跳过输入 / Tab 跳出）：不需要 execCommand
+  if (from === to && text === "") {
+    ta.setSelectionRange(caret, caretEnd ?? caret);
+    return;
+  }
+  ta.setSelectionRange(from, to);
+  document.execCommand("insertText", false, text);
+  ta.setSelectionRange(caret, caretEnd ?? caret);
+}
+
+/**
+ * 采集 textarea 侧的规则上下文。
+ *
+ * 禁用上下文（代码块 / 行内代码 / 公式内不配对）与旧实现口径一致：
+ * isInCodeBlock（``` 围栏计数）+ isInInlineCodeOrMath（行内 ` 与 $ 计数）。
+ */
+export function buildSourcePairInput(
+  ta: HTMLTextAreaElement,
+  start: number,
+  end: number,
+): SourcePairInput {
+  return {
+    value: ta.value,
+    start,
+    end,
+    cfg: readAutoPairConfig(),
+    inDisabledContext: isInCodeBlock(ta.value, start) || isInInlineCodeOrMath(ta.value, start),
+  };
+}
+
 interface EditorContainerProps {
   content?: string;
   filePath?: string | null;
@@ -355,6 +409,25 @@ const PM_MARK_BY_ACTION: Record<string, string> = {
   highlight: "mark",
   underline: "underline",
 };
+
+/**
+ * v0.12.1 需求1：把标题级别落到文档（纯逻辑，导出便于单测）。
+ *
+ * 用 setNodeMarkup 只改 attrs.level（保留内容与子节点），一次事务 = 一次撤销。
+ * pos 为点开菜单时捕获的标题节点位置；期间用户若删掉了该节点，nodeAt 返回
+ * null / 非标题则以 false 结束（菜单已关闭，不弹错）。
+ */
+export function applyHeadingLevelToView(
+  view: { state: EditorState; dispatch: (tr: Transaction) => void },
+  pos: number,
+  level: number,
+): boolean {
+  const node = view.state.doc.nodeAt(pos);
+  if (!node || node.type.name !== "heading") return false;
+  if (Number(node.attrs.level) === level) return false;
+  view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, level }));
+  return true;
+}
 
 /**
  * v0.8.0 修复3：编辑锚点行号 → 字符偏移（源码模式）
@@ -911,6 +984,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       aiGhostHint: translate("settings.translate.ghostHint"),
       // v0.6.6 问题2：阅读模式 Slash 命令触发状态（插件检测后回调，驱动 SlashCommandPm 渲染）
       onSlashStateChange: (s) => setPmSlash(s),
+      // v0.12.1 需求1：标题级别徽标点击 → 打开 H1~H6 下拉菜单
+      // （setState 稳定，无需经 ref 转发；只读标签的拦截在插件 click 处理器内）
+      onHeadingBadgeClick: (headingPos, currentLevel, anchor) =>
+        setHeadingMenu({ open: true, anchor, level: currentLevel, pos: headingPos }),
     });
     if (view) viewRef.current = view;
     return () => {
@@ -1587,6 +1664,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const [slashCommandOpen, setSlashCommandOpen] = useState(false);
   // ─── v0.6.6 问题2：阅读模式 Slash 触发状态（由 ProseMirror 插件回调更新）───
   const [pmSlash, setPmSlash] = useState<SlashState | null>(null);
+  // ─── v0.12.1 需求1：标题级别下拉菜单状态（点击标题左侧 H1/H2 徽标打开）───
+  const [headingMenu, setHeadingMenu] = useState<{
+    open: boolean;
+    anchor: DOMRect | null;
+    /** 当前级别（菜单内高亮） */
+    level: number;
+    /** 标题节点起始位置（改级别用） */
+    pos: number;
+  }>({ open: false, anchor: null, level: 1, pos: 0 });
 
   // ─── 打开链接对话框（携带选中文本作为 initialText）────
   const openLinkDialog = useCallback(() => {
@@ -1960,65 +2046,47 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       return;
     }
 
-    // N1：自动配对补全（先于快捷键解析：仅单字符、无修饰键）
-    // 开符号 → 插入配对（有选区则包裹并保持选中）；闭符号与下一字符相同 → 跳过（光标右移）
+    // v0.12.1 需求4：Tab 跳出配对（光标夹在 ()"" 之间 → 跳到闭符号右侧）。
+    // 位置在 ghost 采纳之后：AI 续写 ghost 活跃时 Tab 的语义是「采纳」，优先级更高。
     if (
       autoPairEnabled &&
-      e.key.length === 1 &&
-      !e.ctrlKey && !e.metaKey && !e.altKey
+      e.key === "Tab" &&
+      !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
     ) {
       const ta = sourceTextareaRef.current;
-      const key = e.key;
-      const close = PAIR_MAP[key];
-      const start = ta?.selectionStart ?? 0;
-      const end = ta?.selectionEnd ?? 0;
-      // 代码块内不配对（与 SlashCommand 的代码块判定一致）
-      // v0.8.0 修复 P1-3：行内代码/公式内同样不配对（PM 侧 inDisabledNode 已覆盖，此处对齐）
-      const inCode = ta ? isInCodeBlock(ta.value, start) || isInInlineCodeOrMath(ta.value, start) : false;
-
-      if (ta && !inCode && close) {
-        e.preventDefault();
-        const selected = ta.value.slice(start, end);
-        // execCommand 触发 input 事件 → React onChange → undo 记录/内容同步
-        ta.setSelectionRange(start, end);
-        document.execCommand("insertText", false, key + selected + close);
-        // 光标置于开符号后；有选区时保持原选中文本选中
-        ta.setSelectionRange(start + 1, start + 1 + selected.length);
-        return;
-      }
-      if (ta && !close && PAIR_CLOSERS.has(key) && ta.value[end] === key) {
-        e.preventDefault();
-        ta.setSelectionRange(end + 1, end + 1);
-        return;
+      if (ta) {
+        const plan = planSourceTab(buildSourcePairInput(ta, ta.selectionStart ?? 0, ta.selectionEnd ?? 0));
+        if (plan.kind === "edit") {
+          e.preventDefault();
+          e.stopPropagation();
+          applySourcePairPlan(ta, plan);
+          return;
+        }
       }
     }
 
-    // N1 扩展（v0.8.0 修复5）：Backspace 空配对成对删除（与 PM 端 handleKeyDown 一致）
-    // value[start-1] 为开符号、value[start] 为对应闭符号且光标无选区 → 一次删掉一对；
-    // 有内容时（"（abc）"）不拦截：默认 Backspace 仅删光标前单字符，不吞闭符号。
+    // ─── v0.12.1 需求4：删除/跳过类交互（输入补全由 beforeinput 监听统一处理）───
+    // 为什么补全不在 keydown 里做：IME 提交的中文标点不会以单字符 keydown 到达
+    // （Chromium 走 composition 路径），keydown + input 双路径会重复判定。
+    // 现在统一为：
+    //   · beforeinput（insertText 单字符）→ 补全 / 包围 / 跳过；
+    //   · compositionend（组合提交后相位）→ 补一次闭符号；
+    //   · keydown → 退格成对删除、Tab 跳出（这两个必须抢在默认行为之前）。
     if (autoPairEnabled && e.key === "Backspace") {
-      // E5(v0.9.2):IME 组合态守卫——组合期按 Backspace 删拼音,不做成对删除
-      // (部分输入法组合期 isComposing=false 但 keyCode=229,与 PM 端 auto-pair 对齐)
-      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       const ta = sourceTextareaRef.current;
       if (ta) {
-        const start = ta.selectionStart ?? 0;
-        const end = ta.selectionEnd ?? 0;
-        if (start === end && start > 0) {
-          const chBefore = ta.value[start - 1];
-          const chAfter = ta.value[start];
-          const close = PAIR_MAP[chBefore];
-          // v0.8.0 修复 P1-3：围栏代码块 + 行内代码/公式 内都不做成对删除
-          const inCode =
-            isInCodeBlock(ta.value, start) || isInInlineCodeOrMath(ta.value, start);
-          if (!inCode && close && chAfter === close) {
-            e.preventDefault();
-            // execCommand 触发 input 事件 → React onChange → undo 记录/内容同步
-            ta.setSelectionRange(start - 1, start + 1);
-            document.execCommand("insertText", false, "");
-            ta.setSelectionRange(start - 1, start - 1);
-            return;
-          }
+        // E5(v0.9.2):IME 组合态守卫——组合期按 Backspace 删拼音，不做成对删除
+        // （部分输入法组合期 isComposing=false 但 keyCode=229，与 PM 端 auto-pair 对齐）
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+        // v0.8.0 修复 P1-3：围栏代码块 + 行内代码/公式内都不做成对删除（在规划器内判定）
+        const plan = planSourceBackspace(
+          buildSourcePairInput(ta, ta.selectionStart ?? 0, ta.selectionEnd ?? 0),
+        );
+        if (plan.kind === "edit") {
+          e.preventDefault();
+          e.stopPropagation();
+          applySourcePairPlan(ta, plan);
+          return;
         }
       }
     }
@@ -2038,6 +2106,67 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       handleFormatAction.current(action);
     }
   }, [isSourceMode, isMdFile, autoPairEnabled]);
+
+  // ─── v0.12.1 需求4：textarea 自动配对的输入路径（beforeinput / compositionend）───
+  //
+  // 为什么用 beforeinput 而不是 keydown：
+  //  · keydown 能拿到按键但拿不到"本次究竟插入了什么字符"，且组合输入提交的中文标点
+  //    没有可用的单字符 keydown（Chromium 走 composition 路径，实测 key=Process/keyCode=229）；
+  //  · beforeinput（inputType=insertText、isComposing=false）是**插入前**唯一可靠的钩子，
+  //    在这里 preventDefault + execCommand 落地补全，用户只看到最终 `()`，无中间态。
+  //  · 组合提交（compositionend 是这一串事件的**最后一个**，实测顺序：
+  //    beforeinput(isComposing=true) → input → compositionend）无法在插入前拦截，
+  //    故提交后用 rAF 做一次"补闭符号"的补救——即需求里的"等组合提交后再处理"。
+  //
+  // 与旧实现的关系：旧实现把补全放在 keydown 里（PAIR_MAP[key]），中文标点依赖
+  // IME 恰好派发单字符 keydown，属偶然可用；现在两条路径都由 sourceAutoPair 规划器裁决。
+  useEffect(() => {
+    if (!isSourceMode || !isMdFile) return;
+    const ta = sourceTextareaRef.current;
+    if (!ta) return;
+
+    const onBeforeInput = (e: Event) => {
+      const ie = e as InputEvent;
+      if (ie.isComposing) return; // 组合输入期间暂停配对
+      if (ie.inputType !== "insertText") return; // 粘贴/删除/换行走默认
+      const data = ie.data;
+      if (typeof data !== "string" || data.length !== 1) return;
+      if (!useSettingsStore.getState().autoPairEnabled) return;
+      const plan = planSourceChar(
+        buildSourcePairInput(ta, ta.selectionStart ?? 0, ta.selectionEnd ?? 0),
+        data,
+      );
+      if (plan.kind !== "edit") return;
+      ie.preventDefault();
+      applySourcePairPlan(ta, plan);
+    };
+
+    const onCompositionEnd = (e: Event) => {
+      const data = (e as CompositionEvent).data;
+      if (typeof data !== "string" || data.length !== 1) return;
+      if (!useSettingsStore.getState().autoPairEnabled) return;
+      // rAF：等浏览器把组合文本真正落进 value 并稳定选区后再判定
+      requestAnimationFrame(() => {
+        if (sourceTextareaRef.current !== ta || !ta.isConnected) return;
+        const pos = ta.selectionStart ?? 0;
+        if (pos !== (ta.selectionEnd ?? 0)) return;
+        const plan = planSourceCompositionCommit({
+          ...buildSourcePairInput(ta, pos, pos),
+          char: data,
+          commitEnd: pos,
+        });
+        if (plan.kind !== "edit") return;
+        applySourcePairPlan(ta, plan);
+      });
+    };
+
+    ta.addEventListener("beforeinput", onBeforeInput);
+    ta.addEventListener("compositionend", onCompositionEnd);
+    return () => {
+      ta.removeEventListener("beforeinput", onBeforeInput);
+      ta.removeEventListener("compositionend", onCompositionEnd);
+    };
+  }, [isSourceMode, isMdFile]);
 
   // ─── v0.6.0：AI 翻译入口接线 ────────────────────
   /** 当前翻译任务上下文（原文/来源通道/textarea 选区位置；重试与回写用） */
@@ -4140,6 +4269,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     return () => container.removeEventListener("contextmenu", onContextMenu);
   }, [viewMode, isMdFile]);
 
+  /**
+   * v0.12.1 需求1：把标题级别徽标选中的级别落到文档（一次事务 = 一次撤销）。
+   * 判定/落地逻辑抽到模块级 applyHeadingLevelToView（可单测）。
+   */
+  const applyHeadingLevel = useCallback((pos: number, level: number) => {
+    const view = viewRef.current;
+    if (!view || view.isDestroyed) return;
+    if (!applyHeadingLevelToView(view, pos, level)) return;
+    view.focus();
+  }, []);
+
   /** PM 右键菜单 action 分发 */
   const handlePmMenuAction = useCallback((action: string) => {
     const view = viewRef.current;
@@ -5734,13 +5874,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             flex: viewMode === "split" ? "none" : isSourceMode ? 1 : 0,
             width: viewMode === "split" ? `calc(${effectiveSplitRatio * 100}% - 3px)` : undefined,
             display: isSourceMode ? "flex" : "none",
-            // v0.12.0 返修（问题4）：编辑模式让「内容区宽度」设置生效。约束加在 wrapper 上
-            // （而非只加在 textarea 上）——两个 overlay 都是 inset:0 铺满 wrapper，
-            // 只有 wrapper 与 textarea 同宽，ghost/专注遮罩才与文本严格对齐。
-            // 分屏模式不参与（wrapper 宽度由分割比例决定）。
-            ...(viewMode === "edit"
-              ? { maxWidth: "var(--editor-content-max-width, 960px)", margin: "0 auto" }
-              : null),
+            // v0.12.1 需求3：编辑模式的可滚动区域改为**整个编辑区**（滚动条贴最右），
+            // 与阅读模式一致。实现方式：wrapper 不再收窄/居中（旧实现在这里加
+            // maxWidth + margin:auto，滚动条因此停在正文右缘），改由 .source-editor
+            // 用左右内边距把正文居中（见 editor.css 的 padding-inline: max(...)）。
+            // 分屏模式不参与（宽度由分割比例决定，滚动条本就贴分栏右缘）。
           }}
         >
           <textarea
@@ -5901,6 +6039,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         translateEnabled={translateEnabled}
         onAction={handlePmMenuAction}
         onClose={() => setPmContextMenu((s) => ({ ...s, open: false }))}
+      />
+
+      {/* v0.12.1 需求1：标题级别下拉菜单（点击标题左侧 H1/H2 徽标打开） */}
+      <HeadingLevelMenu
+        open={headingMenu.open}
+        anchor={headingMenu.anchor}
+        current={headingMenu.level}
+        onSelect={(level) => applyHeadingLevel(headingMenu.pos, level)}
+        onClose={() => setHeadingMenu((s) => ({ ...s, open: false }))}
       />
 
       {/* SlashCommand 菜单：仅源码模式 + Markdown 文件 + 行首 / 触发时渲染 */}

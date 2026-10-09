@@ -183,9 +183,12 @@ export const ITEM_OUT_TOTAL_MS =
   ITEM_SLIDE_OUT_MS + ITEM_COLLAPSE_DELAY_MS + ITEM_COLLAPSE_MS;
 /** v0.8.2 动画优化：文件树「文件夹展开/收起」子节点动画时长（ms），与 CSS 同步。
  * v0.12.0 需求10：动画放慢 50%，450 → 675 / 420 → 630（CSS 中
- * filetree-children-slide 0.675s、slide-out 0.63s 需同步，否则容器与子节点错位） */
-export const TREE_SLIDE_EXPAND_MS = 675;
-export const TREE_SLIDE_COLLAPSE_MS = 630;
+ * filetree-children-slide 0.675s、slide-out 0.63s 需同步，否则容器与子节点错位）
+ * v0.12.1 需求2：**再放慢 50%**，675 → 1013 / 630 → 945（CSS 中
+ * filetree-children-slide 1.013s、slide-out 0.945s 必须同步改，否则容器高度
+ * 过渡与子节点动画错位：容器先到位、子节点还在飘） */
+export const TREE_SLIDE_EXPAND_MS = 1013;
+export const TREE_SLIDE_COLLAPSE_MS = 945;
 /** v0.8.5 需求4：搜索面板展开动画时长（ms），与 FileTree.css search-panel-in 同步 */
 export const SEARCH_PANEL_IN_MS = 220;
 /** v0.8.5 需求4：搜索面板收回动画时长（ms），与 FileTree.css search-panel-out 同步；

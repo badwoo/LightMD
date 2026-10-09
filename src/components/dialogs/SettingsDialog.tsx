@@ -582,7 +582,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               </label>
             </div>
 
-            {/* N1：自动配对补全开关（括号/引号自动补全，编辑与源码模式同时生效） */}
+            {/* N1：自动配对补全开关（括号/引号自动补全，阅读/编辑/分屏三模式同时生效） */}
             <div className="settings-field">
               <label>{t("settings.autoPair")}</label>
               <label className="settings-switch">
@@ -596,6 +596,37 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   {settings.autoPairEnabled ? t("settings.on") : t("settings.off")}
                 </span>
               </label>
+            </div>
+
+            {/* v0.12.1 需求4：配对范围分组开关（总开关关闭时整组置灰） */}
+            <div className="settings-field settings-field-indent">
+              <label>{t("settings.autoPair.kinds")}</label>
+              <div className="settings-checkbox-group" data-testid="auto-pair-kinds">
+                {(
+                  [
+                    ["brackets", "settings.autoPair.brackets"],
+                    ["quotes", "settings.autoPair.quotes"],
+                    ["cjk", "settings.autoPair.cjk"],
+                  ] as const
+                ).map(([kind, labelKey]) => (
+                  <label key={kind} className="settings-checkbox-item">
+                    <input
+                      type="checkbox"
+                      data-pair-kind={kind}
+                      disabled={!settings.autoPairEnabled}
+                      checked={
+                        kind === "brackets"
+                          ? settings.autoPairBrackets
+                          : kind === "quotes"
+                            ? settings.autoPairQuotes
+                            : settings.autoPairCjk
+                      }
+                      onChange={(e) => settings.setAutoPairKind(kind, e.target.checked)}
+                    />
+                    <span>{t(labelKey)}</span>
+                  </label>
+                ))}
+              </div>
             </div>
 
             {/* E14(v0.9.2):段内换行语义(gfm=即换行 / commonmark=标准) */}
