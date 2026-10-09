@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.12.0**
+**Current Version: v0.12.1**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -162,10 +162,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.12.0 installers:
+Visit the [Releases](../../releases) page to download the 0.12.1 installers:
 
-- **`LightMD_0.12.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.12.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.12.1_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.12.1_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -216,6 +216,17 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.12.1 (2026-10-09)
+
+**Heading-level badge / auto-pair rewritten / edit-mode scrollbar at the far right / folder animation 50% slower** (baseline 0.12.0)
+
+- **Heading-level badge (H1–H6)** — headings no longer show the `#` syntax marker; a clickable `H1`/`H2`… badge appears instead (absolutely positioned, still zero layout shift). Clicking it opens an **H1–H6** level menu (200 ms smooth expand animation, current level highlighted, equivalent `#` syntax shown, `prefers-reduced-motion` respected). Changing the level is a single transaction that keeps the heading text and anchor `id`; typing `#` characters still changes the level as before
+- **Auto-pair rewritten** — a single rule source (`core/autoPairRules.ts`, pure functions) plus a textarea planner now drive **all three modes** (reading / edit / split) identically: auto-close pairs, type-over an existing closer, surround a selection, delete a pair with Backspace, `Tab` to jump out, and close a pair after an IME composition commits. A pair insertion is **one edit = one undo**
+- **Pair scope settings** — three new switches (brackets / quotes / CJK punctuation) so quotes can be disabled while brackets stay on
+- **No more false completions** — mid-word (`abc|def`), right before an existing closer, orphan closers, English apostrophes (`don't`), escaped characters (`\(`), code blocks / inline code / math, and active IME composition are all left alone
+- **Edit-mode scrollbar at the far right** — the scrollable area is now the whole editing region (matching reading mode); the text column stays pixel-identical to the previous version
+- **Folder animation 50% slower again** — expand 0.675s → 1.013s, collapse 0.63s → 0.945s
 
 ### v0.12.0 (2026-10-08)
 
