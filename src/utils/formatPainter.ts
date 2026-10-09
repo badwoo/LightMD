@@ -43,8 +43,9 @@ export const SOURCE_MARK_WRAPPERS: Record<string, [string, string]> = {
   mark: ["==", "=="],
 };
 
-/** 持久模式最大应用次数（归零自动退出，防无限模式误用） */
-export const FORMAT_PAINTER_MAX_USES = 5;
+/** 持久模式最大应用次数（归零自动退出，防无限模式误用）
+ *  v0.12.0 返修（问题5）：5 → 10（用户要求双击格式刷可连续应用 10 次） */
+export const FORMAT_PAINTER_MAX_USES = 10;
 
 // ─── 采集（源侧） ────────────────────────────────────────
 

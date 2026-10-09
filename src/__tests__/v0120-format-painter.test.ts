@@ -302,3 +302,28 @@ describe("v0.12.0 需求2：useFormatPainterStore", () => {
     expect(useFormatPainterStore.getState().mode).toBe("idle");
   });
 });
+
+/**
+ * v0.12.0 返修（问题5）：双击格式刷的最大连续应用次数由 5 调整为 10。
+ * （锁定常量值，避免后续误改；持久模式语义仍是"归零自动退出"。）
+ */
+describe("v0.12.0 返修（问题5）：持久模式最大应用次数 = 10", () => {
+  beforeEach(() => {
+    useFormatPainterStore.getState().exit();
+  });
+
+  it("常量值为 10", () => {
+    expect(FORMAT_PAINTER_MAX_USES).toBe(10);
+  });
+
+  it("armPersistent 初始化 remaining = 10；第 9 次后仍在 persistent，第 10 次归零退出", () => {
+    useFormatPainterStore.getState().armPersistent({ marks: ["strong"], blockType: "paragraph" });
+    expect(useFormatPainterStore.getState().remaining).toBe(10);
+    for (let i = 1; i <= 9; i++) useFormatPainterStore.getState().consume();
+    expect(useFormatPainterStore.getState().mode).toBe("persistent");
+    expect(useFormatPainterStore.getState().remaining).toBe(1);
+    useFormatPainterStore.getState().consume();
+    expect(useFormatPainterStore.getState().mode).toBe("idle");
+    expect(useFormatPainterStore.getState().snapshot).toBeNull();
+  });
+});

@@ -165,3 +165,34 @@ describe("v0.12.0 需求5：落点接线（源码断言）", () => {
     expect(src).toContain("(e.clientX - this.resizing.startX) / (this.resizing.zoom || 1)");
   });
 });
+
+/**
+ * v0.12.0 返修（问题3）：页面放大/缩小时阅读焦点不偏移。
+ *
+ * 缺陷背景：`--doc-zoom` 写入后内容整体按比例变高/变矮，但 scrollTop 是绝对像素，
+ * 不补偿时放大后视口落到更靠前的内容（用户看到"内容往回流"）。
+ * zoom 是**等比变换** → 滚动百分比天然守恒，故用百分比还原（块锚点在 iframe
+ * 场景不可用：`doc.body.innerHTML = previewHtml` 会换掉元素引用）。
+ */
+describe("v0.12.0 返修（问题3）：缩放保持阅读焦点（源码断言）", () => {
+  const src = readSrc("components/editor/EditorContainer.tsx");
+
+  it("缩放写入前记录滚动百分比，rAF 内按新高度还原（阅读 .editor-container）", () => {
+    // 记录：写入新 zoom 之前先用 computeScrollPercent 取百分比
+    expect(src).toContain("computeScrollPercent");
+    // 还原：布局生效后（rAF）按百分比换算新的 scrollTop
+    expect(src).toContain("computeRestoreScrollTop");
+    expect(src).toMatch(/computeScrollPercent\(\s*previewContainer\.scrollHeight/);
+  });
+
+  it("分屏 iframe 走独立的滚动元素百分比补偿", () => {
+    expect(src).toContain("iframeDoc?.scrollingElement");
+    expect(src).toMatch(/computeRestoreScrollTop\(\s*iframePercent/);
+  });
+
+  it("仅「缩放真的变化」才补偿（lastDocZoomRef 门控，避免与模式切换抢滚动位置）", () => {
+    expect(src).toContain("const lastDocZoomRef = useRef(docZoom)");
+    expect(src).toContain("const zoomChanged = lastDocZoomRef.current !== docZoom");
+    expect(src).toContain("if (!zoomChanged) return;");
+  });
+});

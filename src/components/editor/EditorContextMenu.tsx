@@ -20,6 +20,29 @@ import { getShortcutLabel } from "../../core/shortcuts";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import "./EditorContextMenu.css";
 
+/**
+ * v0.12.0 返修（问题6）：action → i18n key 映射。
+ *
+ * 渲染时用 `t(\`menu.${action}\`)` 直接拼 key，但部分 action 名与词条名不一致
+ * （源码里是 link/image/table/codeblock/mermaid/code，词条是
+ * menu.insertLink/menu.insertImage/…/menu.inlineCode），
+ * 拼不出来的 key 会原样回显成 `menu.table` 这类英文 key（用户反馈"插入表格等没中文"）。
+ * 此处集中映射，缺失项回退 `menu.<action>`。
+ */
+const MENU_LABEL_KEYS: Record<string, string> = {
+  code: "menu.inlineCode",
+  link: "menu.insertLink",
+  image: "menu.insertImage",
+  table: "menu.insertTable",
+  codeblock: "menu.insertCodeblock",
+  mermaid: "menu.insertMermaid",
+};
+
+/** action → 菜单文案（i18n key 映射 + 兜底） */
+export function menuLabelKey(action: string): string {
+  return MENU_LABEL_KEYS[action] ?? `menu.${action}`;
+}
+
 /** 菜单项类型 */
 export interface MenuItemConfig {
   type: "item" | "separator";
@@ -218,7 +241,7 @@ export function EditorContextMenu({
             disabled={item.disabled}
             onClick={() => handleItemClick(item.action!, item.disabled)}
           >
-            <span className="context-menu-label">{t(`menu.${item.action}`)}</span>
+            <span className="context-menu-label">{t(menuLabelKey(item.action!))}</span>
             {item.shortcut && <span className="context-menu-shortcut">{item.shortcut}</span>}
           </button>
         );

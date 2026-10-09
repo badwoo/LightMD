@@ -8,12 +8,15 @@
  */
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import {
   buildPmMenuItems,
   PmContextMenu,
   NODE_DELETE_LABEL_KEYS,
 } from "../components/editor/PmContextMenu";
+
+const containerSrc = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
 
 afterEach(cleanup);
 
@@ -117,5 +120,36 @@ describe("v0.12.0 需求2：PmContextMenu 渲染交互", () => {
     );
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+/**
+ * v0.12.0 返修（问题1）：阅读模式右键按需接管，恢复 v0.11.0 的 WebView2 原生菜单。
+ *
+ * 缺陷背景：v0.12.0 首次为阅读模式（PM）接管右键，**无差别** preventDefault，
+ * 把原生菜单（表情符号 / 书写方向 / 更多工具）挤掉，用户反馈"右键菜单变成了
+ * 插入链接、插入图片这些"。
+ * 修复：仅「有文本选区 / 已选中块（NodeSelection）」时接管并渲染本菜单；
+ * 其余情况不拦截，交回原生菜单。
+ */
+describe("v0.12.0 返修（问题1）：阅读模式右键接管策略（源码断言）", () => {
+  it("无选区时不拦截（早退 → 交回原生菜单）", () => {
+    expect(containerSrc).toContain("if (!isNode && !hasTextSelection) return;");
+  });
+
+  it("判定**同步**读取选区后才 preventDefault（rAF 内读取已无法阻止原生菜单）", () => {
+    const selIdx = containerSrc.indexOf("const sel = view?.state.selection;");
+    const preventIdx = containerSrc.indexOf("e.preventDefault();", selIdx);
+    expect(selIdx).toBeGreaterThan(-1);
+    expect(preventIdx).toBeGreaterThan(selIdx);
+  });
+
+  it("仅阅读模式 + md 文件生效（编辑/分屏走各自既有右键逻辑）", () => {
+    expect(containerSrc).toContain('if (viewMode !== "preview" || !isMdFile) return;');
+  });
+
+  it("有选区/选中块的判定：NodeSelection 或非空 TextSelection", () => {
+    expect(containerSrc).toContain("const isNode = sel instanceof NodeSelection;");
+    expect(containerSrc).toContain("const hasTextSelection = !!sel && !isNode && sel.from !== sel.to;");
   });
 });

@@ -9,9 +9,14 @@
  * - NodeSelection（块级选中，需求6）：删除 XX（按块类型映射文案）；
  * - 无选区：插入类（链接/图片/表格/代码块/Mermaid）+ AI 续写/摘要。
  *
- * 选区读取时序（v2 修正）：调用方（EditorContainer）在 contextmenu 事件的
- * requestAnimationFrame 内**主动读取** view.state.selection —— mermaid 等
- * NodeView 的 stopEvent 可能拦过 mousedown，React 事件对象的时序不保证。
+ * v0.12.0 返修（问题1）触发策略：调用方（EditorContainer）仅在「有文本选区 / 已选中块」
+ * 时才接管右键并渲染本菜单；**无选区时不再拦截**，交回 WebView2 原生菜单
+ * （恢复 v0.11.0 的表情符号/书写方向/更多工具）。因此上面的「无选区」分支当前不会被
+ * 阅读模式触发，保留它是为了让本组件在三态下都有明确定义（纯函数契约不变）。
+ *
+ * 选区读取时序：调用方在 contextmenu 处理器内**同步**读取 view.state.selection
+ * （PM 的 mousedown 处理器先于 contextmenu 执行，取到的是最新选区；且
+ * preventDefault 必须发生在事件分发期，rAF 内读取已无法阻止原生菜单）。
  */
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";

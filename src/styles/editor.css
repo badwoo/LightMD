@@ -233,16 +233,23 @@
 }
 
 /* ─── v0.12.0 需求11：块级拖拽手柄（选中块的左侧外缘 ⋮⋮） ─────────
-   ::before 伪元素不进 ProseMirror 的 DOM 管理（undo/redo 与 tr.mapping 不受影响）；
+   伪元素不进 ProseMirror 的 DOM 管理（undo/redo 与 tr.mapping 不受影响）；
    仅顶层块显示；拖拽热区由 block-drag 插件按坐标判定（此处纯视觉提示）。
-   与需求3的语法 marker 互斥：marker 装饰仅空选区（光标）时出现，选中态不渲染。 */
+   与需求3的语法 marker 互斥：marker 装饰仅空选区（光标）时出现，选中态不渲染。
+
+   v0.12.0 返修（问题2）：手柄必须对**所有可拖块**可见，此前只有表格能看到——
+   ① 用 `::after` 而非 `::before`：代码块/图表/公式的 wrapper 已用 `::before`
+      画语言角标（`.code-block-wrapper.has-lang-select::before { display:none }`
+      与本规则同权重且更靠后，会把 before 版手柄一并 display:none 掉）；
+   ② 这三类 wrapper 都设了 `overflow: hidden`，手柄在左缘外 20px 会被裁掉 →
+      选中态临时放开裁剪（其子层都按 inset:0 定位，正常态本就不溢出）。 */
 .ProseMirror > .pm-block-selected,
 .ProseMirror > .ProseMirror-selectednode {
   position: relative;
 }
 
-.ProseMirror > .pm-block-selected::before,
-.ProseMirror > .ProseMirror-selectednode::before {
+.ProseMirror > .pm-block-selected::after,
+.ProseMirror > .ProseMirror-selectednode::after {
   content: "⋮⋮";
   position: absolute;
   left: -20px;
@@ -259,10 +266,20 @@
   transition: opacity var(--transition-fast);
 }
 
-.ProseMirror > .pm-block-selected:hover::before,
-.ProseMirror > .ProseMirror-selectednode:hover::before {
+.ProseMirror > .pm-block-selected:hover::after,
+.ProseMirror > .ProseMirror-selectednode:hover::after {
   opacity: 1;
   color: var(--text-secondary);
+}
+
+/* v0.12.0 返修（问题2）：放开选中态的 overflow，让左侧手柄不被 wrapper 裁剪 */
+.ProseMirror > .code-block-wrapper.pm-block-selected,
+.ProseMirror > .mermaid-block-wrapper.pm-block-selected,
+.ProseMirror > .math-block-wrapper.pm-block-selected,
+.ProseMirror > .code-block-wrapper.ProseMirror-selectednode,
+.ProseMirror > .mermaid-block-wrapper.ProseMirror-selectednode,
+.ProseMirror > .math-block-wrapper.ProseMirror-selectednode {
+  overflow: visible;
 }
 
 /* v0.12.0 需求11：拖拽期间的插入指示线（2px 水平线，主题强调色）
@@ -878,7 +895,10 @@ body.format-painter-armed .source-editor {
   flex: 1;
   width: 100%;
   padding: 40px 60px;
-  max-width: 960px;
+  /* v0.12.0 返修（问题4）：内容区宽度设置（--editor-content-max-width）此前只作用于
+     阅读模式的 .ProseMirror，编辑模式固定 960px → 用户调宽度对编辑模式无效。
+     改用同一变量（兜底值仍为 960px，未设置时观感不变）。 */
+  max-width: var(--editor-content-max-width, 960px);
   margin: 0 auto;
   border: none;
   outline: none;

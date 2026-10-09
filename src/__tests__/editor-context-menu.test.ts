@@ -9,7 +9,8 @@
  * - action 标识正确性
  */
 import { describe, it, expect } from "vitest";
-import { buildMenuItems, type MenuItemConfig } from "../components/editor/EditorContextMenu";
+import { buildMenuItems, menuLabelKey, type MenuItemConfig } from "../components/editor/EditorContextMenu";
+import { t } from "../i18n/state";
 
 /** 提取所有非分隔符菜单项的 action */
 function getItemActions(items: MenuItemConfig[]): string[] {
@@ -207,5 +208,43 @@ describe("buildMenuItems - 菜单项配置构建", () => {
     expect(redoItem?.disabled).toBe(true);
     expect(cutItem?.disabled).toBe(true);
     expect(copyItem?.disabled).toBe(true);
+  });
+});
+
+/**
+ * v0.12.0 返修（问题6）：编辑/分屏模式右键菜单中文化。
+ *
+ * 缺陷背景：渲染处按 `t(\`menu.${action}\`)` 拼 key，但插入类 action 名
+ * （link/image/table/codeblock/mermaid）与词条名（menu.insertLink/…）不一致，
+ * `t()` 缺 key 时原样回显 → 菜单里出现 `menu.table` 这类英文 key。
+ * 修复：显式映射表 MENU_LABEL_KEYS + menuLabelKey() 兜底。
+ */
+describe("v0.12.0 返修（问题6）：菜单文案 i18n key 映射", () => {
+  it("插入类 action 映射到正确词条（不再回显英文 key）", () => {
+    expect(menuLabelKey("code")).toBe("menu.inlineCode");
+    expect(menuLabelKey("link")).toBe("menu.insertLink");
+    expect(menuLabelKey("image")).toBe("menu.insertImage");
+    expect(menuLabelKey("table")).toBe("menu.insertTable");
+    expect(menuLabelKey("codeblock")).toBe("menu.insertCodeblock");
+    expect(menuLabelKey("mermaid")).toBe("menu.insertMermaid");
+  });
+
+  it("其余 action 回退 menu.<action>", () => {
+    expect(menuLabelKey("bold")).toBe("menu.bold");
+    expect(menuLabelKey("formatPainter")).toBe("menu.formatPainter");
+    expect(menuLabelKey("aiContinue")).toBe("menu.aiContinue");
+  });
+
+  it("buildMenuItems 产出的**每一个** action 都能翻译成中文（无 key 回显）", () => {
+    // 有选区（覆盖行内格式 + 翻译）与无选区（覆盖 AI 助手 + 插入）两种全量集合
+    const allItems = [...buildMenuItems(true, true, true), ...buildMenuItems(false, true, true)];
+    const actions = getItemActions(allItems);
+    for (const action of actions) {
+      const key = menuLabelKey(action);
+      const text = t(key);
+      // t() 缺 key 会原样回显 key（形如 menu.xxx）→ 断言取到的是真正的中文文案
+      expect(text, `action=${action} key=${key}`).not.toBe(key);
+      expect(text, `action=${action}`).toMatch(/[\u4e00-\u9fa5]/);
+    }
   });
 });

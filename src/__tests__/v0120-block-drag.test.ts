@@ -8,6 +8,7 @@
  * 4. buildBlockMoveTr：删除 + 插入 + mapping（一次撤销单元）；drop 后结构合法
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { EditorState, NodeSelection } from "prosemirror-state";
 import { history, undo } from "prosemirror-history";
 import { lightMDSchema as schema } from "../core/schema";
@@ -17,6 +18,8 @@ import {
   computeDropInsertPos,
   buildBlockMoveTr,
 } from "../core/plugins/block-drag";
+
+const editorCss = readFileSync("src/styles/editor.css", "utf-8");
 
 /** 构造三段文档：p(a) / code(x) / p(b) */
 function makeDoc3() {
@@ -166,5 +169,39 @@ describe("v0.12.0 需求11：buildBlockMoveTr（drop 后结构合法）", () => 
       state = state.apply(tr);
     });
     expect(state.doc.eq(doc)).toBe(true);
+  });
+});
+
+/**
+ * v0.12.0 返修（问题2）：拖拽手柄必须对**所有可拖块**可见。
+ *
+ * 缺陷背景：手柄此前用 `::before` 伪元素画在选中块左缘外 20px，但：
+ *  ① 代码块/图表/公式的 wrapper 已用 `::before` 画语言角标，
+ *     `.code-block-wrapper.has-lang-select::before { display: none }` 同权重且更靠后，
+ *     把 before 版手柄一并 display:none 掉 → 只有无该规则的表格能看到手柄；
+ *  ② 这三类 wrapper 都设了 `overflow: hidden`，左侧外 20px 的手柄会被裁掉。
+ * 修复：改用 `::after` + 选中态放开 overflow。
+ */
+describe("v0.12.0 返修（问题2）：拖拽手柄视觉（CSS 落点断言）", () => {
+  it("手柄画在选中块的 ::after（避开 wrapper 的 ::before 语言角标）", () => {
+    expect(editorCss).toContain(".ProseMirror > .pm-block-selected::after");
+    expect(editorCss).toContain(".ProseMirror > .ProseMirror-selectednode::after");
+    expect(editorCss).toContain('content: "⋮⋮"');
+    // 不能再有 ::before 版手柄（否则会与语言角标规则冲突而不可见）
+    expect(editorCss).not.toContain(".ProseMirror > .pm-block-selected::before");
+    expect(editorCss).not.toContain(".ProseMirror > .ProseMirror-selectednode::before");
+  });
+
+  it("选中态放开三类 wrapper 的 overflow，让左缘外手柄不被裁剪", () => {
+    for (const cls of ["code-block-wrapper", "mermaid-block-wrapper", "math-block-wrapper"]) {
+      expect(editorCss).toContain(`.ProseMirror > .${cls}.pm-block-selected`);
+      expect(editorCss).toContain(`.ProseMirror > .${cls}.ProseMirror-selectednode`);
+    }
+    // 该组规则体为 overflow: visible
+    expect(editorCss).toMatch(/\.math-block-wrapper\.ProseMirror-selectednode\s*\{\s*overflow: visible;/);
+  });
+
+  it("手柄定位在选中块左缘外（left: -20px），与拖拽热区（左 18px）对齐", () => {
+    expect(editorCss).toMatch(/content: "⋮⋮";[\s\S]*?left: -20px;/);
   });
 });

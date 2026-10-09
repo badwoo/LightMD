@@ -4109,27 +4109,31 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, [filePath, viewMode]);
 
   // v0.12.0 需求2：阅读模式右键菜单（首次为 PM 模式引入）。
-  // 选区在 rAF 内主动读取——mermaid 等 NodeView 的 stopEvent 可能拦过 mousedown，
-  // React 事件对象的时序不保证拿到最新选区。
+  // v0.12.0 返修（问题1）：**无选区时不再拦截** —— v0.12.0 首次为阅读模式接管了右键，
+  // 把 v0.11.0 的原生菜单（表情符号 / 书写方向 / 更多工具等 WebView2 项）挤掉了，
+  // 用户反馈"右键菜单变成了插入链接、插入图片这些"。现改为按需接管：
+  //   · 有文本选区 / 已选中块（NodeSelection）→ 应用菜单（行内格式 / 格式刷 / 删除块 / AI 翻译）；
+  //   · 其余（普通空白处右键）→ 不 preventDefault，交回 WebView2 原生菜单。
+  // 判定必须**同步**读取选区：preventDefault 只能在事件分发期生效（放到 rAF 里太晚）；
+  // PM 的 mousedown 处理器已先于 contextmenu 执行，此处读到的选区即最新值。
   useEffect(() => {
     if (viewMode !== "preview" || !isMdFile) return;
     const container = editorRef.current;
     if (!container) return;
     const onContextMenu = (e: MouseEvent) => {
+      const view = viewRef.current;
+      const sel = view?.state.selection;
+      const isNode = sel instanceof NodeSelection;
+      const hasTextSelection = !!sel && !isNode && sel.from !== sel.to;
+      if (!isNode && !hasTextSelection) return; // → 原生菜单
       e.preventDefault();
       const { clientX: x, clientY: y } = e;
-      requestAnimationFrame(() => {
-        const view = viewRef.current;
-        if (!view) return;
-        const sel = view.state.selection;
-        const isNode = sel instanceof NodeSelection;
-        setPmContextMenu({
-          open: true,
-          x,
-          y,
-          hasSelection: !isNode && sel.from !== sel.to,
-          nodeKind: isNode ? sel.node.type.name : null,
-        });
+      setPmContextMenu({
+        open: true,
+        x,
+        y,
+        hasSelection: hasTextSelection,
+        nodeKind: isNode ? sel!.node.type.name : null,
       });
     };
     container.addEventListener("contextmenu", onContextMenu);
@@ -4469,9 +4473,69 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // v0.12.0 需求5：文档缩放比例注入 --doc-zoom（:root，值为比例：1 = 100%）。
   // 消费方：阅读 .ProseMirror 的 CSS zoom、分屏 iframe body 的 zoom（经 collectCssVars）、
   // 编辑 textarea 的字号 calc（见 textarea 内联样式）、table-editor 的 rect→布局值换算。
+  //
+  // v0.12.0 返修（问题3）：缩放同样要求"阅读焦点不偏移"。
+  // zoom 是布局属性——内容整体按比例变高/变矮，而 scrollTop 是绝对像素，
+  // 不动它时放大后视口会落到更靠前的内容（用户看到"内容往回流"）。
+  // 纯缩放是**等比变换**：滚动百分比天然守恒，所以在写入新 --doc-zoom 之前记下百分比、
+  // 布局生效后（rAF）按新高度还原即可。两类阅读容器都走百分比：
+  //   · 阅读模式 → .editor-container；
+  //   · 分屏模式 → iframe 文档滚动元素（iframe 的 body innerHTML 会随缩放被重写，
+  //     块锚点的元素引用会失效，故不能用块锚点）。
+  // 编辑/分屏左侧 textarea 的字号换算另由下方内容锚点效应处理（字体变化会重排，
+  // 百分比不守恒）。
+  const lastDocZoomRef = useRef(docZoom);
   useEffect(() => {
+    // 仅"缩放真的变了"才补偿：模式/文件切换也会触发本效应，
+    // 那时若做百分比还原会与 applyScroll 抢滚动位置
+    const zoomChanged = lastDocZoomRef.current !== docZoom;
+    lastDocZoomRef.current = docZoom;
+
+    const previewContainer =
+      zoomChanged && viewMode === "preview" && isMdFile ? editorRef.current : null;
+    const previewPercent = previewContainer
+      ? computeScrollPercent(
+          previewContainer.scrollHeight,
+          previewContainer.clientHeight,
+          previewContainer.scrollTop,
+        )
+      : null;
+    const iframeDoc =
+      zoomChanged && viewMode === "split" ? previewIframeRef.current?.contentDocument : null;
+    const iframeScroller = (iframeDoc?.scrollingElement ??
+      iframeDoc?.documentElement ??
+      null) as HTMLElement | null;
+    const iframePercent = iframeScroller
+      ? computeScrollPercent(
+          iframeScroller.scrollHeight,
+          iframeScroller.clientHeight,
+          iframeScroller.scrollTop,
+        )
+      : null;
+
     document.documentElement.style.setProperty("--doc-zoom", String(docZoom / 100));
-  }, [docZoom]);
+
+    if (!zoomChanged) return;
+    const raf = requestAnimationFrame(() => {
+      if (previewContainer && previewPercent !== null) {
+        const top = computeRestoreScrollTop(
+          previewPercent,
+          previewContainer.scrollHeight,
+          previewContainer.clientHeight,
+        );
+        if (top !== null) previewContainer.scrollTop = top;
+      }
+      if (iframeScroller && iframePercent !== null) {
+        const top = computeRestoreScrollTop(
+          iframePercent,
+          iframeScroller.scrollHeight,
+          iframeScroller.clientHeight,
+        );
+        if (top !== null) iframeScroller.scrollTop = top;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [docZoom, viewMode, isMdFile]);
 
   // v0.12.0 需求5：Ctrl+滚轮调整文档缩放（阅读/编辑/分屏三模式通用）。
   // 监听挂在 .editor-main-area（不影响侧栏/标签栏）；
@@ -5670,6 +5734,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             flex: viewMode === "split" ? "none" : isSourceMode ? 1 : 0,
             width: viewMode === "split" ? `calc(${effectiveSplitRatio * 100}% - 3px)` : undefined,
             display: isSourceMode ? "flex" : "none",
+            // v0.12.0 返修（问题4）：编辑模式让「内容区宽度」设置生效。约束加在 wrapper 上
+            // （而非只加在 textarea 上）——两个 overlay 都是 inset:0 铺满 wrapper，
+            // 只有 wrapper 与 textarea 同宽，ghost/专注遮罩才与文本严格对齐。
+            // 分屏模式不参与（wrapper 宽度由分割比例决定）。
+            ...(viewMode === "edit"
+              ? { maxWidth: "var(--editor-content-max-width, 960px)", margin: "0 auto" }
+              : null),
           }}
         >
           <textarea
