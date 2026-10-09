@@ -3,6 +3,12 @@
  *
  * 位置：.editor-main-area 右下角（absolute）。默认 opacity:0，
  * 尺子自身即热区（hover / focus-within 显现），150ms 过渡。
+ *
+ * v0.12.0 返修：
+ * - 100% 刻度居中：刻度齿分上下两段绘制（下半 50~100 每 5% 一齿、上半 100~200
+ *   每 5% 一齿），中缝 100% 刻度线加深（.zoom-ruler-mid）；
+ * - 调整中显示圆形透明气泡（.zoom-ruler-bubble，尺寸随百分比增大）；
+ * - 停止后显示低透明度小百分比（.zoom-ruler-idle-value，100% 时不渲染）。
  */
 
 .zoom-ruler {
@@ -29,12 +35,61 @@
   opacity: 1;
 }
 
-.zoom-ruler-value {
+/* ─── 调整中：圆形透明气泡（尺寸/字号由内联样式按百分比控制） ─── */
+.zoom-ruler-bubble {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  opacity: 0.85;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  pointer-events: none;
+  white-space: nowrap;
+  transition: width 0.12s ease, height 0.12s ease, font-size 0.12s ease;
+}
+
+/* ─── 停止后：低透明度小百分比（100% 时不渲染） ─── */
+.zoom-ruler-idle-value {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
   font-size: 10px;
   line-height: 1;
   color: var(--text-secondary);
+  opacity: 0.45;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ─── 轨道包装：上下两段刻度齿 + 100% 中线 ─── */
+.zoom-ruler-track-wrap {
+  position: relative;
+  width: 12px;
+  height: 160px;
+}
+
+/* 100% 刻度线：位于正中，颜色加深 */
+.zoom-ruler-mid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-1px);
+  background: var(--text-secondary);
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* 竖向滑条：writing-mode + direction 控制方向（向上 = 增大） */
@@ -42,27 +97,45 @@
   writing-mode: vertical-lr;
   direction: rtl;
   width: 12px;
-  height: 120px;
+  height: 160px;
   margin: 0;
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
   cursor: pointer;
+  position: relative;
 }
 
-/* 轨道：底色 + 每 5% 一格的刻度齿（120px / 30 格 = 4px 周期） */
+/*
+ * 轨道：底色 + 两段刻度齿（100% 居中的分段线性刻度）。
+ * 轨道高 160px，上下各 80px：
+ * - 下半（50~100）：每 5% 一齿 → 80px / 10 格 = 8px 周期；
+ * - 上半（100~200）：每 5% 一齿 → 80px / 20 格 = 4px 周期。
+ * 用两个 repeating-linear-gradient + background-size/position 分段叠加。
+ */
 .zoom-ruler-range::-webkit-slider-runnable-track {
   width: 12px;
-  height: 120px;
+  height: 160px;
   border-radius: 6px;
   background-color: var(--bg-secondary);
-  background-image: repeating-linear-gradient(
-    to bottom,
-    var(--text-tertiary) 0px,
-    var(--text-tertiary) 1px,
-    transparent 1px,
-    transparent 4px
-  );
+  background-image:
+    repeating-linear-gradient(
+      to bottom,
+      var(--text-tertiary) 0px,
+      var(--text-tertiary) 1px,
+      transparent 1px,
+      transparent 8px
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      var(--text-tertiary) 0px,
+      var(--text-tertiary) 1px,
+      transparent 1px,
+      transparent 4px
+    );
+  background-size: 100% 80px, 100% 80px;
+  background-position: bottom, top;
+  background-repeat: no-repeat;
 }
 
 /* 滑块：小块（与轨道同宽，视觉为"推块"） */

@@ -124,7 +124,7 @@ interface EditorState {
   // label 导致后者覆盖前者、内容丢失）。label 由持有源码 textarea ref 的
   // EditorContainer 计算（内部有当前文本），App 侧无需感知文本。
   sourceInsertHandler:
-    | ((syntax: string, cursorOffset?: number, opts?: { label?: string }) => void)
+    | ((syntax: string, cursorOffset?: number, opts?: { label?: string; ghost?: string }) => void)
     | null;
   // 撤销/恢复回调，由 EditorContainer 注册
   undoHandler: (() => void) | null;
@@ -159,7 +159,7 @@ interface EditorState {
   setWordCount: (count: WordCountResult) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleFocusMode: () => void;
-  setSourceInsertHandler: (handler: ((syntax: string, cursorOffset?: number) => void) | null) => void;
+  setSourceInsertHandler: (handler: ((syntax: string, cursorOffset?: number, opts?: { label?: string; ghost?: string }) => void) | null) => void;
   setUndoHandler: (handler: (() => void) | null) => void;
   setRedoHandler: (handler: (() => void) | null) => void;
   setShowSearch: (show: boolean) => void;

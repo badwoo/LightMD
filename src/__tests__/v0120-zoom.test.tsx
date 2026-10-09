@@ -9,7 +9,7 @@
  */
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { useSettingsStore, DOC_ZOOM_MIN, DOC_ZOOM_MAX, DOC_ZOOM_STEP } from "../stores/useSettingsStore";
 import { ZoomRuler } from "../components/editor/ZoomRuler";
@@ -63,22 +63,56 @@ describe("v0.12.0 需求5：docZoom store", () => {
   });
 });
 
-describe("v0.12.0 需求5：ZoomRuler 组件", () => {
-  it("渲染百分比数字与 range（min/max/step 正确）", () => {
-    render(<ZoomRuler value={150} onChange={() => {}} />);
-    expect(screen.getByText("150%")).toBeTruthy();
+describe("v0.12.0 需求5：ZoomRuler 组件（返修：100% 居中 + 气泡 + 淡百分比）", () => {
+  it("100% 位于滑条正中间（分段线性映射：50~100 占下半、100~200 占上半）", () => {
+    render(<ZoomRuler value={100} onChange={() => {}} />);
     const range = screen.getByRole("slider") as HTMLInputElement;
-    expect(range.min).toBe(String(DOC_ZOOM_MIN));
-    expect(range.max).toBe(String(DOC_ZOOM_MAX));
-    expect(range.step).toBe(String(DOC_ZOOM_STEP));
-    expect(range.value).toBe("150");
+    // 内部滑条用线性"位置值" 0~1000，100% → 500（正中）
+    expect(range.min).toBe("0");
+    expect(range.max).toBe("1000");
+    expect(range.value).toBe("500");
   });
 
-  it("拖动/点击刻度触发 onChange（数值）", () => {
+  it("滑块位置随百分比非线性分布：75% → 250、150% → 750、200% → 1000", () => {
+    const cases: Array<[number, string]> = [[75, "250"], [150, "750"], [200, "1000"], [50, "0"]];
+    for (const [value, pos] of cases) {
+      const { unmount } = render(<ZoomRuler value={value} onChange={() => {}} />);
+      const range = screen.getByRole("slider") as HTMLInputElement;
+      expect(range.value, `value=${value}`).toBe(pos);
+      unmount();
+    }
+  });
+
+  it("拖动/点击刻度触发 onChange（位置值 → 真实缩放，按步进取整）", () => {
     const onChange = vi.fn();
     render(<ZoomRuler value={100} onChange={onChange} />);
-    fireEvent.change(screen.getByRole("slider"), { target: { value: "175" } });
+    // 位置 875 → 100 + (875-500)/500*100 = 175
+    fireEvent.change(screen.getByRole("slider"), { target: { value: "875" } });
     expect(onChange).toHaveBeenCalledWith(175);
+    // 位置 260 → 50 + 260/500*50 = 76 → 按步进取整为 75
+    fireEvent.change(screen.getByRole("slider"), { target: { value: "260" } });
+    expect(onChange).toHaveBeenLastCalledWith(75);
+  });
+
+  it("调整中显示气泡；停止后显示淡百分比；100% 停止后两者都不显示", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(<ZoomRuler value={125} onChange={() => {}} />);
+      // 挂载即"调整中" → 气泡可见、淡百分比不可见
+      expect(screen.getByTestId("zoom-ruler-bubble").textContent).toBe("125%");
+      expect(screen.queryByTestId("zoom-ruler-idle-value")).toBeNull();
+      // 600ms 停顿 → 调整结束：气泡消失、淡百分比出现
+      act(() => { vi.advanceTimersByTime(700); });
+      expect(screen.queryByTestId("zoom-ruler-bubble")).toBeNull();
+      expect(screen.getByTestId("zoom-ruler-idle-value").textContent).toBe("125%");
+      // 保持 100% → 淡百分比也不显示
+      rerender(<ZoomRuler value={100} onChange={() => {}} />);
+      act(() => { vi.advanceTimersByTime(700); });
+      expect(screen.queryByTestId("zoom-ruler-bubble")).toBeNull();
+      expect(screen.queryByTestId("zoom-ruler-idle-value")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -666,6 +666,17 @@ function App() {
             // 否则一次双击会让每个窗口都打开同一文件。
             if (payload?.target && payload.target !== getWindowLabel()) return;
             if (!payload?.path) return;
+            // v0.12.0 返修（问题7）：软件关闭状态下双击 md 文件 → 直接打开并显示该文件。
+            // 冷启动时 Rust 延迟 500ms 发来文件路径，可能早于启动恢复完成——若先打开
+            // 双击文件，恢复流程末尾的"激活上次活跃标签"会把它顶掉（用户感知为
+            // "打开了上次记忆文件"）。此处等恢复期结束再打开，保证双击文件最后
+            // 打开并成为活跃标签；已运行实例（恢复期早已结束）立即打开不受影响。
+            // 恢复期其他文件的阅读进度（fileScrollProgress 快照）不受影响。
+            let waited = 0;
+            while (sessionRestoringRef.current && waited < 10000) {
+              await new Promise((r) => setTimeout(r, 100));
+              waited += 100;
+            }
             await openExternalFileRef.current(payload.path);
           },
         );

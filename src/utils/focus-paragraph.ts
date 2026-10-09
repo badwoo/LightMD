@@ -402,6 +402,14 @@ export function measureTextareaCursorY(
 export function syncTextareaMetrics(textarea: HTMLTextAreaElement, el: HTMLElement): void {
   const cs = getComputedStyle(textarea);
   el.style.boxSizing = "border-box";
+  // v0.12.0 返修：显式对齐内容宽度。overlay 以 inset:0 铺满 wrapper，宽度含
+  // textarea 的滚动条区域；textarea 的可用内容宽 = clientWidth（已扣滚动条）。
+  // 不同步宽度时 overlay 与 textarea 换行位置不一致，ghost/续写预览会漂移
+  // （用户反馈"ghost 文本是浮动的"）。算法与 syncMirrorStyle 一致：
+  // overlay 为 border-box，width = clientWidth + 左右 border。
+  const borderLeft = parseFloat(cs.borderLeftWidth) || 0;
+  const borderRight = parseFloat(cs.borderRightWidth) || 0;
+  el.style.width = `${textarea.clientWidth + borderLeft + borderRight}px`;
   el.style.fontFamily = cs.fontFamily;
   el.style.fontSize = cs.fontSize;
   el.style.fontWeight = cs.fontWeight;

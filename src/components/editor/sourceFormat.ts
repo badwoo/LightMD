@@ -52,6 +52,21 @@ export function wrapSelection(
 }
 
 /**
+ * v0.12.0 需求1 返修：前缀/包裹类格式的 ghost 占位文案。
+ * 用户反馈"还有好多格式符中间的文本没有设置为 ghost 文本"——
+ * 列表/任务/有序列表/引用/链接/图片全部改为「只插语法符号 + ghost 提示」，
+ * 占位文字（列表项/链接文本等）不再落盘。块级多行模板
+ * （代码块/表格/Mermaid/公式/分割线）仍预填真文本（新建块需要模板指引）。
+ */
+export const PREFIX_GHOST_TEXTS = {
+  list: "列表项",
+  task: "任务项",
+  quote: "引用文本",
+  link: "链接文本",
+  image: "图片描述",
+} as const;
+
+/**
  * 获取指定级别的标题前缀（如 level=3 返回 "### "）
  * level 自动 clamp 到 [1, 6]
  */
@@ -168,18 +183,32 @@ export function buildFormatReplacement(action: string, selected: string): Format
       return selected
         ? { replacement: `###### ${selected}`, cursorOffset: 7 + selected.length }
         : { replacement: "###### ", cursorOffset: 7, ghostText: HEADING_GHOST_TEXTS[5] };
+    // v0.12.0 需求1 返修：无选区时前缀/包裹类格式只插语法符号，占位提示走 ghostText；
+    // 有选区时保持完整包裹（前缀 + 选中文字，既有行为不变）
     case "ul":
-      return { replacement: `- ${selected || "列表项"}`, cursorOffset: selected ? (2 + selected.length) : 2 };
+      return selected
+        ? { replacement: `- ${selected}`, cursorOffset: 2 + selected.length }
+        : { replacement: "- ", cursorOffset: 2, ghostText: PREFIX_GHOST_TEXTS.list };
     case "task":
-      return { replacement: `- [ ] ${selected || "任务项"}`, cursorOffset: selected ? (6 + selected.length) : 6 };
+      return selected
+        ? { replacement: `- [ ] ${selected}`, cursorOffset: 6 + selected.length }
+        : { replacement: "- [ ] ", cursorOffset: 6, ghostText: PREFIX_GHOST_TEXTS.task };
     case "ol":
-      return { replacement: `1. ${selected || "列表项"}`, cursorOffset: selected ? (3 + selected.length) : 3 };
+      return selected
+        ? { replacement: `1. ${selected}`, cursorOffset: 3 + selected.length }
+        : { replacement: "1. ", cursorOffset: 3, ghostText: PREFIX_GHOST_TEXTS.list };
     case "quote":
-      return { replacement: `> ${selected || "引用文本"}`, cursorOffset: selected ? (2 + selected.length) : 2 };
+      return selected
+        ? { replacement: `> ${selected}`, cursorOffset: 2 + selected.length }
+        : { replacement: "> ", cursorOffset: 2, ghostText: PREFIX_GHOST_TEXTS.quote };
     case "link":
-      return { replacement: `[${selected || "链接文本"}](url)`, cursorOffset: selected ? (selected.length + 3) : 1 };
+      return selected
+        ? { replacement: `[${selected}](url)`, cursorOffset: selected.length + 3 }
+        : { replacement: "[](url)", cursorOffset: 1, ghostText: PREFIX_GHOST_TEXTS.link };
     case "image":
-      return { replacement: `![${selected || "图片描述"}](url)`, cursorOffset: selected ? (selected.length + 4) : 2 };
+      return selected
+        ? { replacement: `![${selected}](url)`, cursorOffset: selected.length + 4 }
+        : { replacement: "![](url)", cursorOffset: 2, ghostText: PREFIX_GHOST_TEXTS.image };
     case "table":
       return {
         replacement: `\n| 列1 | 列2 | 列3 |\n|------|------|------|\n| 内容 | 内容 | 内容 |\n`,
@@ -200,6 +229,8 @@ export function buildFormatReplacement(action: string, selected: string): Format
  * 清除（返回 true）：
  * - "input"：任何真实输入（用户开始键入，占位提示完成使命）；
  * - "escape"：用户按 Esc 放弃提示（不回滚已插入的语法符号，用户可 Ctrl+Z 撤销）；
+ * - "undo"：v0.12.0 返修——撤销/恢复后文档内容已与 ghost 快照不符，必须清除
+ *   （修复"点击格式符后 Ctrl+Z 撤销了但 ghost 文本还在"）；
  * - "file-switch" / "mode-switch"：切文件/切模式（防跨文档残留）。
  * 保留（返回 false）：
  * - 方向键移动光标 / 点击移动光标 —— 用户可能想移到别处继续，提示继续有效。
@@ -208,6 +239,7 @@ export function shouldClearFormatGhost(kind: string): boolean {
   return (
     kind === "input" ||
     kind === "escape" ||
+    kind === "undo" ||
     kind === "file-switch" ||
     kind === "mode-switch"
   );
@@ -317,17 +349,21 @@ export interface FormatButton {
   isUndoRedo?: boolean;
   isSeparator?: boolean;
   hasDropdown?: boolean;
+  /** v0.12.0 需求2 返修：刷子形状 SVG 图标（格式刷按钮） */
+  isBrushIcon?: boolean;
 }
 
 /**
  * 格式工具栏按钮配置（静态常量，避免每次渲染重建）
- * 顺序：撤销/恢复 | 分隔 | H1-H6 | 粗体/斜体/粗斜体/删除线/行内代码 | 代码块 | 列表/任务 | 引用/链接/图片/表格 | Mermaid/数学公式/分割线
+ * 顺序：撤销/恢复/格式刷(刷子图标) | 分隔 | H1-H6 | 粗体/斜体/粗斜体/删除线/行内代码 | 代码块 | 列表/任务 | 引用/链接/图片/表格 | Mermaid/数学公式/分割线
  *
  * v0.9.0 自定义快捷键：title 不再硬编码键位，展示时经 formatButtonTitle 动态拼接生效键位
  */
 export const FORMAT_BUTTONS: FormatButton[] = [
   { action: "undo", label: "↩", title: "撤销", isUndoRedo: true },
   { action: "redo", label: "↪", title: "恢复", isUndoRedo: true },
+  // v0.12.0 需求2 返修：格式刷改为刷子形状图标（isBrushIcon），并移到「恢复」按钮右边
+  { action: "formatPainter", label: "", title: "格式刷（单击应用一次，双击持续应用）", isBrushIcon: true },
   { action: "sep1", label: "|", title: "", isSeparator: true },
   { action: "h1", label: "H1", title: "标题一" },
   { action: "h2", label: "H2", title: "标题二" },
@@ -340,8 +376,6 @@ export const FORMAT_BUTTONS: FormatButton[] = [
   { action: "bolditalic", label: "BI", title: "粗斜体" },
   { action: "strikethrough", label: "S", title: "删除线" },
   { action: "code", label: "<>", title: "行内代码" },
-  // v0.12.0 需求2：格式刷（单击应用一次，双击持续应用）
-  { action: "formatPainter", label: "🖌", title: "格式刷（单击应用一次，双击持续应用）" },
   { action: "codeblock", label: "```", title: "代码块" },
   { action: "ul", label: "•", title: "无序列表" },
   { action: "task", label: "☑", title: "任务列表" },

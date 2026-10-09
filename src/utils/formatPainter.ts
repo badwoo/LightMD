@@ -15,6 +15,9 @@
  */
 import type { EditorState, Transaction } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
+import { TextSelection } from "prosemirror-state";
+import { lift as liftCmd, setBlockType, wrapIn } from "prosemirror-commands";
+import { wrapInList, liftListItem } from "prosemirror-schema-list";
 import { t } from "../i18n/state";
 
 /** 格式快照（模式无关中间表示） */
@@ -90,6 +93,10 @@ export function collectSourceSnapshot(text: string, start: number, end: number):
 /**
  * PM 侧采集：区间内所有文本节点 mark 的**交集**（整段都有的 mark 才算）
  * + 起点所在块的类型（heading 附级别）。
+ *
+ * v0.12.0 需求2 返修：块类型检测补齐列表/序号/引用——点击列表项/引用内段落时，
+ * 向外找最近的容器祖先（与源码行首前缀语义对齐：heading > blockquote > list），
+ * task_list 归并为 bullet_list（源码侧 `- [ ] ` 同样按 bullet 采集）。
  */
 export function collectPmSnapshot(state: EditorState, from: number, to: number): FormatSnapshot {
   const sets: Set<string>[] = [];
@@ -105,11 +112,22 @@ export function collectPmSnapshot(state: EditorState, from: number, to: number):
   // 块类型
   let blockType: string | null = null;
   try {
-    const parent = state.doc.resolve(from).parent;
-    blockType =
-      parent.type.name === "heading"
-        ? `heading${parent.attrs.level || 1}`
-        : parent.type.name;
+    const $from = state.doc.resolve(from);
+    const parent = $from.parent;
+    if (parent.type.name === "heading") {
+      blockType = `heading${parent.attrs.level || 1}`;
+    } else {
+      // 从内向外找最近的列表/引用容器
+      for (let d = $from.depth - 1; d >= 1; d--) {
+        const name = $from.node(d).type.name;
+        if (name === "blockquote") { blockType = "blockquote"; break; }
+        if (name === "bullet_list" || name === "task_list") { blockType = "bullet_list"; break; }
+        if (name === "ordered_list") { blockType = "ordered_list"; break; }
+      }
+      if (!blockType) {
+        blockType = parent.type.name === "paragraph" ? "paragraph" : parent.type.name;
+      }
+    }
   } catch {
     blockType = null;
   }
@@ -194,6 +212,126 @@ export function applyPmSnapshotToPm(
   const tr = buildPmSnapshotTr(view.state, from, to, snapshot);
   if (!tr) return false;
   view.dispatch(tr);
+  return true;
+}
+
+/**
+ * v0.12.0 需求2 返修：PM 侧块级全格式应用（无序列表/有序列表/引用 ⇄ 段落/标题）。
+ *
+ * buildPmSnapshotTr 只覆盖 paragraph/heading 的 setBlockType；列表与引用的转换
+ * 涉及文档结构调整（包 list_item、脱离引用/列表），需要命令管线按序执行：
+ *   ① 脱离引用（目标非 blockquote 时）→ prosemirror-commands `lift`；
+ *   ② 脱离列表（目标非同类型列表时）→ `liftListItem`（task_item 用对应类型）；
+ *   ③ 应用目标：标题/段落 setBlockType；bullet/ordered wrapInList（标题先转段落，
+ *      因 list_item 首子必须是 paragraph）；blockquote wrapIn。
+ * 每步都是 prosemirror 标准命令（自动保证 schema 合法性），无效果的步骤跳过。
+ * 各步依次 view.dispatch（均入撤销历史），全部基于命令后的最新 state 计算位置。
+ *
+ * @returns 是否发生过任何变更
+ */
+export function applyPmBlockSnapshot(
+  view: EditorView,
+  from: number,
+  to: number,
+  snapshot: FormatSnapshot,
+): boolean {
+  const schema = view.state.schema;
+  const target = snapshot.blockType;
+  // 目标为空（采集异常）→ 不动块级
+  if (target === null) return false;
+
+  let cur = view.state;
+  let changed = false;
+  const txs: Transaction[] = [];
+  const step = (cmd: (s: EditorState, d: (t?: Transaction) => void) => boolean): boolean => {
+    let stepped: Transaction | undefined;
+    cmd(cur, (t) => { if (t) stepped = t; });
+    if (stepped) {
+      txs.push(stepped);
+      cur = cur.apply(stepped);
+      changed = true;
+      return true;
+    }
+    return false;
+  };
+
+  // 0) 建立覆盖目标块的文本选区（供命令定位；不入撤销历史）
+  const maxPos = cur.doc.content.size - 1;
+  const selFrom = Math.max(1, Math.min(from, maxPos));
+  const selTo = Math.max(selFrom, Math.min(to, maxPos));
+  try {
+    cur = cur.apply(cur.tr.setSelection(TextSelection.create(cur.doc, selFrom, selTo)).setMeta("addToHistory", false));
+  } catch {
+    return false;
+  }
+
+  /** 当前选区所在上下文：最近的列表容器类型 / 是否在引用内 / 父块类型 */
+  const ctx = (st: EditorState) => {
+    const $p = st.doc.resolve(st.selection.from);
+    let listType: string | null = null;
+    let inQuote = false;
+    for (let d = $p.depth; d >= 1; d--) {
+      const name = $p.node(d).type.name;
+      if (!listType && (name === "bullet_list" || name === "ordered_list" || name === "task_list")) {
+        listType = name;
+      }
+      if (name === "blockquote") inQuote = true;
+    }
+    const parent = $p.parent;
+    return {
+      listType,
+      inQuote,
+      isHeading: parent.type.name === "heading",
+      isParagraph: parent.type.name === "paragraph",
+      headingLevel: parent.type.name === "heading" ? Number(parent.attrs.level) || 1 : 0,
+    };
+  };
+
+  // ① 脱离引用（目标非引用时）
+  if (ctx(cur).inQuote && target !== "blockquote") {
+    step(liftCmd);
+  }
+
+  // ② 脱离列表：当前列表容器与目标不同（目标非列表，或为另一类型列表）时，
+  //    先 liftListItem 脱离；目标为同类型列表时保持不动（幂等）
+  const c1 = ctx(cur);
+  if (c1.listType && c1.listType !== target) {
+    const itemType =
+      c1.listType === "task_list" && schema.nodes.task_item
+        ? schema.nodes.task_item
+        : schema.nodes.list_item;
+    step(liftListItem(itemType));
+  }
+
+  // ③ 应用目标块型
+  if (target === "paragraph" || target.startsWith("heading")) {
+    const c2 = ctx(cur);
+    if (target === "paragraph") {
+      if (c2.isHeading) step(setBlockType(schema.nodes.paragraph));
+    } else {
+      const level = Math.max(1, Math.min(6, parseInt(target.slice(7), 10) || 1));
+      if (!c2.isHeading || c2.headingLevel !== level) {
+        step(setBlockType(schema.nodes.heading, { level }));
+      }
+    }
+  } else if (target === "bullet_list" || target === "ordered_list") {
+    const c2 = ctx(cur);
+    if (c2.listType !== target) {
+      const listNode = target === "bullet_list" ? schema.nodes.bullet_list : schema.nodes.ordered_list;
+      if (!listNode) return false;
+      // 标题先转段落（list_item 内容首子必须是 paragraph）
+      if (c2.isHeading) step(setBlockType(schema.nodes.paragraph));
+      step(wrapInList(listNode));
+    }
+  } else if (target === "blockquote") {
+    const c2 = ctx(cur);
+    if (!c2.inQuote) {
+      step(wrapIn(schema.nodes.blockquote));
+    }
+  }
+
+  if (!changed) return false;
+  for (const tx of txs) view.dispatch(tx);
   return true;
 }
 

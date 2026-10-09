@@ -45,6 +45,7 @@ import {
   collectSourceSnapshot,
   collectPmSnapshot,
   buildPmSnapshotTr,
+  applyPmBlockSnapshot,
   wrapRangeWithMarks,
   applyBlockTypeToLine,
   type FormatSnapshot,
@@ -535,6 +536,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
      * （用户要求：光标不可见时按阅读进度百分比定位，不强制滚动）。
      */
     anchorRatio?: number | null;
+    /**
+     * v0.12.0 返修（问题6）：行内列偏移（光标相对行首的字符数）。
+     * 阅读 → 编辑切换时，PM 选区只精确到"行号 + 行内 doc 文本偏移"，
+     * 此前一律落到行首——用户读到"abc"后切换，输入光标却在行首。
+     * 有值时恢复光标 = 行首 + anchorColumn（clamp 到源行长度）。
+     */
+    anchorColumn?: number | null;
   } | null>(null);
 
   // 待恢复的 iframe 滚动百分比：分屏模式下 iframe 内容异步加载，
@@ -630,6 +638,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const currentContent = sourceContentRef.current;
     const undoEntry = undoStackRef.current.pop()!;
     const undoneContent = applyDiff(currentContent, undoEntry, true);
+    // v0.12.0 需求1 返修②：撤销后文档与 ghost 快照不符 → 清除格式 ghost
+    // （修复"点击格式符后 Ctrl+Z 撤销了但 ghost 文本还在"）
+    formatGhostHandlersRef.current.clear("undo");
     // 恢复栈存储反向差异（从撤销后状态恢复到当前状态）
     const redoDiff = computeDiff(undoneContent, currentContent);
     redoStackRef.current.push({ ...redoDiff, cursorPos: textarea.selectionStart, scrollTop: textarea.scrollTop });
@@ -662,6 +673,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const currentContent = sourceContentRef.current;
     const redoEntry = redoStackRef.current.pop()!;
     const redoneContent = applyDiff(currentContent, redoEntry, false);
+    // v0.12.0 需求1 返修②：恢复后文档与 ghost 快照不符 → 清除格式 ghost
+    formatGhostHandlersRef.current.clear("undo");
     // 撤销栈存储差异：从当前状态到恢复后状态，撤销时反向应用即可回到当前状态
     const undoDiff = computeDiff(currentContent, redoneContent);
     undoStackRef.current.push({ ...undoDiff, cursorPos: textarea.selectionStart, scrollTop: textarea.scrollTop });
@@ -699,7 +712,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const insertHandler = (
         syntax: string,
         cursorOffset?: number,
-        _opts?: { label?: string },
+        opts?: { label?: string; ghost?: string },
       ) => {
         const textarea = sourceTextareaRef.current;
         if (!textarea) return;
@@ -730,6 +743,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           : cursorOffset !== undefined
             ? start + cursorOffset
             : start + Math.floor(finalSyntax.length / 2);
+        // v0.12.0 需求1 返修：语法辅助栏插入同样走格式 ghost 通道——
+        // 带 ghost 文案的项（粗体/标题/列表等）显示灰色占位提示且不落盘；
+        // 所有项（含代码块模板）都记录插入区间，未编辑时退格可整段删除（与格式栏一致）
+        if (!selected) {
+          formatGhostRef.current = {
+            text: opts?.ghost ?? "",
+            pos: cursorPos,
+            start,
+            end: start + finalSyntax.length,
+            content: newContent,
+          };
+          sourceGhostHandlersRef.current.invalidate();
+          requestAnimationFrame(() => formatGhostHandlersRef.current.render());
+        }
         const restore = () => {
           const ta = sourceTextareaRef.current;
           if (ta) {
@@ -1094,14 +1121,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         : textareaScrollPercentRef.current;
       // v0.8.0 修复 P10：编辑 ↔ 分屏同样携带编辑锚点（光标在 textarea 中）；
       // 光标可见时按同比例对齐（视觉位置不变），不可见时回退百分比
+      // v0.12.0 返修（问题6）：同时携带行内列偏移，恢复时不再丢到行首
       let anchorLine: number | null = null;
       let anchorRatio: number | null = null;
+      let anchorColumn: number | null = null;
       if (fromSource) {
         const textarea = sourceTextareaRef.current;
         if (textarea) {
           const cursorPos = textarea.selectionStart ?? lastTextareaCursorRef.current;
           lastTextareaCursorRef.current = cursorPos;
           anchorLine = lineIndexOfOffset(sourceContentRef.current, cursorPos);
+          anchorColumn = cursorPos - (sourceContentRef.current.lastIndexOf("\n", cursorPos - 1) + 1);
           anchorRatio = computeViewportRatio(
             measureTextareaCursorY(textarea, cursorPos),
             textarea.scrollTop,
@@ -1114,6 +1144,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         percent: sourcePercent,
         anchorLine,
         anchorRatio,
+        anchorColumn,
       };
       return;
     }
@@ -1140,6 +1171,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         const { from } = view.state.selection;
         const textBefore = view.state.doc.textBetween(0, from, "\n", "\n");
         const lineIndex = lineIndexOfOffset(textBefore, textBefore.length);
+        // v0.12.0 返修（问题6）：行内列偏移——PM doc 文本不含 markdown 语法字符，
+        // 切到编辑模式后按"行首 + 列偏移"落光标（clamp 到源码行长度），
+        // 修复"阅读到 abc 后切换模式，输入光标却回到行首"
+        const anchorColumn = textBefore.length - (textBefore.lastIndexOf("\n") + 1);
 
         // v0.8.0 修复 P10：记录光标在阅读视口中的相对位置（可见时）；
         // 不可见（用户在别处浏览）则不记录 → 恢复时回退滚动百分比
@@ -1162,6 +1197,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           percent: sourcePercent,
           anchorLine: lineIndex,
           anchorRatio,
+          anchorColumn,
         };
 
         requestAnimationFrame(() => {
@@ -1172,6 +1208,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             for (let i = 0; i < Math.min(lineIndex, lines.length - 1); i++) {
               pos += lines[i].length + 1;
             }
+            // v0.12.0 返修（问题6）：加行内列偏移（clamp 到源码行长度，防语法字符差异越界）
+            const lineLen = lines.length > lineIndex ? lines[lineIndex].length : 0;
+            pos += Math.min(anchorColumn, lineLen);
             textarea.focus();
             textarea.setSelectionRange(pos, pos);
           }
@@ -1273,7 +1312,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 双重 rAF 确保浏览器完成布局计算
   useEffect(() => {
     if (!pendingScrollRef.current) return;
-    const { targetMode, percent, anchorLine, anchorRatio } = pendingScrollRef.current;
+    const { targetMode, percent, anchorLine, anchorRatio, anchorColumn } = pendingScrollRef.current;
     pendingScrollRef.current = null;
     // 标记正在恢复滚动位置，阻止打字机 effect 的初始 scrollToCenter 覆盖
     // 根因：打字机 effect 的 scrollToCenter 使用 smooth 滚动，是异步多帧的，
@@ -1327,7 +1366,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           // 仅在切换时光标可见（anchorRatio 有值）时使用；不可见则回退滚动百分比。
           let anchored = false;
           if (anchorLine != null && anchorRatio != null) {
-            const pos = sourceLineToPos(sourceContentRef.current, anchorLine);
+            let pos = sourceLineToPos(sourceContentRef.current, anchorLine);
+            // v0.12.0 返修（问题6）：恢复光标带上行内列偏移（clamp 到源码行长度），
+            // 避免"阅读到 abc 后切模式，光标被延迟恢复逻辑顶回行首"
+            if (anchorColumn != null && anchorColumn > 0) {
+              const text = sourceContentRef.current;
+              const nl = text.indexOf("\n", pos);
+              const lineLen = (nl === -1 ? text.length : nl) - pos;
+              pos += Math.min(anchorColumn, lineLen);
+            }
             textarea.focus();
             textarea.setSelectionRange(pos, pos);
             const targetTop = computeAnchorScrollTop(
@@ -1808,10 +1855,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       setTimeout(restore, 50);
       // v0.12.0 需求1：无选中文本且当前行除已有前缀外为空 → 显示标题占位 ghost
       // （已有内容的行不显示，避免"标题一"被误解为要追加的文字）
+      // 返修：记录语法符号区间 [行首, 行首+新前缀) 与全文快照，供退格整段删除
       const { start: lineStart, end: lineEnd } = getLineRange(currentContent, start);
       const lineBody = currentContent.substring(lineStart, lineEnd).replace(/^#{1,6}\s*/, "");
       if (start === end && lineBody.trim() === "") {
-        formatGhostRef.current = { text: HEADING_GHOST_TEXTS[level - 1], pos: newCursorPos };
+        formatGhostRef.current = {
+          text: HEADING_GHOST_TEXTS[level - 1],
+          pos: newCursorPos,
+          start: lineStart,
+          end: lineStart + prefix.length,
+          content: newText,
+        };
         sourceGhostHandlersRef.current.invalidate();
         requestAnimationFrame(() => formatGhostHandlersRef.current.render());
       } else {
@@ -1849,9 +1903,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setTimeout(restore, 50);
 
     // v0.12.0 需求1：无选区行内格式 → 文档只插语法符号，占位提示走格式 ghost；
-    // 预填类（代码块/表格/Mermaid/列表/引用等模板）或其它情况 → 清除残留 ghost
+    // 预填类（代码块/表格/Mermaid 等模板）或其它情况 → 清除残留 ghost。
+    // 返修：记录语法符号区间 [start, start+replacement.length) 与全文快照——
+    // ghost 渲染基于快照（防时序漂移），退格可整段删除格式符。
     if (result.ghostText) {
-      formatGhostRef.current = { text: result.ghostText, pos: newCursorPos };
+      formatGhostRef.current = {
+        text: result.ghostText,
+        pos: newCursorPos,
+        start,
+        end: start + replacement.length,
+        content: newContent,
+      };
       // AI ghost 让位（格式操作是用户主动动作，异步任务不打断视觉）
       sourceGhostHandlersRef.current.invalidate();
       requestAnimationFrame(() => formatGhostHandlersRef.current.render());
@@ -1906,6 +1968,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       e.preventDefault();
       e.stopPropagation();
       formatGhostHandlersRef.current.clear("escape");
+      return;
+    }
+
+    // v0.12.0 需求1 返修④：点击格式符/语法辅助栏后未编辑时按退格 → 整段删除格式符
+    // （如 `****`/`- [ ] ` 一次删净，而不是逐字符删除）；光标已移动或已编辑则走默认退格。
+    // 格式刷/语法辅助栏等其它插入路径的 ghost 同样由此覆盖。
+    if (
+      e.key === "Backspace" &&
+      !e.ctrlKey && !e.metaKey && !e.altKey &&
+      formatGhostRef.current &&
+      formatGhostHandlersRef.current.remove()
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
       return;
     }
 
@@ -2358,7 +2434,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 不键入则永不落盘（修复"占位文字残留进文件"）。
   // 与 AI ghost 共用 overlay：AI ghost 优先（异步任务不被打断视觉），
   // 格式操作触发时经 sourceGhostHandlersRef.invalidate() 让 AI ghost 让位。
-  const formatGhostRef = useRef<{ text: string; pos: number } | null>(null);
+  //
+  // v0.12.0 返修：
+  // - content：插入语法符号后的全文快照。渲染 overlay 时使用快照而非 textarea.value，
+  //   消除"setState 未提交 → rAF 读到旧文本 → ghost 位置漂移（浮动）"的时序问题；
+  // - start/end：本次插入的语法符号区间，供退格键整段删除格式符（用户返修需求④）。
+  const formatGhostRef = useRef<{
+    text: string;
+    pos: number;
+    start: number;
+    end: number;
+    content: string;
+  } | null>(null);
 
   /** 执行气泡型 AI 任务（润色/摘要/源码续写）：openBubble → 流式 → finish/fail */
   const runAiBubble = useCallback((
@@ -2511,7 +2598,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     sourceGhostTextRef.current = "";
   }, []);
 
-  /** v0.12.0 需求1：渲染格式 ghost（占位提示）到 overlay；AI ghost 活跃时让位不渲染 */
+  /**
+   * v0.12.0 需求1：渲染格式 ghost（占位提示）到 overlay；AI ghost 活跃时让位不渲染。
+   * 返修：基于插入时的全文快照（ghost.content）渲染，保证 ghost 一定落在格式符中间；
+   * textarea 当前值与快照不一致（用户已编辑/撤销）时自清除，防幽灵内容错位残留。
+   */
   const renderFormatGhost = useCallback(() => {
     const overlay = sourceGhostOverlayRef.current;
     const textarea = sourceTextareaRef.current;
@@ -2519,9 +2610,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (!overlay || !textarea || !ghost) return;
     // AI ghost 优先（异步任务不被打断视觉）
     if (sourceGhostActiveRef.current) return;
+    // 文档已偏离 ghost 快照（真实输入/撤销/其它写路径）→ ghost 语义失效，清除
+    if (textarea.value !== ghost.content) {
+      formatGhostRef.current = null;
+      overlay.innerHTML = "";
+      return;
+    }
     syncTextareaMetrics(textarea, overlay);
     // hintText 为空（格式 ghost 无需"Tab 采纳"提示）
-    overlay.innerHTML = buildSourceGhostHtml(textarea.value, ghost.pos, ghost.text, "", false);
+    overlay.innerHTML = buildSourceGhostHtml(ghost.content, ghost.pos, ghost.text, "", false);
     overlay.scrollTop = textarea.scrollTop;
   }, []);
 
@@ -2537,12 +2634,53 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
   }, []);
 
+  /**
+   * v0.12.0 需求1 返修④：退格删除整个格式符。
+   * ghost 活跃且光标仍停在插入点时按 Backspace → 整段删除本次插入的语法符号
+   * （如 `****`/`- [ ] `），光标回到插入前位置；删除本身推入撤销栈，Ctrl+Z 可恢复。
+   */
+  const removeFormatGhostSyntax = useCallback(() => {
+    const ghost = formatGhostRef.current;
+    const textarea = sourceTextareaRef.current;
+    if (!ghost || !textarea) return false;
+    // 光标已离开插入点 → 不再整段删除，走默认退格
+    if (textarea.selectionStart !== textarea.selectionEnd || textarea.selectionStart !== ghost.pos) return false;
+    const current = sourceContentRef.current;
+    if (current.slice(ghost.start, ghost.end) !== ghost.content.slice(ghost.start, ghost.end)) return false;
+    const newContent = current.slice(0, ghost.start) + current.slice(ghost.end);
+    const scrollTop = textarea.scrollTop;
+    const diff = computeDiff(current, newContent);
+    pushUndoEntry({ ...diff, cursorPos: ghost.start, scrollTop });
+    setSourceContent(newContent);
+    sourceContentRef.current = newContent;
+    onContentChangeRef.current?.(newContent);
+    setDirtyRef.current(true);
+    lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
+    formatGhostRef.current = null;
+    if (!sourceGhostActiveRef.current) {
+      const overlay = sourceGhostOverlayRef.current;
+      if (overlay) overlay.innerHTML = "";
+    }
+    const caret = ghost.start;
+    const restore = () => {
+      const ta = sourceTextareaRef.current;
+      if (ta) {
+        ta.focus();
+        ta.setSelectionRange(caret, caret);
+        ta.scrollTop = scrollTop;
+      }
+    };
+    requestAnimationFrame(restore);
+    return true;
+  }, []);
+
   // 每次渲染转发最新实现（handleFormatAction 为挂载时创建一次的 ref 函数，避免闭包过期）
-  const formatGhostHandlersRef = useRef<{ render: () => void; clear: (kind: string) => void }>({
-    render: () => {},
-    clear: () => {},
-  });
-  formatGhostHandlersRef.current = { render: renderFormatGhost, clear: clearFormatGhost };
+  const formatGhostHandlersRef = useRef<{
+    render: () => void;
+    clear: (kind: string) => void;
+    remove: () => boolean;
+  }>({ render: () => {}, clear: () => {}, remove: () => false });
+  formatGhostHandlersRef.current = { render: renderFormatGhost, clear: clearFormatGhost, remove: removeFormatGhostSyntax };
 
   // v0.12.0 需求1：切文件 / 切模式时清除格式 ghost（防跨文档、跨模式残留）
   useEffect(() => {
@@ -3863,11 +4001,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if ($pos.depth < 1) return false;
     const from = $pos.start($pos.depth);
     const to = $pos.end($pos.depth);
+    let applied = false;
+    // 行内 marks + 段落/标题块级（事务构造）
     const tr = buildPmSnapshotTr(view.state, from, to, snapshot);
-    if (!tr) return false;
-    view.dispatch(tr);
-    view.focus();
-    return true;
+    if (tr) {
+      view.dispatch(tr);
+      applied = true;
+    }
+    // v0.12.0 需求2 返修：列表/序号/引用块级管线（命令按序执行，目标已一致时为 no-op）
+    if (applyPmBlockSnapshot(view, from, to, snapshot)) {
+      applied = true;
+    }
+    if (applied) view.focus();
+    return applied;
   }, []);
 
   /** 应用格式刷到源码点击处所在行（块级前缀替换 + 行内容包裹，覆盖式） */
@@ -4247,11 +4393,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // 暴露给外部 useEffect（sourceContent 变化时）调用，避免重绑事件
     updateOverlayRef.current = updateOverlay;
 
-    // 立即重绘（不使用 rAF 节流，确保光标位置变化时高亮即时跟随）
+    // 立即重绘（保持既有即时性），再以**双 rAF 跟随重绘**校正最终位置：
+    // 首次同步重绘时 textarea.value/scrollTop 可能尚未稳定（React 提交、打字机
+    // 滚动、浏览器 scrollIntoView 都在其后发生），双 rAF 在布局稳定后再算一次，
+    // 修复"上下移动光标/回车换行时 3 行高亮没有准确跟随"。
     // measureTextareaRangeY 内部使用 getBoundingClientRect，浏览器会强制布局计算，
     // 但仅在 focusMode 开启时执行，性能开销可控
+    let followUpRaf = 0;
     const scheduleUpdate = () => {
       updateOverlay();
+      if (followUpRaf) cancelAnimationFrame(followUpRaf);
+      // 双 rAF：第一帧等滚动/渲染落定，第二帧在布局稳定后重算
+      followUpRaf = requestAnimationFrame(() => {
+        followUpRaf = requestAnimationFrame(updateOverlay);
+      });
     };
 
     // 监听光标位置变化和滚动
@@ -4261,6 +4416,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     textarea.addEventListener("scroll", scheduleUpdate);
     // select 事件覆盖键盘方向键移动选区的情况
     textarea.addEventListener("select", scheduleUpdate);
+    // v0.12.0 返修（需求9）：document selectionchange 覆盖所有光标移动路径
+    // （方向键/Home/End/PgUp/PgDn 等不触发 select 事件，keyup 也可能被吞），
+    // 保证 3 行高亮窗始终跟随光标
+    document.addEventListener("selectionchange", scheduleUpdate);
 
     // 初始绘制
     updateOverlay();
@@ -4271,6 +4430,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       textarea.removeEventListener("input", scheduleUpdate);
       textarea.removeEventListener("scroll", scheduleUpdate);
       textarea.removeEventListener("select", scheduleUpdate);
+      document.removeEventListener("selectionchange", scheduleUpdate);
+      if (followUpRaf) cancelAnimationFrame(followUpRaf);
       updateOverlayRef.current = null;
       // 清空遮罩，避免残留
       const ov = focusOverlayRef.current;
@@ -4350,14 +4511,25 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 方案：变化前记录"视口首个可见块 + 偏移"，ResizeObserver 回调（重排完成后）
   // 用差值补偿 scrollTop；rAF 双保险避开侧栏 width transition（250ms）的中间帧。
   // 副作用：补偿触发 scroll → fileScrollProgress 自动记录新百分比，无需处理。
+  //
+  // v0.12.0 返修（需求4 bug）：最大化→缩小→再放大会跳到文档末尾。
+  // 根因：窗口 resize 期间 Chromium 会把焦点光标（阅读模式 PM 选区常在文档末尾）
+  // 程序性滚入视口——该滚动先于 RO 回调触发 scroll 事件，把锚点"刷新"成了末尾，
+  // 随后的补偿反而把视口恢复到末尾。修复：window resize 事件先于 scroll 步骤
+  // 触发，用它打时间标，抑制窗口内的 scroll 锚点刷新；350ms 超时兜底防卡死。
   useEffect(() => {
     if (viewMode !== "preview" || !isMdFile) return;
     const container = editorRef.current;
     if (!container || typeof ResizeObserver === "undefined") return;
     const selector = ".ProseMirror > *";
     let anchor = captureAnchor(container, selector);
-    // 用户滚动后基准更新为当前视口
-    const onScroll = () => { anchor = captureAnchor(container, selector); };
+    let suppressUntil = 0;
+    const markResize = () => { suppressUntil = performance.now() + 350; };
+    // 用户滚动后基准更新为当前视口（resize 抑制窗口内除外）
+    const onScroll = () => {
+      if (performance.now() < suppressUntil) return;
+      anchor = captureAnchor(container, selector);
+    };
     const ro = new ResizeObserver(() => {
       requestAnimationFrame(() => {
         restoreAnchor(container, anchor);
@@ -4365,21 +4537,29 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       });
     });
     ro.observe(container);
+    window.addEventListener("resize", markResize);
     container.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       ro.disconnect();
+      window.removeEventListener("resize", markResize);
       container.removeEventListener("scroll", onScroll);
     };
   }, [viewMode, isMdFile, forceUpdateKey]);
 
   // v0.12.0 需求4：编辑/分屏左侧 textarea 的行锚点（textarea 无子元素，
   // 块锚点不适用——用 scrollTop 换算的浮点行索引，行高变化后仍可还原）
+  // 同样带 resize 抑制（光标 autoscroll 污染行锚点的机理与上方阅读模式一致）
   useEffect(() => {
     if (!isSourceMode) return;
     const ta = sourceTextareaRef.current;
     if (!ta || typeof ResizeObserver === "undefined") return;
     lineAnchorRef.current = captureLineAnchor(ta);
-    const onScroll = () => { lineAnchorRef.current = captureLineAnchor(ta); };
+    let suppressUntil = 0;
+    const markResize = () => { suppressUntil = performance.now() + 350; };
+    const onScroll = () => {
+      if (performance.now() < suppressUntil) return;
+      lineAnchorRef.current = captureLineAnchor(ta);
+    };
     const ro = new ResizeObserver(() => {
       requestAnimationFrame(() => {
         restoreLineAnchor(ta, lineAnchorRef.current);
@@ -4387,9 +4567,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       });
     });
     ro.observe(ta);
+    window.addEventListener("resize", markResize);
     ta.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       ro.disconnect();
+      window.removeEventListener("resize", markResize);
       ta.removeEventListener("scroll", onScroll);
     };
   }, [isSourceMode, viewMode, forceUpdateKey]);
@@ -5289,7 +5471,29 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
                 title={formatButtonTitle(btn)}
                 onClick={(e) => onFormatBtnClick(btn.action, e.detail)}
               >
-                {btn.label}
+                {/* v0.12.0 需求2 返修：格式刷用刷子形状 SVG 图标（替代 emoji，与工具栏风格统一） */}
+                {btn.isBrushIcon ? (
+                  <svg
+                    className="format-btn-brush-icon"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    {/* 刷柄 + 刷毛（paintbrush，Lucide 形状） */}
+                    <path d="m14.622 17.897-10.68-2.913" />
+                    <path d="M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .354l.949 1.58c.09.15.118.325.078.493l-.416 1.663a.5.5 0 0 1-.613.365l-6.1-1.663a.5.5 0 0 1-.32-.707l1.061-1.837a.5.5 0 0 0 0-.507l-1.06-1.837a.5.5 0 0 1 .32-.707l6.1-1.663a.5.5 0 0 0 .366-.613l-.42-1.68a.5.5 0 0 1 .366-.613z" />
+                    <path d="M18.793 6.207 21 4" />
+                    <path d="M4 14.5c.5-1.5 1.5-2 2.5-2s2.5 1 2.5 3.5c0 1.5-.5 2.5-1 3.5-.5 1-1.5 2-3 2s-3-1.5-3-3 1-2.5 2-4z" />
+                  </svg>
+                ) : (
+                  btn.label
+                )}
               </button>
             );
           })}
