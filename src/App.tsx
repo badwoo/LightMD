@@ -3160,6 +3160,10 @@ function App() {
     // 而"上次活跃标签"必须在每次切换时都是最新的，否则重启后定位错误。
     saveLastActiveTab(tab);
     // 加载目标标签内容
+    // v0.12.1 需求3：先同步切换全局文档路径（与 handleOpenFile 同一处理），
+    // 否则切回带图片的标签时，ProseMirror 解析相对图片路径用的还是上一个文档的目录。
+    // EditorContainer 内部还有一层兜底（解析前按 filePath 再同步一次），两处同源。
+    setCurrentDocPath(tab.path || "");
     setContent(tab.content || "");
     safeSetItem(CONTENT_KEY, tab.content || "");
     openFile(tab.path);

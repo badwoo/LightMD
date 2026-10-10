@@ -231,13 +231,19 @@ describe("v0.9.1 需求2：设置弹窗出现时背景不再杂乱", () => {
     expect(before).toContain("animation: settings-scrim-in");
   });
 
-  it("弹窗入场只做一次淡入 + 极小位移，且全部是合成层属性", () => {
+  it("弹窗入场：v0.12.1 需求8 改为从上方滑下来 + 落位果冻回弹，且只用合成层属性", () => {
     const dialog = rule(css, ".settings-dialog {");
     expect(dialog).toContain("animation: settings-dialog-in");
     const kf = rule(css, "@keyframes settings-dialog-in {");
-    expect(kf).toContain("opacity");
-    expect(kf).toContain("translateY(8px)");
-    // 旧的 20px 位移（背景"在弹窗里走"的观感来源）已移除
+    // 起点在视口上方之外（滑下来），落点附近有过冲再收敛（果冻回弹）
+    expect(kf).toContain("translateY(calc(-50vh - 50%))");
+    expect(kf).toContain("translateY(14px)");
+    expect(kf).toContain("translateY(-7px)");
+    // v0.12.1 需求8 二轮：纯位移，弹窗本体不再淡入（明暗只由遮罩负责）
+    expect(kf).not.toContain("opacity");
+    // 旧的极小位移（8px 淡入）已被替换
+    expect(kf).not.toContain("translateY(8px)");
+    // 旧实现里会"让背景在弹窗里走"的 20px 位移同样不再出现
     expect(kf).not.toContain("translateY(20px)");
   });
 
@@ -284,12 +290,12 @@ describe("v0.9.1 需求3：设置弹窗打开/关闭淡入淡出", () => {
     await waitFor(() => expect(onClose2).toHaveBeenCalled());
   });
 
-  it("关闭动画关键帧与 JS 常量对齐（180ms）", () => {
+  it("关闭动画关键帧与 JS 常量对齐（v0.12.1 需求8 二轮：520ms / 常量 540ms）", () => {
     const css = read("../components/dialogs/SettingsDialog.css");
     expect(css).toContain("@keyframes settings-dialog-out");
-    expect(rule(css, ".settings-overlay.closing .settings-dialog {")).toContain("settings-dialog-out 160ms");
+    expect(rule(css, ".settings-overlay.closing .settings-dialog {")).toContain("settings-dialog-out 520ms");
     const src = read("../components/dialogs/SettingsDialog.tsx");
-    expect(src).toContain("const SETTINGS_CLOSE_MS = 180");
+    expect(src).toContain("const SETTINGS_CLOSE_MS = 540");
     expect(src).toContain("setTimeout(() => {");
   });
 });

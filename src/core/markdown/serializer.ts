@@ -340,11 +340,14 @@ function taskListToMarkdown(node: Node): string {
   const serializeItems = (taskListNode: Node, indent: string) => {
     taskListNode.forEach((taskItem) => {
       const checked = taskItem.attrs.checked ? "x" : " ";
+      // v0.12.1 需求5：列表符号即样式（`-` 方形 / `*` 圆形），往返由
+      // task-list-plugin 的 taskStyleFromBullet 逆向还原
+      const bullet = taskItem.attrs.style === "circle" ? "*" : "-";
       let isFirstChild = true;
       taskItem.forEach((child) => {
         if (isFirstChild && child.type.name === "paragraph") {
           const content = inlineToMarkdown(child);
-          lines.push(`${indent}- [${checked}] ${content}`);
+          lines.push(`${indent}${bullet} [${checked}] ${content}`);
           isFirstChild = false;
         } else if (child.type.name === "task_list") {
           // 嵌套任务列表：递归序列化，增加 2 空格缩进

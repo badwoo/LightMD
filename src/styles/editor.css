@@ -207,20 +207,32 @@
 .ProseMirror .pm-heading-badge {
   position: absolute;
   right: 100%;
+  /* v0.12.1 需求1 修复①（与标题对齐）：绝对定位只给了 right，垂直方向落在**静态位置**
+     上——inline-flex 的基线是盒内文字基线，于是徽标整体比标题中线高 7px（H1 实测
+     centerOffset=-7px）。top:50% + translateY(-50%) 精确对齐单行标题的中线。 */
+  top: 50%;
+  transform: translateY(-50%);
   margin-right: 0.35em;
   /* 与标题正文同一行、垂直居中；用 em 跟随缩放与字号设置 */
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.7em;
-  height: 1.35em;
-  padding: 0 0.28em;
+  /* v0.12.1 需求1 修复②（H 与数字分成两行）：旧规则的最小宽度 1.7em + 左右内边距 .28em
+     在 H1（2em=32px）下算出 19.84px 字号、内容区仅 22.9px，而 600 字重的 "H1" 宽约
+     25.6px → 叠加 .ProseMirror 的 word-break: break-word 后 "H" 与 "1" 被折成两行，
+     文字还溢出盒子（实测徽标 34×27，文字两行）。
+     现改为：字号用小步进 clamp（随级别 9~13px，H1 不再得到近 20px 的大徽标），
+     宽高给足 + white-space: nowrap，从根上杜绝折行。 */
+  min-width: 22px;
+  height: 17px;
+  padding: 0 4px;
+  white-space: nowrap;
   border: 1px solid var(--border-color);
   border-radius: 4px;
   background: var(--bg-secondary);
   color: var(--marker-color);
   font-family: var(--font-sans);
-  font-size: 0.62em;
+  font-size: clamp(9px, 0.42em, 13px);
   font-weight: 600;
   font-style: normal;
   line-height: 1;
@@ -503,15 +515,169 @@
   gap: 6px;
   margin: 0.3em 0;
   list-style: none;
+  /* v0.12.1 需求5：样式手柄绝对定位到复选框左侧之外（同标题徽标思路，不进文档流） */
+  position: relative;
 }
 
+/* v0.12.1 需求4：复选框与首行文字对齐。
+   根因：段间距规则 `.ProseMirror > ul p`（v0.11.0 B4-10）给 .task-content 内的首段也加了
+   0.8em 上边距，而复选框只有硬编码的 margin-top: 5px —— 真机实测复选框中心比首行文字中心
+   高 13~14px。修法：① 首段上边距归零（条目间距仍由段落下边距 + li 外边距提供）；
+   ② 复选框按「首行盒高 = 行高 × 字号」精确居中（font: inherit 让 1em = 正文字号）。 */
+.ProseMirror li.task-item > .task-content > p:first-child {
+  margin-top: 0;
+}
+
+/* v0.12.1 需求4/5：自绘复选框。
+   需求4（对齐）需要精确控制尺寸与垂直位置；需求5（方形/圆形两种样式）需要圆角与对勾，
+   原生 checkbox 的 accent-color 两者都做不到，故 appearance: none 全自绘。 */
 .ProseMirror .task-checkbox {
-  margin-top: 5px;
-  cursor: pointer;
-  accent-color: var(--accent-color, #5c9dff);
+  appearance: none;
+  -webkit-appearance: none;
   flex-shrink: 0;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  font: inherit;
+  margin-top: calc((var(--editor-line-height, 1.8) * 1em - 15px) / 2);
+  border: 1.5px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  position: relative;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+/* v0.12.1 需求5：圆形样式（源码写作 `* [ ]`，见 core/markdown/task-list-plugin.ts） */
+.ProseMirror li.task-item-circle .task-checkbox {
+  border-radius: 50%;
+}
+
+.ProseMirror .task-checkbox:hover {
+  border-color: var(--accent-color, #5c9dff);
+}
+
+.ProseMirror .task-checkbox:checked {
+  background: var(--accent-color, #5c9dff);
+  border-color: var(--accent-color, #5c9dff);
+}
+
+/* 对勾（自绘，方形/圆形共用；1.8px 描边在 15px 盒子里最清晰） */
+.ProseMirror .task-checkbox:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 7px;
+  border: solid #fff;
+  border-width: 0 1.8px 1.8px 0;
+  transform: rotate(42deg);
+}
+
+.ProseMirror .task-checkbox:focus-visible {
+  outline: 2px solid var(--accent-color, #5c9dff);
+  outline-offset: 1px;
+}
+
+/* v0.12.1 需求5：阅读模式下复选框前的**浅色小样式手柄**（点击下拉选方形/圆形）。
+   绝对定位到复选框左侧之外：不占文档流、开关菜单不会推动正文（与标题徽标同一策略）。
+   静止时是浅色（opacity .38），鼠标移到该任务项上才提亮到可点击的强度。 */
+.ProseMirror .task-style-handle {
+  position: absolute;
+  right: calc(100% + 6px);
+  top: calc((var(--editor-line-height, 1.8) * 1em - 15px) / 2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 15px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: -1px;
+  line-height: 1;
+  /* .ProseMirror 上的 word-break: break-word 会被继承下来，把 "::" 折成上下两行 */
+  white-space: nowrap;
+  opacity: 0.38;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.ProseMirror li.task-item:hover .task-style-handle {
+  opacity: 0.95;
+}
+
+.ProseMirror .task-style-handle:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.14));
+  color: var(--accent-color, #5c9dff);
+}
+
+/* 样式下拉（NodeView 内创建、**挂到 document.body**，故这里不能用 .ProseMirror 前缀限定；
+   格式栏的任务下拉也复用同一套类名） */
+.task-style-menu {
+  /* 位置由 NodeView 内联指定（fixed + left/top，贴手柄左侧）；这里只负责外观。
+     不能写 right/top —— 与内联 left 同时存在会把弹层拉宽。 */
+  position: fixed;
+  z-index: 1200;
+  min-width: 116px;
+  padding: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  animation: heading-menu-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.task-style-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-style-item:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.14));
+}
+
+.task-style-item.active {
+  color: var(--accent-color, #5c9dff);
+}
+
+/* 菜单/格式栏里的样式预览小方块（与正文复选框同款绘制，缩小到 12px） */
+.task-style-preview {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+}
+
+.task-style-preview.circle {
+  border-radius: 50%;
+}
+
+/* 格式栏任务下拉里的预览与文字对齐（下拉项复用了 mermaid 的样式类） */
+.task-style-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .ProseMirror .task-content {
@@ -1021,7 +1187,10 @@ body.format-painter-armed .source-editor {
 }
 
 /* ─── Mermaid 模板下拉菜单 ──────────────────── */
-.mermaid-dropdown-wrap {
+.mermaid-dropdown-wrap,
+/* v0.12.1 需求5：任务列表样式下拉复用同一套定位（必须同为 relative 容器，
+   否则绝对定位的下拉菜单会挂到更外层、跑到窗口左下角） */
+.task-style-dropdown-wrap {
   position: relative;
   display: inline-flex;
 }

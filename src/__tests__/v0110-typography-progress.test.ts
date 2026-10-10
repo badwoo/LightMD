@@ -65,7 +65,9 @@ describe("v0.11.0 B4-10 排版三项设置", () => {
     expect(settingsSrc).toContain('data-testid="settings-content-max-width"');
     // 行高 1.4~2.4、段间距 0.6~2.0、内容宽 0~1600
     expect(settingsSrc).toMatch(/min=\{0\}[\s\S]{0,300}?max=\{24\}/);
-    expect(settingsSrc).toContain("setLineHeight(Number(e.target.value) / 10)");
+    // v0.12.1 需求9：onChange 里先归一化到本地变量，再写本地 state + 推实时预览
+    expect(settingsSrc).toContain("setLineHeight(v);");
+    expect(settingsSrc).toContain("pushTypographyPreview({ lineHeight: v })");
     expect(settingsSrc).toMatch(/max=\{1600\}/);
   });
 

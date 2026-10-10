@@ -26,18 +26,22 @@
   justify-content: center;
 }
 
-/* 遮罩（独立层，仅 opacity 参与动画） */
+/* 遮罩（独立层，仅 opacity 参与动画）
+   v0.12.1 需求8（二轮）：入场/退场时长与弹窗新的滑入/滑出时长对齐。
+   退场故意**延迟 200ms**再淡出：弹窗要"平滑移动出去"，遮罩若先亮完，
+   会在弹窗还没滑走时就把背景提亮，观感像"弹窗在原地消失"。
+   （遮罩入 200ms < 弹窗 640ms；遮罩出 200ms 延迟 + 320ms = 520ms = 弹窗滑完的时间） */
 .settings-overlay::before {
   content: "";
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
   will-change: opacity;
-  animation: settings-scrim-in 140ms ease-out both;
+  animation: settings-scrim-in 200ms ease-out both;
 }
 
 .settings-overlay.closing::before {
-  animation: settings-scrim-out 160ms ease-in both;
+  animation: settings-scrim-out 320ms ease-in 200ms both;
 }
 
 @keyframes settings-scrim-in {
@@ -60,30 +64,76 @@
   flex-direction: column;
   /* 保证弹窗绘制在遮罩伪元素（absolute）之上 */
   position: relative;
-  will-change: opacity, transform;
-  animation: settings-dialog-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* v0.12.1 需求8（二轮）：只动 transform —— 弹窗全程保持不透明，
+     进出都是"平滑移动"，不再叠一层淡入淡出 */
+  will-change: transform;
+  animation: settings-dialog-in 640ms both;
 }
 
 .settings-overlay.closing .settings-dialog {
-  animation: settings-dialog-out 160ms cubic-bezier(0.4, 0, 1, 1) both;
+  animation: settings-dialog-out 520ms both;
 }
 
-/* 打开：淡入 + 轻微上浮（位移仅 8px，避免"背后的内容在弹窗里走"的观感）。
+/* 打开（v0.12.1 需求8 二轮修订）：**纯位移**地从页面上方平滑滑下来，落位时带一次轻微"果冻"回弹。
+   二轮修订要点：
+   · **不再有透明度动画** —— 用户要求"平滑移动进来"，而不是"移动 + 淡化"；弹窗全程不透明，
+     只有位置在动（遮罩的明暗变化仍由 `::before` 单独负责，不影响弹窗本体）；
+   · 起点 `calc(-50vh - 50%)` = 把居中弹窗整体移到视口上方之外
+     （中心在 50vh，自身高度 H：上移 50vh + H/2 后底边恰好落在视口顶边），
+     因此是"从屏幕外滑进来"，任何窗口高度下都成立；
+   · 68% 处越过落点 (+14px)，随后 82% (-7px) / 91% (+3px) / 96% (-1px) 逐级收敛，
+     形成一次幅度递减的弹性回弹（阻尼振动），总时长 640ms（比一轮稍慢）；
+   · 每段单独给 animation-timing-function：入场段快速减速，回弹段用 ease-in-out，
+     避免默认缓动把回弹抹平成"抖动一下"；
+   · 全程只动 transform（合成层属性，不触发重排重绘）。
    注意：带 transform / will-change: transform 的元素会成为 **fixed 后代的包含块**，
    所以「自定义快捷键」弹窗（fixed 覆盖层）**不能**挂在本弹窗内部——它由
    SettingsDialog.tsx 渲染在 `.settings-overlay` 下、与本弹窗平级（见该文件注释）。 */
 @keyframes settings-dialog-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
+  0% {
+    transform: translateY(calc(-50vh - 50%));
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  68% {
+    transform: translateY(14px);
+    animation-timing-function: ease-out;
+  }
+  82% {
+    transform: translateY(-7px);
+    animation-timing-function: ease-in-out;
+  }
+  91% {
+    transform: translateY(3px);
+    animation-timing-function: ease-in-out;
+  }
+  96% {
+    transform: translateY(-1px);
+    animation-timing-function: ease-in-out;
+  }
+  100% {
+    transform: translateY(0);
+  }
 }
 
-/* 关闭：淡出 + 轻微下沉；总时长与 SettingsDialog.tsx 的 SETTINGS_CLOSE_MS(180ms) 对齐 */
+/* 关闭（v0.12.1 需求8 二轮修订）：先"蓄力"向下轻压一下（弹跳），再**纯位移**地平滑滑出页面上方。
+   二轮修订：去掉透明度动画（不再"边移动边淡化消失"），并把起点终点同样改为
+   `calc(-50vh - 50%)` —— 滑到最后一帧弹窗已完全离开视口，观感是"滑走了"而不是"变没了"。
+   总时长与 SettingsDialog.tsx 的 SETTINGS_CLOSE_MS(540ms) 对齐。 */
 @keyframes settings-dialog-out {
-  from { opacity: 1; transform: translateY(0); }
-  to   { opacity: 0; transform: translateY(6px); }
+  0% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0.34, 0, 0.2, 1);
+  }
+  20% {
+    transform: translateY(14px);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0);
+  }
+  100% {
+    transform: translateY(calc(-50vh - 50%));
+  }
 }
 
-/* 尊重系统减弱动效：不做位移，仅极短的透明度过渡（视觉上等同直接出现/消失） */
+/* 尊重系统减弱动效：不做位移，仅极短的时长（视觉上等同直接出现/消失） */
 @media (prefers-reduced-motion: reduce) {
   .settings-overlay::before,
   .settings-overlay.closing::before,
@@ -104,6 +154,41 @@
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(20px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── v0.12.1 需求9：拖排版滑条时弹窗变"玻璃透明" ──────────────────────
+   目的：让用户一边拖、一边看得见文档的真实变化。
+   做法（关键点）：**不用 opacity** —— 父级 opacity 会把整棵子树（含滑条本体）一起淡化，
+   而需求明确"除了滑条颜色不变"。这里只把弹窗的**底板**换成半透明色 + 背景模糊：
+   文字、边框、滑条全部保持原样不动，只有面板底色透出后面的文档，观感就是毛玻璃。
+
+   二轮修订：**透明度提高到 80% 以上** —— 底板不透明度由 34% 降到 15%（= 85% 透明），
+   遮罩压暗同时降到 0.06（一轮为 0.16），保证背后的文档清晰可辨；
+   背景模糊继续保留（既维持"玻璃"质感，也让面板上的文字在花哨背景上仍可读）。 */
+.settings-overlay.previewing .settings-dialog {
+  /* 兜底（不支持 color-mix 的内核仍是一块不透明底板，只是没有预览） */
+  background: var(--bg-primary);
+  background: color-mix(in srgb, var(--bg-primary) 15%, transparent);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  border-color: color-mix(in srgb, var(--border-color) 45%, transparent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.settings-overlay.previewing::before {
+  background: rgba(0, 0, 0, 0.06);
+  transition: background-color 160ms ease;
+}
+
+/* 减弱动效偏好下不做模糊（模糊是合成层重活，且用户明确要降低视觉动效） */
+@media (prefers-reduced-motion: reduce) {
+  .settings-overlay.previewing .settings-dialog {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    /* 无模糊时底板稍实一点，保证文字可读（仍是 80% 透明） */
+    background: color-mix(in srgb, var(--bg-primary) 20%, transparent);
+  }
 }
 
 .settings-header {

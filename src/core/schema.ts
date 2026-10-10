@@ -530,18 +530,37 @@ const nodeSpecs: Record<string, NodeSpec> = {
     defining: true,
     attrs: {
       checked: { default: false },
+      // v0.12.1 需求5：复选框样式（square 方形 = 源码 `- [ ]`；circle 圆形 = 源码 `* [ ]`）
+      style: { default: "square" },
     },
     parseDOM: [
       {
         tag: "li.task-item",
         getAttrs(dom: string | HTMLElement) {
           const el = dom as HTMLElement;
-          return { checked: el.getAttribute("data-checked") === "true" };
+          return {
+            checked: el.getAttribute("data-checked") === "true",
+            // 富文本粘贴 / HTML 往返：优先读 data-style，退化用 class 判定
+            style:
+              el.getAttribute("data-style") === "circle" ||
+              el.classList.contains("task-item-circle")
+                ? "circle"
+                : "square",
+          };
         },
       },
     ],
     toDOM(node: Node): DOMOutputSpec {
-      return ["li", { class: "task-item", "data-checked": String(node.attrs.checked) }, 0];
+      const style = node.attrs.style === "circle" ? "circle" : "square";
+      return [
+        "li",
+        {
+          class: style === "circle" ? "task-item task-item-circle" : "task-item",
+          "data-checked": String(node.attrs.checked),
+          "data-style": style,
+        },
+        0,
+      ];
     },
   },
 

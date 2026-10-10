@@ -19,6 +19,8 @@ import { TextSelection } from "prosemirror-state";
 import { lift as liftCmd, setBlockType, wrapIn } from "prosemirror-commands";
 import { wrapInList, liftListItem } from "prosemirror-schema-list";
 import { t } from "../i18n/state";
+// v0.12.1 需求5：任务列表方形/圆形样式的单一事实源
+import { normalizeTaskStyle, taskStyleFromBullet, TASK_STYLE_BULLET, type TaskStyle } from "../core/markdown/task-style";
 
 /** 格式快照（模式无关中间表示） */
 export interface FormatSnapshot {
@@ -26,6 +28,12 @@ export interface FormatSnapshot {
   marks: string[];
   /** 块类型：paragraph / heading1..6 / blockquote / bullet_list / ordered_list / null */
   blockType: string | null;
+  /**
+   * v0.12.1 需求5：任务列表图标样式（square/circle）。
+   * 非 null 表示"源格式是任务项"——源码侧据此写 `- [ ] ` / `* [ ] `，
+   * PM 侧据此改目标任务项的 style 属性（列表符号随之变化）。
+   */
+  taskStyle?: TaskStyle | null;
   /** 源码模式原始语法串（兜底精确复用；本期未使用，保留字段避免后续破坏性变更） */
   rawSyntax?: string;
 }
@@ -78,8 +86,14 @@ export function collectSourceSnapshot(text: string, start: number, end: number):
   // 块类型：选中文本的首行行首前缀
   const firstLine = selected.split("\n")[0] ?? "";
   let blockType: string | null = "paragraph";
+  // v0.12.1 需求5：任务项（`- [ ] ` / `* [ ] `）额外采集图标样式
+  let taskStyle: TaskStyle | null = null;
+  const taskMatch = /^\s*([-*+])\s+\[[ xX]\]/.exec(firstLine);
   const headingMatch = /^(#{1,6})\s/.exec(firstLine);
-  if (headingMatch) {
+  if (taskMatch) {
+    blockType = "bullet_list";
+    taskStyle = taskStyleFromBullet(taskMatch[1]);
+  } else if (headingMatch) {
     blockType = `heading${headingMatch[1].length}`;
   } else if (/^>\s?/.test(firstLine)) {
     blockType = "blockquote";
@@ -88,7 +102,7 @@ export function collectSourceSnapshot(text: string, start: number, end: number):
   } else if (/^\d+\.\s/.test(firstLine)) {
     blockType = "ordered_list";
   }
-  return { marks, blockType, rawSyntax: selected };
+  return { marks, blockType, taskStyle, rawSyntax: selected };
 }
 
 /**
@@ -112,6 +126,8 @@ export function collectPmSnapshot(state: EditorState, from: number, to: number):
   }
   // 块类型
   let blockType: string | null = null;
+  // v0.12.1 需求5：任务项样式（square/circle）
+  let taskStyle: TaskStyle | null = null;
   try {
     const $from = state.doc.resolve(from);
     const parent = $from.parent;
@@ -121,6 +137,9 @@ export function collectPmSnapshot(state: EditorState, from: number, to: number):
       // 从内向外找最近的列表/引用容器
       for (let d = $from.depth - 1; d >= 1; d--) {
         const name = $from.node(d).type.name;
+        // v0.12.1 需求5：任务项本身携带样式，必须在内层先采集
+        // （外层是 task_list，循环在它那里 break）
+        if (name === "task_item") taskStyle = normalizeTaskStyle($from.node(d).attrs.style);
         if (name === "blockquote") { blockType = "blockquote"; break; }
         if (name === "bullet_list" || name === "task_list") { blockType = "bullet_list"; break; }
         if (name === "ordered_list") { blockType = "ordered_list"; break; }
@@ -132,7 +151,7 @@ export function collectPmSnapshot(state: EditorState, from: number, to: number):
   } catch {
     blockType = null;
   }
-  return { marks, blockType };
+  return { marks, blockType, taskStyle };
 }
 
 // ─── 应用（目标侧） ──────────────────────────────────────
@@ -331,6 +350,26 @@ export function applyPmBlockSnapshot(
     }
   }
 
+  // ④ v0.12.1 需求5：任务列表图标样式（方形/圆形）必须跟随格式刷。
+  //    目标已是任务项 → setNodeMarkup 改 style 属性（序列化端据此写 `-` / `*`）。
+  //    目标不是任务项时不做列表包装（把普通段落变成任务项需要重建块结构，
+  //    超出格式刷"套用格式"的语义；源码模式侧已按 `- [ ] ` / `* [ ] ` 前缀实现）。
+  if (snapshot.taskStyle) {
+    const $p = cur.doc.resolve(cur.selection.from);
+    for (let d = $p.depth; d >= 1; d--) {
+      const n = $p.node(d);
+      if (n.type.name !== "task_item") continue;
+      if (normalizeTaskStyle(n.attrs.style) !== snapshot.taskStyle) {
+        const pos = $p.before(d);
+        const tr = cur.tr.setNodeMarkup(pos, undefined, { ...n.attrs, style: snapshot.taskStyle });
+        txs.push(tr);
+        cur = cur.apply(tr);
+        changed = true;
+      }
+      break;
+    }
+  }
+
   if (!changed) return false;
   for (const tx of txs) view.dispatch(tx);
   return true;
@@ -381,19 +420,25 @@ export function wrapRangeWithMarks(
  * 源码侧块级应用：替换指定行的行首前缀。
  * headingN → `#`×N + 空格；blockquote → `> `；bullet_list → `- `；
  * ordered_list → `1. `；paragraph/null → 清除前缀。
+ *
+ * v0.12.1 需求5：源格式是任务项时（taskStyle 非 null）前缀为任务项语法
+ * `- [ ] ` / `* [ ] `（圆形用 `*`），这样"从任务项采集 → 刷到普通行"也能得到
+ * 同款图标的任务项；已有前缀（含旧的任务项语法）先剥离再替换。
  */
 export function applyBlockTypeToLine(
   text: string,
   lineStart: number,
   lineEnd: number,
   blockType: string | null,
+  taskStyle?: TaskStyle | null,
 ): { text: string; start: number; end: number } | null {
   const line = text.slice(lineStart, lineEnd);
-  const stripped = line.replace(/^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/, "");
+  const stripped = line.replace(/^(#{1,6}\s+|>\s?|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/, "");
   let prefix = "";
   if (blockType === "blockquote") prefix = "> ";
-  else if (blockType === "bullet_list") prefix = "- ";
-  else if (blockType === "ordered_list") prefix = "1. ";
+  else if (blockType === "bullet_list") {
+    prefix = taskStyle ? `${TASK_STYLE_BULLET[taskStyle]} [ ] ` : "- ";
+  } else if (blockType === "ordered_list") prefix = "1. ";
   else if (blockType && blockType.startsWith("heading")) {
     const level = Math.max(1, Math.min(6, parseInt(blockType.slice(7), 10) || 1));
     prefix = "#".repeat(level) + " ";

@@ -52,6 +52,12 @@ export const zhCN: Record<string, string> = {
   "heading.menu.title": "标题级别",
   "heading.menu.hint": "输入 # 数量同样可改级别",
   "heading.menu.current": "当前",
+  // v0.12.1 需求5：任务列表方形/圆形样式（阅读模式手柄下拉 + 格式栏下拉）
+  "task.style.handle": "点击切换任务图标样式（方形 / 圆形）",
+  "task.style.square": "方形",
+  "task.style.circle": "圆形",
+  "task.style.squareTitle": "任务列表（方形图标）",
+  "task.style.circleTitle": "任务列表（圆形图标）",
   "settings.paragraphBreaks": "段内换行",
   "settings.paragraphBreaks.gfm": "GFM(即换行)",
   "settings.paragraphBreaks.commonmark": "CommonMark(需两空格)",

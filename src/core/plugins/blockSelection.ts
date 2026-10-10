@@ -73,6 +73,13 @@ export function handleBlockStopEvent(
   }
   const node = state.doc.nodeAt(pos);
   if (!node) return false;
+  // v0.12.1 需求6：块级选中后必须**把焦点交还编辑器**。
+  // 下面的 preventDefault() 阻止了浏览器「点击 contenteditable 自动聚焦」的默认行为，
+  // 不显式 focus 的话 activeElement 会停在 BODY：随后的所有按键（→ 退出代码块、
+  // Delete 删除整块、Esc 取消选中）根本到不了编辑器 —— 真机实测（WebView2 + CDP）
+  // 点击代码块后 activeElement=BODY，连按 → 毫无反应，用户看到的就是
+  // "点了代码块之后方向键乱跳/走不出去"。
+  view.focus();
   view.dispatch(state.tr.setSelection(NodeSelection.create(state.doc, pos)));
   e.preventDefault();
   return true;

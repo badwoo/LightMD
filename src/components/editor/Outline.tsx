@@ -168,7 +168,11 @@ export function Outline({ editorView }: OutlineProps) {
     });
 
     // 通过序列化比较避免无变化时触发 setState
-    const key = items.map((h) => `${h.pos}:${h.text}`).join("|");
+    // v0.12.1 需求2：比较键**必须含 level**——旧键只有 `pos:text`，而通过标题徽标
+    // 下拉改级别时 pos 与 text 都不变（setNodeMarkup 只改 attrs.level），键相同 →
+    // setHeadings 被跳过 → 大纲条目的 outline-level-N 类名与 paddingLeft 不刷新，
+    // 用户看到"改了级别但大纲没有层级缩进"。level 必须参与比较。
+    const key = items.map((h) => `${h.pos}:${h.level}:${h.text}`).join("|");
     if (key === lastHeadingsRef.current) return items;
     lastHeadingsRef.current = key;
     setHeadings(items);

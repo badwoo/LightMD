@@ -1,21 +1,27 @@
 /**
  * markdown-it 任务列表插件
- * 识别 - [ ] / - [x] / - [X] 语法，生成 task_list / task_item token
+ * 识别 - [ ] / - [x] / - [X]（以及 * / + 符号）语法，生成 task_list / task_item token
  * 支持嵌套任务列表（缩进的子任务项）
+ *
+ * v0.12.1 需求5：列表符号决定复选框样式——`- [ ]`=方形（默认）、`* [ ]`=圆形
+ * （口径见 core/markdown/task-style.ts，与 schema/序列化/格式刷同源）。
  *
  * 设计：在 markdown-it 的 list 规则之前拦截任务列表语法，
  * 不匹配的普通无序列表仍由原生 list 规则处理。
  */
 import type MarkdownIt from "markdown-it";
+import { taskStyleFromBullet, taskItemClassName, type TaskStyle } from "./task-style";
 
-// 任务列表项正则：匹配行首的 "- [ ]" / "- [x]" / "- [X]" / "* [ ]" / "* [x]" / "* [X]"
-const TASK_ITEM_RE = /^(\s*)([-*])\s+\[([ xX])\]\s+/;
+// 任务列表项正则：匹配行首的 "- [ ]" / "- [x]" / "* [ ]" / "+ [x]" 等（符号与勾选态任意组合）
+const TASK_ITEM_RE = /^(\s*)([-*+])\s+\[([ xX])\]\s+/;
 
 interface TaskItemNode {
   checked: boolean;
   content: string;
   indent: number; // 缩进空格数
   children: TaskItemNode[];
+  /** v0.12.1 需求5：由列表符号决定的复选框样式 */
+  style: TaskStyle;
   // E15：任务项内的缩进续行（嵌套普通列表/段落/代码块等），
   // 保留原始行（含缩进），emit 时相对化后交给 block 解析器二次解析
   extraLines: string[];
@@ -49,7 +55,7 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
   // E15：条目流设计——任务项与缩进续行线性收集，buildTree 时按缩进归属，
   // 保证「与子任务平级的普通列表块」能正确挂回父任务项
   type Entry =
-    | { kind: "item"; checked: boolean; content: string; indent: number; line: number }
+    | { kind: "item"; checked: boolean; content: string; indent: number; line: number; style: TaskStyle }
     | { kind: "extra"; indent: number; text: string };
   const entries: Entry[] = [];
   let nextLine = startLine;
@@ -95,6 +101,8 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
       content,
       indent: state.tShift[nextLine],
       line: nextLine,
+      // v0.12.1 需求5：`*` 符号 = 圆形复选框，其余（-/+/其它）= 方形
+      style: taskStyleFromBullet(itemMatch[2]),
     });
     nextLine++;
   }
@@ -138,6 +146,7 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
         content: entry.content,
         indent: entry.indent,
         children: [],
+        style: entry.style,
         extraLines: [],
       };
 
@@ -159,8 +168,14 @@ function taskListBlock(state: any, startLine: number, endLine: number, silent: b
       const node = nodes[idx];
       // task_item_open
       const itemOpen = state.push("task_item_open", "li", 1);
-      itemOpen.attrs = [["data-checked", String(node.checked)], ["class", "task-item"]];
-      itemOpen.markup = "-";
+      // v0.12.1 需求5：data-style 供 parser 写入节点属性、供 markdown-it renderer
+      // 生成圆形 class —— 阅读模式（NodeView）与分屏预览两处 DOM 必须同构
+      itemOpen.attrs = [
+        ["data-checked", String(node.checked)],
+        ["data-style", node.style],
+        ["class", taskItemClassName(node.style)],
+      ];
+      itemOpen.markup = node.style === "circle" ? "*" : "-";
       itemOpen.map = [startLine + idx, startLine + idx + 1];
 
       // inline 内容
@@ -228,8 +243,10 @@ export function taskListPlugin(md: MarkdownIt): void {
   md.renderer.rules.task_item_open = function (tokens, idx) {
     const token = tokens[idx];
     const checked = token.attrGet("data-checked") === "true";
+    // v0.12.1 需求5：圆形样式（`* [ ]`）的 li 带 task-item-circle，分屏预览与阅读模式同款
+    const cls = token.attrGet("class") || "task-item";
     const checkbox = `<input type="checkbox" class="task-checkbox"${checked ? " checked" : ""} data-checked="${checked}">`;
-    return `<li class="task-item" data-checked="${checked}">${checkbox}<div class="task-content${checked ? " task-checked" : ""}">`;
+    return `<li class="${cls}" data-checked="${checked}" data-style="${token.attrGet("data-style") || "square"}">${checkbox}<div class="task-content${checked ? " task-checked" : ""}">`;
   };
 
   md.renderer.rules.task_item_close = function () {

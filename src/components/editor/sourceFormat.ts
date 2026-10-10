@@ -227,6 +227,11 @@ export function buildFormatReplacement(action: string, selected: string): Format
       return selected
         ? { replacement: `- [ ] ${selected}`, cursorOffset: 6 + selected.length }
         : { replacement: "- [ ] ", cursorOffset: 6, ghostText: PREFIX_GHOST_TEXTS.task };
+    // v0.12.1 需求5：圆形图标的任务项（源码 `* [ ] `，见 core/markdown/task-style.ts）
+    case "task-circle":
+      return selected
+        ? { replacement: `* [ ] ${selected}`, cursorOffset: 6 + selected.length }
+        : { replacement: "* [ ] ", cursorOffset: 6, ghostText: PREFIX_GHOST_TEXTS.task };
     case "ol":
       return selected
         ? { replacement: `1. ${selected}`, cursorOffset: 3 + selected.length }
@@ -412,7 +417,8 @@ export const FORMAT_BUTTONS: FormatButton[] = [
   { action: "code", label: "<>", title: "行内代码" },
   { action: "codeblock", label: "```", title: "代码块" },
   { action: "ul", label: "•", title: "无序列表" },
-  { action: "task", label: "☑", title: "任务列表" },
+  // v0.12.1 需求5：任务列表按钮改为下拉（可选方形 / 圆形图标样式），点击行为由此下拉接管
+  { action: "task", label: "☑", title: "任务列表（点击选择方形 / 圆形图标）" },
   { action: "ol", label: "1.", title: "有序列表" },
   { action: "quote", label: "❝", title: "引用" },
   { action: "link", label: "🔗", title: "链接" },

@@ -51,6 +51,12 @@ export const enUS: Record<string, string> = {
   "heading.menu.title": "Heading level",
   "heading.menu.hint": "Typing # also changes the level",
   "heading.menu.current": "Current",
+  // v0.12.1 requirement 5: task list square / circle icon styles
+  "task.style.handle": "Click to switch the task icon style (square / circle)",
+  "task.style.square": "Square",
+  "task.style.circle": "Circle",
+  "task.style.squareTitle": "Task list (square icon)",
+  "task.style.circleTitle": "Task list (circle icon)",
   "settings.paragraphBreaks": "Line Breaks in Paragraph",
   "settings.paragraphBreaks.gfm": "GFM (line break)",
   "settings.paragraphBreaks.commonmark": "CommonMark (2 spaces)",

@@ -26,15 +26,20 @@ import { MathBlockView } from "../core/plugins/math-block";
 
 const readSrc = (p: string) => readFileSync(`src/${p}`, "utf-8");
 
-/** 构造 mock EditorView（state getter + dispatch 写回） */
+/** 构造 mock EditorView（state getter + dispatch 写回 + focus 记录） */
 function makeMockView(initial: EditorState) {
   let state = initial;
+  const focusCalls: number[] = [];
   const view = {
     get state() {
       return state;
     },
     dispatch: (tr: { doc: unknown } & Parameters<EditorState["apply"]>[0]) => {
       state = state.apply(tr as Parameters<EditorState["apply"]>[0]);
+    },
+    // v0.12.1 需求6：块级选中后要 view.focus()（真机 EditorView 有此方法）
+    focus: () => {
+      focusCalls.push(1);
     },
     nodeDOM: () => null,
     dom: document.createElement("div"),
@@ -45,6 +50,7 @@ function makeMockView(initial: EditorState) {
     setState: (s: EditorState) => {
       state = s;
     },
+    focusCalls,
   };
 }
 
@@ -88,7 +94,7 @@ describe("v0.12.0 需求6：handleBlockStopEvent", () => {
   const codePos = doc.child(0).nodeSize;
 
   it("单击 → 拦下并建立 NodeSelection（preventDefault 被调）", () => {
-    const { view, getState } = makeMockView(EditorState.create({ doc, schema }));
+    const { view, getState, focusCalls } = makeMockView(EditorState.create({ doc, schema }));
     const dom = document.createElement("div");
     const e = fakeMouseEvent({});
     const handled = handleBlockStopEvent(dom, view, () => codePos, e);
@@ -97,6 +103,16 @@ describe("v0.12.0 需求6：handleBlockStopEvent", () => {
     expect(sel).toBeInstanceOf(NodeSelection);
     expect(sel.from).toBe(codePos);
     expect(e.preventDefault).toHaveBeenCalled();
+    // v0.12.1 需求6：preventDefault 会吃掉浏览器的自动聚焦，必须显式把焦点交还编辑器，
+    // 否则后续按键（→ 退出代码块 / Delete 删块）都到不了 ProseMirror
+    expect(focusCalls.length).toBe(1);
+  });
+
+  it("放行路径（双击/右键/交互控件）不得抢焦点", () => {
+    const { view, focusCalls } = makeMockView(EditorState.create({ doc, schema }));
+    handleBlockStopEvent(document.createElement("div"), view, () => codePos, fakeMouseEvent({ detail: 2 }));
+    handleBlockStopEvent(document.createElement("div"), view, () => codePos, fakeMouseEvent({ button: 2 }));
+    expect(focusCalls.length).toBe(0);
   });
 
   it("双击（detail=2）→ 放行（可进源码编辑态）", () => {

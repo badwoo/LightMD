@@ -4,6 +4,8 @@
  * 行为：
  * - 阅读模式：显示羽毛笔（书写语义），点击切换到分屏模式
  * - 分屏模式：显示小书本（阅读语义），点击切回阅读模式
+ * - v0.12.1 需求11：**编辑模式也显示小书本**（此前只有分屏右上角有），
+ *   点击直接跳到阅读模式 —— 编辑/分屏两种"源码侧"模式都能一键回阅读。
  * - 与「译」按钮并排悬浮于编辑区域右上角，不随文档滚动
  * - 样式复用 full-translate-btn 的变量体系，自动适配 6 主题
  */
@@ -12,26 +14,27 @@ import type { ViewMode } from "../../stores/useEditorStore";
 import "./FullTranslateButton.css";
 
 interface ModeSwitchButtonProps {
-  /** 当前视图模式（仅 preview/split 时由父组件渲染本按钮） */
+  /** 当前视图模式（preview/edit/split 三模式都会渲染本按钮） */
   viewMode: ViewMode;
-  /** 模式切换：阅读→分屏 / 分屏→阅读 */
+  /** 模式切换：阅读→分屏 / 分屏·编辑→阅读 */
   onSwitch: (mode: "preview" | "split") => void;
 }
 
 export function ModeSwitchButton({ viewMode, onSwitch }: ModeSwitchButtonProps) {
   const t = useT();
-  const isSplit = viewMode === "split";
+  // v0.12.1 需求11：编辑模式与分屏模式同为"源码侧"，都显示小书本 → 阅读模式
+  const toPreview = viewMode === "split" || viewMode === "edit";
 
   return (
     <button
       type="button"
       className="mode-switch-btn"
-      title={isSplit ? t("mode.switch.toPreview") : t("mode.switch.toSplit")}
-      aria-label={isSplit ? t("mode.switch.toPreview") : t("mode.switch.toSplit")}
-      onClick={() => onSwitch(isSplit ? "preview" : "split")}
+      title={toPreview ? t("mode.switch.toPreview") : t("mode.switch.toSplit")}
+      aria-label={toPreview ? t("mode.switch.toPreview") : t("mode.switch.toSplit")}
+      onClick={() => onSwitch(toPreview ? "preview" : "split")}
     >
-      {isSplit ? (
-        /* 分屏模式：小书本（点击回阅读模式） */
+      {toPreview ? (
+        /* 分屏/编辑模式：小书本（点击回阅读模式） */
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 7c-2.2-1.6-5-2.2-9-2.2v13.5c4 0 6.8.6 9 2.2 2.2-1.6 5-2.2 9-2.2V4.8c-4 0-6.8.6-9 2.2z" />
           <line x1="12" y1="7" x2="12" y2="20.5" />

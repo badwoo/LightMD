@@ -217,7 +217,31 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
 
-### v0.12.1 (2026-10-09)
+### v0.12.1 (2026-10-09, round 2 on 2026-10-10)
+
+**Heading-level badge / auto-pair rewritten / edit-mode scrollbar at the far right / folder animation 50% slower** (baseline 0.12.0)
+
+#### Round 2 (2026-10-10): 11 experience fixes
+
+**New capabilities**
+
+- **Two task-list icons** — square / circle checkboxes: pick one from the toolbar `☑` dropdown; in reading mode each task item shows a **light `::` handle** on the left that opens the same picker. A circle item is written as `* [ ] ` (still a standard task-list item, other editors are unaffected). The **format painter** also carries the style over (source mode rewrites the prefix, reading mode updates the node attribute)
+- **Live typography preview** — dragging font size / family / line height / paragraph spacing / content width in Settings updates the document **immediately** (a non-persisted preview store; nothing is written to localStorage and no cross-window broadcast is sent while dragging). Save commits; Cancel / `✕` / Esc restores instantly
+- **Frosted settings panel + focus preservation while dragging** — the panel background becomes translucent with a backdrop blur while you drag a typography slider: **85% transparent** (panel alpha 0.15) with sliders and text staying crisp. The **reading focus is preserved** by the same anchor mechanism used for window/sidebar resizing: the block anchor (reading mode), the textarea content anchor (edit / split left) and the split iframe anchor are measured *before* the CSS variables are written and compensated *immediately after*, inside one `useLayoutEffect`. Measured drift across the four sliders: ≤0.3px
+- **Back to reading from edit mode** — edit mode now also shows the floating **book** button (reading = quill, split/edit = book)
+
+**Fixes**
+
+- **Heading badge alignment / wrapping** — the badge is now centred on the heading line (`top:50%` + `translateY(-50%)`; it used to sit 7px too high) and can no longer break `H1` into two lines: `clamp(9px,0.42em,13px)` sizing, a roomy box and `white-space:nowrap` replace the old `min-width:1.7em` rule that could not fit a 600-weight `H1`
+- **Outline now follows the level** — the outline's heading de-duplication key includes `level` (it used to be `pos:text` only, so changing the level through the badge left `pos`/`text` unchanged and the outline never re-rendered)
+- **Images no longer vanish after switching documents** — the global document path is synced from `filePath` right before the content is parsed (once in the file-switch effect, once on first mount, plus a third safety net in the App tab switch): child effects run before parent effects, so the old code resolved image paths against the *previous* document's folder
+- **Task checkbox alignment** — the first paragraph inside a task item has its top margin zeroed (the paragraph-spacing rule used to push it 13–14px down) and the checkbox is drawn by hand and centred on the first line box (computed from line-height × font-size) instead of a hard-coded `margin-top:5px`
+- **Getting out of a code block** — (1) block selection now calls `view.focus()` (the `preventDefault` swallowed the browser's auto-focus, leaving `activeElement` on `BODY`, so no key ever reached the editor); (2) a new `ArrowRight` command exits to the next block when the whole block is selected or the caret is at the end of its content, creating a paragraph when the block is the last one
+- **No more phantom blank lines in reading mode** — `Enter` inside a plain paragraph now inserts a **soft/hard line break** (two-space break in Markdown, no blank line) and `Shift+Enter` creates a new paragraph; lists, quotes, headings and tables keep their original behaviour
+- **Settings animations** — opening slides in from **off-screen above** (`translateY(calc(-50vh - 50%))`) and overshoots to +14px before settling (jelly bounce, 640 ms); closing presses down +14px ("wind-up") and then **purely translates** out of the viewport over 520 ms (`SETTINGS_CLOSE_MS` 180 → 540). Second-round revision per user feedback: **the panel itself no longer fades** (it used to move and fade out at the same time) — brightness is handled only by the scrim, which is now **delayed by 200 ms** so it fades after the panel has slid away
+- **Format painter icon** — redrawn as a recognisable little paint brush (handle + ferrule + tapered bristles)
+
+**Verification**: **252 files / 4065 tests** pass (new `v0121-round2-requests` with 45 contract + runtime cases — including the second-round animation-purity, transparency and focus-anchor wiring assertions — and `v0121-image-doc-switch` with 3 regression cases that provably fail without the fix; 3 older assertions updated); `tsc --noEmit` clean; `vite build` succeeds; on the packaged app driven through WebView2 CDP **20/20 checks PASS** (`scripts/real-machine-v0121-round2.mjs`): images still render (`naturalWidth=565`) after switching away and back, badge centre offset 0px with a single text line box, outline padding 12px → 40px, checkbox alignment off by 0.4px, handle → circle writes `* [ ]`, ArrowRight leaves the code block into a new paragraph, `Enter` produces `<br>` with no blank line in the source, the edit-mode book button returns to reading mode, open animation `-1252.8 → +14 → 0`, close animation `+14 → -1252.8`, dragging the font size 16px → 25px with `blur(12px)` and `alpha=0.15` (85% transparent), cancel rolls back to 16px, **panel opacity stays exactly 1 throughout (pure translation, no fade)**, and the anchored paragraph drifts by only 0 / 0 / +0.1 / -0.3px while dragging the four typography sliders
 
 **Heading-level badge / auto-pair rewritten / edit-mode scrollbar at the far right / folder animation 50% slower** (baseline 0.12.0)
 

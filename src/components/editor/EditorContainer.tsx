@@ -8,7 +8,7 @@
  *   切换模式时直接使用已记录的值（而非从已隐藏元素读取）
  * - 任何模式下的修改，切换到其他模式时内容不丢失、滚动位置一致
  */
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
 import { createEditor, getMarkdownFromDoc, clearSerializationCache } from "../../core/editor";
 // v0.11.0 B4-3：主题明暗判定单源（night 也是暗色，此前被 `theme === "dark"` 漏判）
 import { isDarkTheme, mermaidThemeName } from "../../utils/themeTone";
@@ -25,6 +25,8 @@ import { toggleMark } from "prosemirror-commands";
 import type { EditorView } from "prosemirror-view";
 import { useEditorStore, isTranslateSnapshotForFile, type ViewMode } from "../../stores/useEditorStore";
 import { useSettingsStore, isAiChatRectVisible, DOC_ZOOM_STEP } from "../../stores/useSettingsStore";
+// v0.12.1 需求9：设置弹窗拖滑条时的临时排版预览（非持久化，取消即还原）
+import { useTypographyPreviewStore, withPreview } from "../../stores/useTypographyPreviewStore";
 import { useAutoSave } from "../../hooks/useAutoSave";
 import { useResizable } from "../../hooks/useResizable";
 import { useT, t as translate } from "../../i18n";
@@ -84,7 +86,7 @@ import { getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
 // R1(v0.10.0)：分屏预览统一走渲染管线（与导出 HTML/PDF/PNG 同一配置源 + 同一 mermaid 包装/高亮步骤）
 import { renderMarkdownHtml } from "../../core/renderPipeline";
 import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
-import { resolveImageSrc } from "../../utils/imagePath";
+import { resolveImageSrc, setCurrentDocPath } from "../../utils/imagePath";
 import { resolveLinkAction, anchorMatchesHeading } from "../../utils/linkNav";
 // v0.12.0 需求8：外部链接打开工具（原 isTauri 分支逻辑抽出，设置弹窗「关于」复用）
 import { openExternalHref } from "../../utils/openExternal";
@@ -517,6 +519,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const paragraphSpacing = useSettingsStore((s) => s.paragraphSpacing);
   const contentMaxWidth = useSettingsStore((s) => s.contentMaxWidth);
   const fontFamily = useSettingsStore((s) => s.fontFamily);
+  // v0.12.1 需求9：设置弹窗拖滑条期间的**临时排版预览**（非持久化）。
+  // 预览值为 undefined 时用已保存值——不拖动时行为与以前完全一致。
+  const typographyPreview = useTypographyPreviewStore((s) => s.preview);
+  const effFontSize = withPreview(fontSize, typographyPreview?.fontSize);
+  const effFontFamily = withPreview(fontFamily, typographyPreview?.fontFamily);
+  const effLineHeight = withPreview(lineHeight, typographyPreview?.lineHeight);
+  const effParagraphSpacing = withPreview(paragraphSpacing, typographyPreview?.paragraphSpacing);
+  const effContentMaxWidth = withPreview(contentMaxWidth, typographyPreview?.contentMaxWidth);
+  // 供分屏 iframe 判断"这次是不是纯排版预览"（仅刷新样式表，不重排正文）
+  const typographyPreviewKey = typographyPreview
+    ? `${effFontSize}:${effFontFamily}:${effLineHeight}:${effParagraphSpacing}:${effContentMaxWidth}`
+    : "";
   // v0.12.0 需求5：文档整体缩放（百分比；阅读/分屏右用 CSS zoom、编辑 textarea 用字号换算）
   const docZoom = useSettingsStore((s) => s.docZoom);
   const setDocZoom = useSettingsStore((s) => s.setDocZoom);
@@ -877,6 +891,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   useEffect(() => {
     const parent = editorRef.current;
     if (!parent) return;
+    // v0.12.1 需求3：首次解析也要先把全局文档路径设成本份内容的路径。
+    // 本 effect（子组件）先于 App 的 setCurrentDocPath effect 执行，若不在这里同步，
+    // 首屏渲染图片时 currentDocPath 还是空的 → 相对路径解析成裸相对路径 → 图片不可见。
+    setCurrentDocPath(filePath || "");
     const view = createEditor({
       parent,
       typewriterModeRef,
@@ -1138,6 +1156,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // 文件切换时清除序列化缓存，因为 doc 对象会变化
     if (forceUpdate) clearSerializationCache();
     try {
+      // v0.12.1 需求3（图片切文档后消失）：**在解析文档之前**把全局文档路径切到本份内容
+      // 对应的路径。schema.image.toDOM 用模块级 currentDocPath 解析相对路径
+      // （./assets/x.png → asset://…），而 App 层"设路径"和"投内容"都走 React 状态：
+      // 子组件（本组件）的 effect 先于父组件 App 的 effect 执行，于是切标签时
+      // 这里解析图片用的仍是**上一个**文档的路径 —— 文档一换、图片路径就错，
+      // 表现为"图片文档切走再切回来图片就没了"。这里以 filePath 为准同步一次，
+      // 与内容同源、与 React effect 顺序无关。
+      setCurrentDocPath(filePath || "");
       const newDoc = markdownToDoc(content);
       const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
       tr.setSelection(TextSelection.atStart(tr.doc));
@@ -1146,7 +1172,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     } catch (e) {
       console.error("更新编辑器内容失败:", e);
     }
-  }, [content, forceUpdateKey, isMdFile]);
+  }, [content, forceUpdateKey, isMdFile, filePath]);
 
   // ─── v0.7.0 bug修复：文件切换保留浏览进度 ─────────
   // 需求：切换不同打开的文件时浏览进度不重置；重新打开该文件时重置到顶部。
@@ -1659,6 +1685,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const formatPainterMode = useFormatPainterStore((s) => s.mode);
   // ─── Mermaid 模板下拉状态 ────────────────────────
   const [mermaidMenuOpen, setMermaidMenuOpen] = useState(false);
+  // ─── v0.12.1 需求5：任务列表图标样式下拉（方形 / 圆形）───
+  const [taskStyleMenuOpen, setTaskStyleMenuOpen] = useState(false);
   // ─── SlashCommand 菜单 open 状态 ───────────────────
   // 仅在源码模式 + Markdown 文件 + 行首输入 / 时打开
   const [slashCommandOpen, setSlashCommandOpen] = useState(false);
@@ -4142,7 +4170,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     let nextLineStart = lineStart;
     let nextLineEnd = lineEnd;
     if (snapshot.blockType !== null) {
-      const blockRes = applyBlockTypeToLine(text, lineStart, lineEnd, snapshot.blockType);
+      // v0.12.1 需求5：任务项样式（方形 `- [ ] ` / 圆形 `* [ ] `）随格式刷一并套用
+      const blockRes = applyBlockTypeToLine(text, lineStart, lineEnd, snapshot.blockType, snapshot.taskStyle);
       if (blockRes) {
         next = blockRes.text;
         nextLineStart = blockRes.start;
@@ -4152,7 +4181,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // 2) 行内：对行内容（掐掉前缀）包裹（先剥后包，不叠加）
     if (snapshot.marks.length > 0) {
       const line = next.slice(nextLineStart, nextLineEnd);
-      const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/.exec(line);
+      // 前置前缀（含任务项 `- [ ] ` 形态）都要掐掉，行内符号只包裹正文
+      const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/.exec(line);
       const contentStart = nextLineStart + (prefixMatch ? prefixMatch[0].length : 0);
       if (nextLineEnd > contentStart) {
         const wrapped = wrapRangeWithMarks(next, contentStart, nextLineEnd, snapshot.marks);
@@ -4351,6 +4381,27 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, [mermaidMenuOpen]);
+
+  // ─── v0.12.1 需求5：任务列表样式下拉（格式栏「任务列表」按钮）──────
+  // 点击插入对应符号的任务项：方形 = `- [ ] `、圆形 = `* [ ] `
+  // （样式口径见 core/markdown/task-style.ts，阅读模式手柄下拉走同一套符号）
+  const handleTaskStyleSelect = useCallback((style: "square" | "circle") => {
+    setTaskStyleMenuOpen(false);
+    handleFormatAction.current(style === "circle" ? "task-circle" : "task");
+  }, []);
+
+  // 关闭任务样式下拉：外部点击时（与 Mermaid 下拉同款处理）
+  useEffect(() => {
+    if (!taskStyleMenuOpen) return;
+    const handle = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(".task-style-dropdown-wrap")) {
+        setTaskStyleMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [taskStyleMenuOpen]);
 
   // ─── SlashCommand 菜单关闭回调 ──────────────────
   // 根因：onClose 调用 setSlashCommandOpen(false) + handleSourceChange 调用 setSourceContent
@@ -4575,6 +4626,35 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     updateOverlayRef.current();
   }, [sourceContent]);
 
+  // ─── v0.12.1 需求9（二轮）：排版变化时保持阅读焦点 ────────────────
+  //
+  // 用户反馈：在设置里调字号 / 行高 / 段间距 / 内容区宽度时，文档会重排，视口内容漂移
+  // （和没做窗口缩放焦点保持之前一样）。字号/行高只改文本高度、内容区宽度只改
+  // `.ProseMirror` 的 max-width —— 外层滚动容器的**盒子尺寸都没变**，所以既有的
+  // ResizeObserver 锚点（只在容器宽度变化时补偿）在这里不会生效，必须显式补偿。
+  //
+  // 做法：**在同一个 layout effect 里完成「先量旧位置 → 写新变量 → 立刻量新位置 → 补 scrollTop」**。
+  // 用 useLayoutEffect 而非 useEffect，整段发生在浏览器绘制之前 → 不会闪一帧。
+  // 量 getBoundingClientRect 会强制同步布局，所以写变量后立刻测量拿到的一定是新排版。
+  //   · 阅读模式 → 块锚点（视口内首个顶层块 + 其相对视口顶的偏移）
+  //   · 编辑/分屏左侧 → textarea 内容锚点（视口顶部字符偏移 + 视口 Y）
+  // 内容不足一屏（无可滚动空间）时两个 capture 都返回 null，安全跳过。
+  const captureTypographyAnchor = useCallback(() => {
+    const container = viewMode === "preview" && isMdFile ? editorRef.current : null;
+    const blockAnchor = container ? captureAnchor(container, ".ProseMirror > *") : null;
+    const ta = isSourceMode ? sourceTextareaRef.current : null;
+    const textAnchor = ta ? captureTextAnchor(ta) : null;
+    return { container, blockAnchor, ta, textAnchor };
+  }, [viewMode, isMdFile, isSourceMode]);
+
+  const restoreTypographyAnchor = useCallback(
+    (anchor: ReturnType<typeof captureTypographyAnchor>) => {
+      if (anchor.container && anchor.blockAnchor) restoreAnchor(anchor.container, anchor.blockAnchor);
+      if (anchor.ta && anchor.textAnchor) restoreTextAnchor(anchor.ta, anchor.textAnchor);
+    },
+    [],
+  );
+
   // ─── 字体 ──────────────────────────────────────
   // v0.11.0 B4-1：字号/字体同时写到 **:root**（原先只写在 .ProseMirror 元素上）。
   //
@@ -4585,30 +4665,43 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   //
   // 修复：写到 :root，:root 与 .ProseMirror 都能取到；collectCssVars 无需改动。
   // 同时保留 .ProseMirror 上的设置（局部覆盖，语义更明确）。
-  useEffect(() => {
+  //
+  // v0.12.1 需求9：排版预览值优先（设置弹窗里拖滑条 → 立即改用预览值，
+  // 未拖动时 preview 为 null，行为与以前完全一致）。
+  // v0.12.1 需求9（二轮）：改为 useLayoutEffect，并在写变量前后做一次视口锚点补偿
+  // （见上方 captureTypographyAnchor 的说明）——保证调字号/字体时阅读焦点不丢。
+  useLayoutEffect(() => {
+    const anchor = captureTypographyAnchor();
     const root = document.documentElement;
-    root.style.setProperty("--editor-font-size", `${fontSize}px`);
-    root.style.setProperty("--editor-font-family", fontFamily);
+    root.style.setProperty("--editor-font-size", `${effFontSize}px`);
+    root.style.setProperty("--editor-font-family", effFontFamily);
     const editorDom = editorRef.current?.querySelector(".ProseMirror") as HTMLElement | null;
     if (editorDom) {
-      editorDom.style.setProperty("--editor-font-size", `${fontSize}px`);
-      editorDom.style.setProperty("--editor-font-family", fontFamily);
+      editorDom.style.setProperty("--editor-font-size", `${effFontSize}px`);
+      editorDom.style.setProperty("--editor-font-family", effFontFamily);
     }
-  }, [fontSize, fontFamily]);
+    restoreTypographyAnchor(anchor);
+  }, [effFontSize, effFontFamily, captureTypographyAnchor, restoreTypographyAnchor]);
 
   // v0.11.0 B4-10：排版三项（行高 / 段间距 / 内容区最大宽度）注入 CSS 变量。
   // 机制与上面字号/字体一致（写到 :root，iframe 预览的 collectCssVars 也能取到）。
   // 值为 0 表示「跟随主题默认」→ 此时清空属性，让 CSS 的 var() 兜底值生效。
-  useEffect(() => {
+  // v0.12.1 需求9：同样支持预览值覆盖（实时预览）。
+  // v0.12.1 需求9（二轮）：同样改为 useLayoutEffect + 视口锚点补偿
+  // （行高/段间距只改文本高度、内容区宽度只改 .ProseMirror 的 max-width，
+  //  外层滚动容器盒子不变 → 既有 ResizeObserver 锚点不会触发，必须在这里显式补偿）。
+  useLayoutEffect(() => {
+    const anchor = captureTypographyAnchor();
     const root = document.documentElement;
     const setOrClear = (name: string, value: number, unit: string) => {
       if (value > 0) root.style.setProperty(name, `${value}${unit}`);
       else root.style.removeProperty(name);
     };
-    setOrClear("--editor-line-height", lineHeight, "");
-    setOrClear("--editor-paragraph-spacing", paragraphSpacing, "");
-    setOrClear("--editor-content-max-width", contentMaxWidth, "px");
-  }, [lineHeight, paragraphSpacing, contentMaxWidth]);
+    setOrClear("--editor-line-height", effLineHeight, "");
+    setOrClear("--editor-paragraph-spacing", effParagraphSpacing, "");
+    setOrClear("--editor-content-max-width", effContentMaxWidth, "px");
+    restoreTypographyAnchor(anchor);
+  }, [effLineHeight, effParagraphSpacing, effContentMaxWidth, captureTypographyAnchor, restoreTypographyAnchor]);
 
   // v0.12.0 需求5：文档缩放比例注入 --doc-zoom（:root，值为比例：1 = 100%）。
   // 消费方：阅读 .ProseMirror 的 CSS zoom、分屏 iframe body 的 zoom（经 collectCssVars）、
@@ -5238,6 +5331,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     math: false,
     theme: "",
   });
+  // v0.12.1 需求9：分屏预览的增量判据——区分"正文变了"与"只是排版预览变了"。
+  // 纯排版变化只需刷新 iframe 的 <style>，不必重排 body（拖滑条时避免每帧重建 DOM）。
+  const lastIframeHtmlRef = useRef("");
+  const lastIframeTypoKeyRef = useRef("");
 
   // 追踪是否刚切换到分屏模式
   useEffect(() => {
@@ -5357,6 +5454,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       || (hasMath && !init.math)
       || themeChanged;
 
+    // v0.12.1 需求9：区分"正文变了"与"只是排版预览变了"（见两个 ref 的注释）
+    const htmlChanged = lastIframeHtmlRef.current !== previewHtml;
+    lastIframeHtmlRef.current = previewHtml;
+    const typoChanged = lastIframeTypoKeyRef.current !== typographyPreviewKey;
+    lastIframeTypoKeyRef.current = typographyPreviewKey;
+
     // 与阅读模式（editor.css .ProseMirror）保持一致的元素样式
     const sharedStyles = `
       :root {
@@ -5394,8 +5497,23 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       a { color: ${cv.linkColor}; }
       img { max-width: 100%; border-radius: 4px; }
       ul.task-list { list-style: none; padding-left: 0; margin: 0.4em 0; }
-      li.task-item { display: flex; align-items: flex-start; gap: 6px; margin: 0.3em 0; list-style: none; }
-      .task-item input[type="checkbox"] { margin-top: 5px; accent-color: ${cv.accentColor}; flex-shrink: 0; width: 16px; height: 16px; }
+      li.task-item { display: flex; align-items: flex-start; gap: 6px; margin: 0.3em 0; list-style: none; position: relative; }
+      /* v0.12.1 需求4：首段上边距归零，让复选框按"首行盒高"精确居中（与阅读模式同款口径） */
+      li.task-item > .task-content > p:first-child { margin-top: 0; }
+      .task-item input[type="checkbox"] {
+        appearance: none; -webkit-appearance: none; flex-shrink: 0;
+        width: 15px; height: 15px; margin: 0; font: inherit;
+        margin-top: calc((1.8 * 1em - 15px) / 2);
+        border: 1.5px solid ${cv.borderColor}; border-radius: 3px;
+        background: ${cv.bgPrimary}; position: relative;
+      }
+      /* v0.12.1 需求5：圆形样式（源码写作星号 bullet 的任务项） */
+      li.task-item-circle input[type="checkbox"] { border-radius: 50%; }
+      .task-item input[type="checkbox"]:checked { background: ${cv.accentColor}; border-color: ${cv.accentColor}; }
+      .task-item input[type="checkbox"]:checked::after {
+        content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 7px;
+        border: solid #fff; border-width: 0 1.8px 1.8px 0; transform: rotate(42deg);
+      }
       .task-item .task-checked { text-decoration: line-through; color: ${cv.textTertiary}; }
       .footnote-ref { font-size: 0.8em; vertical-align: super; line-height: 0; }
       .footnote-ref a { color: ${cv.linkColor}; text-decoration: none; }
@@ -5460,6 +5578,21 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       doc.close();
       // 记录已加载的脚本状态与主题（供下次增量更新比对是否需重写）
       previewIframeInitRef.current = { mermaid: hasMermaid, math: hasMath, theme };
+    } else if (typoChanged && !htmlChanged) {
+      // v0.12.1 需求9：**纯排版预览**（设置里拖字号/行高滑条）——只换 iframe 的样式表。
+      // 正文未变，重排 body 既浪费又会打断 mermaid/katex 渲染，故这里只刷新 head 里的
+      // <style>（首次完整写入时注入的元素）+ --doc-zoom，正文 DOM 原样保留。
+      //
+      // v0.12.1 需求9（二轮）：分屏右侧预览同样要**保持阅读焦点** ——
+      // 换样式表前后按块锚点补偿 iframe 自己的 scrollTop（量 rect 会强制同步布局，
+      // 因此写样式后立刻测量拿到的就是新排版）。
+      const scroller = (doc.scrollingElement ?? doc.documentElement) as Element | null;
+      const anchor = scroller ? captureAnchor(scroller, "body > *") : null;
+      const styleEl = doc.querySelector("style");
+      if (styleEl) styleEl.textContent = sharedStyles + getPrismCss(isDarkTheme(theme));
+      doc.documentElement.style.setProperty("--doc-zoom", cv.docZoom);
+      if (scroller) restoreAnchor(scroller, anchor);
+      return;
     } else {
       // 增量更新：只替换 body 内容，不重新加载脚本
       // 替换 body 内容（样式通过 :root 变量自动更新）
@@ -5528,7 +5661,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         requestAnimationFrame(setScroll);
       }
     }
-  }, [previewHtml, viewMode, theme, collectCssVars, docZoom]);
+  }, [previewHtml, viewMode, theme, collectCssVars, docZoom, typographyPreviewKey]);
 
   // v0.12.0 需求4：分屏 iframe 尺寸变化时保持预览焦点。
   // iframe 的 contentDocument 有独立滚动盒，不在主文档 ResizeObserver 的观察范围内：
@@ -5658,6 +5791,44 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         <div className="source-format-toolbar">
           {formatButtons.map((btn) => {
             if (btn.isSeparator) return <span key={btn.action} className="format-separator">{btn.label}</span>;
+            // v0.12.1 需求5：任务列表按钮 → 下拉选择两种图标样式（方形 / 圆形）
+            if (btn.action === "task") {
+              return (
+                <div key={btn.action} className="task-style-dropdown-wrap">
+                  <button
+                    className="format-btn"
+                    title={formatButtonTitle(btn)}
+                    onClick={() => setTaskStyleMenuOpen((v) => !v)}
+                    aria-expanded={taskStyleMenuOpen}
+                    aria-haspopup="menu"
+                  >
+                    {btn.label}
+                  </button>
+                  {taskStyleMenuOpen && (
+                    <div className="mermaid-dropdown-menu" role="menu" data-testid="task-style-dropdown">
+                      <button
+                        className="mermaid-dropdown-item task-style-option"
+                        role="menuitem"
+                        data-style="square"
+                        onClick={() => handleTaskStyleSelect("square")}
+                      >
+                        <span className="task-style-preview" />
+                        {t("task.style.squareTitle")}
+                      </button>
+                      <button
+                        className="mermaid-dropdown-item task-style-option"
+                        role="menuitem"
+                        data-style="circle"
+                        onClick={() => handleTaskStyleSelect("circle")}
+                      >
+                        <span className="task-style-preview circle" />
+                        {t("task.style.circleTitle")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            }
             // Mermaid 按钮：渲染为带下拉菜单的容器
             if (btn.hasDropdown) {
               return (
@@ -5697,25 +5868,30 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
                 title={formatButtonTitle(btn)}
                 onClick={(e) => onFormatBtnClick(btn.action, e.detail)}
               >
-                {/* v0.12.0 需求2 返修：格式刷用刷子形状 SVG 图标（替代 emoji，与工具栏风格统一） */}
+                {/* v0.12.0 需求2 返修：刷子形状 SVG 图标（替代 emoji，与工具栏风格统一）
+                    v0.12.1 需求7：按用户要求**重绘为一把小油漆刷**——旧图形是斜置的
+                    抽象笔刷，缩小到 14px 后辨识度差；现改为「斜向刷柄 + 收口刷头」的
+                    经典漆刷轮廓：柄是带圆角端头的旋转矩形，刷头是向下收拢的梯形，
+                    两个形状之间留出刷箍缝隙，缩到 14px 仍能一眼看出是刷子。 */}
                 {btn.isBrushIcon ? (
                   <svg
                     className="format-btn-brush-icon"
-                    width="14"
-                    height="14"
+                    width="15"
+                    height="15"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
-                    strokeWidth="2"
+                    strokeWidth="1.9"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     aria-hidden="true"
                   >
-                    {/* 刷柄 + 刷毛（paintbrush，Lucide 形状） */}
-                    <path d="m14.622 17.897-10.68-2.913" />
-                    <path d="M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .354l.949 1.58c.09.15.118.325.078.493l-.416 1.663a.5.5 0 0 1-.613.365l-6.1-1.663a.5.5 0 0 1-.32-.707l1.061-1.837a.5.5 0 0 0 0-.507l-1.06-1.837a.5.5 0 0 1 .32-.707l6.1-1.663a.5.5 0 0 0 .366-.613l-.42-1.68a.5.5 0 0 1 .366-.613z" />
-                    <path d="M18.793 6.207 21 4" />
-                    <path d="M4 14.5c.5-1.5 1.5-2 2.5-2s2.5 1 2.5 3.5c0 1.5-.5 2.5-1 3.5-.5 1-1.5 2-3 2s-3-1.5-3-3 1-2.5 2-4z" />
+                    {/* 刷柄（右上，带圆角端头） */}
+                    <path d="M20.4 3.6a2.1 2.1 0 0 0-3 0l-5.3 5.3 3 3 5.3-5.3a2.1 2.1 0 0 0 0-3z" />
+                    {/* 刷箍（柄与刷头之间的分界） */}
+                    <path d="M12.1 8.9 15.1 11.9" />
+                    {/* 刷头（向左下收拢的刷毛） */}
+                    <path d="M10.9 10.1c-.6-.6-1.5-.6-2.1 0l-1.5 1.5c-1.1 1.1-1.4 2.3-1.6 3.3-.1.9-.5 1.4-1.1 2-.5.5-.3 1.2.3 1.4 1.7.7 3.8.6 5.3-.9l1.6-1.6c.6-.6.6-1.5 0-2.1z" />
                   </svg>
                 ) : (
                   btn.label
@@ -5730,8 +5906,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       <div className="editor-main-area" ref={mainAreaRef}>
         {/* v0.12.0 需求5：右下角缩放尺（hover 显现；拖动/点击调整 docZoom） */}
         <ZoomRuler value={docZoom} onChange={setDocZoom} />
-        {/* v0.6.1 问题5：模式切换悬浮按钮（阅读=羽毛笔→分屏 / 分屏=书本→阅读） */}
-        {(viewMode === "preview" || viewMode === "split") && isMdFile && (
+        {/* v0.6.1 问题5：模式切换悬浮按钮（阅读=羽毛笔→分屏 / 分屏=书本→阅读）
+            v0.12.1 需求11：编辑模式同样渲染（组件内 edit → 小书本，点击跳阅读模式） */}
+        {isMdFile && (
           <ModeSwitchButton
             viewMode={viewMode}
             onSwitch={(m) => setViewMode(m)}

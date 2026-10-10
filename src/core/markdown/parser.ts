@@ -596,6 +596,8 @@ function parseTaskList(tokens: Token[], index: number): ParseResult {
       // 从 attrs 读取 data-checked 属性（与 task-list-plugin 的输出对齐）
       const checkedAttr = getAttr(t, "data-checked");
       const checked = checkedAttr === "true";
+      // v0.12.1 需求5：复选框样式（square/circle）同样来自 token 属性
+      const style = getAttr(t, "data-style") === "circle" ? "circle" : "square";
       let content = "";
       const childBlocks: Node[] = [];
       // 冲刷当前累积的 inline 内容为段落（E15：任务项内多段落不再合并）
@@ -646,7 +648,7 @@ function parseTaskList(tokens: Token[], index: number): ParseResult {
         childBlocks.length > 0
           ? childBlocks
           : [schema.nodes.paragraph.create(null, parseInline(content))];
-      items.push(schema.nodes.task_item.create({ checked }, children));
+      items.push(schema.nodes.task_item.create({ checked, style }, children));
     } else {
       i++;
     }

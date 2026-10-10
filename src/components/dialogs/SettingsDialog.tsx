@@ -6,9 +6,15 @@
  * F3：载入文件夹开关 + 数量（实时生效，钳制 1-5）
  * v0.6.0：AI 翻译分组（Provider 预设/API Key（keyring）/测试连接/目标语言/语体/结果模式/自定义 Prompt，实时生效）
  * 其他字段（fontSize/fontFamily/autoSaveInterval/customCss）点击"保存设置"才提交
+ *
+ * v0.12.1 需求9：字号/字体/行高/段间距/内容区宽度在**拖动时实时预览**——
+ * 拖动期间把当前值写进非持久化的 useTypographyPreviewStore（EditorContainer 据此覆盖
+ * CSS 变量），文档立刻可见效果；同时给 overlay 加 `.previewing`，弹窗变"玻璃透明"，
+ * 不遮挡文档。点「保存设置」才写进持久化设置；取消 / ✕ / 遮罩 / Esc 只清预览 → 立即还原。
  */
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useSettingsStore, THEMES, type Theme, type TranslateSettings } from "../../stores/useSettingsStore";
+import { useTypographyPreviewStore } from "../../stores/useTypographyPreviewStore";
 import { translateService } from "../../services/translateService";
 import { useT } from "../../i18n";
 // v0.9.0 自定义快捷键设置弹窗（编辑器分类最后一栏入口）
@@ -83,9 +89,10 @@ interface SettingsDialogProps {
 
 /**
  * v0.9.1 需求3：关闭动画时长（与 SettingsDialog.css 的 dialog-out 一致，留 20ms 余量）。
- * 关闭请求先切到 closing 播放淡出，动画结束后才真正 onClose() 卸载。
+ * 关闭请求先切到 closing 播放退场动画，动画结束后才真正 onClose() 卸载。
+ * v0.12.1 需求8（二轮）：退场改为「先下压蓄力、再纯位移滑出页面上方」，520ms，常量同步。
  */
-const SETTINGS_CLOSE_MS = 180;
+const SETTINGS_CLOSE_MS = 540;
 
 export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const settings = useSettingsStore();
@@ -241,28 +248,91 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     settings.setTypography({ lineHeight, paragraphSpacing, contentMaxWidth });
     settings.setAutoSaveInterval(autoSaveInterval * 1000);
     settings.setCustomCss(customCss);
+    // v0.12.1 需求9：提交后清预览——此后由持久化设置驱动，值相同，视觉无跳变
+    useTypographyPreviewStore.getState().clear();
+    setPreviewing(false);
     requestClose();
   };
+
+  // ─── v0.12.1 需求9：排版实时预览 ────────────────────────
+  /**
+   * 把当前五项排版值推给预览 store（EditorContainer 消费 → CSS 变量立即生效）。
+   * 用 patch 覆盖刚变化的那一项：onChange 里 setState 是异步的，不能依赖新的本地值。
+   */
+  const pushTypographyPreview = useCallback(
+    (patch: Partial<{ fontSize: number; fontFamily: string; lineHeight: number; paragraphSpacing: number; contentMaxWidth: number }>) => {
+      useTypographyPreviewStore.getState().setPreview({
+        fontSize,
+        fontFamily,
+        lineHeight,
+        paragraphSpacing,
+        contentMaxWidth,
+        ...patch,
+      });
+    },
+    [fontSize, fontFamily, lineHeight, paragraphSpacing, contentMaxWidth],
+  );
+
+  /**
+   * 取消/关闭（✕、取消、点遮罩、Esc）：清掉预览即可——
+   * 文档用的还是持久化设置里的旧值，界面立刻还原，不产生任何写入。
+   */
+  const requestCancel = useCallback(() => {
+    useTypographyPreviewStore.getState().clear();
+    // 本地受控值也要同步回"已保存值"，否则再次打开弹窗时滑条位置与文档不一致
+    setFontSize(settings.fontSize);
+    setFontFamily(settings.fontFamily);
+    setLineHeight(settings.lineHeight);
+    setParagraphSpacing(settings.paragraphSpacing);
+    setContentMaxWidth(settings.contentMaxWidth);
+    requestClose();
+  }, [requestClose, settings.fontSize, settings.fontFamily, settings.lineHeight, settings.paragraphSpacing, settings.contentMaxWidth]);
+
+  /** 拖动开始/结束：只控制"玻璃透明"外观（值本身由 onChange 实时预览） */
+  const [previewing, setPreviewing] = useState(false);
+  useEffect(() => {
+    if (!previewing) return;
+    const stop = () => setPreviewing(false);
+    // 指针可能在弹窗/窗口外抬起（拖到侧栏再松手），故监听 window
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    window.addEventListener("blur", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("blur", stop);
+    };
+  }, [previewing]);
+
+  // 打开时确保没有残留预览（例如上一次弹窗异常卸载）；卸载时同样清干净
+  useEffect(() => {
+    useTypographyPreviewStore.getState().clear();
+    return () => useTypographyPreviewStore.getState().clear();
+  }, []);
+
+  /** 五个排版滑条的公共拖拽起点：进入"玻璃预览"外观 */
+  const beginTypographyDrag = useCallback(() => setPreviewing(true), []);
 
   // v0.9.0 自定义快捷键弹窗开关
   const [showShortcuts, setShowShortcuts] = useState(false);
 
   // v0.9.1 需求3：Esc 关闭设置弹窗（此前只能点 ✕ / 取消）。
   // 快捷键子弹窗打开时让位——它自己是顶层，Esc 由它处理（取消录制或关闭子窗）。
+  // v0.12.1 需求9：Esc 属于"取消"，必须走 requestCancel（丢弃排版预览、还原文档）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || showShortcuts) return;
       e.preventDefault();
-      requestClose();
+      requestCancel();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [showShortcuts, requestClose]);
+  }, [showShortcuts, requestCancel]);
 
   return (
     <div
-      className={`settings-overlay${closing ? " closing" : ""}`}
-      onClick={requestClose}
+      className={`settings-overlay${closing ? " closing" : ""}${previewing ? " previewing" : ""}`}
+      onClick={requestCancel}
       data-testid="settings-overlay"
     >
       {/*
@@ -275,7 +345,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       <div className="settings-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="settings-header">
           <h2>{t("settings.title")}</h2>
-          <button className="settings-close" onClick={requestClose} aria-label={t("common.close")}>
+          <button className="settings-close" onClick={requestCancel} aria-label={t("common.close")}>
             ✕
           </button>
         </div>
@@ -322,7 +392,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   min={12}
                   max={28}
                   value={fontSize}
-                  onChange={(e) => setFontSize(Number(e.target.value))}
+                  onPointerDown={beginTypographyDrag}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setFontSize(v);
+                    pushTypographyPreview({ fontSize: v });
+                  }}
+                  data-testid="settings-font-size"
                 />
                 <span className="range-value">{fontSize}px</span>
               </div>
@@ -333,7 +409,10 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               <select
                 className="settings-select"
                 value={fontFamily}
-                onChange={(e) => setFontFamily(e.target.value)}
+                onChange={(e) => {
+                  setFontFamily(e.target.value);
+                  pushTypographyPreview({ fontFamily: e.target.value });
+                }}
               >
                 <option value="var(--font-sans)">{t("settings.fontFamily.systemDefault")}</option>
                 <option value='"Microsoft YaHei", sans-serif'>{t("settings.fontFamily.microsoftYaHei")}</option>
@@ -354,7 +433,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   max={24}
                   step={1}
                   value={Math.round(lineHeight * 10)}
-                  onChange={(e) => setLineHeight(Number(e.target.value) / 10)}
+                  onPointerDown={beginTypographyDrag}
+                  onChange={(e) => {
+                    const v = Number(e.target.value) / 10;
+                    setLineHeight(v);
+                    pushTypographyPreview({ lineHeight: v });
+                  }}
                   data-testid="settings-line-height"
                 />
                 <span className="range-value">
@@ -372,7 +456,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   max={20}
                   step={1}
                   value={Math.round(paragraphSpacing * 10)}
-                  onChange={(e) => setParagraphSpacing(Number(e.target.value) / 10)}
+                  onPointerDown={beginTypographyDrag}
+                  onChange={(e) => {
+                    const v = Number(e.target.value) / 10;
+                    setParagraphSpacing(v);
+                    pushTypographyPreview({ paragraphSpacing: v });
+                  }}
                   data-testid="settings-paragraph-spacing"
                 />
                 <span className="range-value">
@@ -392,7 +481,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   max={1600}
                   step={20}
                   value={contentMaxWidth}
-                  onChange={(e) => setContentMaxWidth(Number(e.target.value))}
+                  onPointerDown={beginTypographyDrag}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setContentMaxWidth(v);
+                    pushTypographyPreview({ contentMaxWidth: v });
+                  }}
                   data-testid="settings-content-max-width"
                 />
                 <span className="range-value">
@@ -1070,7 +1164,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
         </div>
 
         <div className="settings-footer">
-          <button className="settings-btn secondary" onClick={requestClose}>
+          <button className="settings-btn secondary" onClick={requestCancel}>
             {t("settings.cancel")}
           </button>
           <button className="settings-btn primary" onClick={handleSave}>
