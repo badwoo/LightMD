@@ -521,7 +521,93 @@ function inlineToMarkdown(node: Node, context?: "table"): string {
     }
   });
 
-  return parts.join("");
+  return escapeContinuationLines(parts.join(""));
+}
+
+/**
+ * v0.12.2 P3：段内换行（`hard_break` → `"  \n"`）的**续行行首转义**。
+ *
+ * ─── 缺陷背景 ───
+ *
+ * 需求10 把「顶层段落内回车」改为插入 `hard_break`（段内换行，源码里两行相邻）。
+ * 但 Markdown 的**块级起始判定**只看行首，与上一行如何结尾无关 —— 于是用户
+ * 「回车换行后写一条分隔线 / 列表 / 标题」时，续行会被块级规则劫持：
+ *
+ *   实测（真实 markdown-it + 本项目 parser/serializer）：
+ *     "abc  \n---\n"     → [heading:2("abc")]   段落升格为 Setext 标题，`---` 文本丢失
+ *     "abc  \n===\n"     → [heading:1("abc")]
+ *     "abc  \n- item\n"  → [paragraph, bullet_list]   块结构被拆
+ *     "abc  \n# h\n"     → [paragraph, heading:1]
+ *
+ * ─── 为什么不能改换行编码 ───
+ *
+ * 实测三种编码（两空格 `"  \n"` / 反斜杠 `"\\\n"` / 裸换行 `"\n"`）**全部同样失败**：
+ * Setext 与块起始是块级解释，与上一行结尾无关。反斜杠方案还会把 `\` 变成字面文本
+ * （`"abc\\\n---\n"` → `<h2>abc\</h2>`）。故唯一可行修复是**转义续行行首字符**。
+ *
+ * ─── 规则 ───
+ *
+ * 对每个续行（第一个 `\n` 之后的行）：先剥离行首空白，若首个非空白字符会触发块级
+ * 解释，则在其前插入 `\`。已以 `\` 开头的行跳过（`escapeText` 已转义过，避免叠加）。
+ *
+ * 覆盖的构造（对照 21 项实测危险集）：
+ *   Setext 下划线（`-`/`=` 组成的整行）、主题分隔线（`*`/`_`）、ATX 标题（`#`）、
+ *   引用（`>`）、无序列表（`-`/`+`/`*` + 空白）、有序列表（数字 + `.`/`)` + 空白）、
+ *   围栏代码块（``` / ~~~）、HTML 块（`<tag` / `<!--`）、链接引用与脚注定义（`[..]:`）。
+ */
+function escapeContinuationLines(inline: string): string {
+  // 无换行 → 绝大多数段落在此短路，零开销
+  if (!inline.includes("\n")) return inline;
+
+  const lines = inline.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    lines[i] = escapeContinuationLine(lines[i]);
+  }
+  return lines.join("\n");
+}
+
+/** 续行危险行首：`{re, esc}` —— esc 接收「行首空白 + 正文」，返回转义后的行 */
+const CONTINUATION_GUARDS: Array<{
+  re: RegExp;
+  esc: (lead: string, body: string) => string;
+}> = [
+  // Setext 下划线（`=`）—— 单字符即可把上一行升格为 H1
+  { re: /^=+\s*$/, esc: (lead, body) => lead + "\\" + body },
+  // Setext 下划线（`-`）与主题分隔线 —— 单字符即可升格为 H2
+  { re: /^-+\s*$/, esc: (lead, body) => lead + "\\" + body },
+  // 主题分隔线（`*` / `_`，3 个以上；escapeText 已处理成对星号，此处兜底）
+  { re: /^([*_])(\s*\1)*\s*$/, esc: (lead, body) => lead + "\\" + body },
+  // ATX 标题
+  { re: /^#{1,6}(\s|$)/, esc: (lead, body) => lead + "\\" + body },
+  // 引用
+  { re: /^>/, esc: (lead, body) => lead + "\\" + body },
+  // 无序列表（含缩进场景：先剥空白再判定）
+  { re: /^[-+*](\s|$)/, esc: (lead, body) => lead + "\\" + body },
+  // 有序列表（只转义分隔符，保持 `1.` 可读）
+  {
+    re: /^(\d{1,9})([.)])(\s|$)/,
+    esc: (lead, body) => lead + body.replace(/^(\d{1,9})([.)])/, "$1\\$2"),
+  },
+  // 围栏代码块
+  { re: /^(`{3,}|~{3,})/, esc: (lead, body) => lead + "\\" + body },
+  // HTML 块（`<div>` / `<!--` / `<!DOCTYPE` / `<?xml`）
+  { re: /^<(\/?[a-zA-Z][a-zA-Z0-9-]*|[!?])/, esc: (lead, body) => lead + "\\" + body },
+  // 链接引用定义 / 脚注定义
+  { re: /^\[[^\]]*\]:/, esc: (lead, body) => lead + "\\" + body },
+];
+
+function escapeContinuationLine(line: string): string {
+  if (!line) return line;
+  const m = /^(\s*)/.exec(line)!;
+  const lead = m[1];
+  const body = line.slice(lead.length);
+  if (!body) return line;
+  // 已被 escapeText 转义过 → 跳过，避免叠加反斜杠
+  if (body.startsWith("\\")) return line;
+  for (const g of CONTINUATION_GUARDS) {
+    if (g.re.test(body)) return g.esc(lead, body);
+  }
+  return line;
 }
 
 function applyMark(text: string, mark: Mark, inTableCell = false): string {
@@ -632,6 +718,18 @@ function escapeTitle(title: string): string {
 const PAIRABLE_SUB = /~([^\s~]|\\.)+~/;
 const PAIRABLE_SUP = /\^([^\s^]|\\.)+\^/;
 
+/**
+ * v0.12.2 P5：`$`（行内公式）与 `==`（高亮）的真实配对判定。
+ *
+ * 口径来自本机实测（markdown-it + 本项目 katex-plugin / markdown-it-mark）：
+ * - `$`：两个 `$` 之间**至少一个字符**即配对（空白也算内容，与 sub/sup 不同）；
+ *   故只需排除「`$$` 相邻」这一种不配对形态。
+ * - `==`：闭合 `==` 之间的内容必须**非空白、非 `=`**（markdown-it-mark 的 scanDelims
+ *   要求 `can_open`/`can_close`）；`a == b`、`2 == 3 == 4`、`a===b` 都不配对。
+ */
+const PAIRABLE_MATH = new RegExp("\\$(?!\\$)[\\s\\S]*?\\$");
+const PAIRABLE_MARK = /==([^\s=]|\\.)+==/;
+
 function escapeText(text: string, inTableCell = false, pairContext?: string): string {
   if (!text) return text;
   let out = text.replace(/\\/g, "\\\\");
@@ -661,8 +759,8 @@ function escapeText(text: string, inTableCell = false, pairContext?: string): st
     out = s;
   }
 
-  // 高亮标记 ==：成对出现时逐字符转义
-  out = out.replace(/==/g, "\\=\\=");
+  // v0.12.2 P5：高亮 `==` 的转义移到下方「按真实配对判定」处统一处理
+  // （原实现在此无条件 `out.replace(/==/g,"\\=\\=")`，产生 `a \=\= b` 噪音）。
 
   // 图片起始 ![（仅在后随 [ 时有意义）
   out = out.replace(/!(?=\[)/g, "\\!");
@@ -702,9 +800,26 @@ function escapeText(text: string, inTableCell = false, pairContext?: string): st
   if (PAIRABLE_SUP.test(pairSource)) {
     out = out.replace(/\^/g, "\\^");
   }
-  // `$` 保留无条件转义：两个裸 `$` 会配对成行内公式（$x$），是真实风险，
-  // 且金额场景（$100）与公式难以在不看上下文的情况下区分。
-  out = out.replace(/\$/g, "\\$");
+  // v0.12.2 P5：`$` 与 `==` 同样改为**只在真的能配对时**才转义。
+  //
+  // 缺陷背景（P5，与已修的 P1-6 同类）：原实现对这两个符号**无条件裸替换**
+  // （`out.replace(/\$/g,"\\$")` 与 `out.replace(/==/g,"\\=\\=")`），于是
+  //   `价格 $100` → `价格 \$100`、`a == b` → `a \=\= b`
+  // 凭空多出反斜杠（git diff 噪音），而这两处根本不会配对。
+  //
+  // 本机实测（markdown-it + 本项目 katex-plugin，判定与解析口径一致）：
+  //   `$`：两个 `$` 且**中间至少一个字符**才配对（空白也算内容）
+  //        `$x$` `$ x $` `x$y$z` `a $5 and $6` → 配对（必须转义）
+  //        `价格 $100` `cost $5` `100$` `$` `$$` `5$ off` → 不配对（不该转义）
+  //   `==`：闭合 `==` 的两侧内容必须**非空白且非 `=`**
+  //        `a==b==c` `==x==` `x ==y== z` → 配对（必须转义）
+  //        `a == b` `x==y` `2 == 3 == 4` `a===b` `a ==` → 不配对（不该转义）
+  if (PAIRABLE_MATH.test(pairSource)) {
+    out = out.replace(/\$/g, "\\$");
+  }
+  if (PAIRABLE_MARK.test(pairSource)) {
+    out = out.replace(/==/g, "\\=\\=");
+  }
 
   if (inTableCell) {
     out = out.replace(/\|/g, "\\|");

@@ -313,15 +313,22 @@ export function generatePrintCss(
  * 在 @page 规则之外，添加 body 的字体、行高、颜色等基础样式，
  * 使导出 HTML 在打印时有合理的默认排版。
  *
+ * v0.12.2 P8：`includeCSS` 的口径明确为「是否附加**内容排版**样式」——
+ *   · 恒注入：`@page`（纸张大小/页边距，**分页结构性必需**，关掉会贴边/错纸）
+ *             + 页眉页脚定位元素（用户已显式配置，属结构而非排版）；
+ *   · 受 includeCSS 控制：本函数返回的 body 基础排版（字体/字号/行高/颜色）。
+ *
  * @param options PDF 导出选项
  * @param title 文档标题
  * @param dateStr 日期字符串
+ * @param includeContentStyle 是否附加 body 基础排版（默认 true）
  * @returns 完整的 <style> 标签内容（不含 <style> 标签本身）
  */
 export function generateFullPrintStylesheet(
   options: PdfExportOptions,
   title: string,
   dateStr: string = formatDate(),
+  includeContentStyle = true,
 ): string {
   const pageCss = generatePrintCss(options, title, dateStr);
   // v0.11.0 B2-2：页眉/页脚改用 fixed 常规元素（Chromium 打印每页重复），
@@ -329,12 +336,14 @@ export function generateFullPrintStylesheet(
   const marginBoxCss = generateFixedMarginBoxCss(options, title, dateStr);
   // body 基础样式：避免 @page margin:0 导致内容贴边
   // 由于 @page 已设置 margin，body 不再需要额外 padding
-  const bodyCss = `body {
+  const bodyCss = includeContentStyle
+    ? `body {
   font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 12pt;
   line-height: 1.6;
   color: #1a1a1a;
-}`;
+}`
+    : "";
   const parts = [pageCss, marginBoxCss, bodyCss].filter(Boolean);
   return parts.join("\n");
 }

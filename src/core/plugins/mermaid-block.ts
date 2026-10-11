@@ -16,6 +16,8 @@ import type { Node as PMNode } from "prosemirror-model";
 import mermaid from "mermaid";
 // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除）
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
+// v0.12.2 P7：内联提示文案走 i18n（此前硬编码中文，英文界面穿帮）
+import { t } from "../../i18n/state";
 
 // 初始化 mermaid 配置（只执行一次）
 let mermaidInitialized = false;
@@ -158,7 +160,7 @@ export class MermaidBlockView implements NodeView {
     this.lastRenderedCode = code;
 
     if (!code || code === "\u200B") {
-      this.previewLayer.innerHTML = '<div class="mermaid-empty">双击编辑 Mermaid 图表</div>';
+      this.previewLayer.innerHTML = `<div class="mermaid-empty">${t("mermaid.empty")}</div>`;
       return;
     }
 
@@ -172,7 +174,7 @@ export class MermaidBlockView implements NodeView {
       // 清理 mermaid 产生的错误 DOM（mermaid 渲染失败时会创建 id 为 d+id 的元素）
       const errorEl = document.getElementById(`dmermaid-${renderCount}`);
       if (errorEl) errorEl.remove();
-      this.previewLayer.innerHTML = `<div class="mermaid-error"><span class="mermaid-error-icon">⚠</span> 图表语法错误<div class="mermaid-error-detail">${this.escapeHtml(errorMsg)}</div></div>`;
+      this.previewLayer.innerHTML = `<div class="mermaid-error"><span class="mermaid-error-icon">⚠</span> ${t("mermaid.syntaxError")}<div class="mermaid-error-detail">${this.escapeHtml(errorMsg)}</div></div>`;
     }
   }
 

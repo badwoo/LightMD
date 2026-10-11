@@ -8,6 +8,8 @@ import "./styles/global.css";
 // → 用户写完 CSS 点「保存设置」毫无反应，属典型欺骗性 UI。
 // 本模块负责幂等注入 + 非法 CSS 兜底 + 跨窗口同步。
 import { initCustomCssInjection } from "./utils/customCss";
+// v0.12.2 P1：应用级错误边界（此前的崩溃会直接白屏，用户无法自救）
+import { ErrorBoundary } from "./components/ErrorBoundary";
 // KaTeX 样式通过 index.html 中的 <link> 引入 /vendor/katex/katex.min.css
 // 避免 Vite 将字体文件重复打包到 dist/assets/（节省约 3MB）
 
@@ -16,6 +18,8 @@ initCustomCssInjection();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>
 );

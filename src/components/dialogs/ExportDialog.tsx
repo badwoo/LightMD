@@ -278,15 +278,60 @@ function formatLabel(format: ExportFormat, tt: (key: string, params?: Record<str
 
 // ─── 导出实现 ──────────────────────────────────────────
 
-const EXPORT_CSS = `
-/* LightMD 导出样式 */
+/**
+ * v0.12.2 P9：导出样式跟随应用的排版设置。
+ *
+ * ─── 缺陷背景 ───
+ *
+ * 导出样式此前是模块级常量（`EXPORT_CSS`），字号/行高/内容宽度**全部硬编码**
+ * （16px / 1.8 / 860px）。用户在设置里调完排版，导出结果完全不变 —— 属
+ * 「所见非所得」。主题（明暗）此前已跟随（Prism / mermaid 用 isDarkTheme），
+ * 唯独排版三项没有。
+ *
+ * ─── 修复 ───
+ *
+ * 改为工厂函数，接收应用当前排版设置（字号 / 行高 / 段间距 / 内容宽度 / 字体），
+ * 与阅读区 `.ProseMirror` 的口径保持一致：
+ *   · 字号：`fontSize`（px）
+ *   · 行高：与 `--editor-line-height` 同义（0/缺省 → 1.8）
+ *   · 段间距：与 `--editor-paragraph-spacing` 同义（倍数，0/缺省 → 1，乘在 0.8em 上）
+ *   · 内容宽度：与 `--editor-content-max-width` 同义（0/缺省 → 860px）
+ *   · 字体：`fontFamily` 设置（空 → 沿用导出内置的跨平台字体栈）
+ *
+ * 未传（或字段为 0/空）时回落到原有硬编码默认值，**不改变既有导出观感**。
+ */
+export interface ExportTypography {
+  /** 正文字号（px）；0/缺省 → 16 */
+  fontSize?: number;
+  /** 行高倍数；0/缺省 → 1.8 */
+  lineHeight?: number;
+  /** 段间距倍数；0/缺省 → 1 */
+  paragraphSpacing?: number;
+  /** 内容区最大宽度（px）；0/缺省 → 860 */
+  contentMaxWidth?: number;
+  /** 正文字体；空 → 内置跨平台字体栈 */
+  fontFamily?: string;
+}
+
+export function buildExportCss(t?: ExportTypography): string {
+  const fontSize = t?.fontSize && t.fontSize > 0 ? `${t.fontSize}px` : "16px";
+  const lineHeight = t?.lineHeight && t.lineHeight > 0 ? t.lineHeight : 1.8;
+  // 与 editor.css 同口径：0.8em * 倍数（默认 1）
+  const paraMul = t?.paragraphSpacing && t.paragraphSpacing > 0 ? t.paragraphSpacing : 1;
+  const maxWidth = t?.contentMaxWidth && t.contentMaxWidth > 0 ? `${t.contentMaxWidth}px` : "860px";
+  const fontFamily = t?.fontFamily && t.fontFamily.trim()
+    ? `${t.fontFamily}, "Segoe UI", "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif`
+    : `"Segoe UI", "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif`;
+
+  return `
+/* LightMD 导出样式（v0.12.2 P9：字号/行高/段间距/内容宽度/字体跟随应用设置） */
 /* body 选择器用于 HTML/PDF 导出；.markdown-body 选择器用于图片导出（临时 div 无 body 元素） */
 body, .markdown-body {
-  font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 16px;
-  line-height: 1.8;
+  font-family: ${fontFamily};
+  font-size: ${fontSize};
+  line-height: ${lineHeight};
   color: #1a1a1a;
-  max-width: 860px;
+  max-width: ${maxWidth};
   margin: 40px auto;
   padding: 0 20px;
 }
@@ -296,6 +341,7 @@ body, .markdown-body {
   margin: 0;
   padding: 0;
 }
+p { margin-top: calc(0.8em * ${paraMul}); margin-bottom: calc(0.8em * ${paraMul}); }
 h1 { font-size: 2em; margin: 0.8em 0 0.4em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; }
 h2 { font-size: 1.5em; margin: 0.7em 0 0.3em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; }
 h3 { font-size: 1.25em; margin: 0.6em 0 0.2em; }
@@ -327,6 +373,25 @@ li.task-item { display: flex; align-items: flex-start; gap: 6px; margin: 0.3em 0
 .task-item input[type="checkbox"] { margin-top: 5px; accent-color: #5c9dff; }
 .task-item .task-checked { text-decoration: line-through; color: #999; }
 `;
+}
+
+/**
+ * v0.12.2 P9：从设置 store 读取当前排版，供全部导出格式复用。
+ *
+ * 与阅读区 `.ProseMirror` 消费的 CSS 变量同源（`useSettingsStore` 的
+ * fontSize / lineHeight / paragraphSpacing / contentMaxWidth / fontFamily），
+ * 保证「设置里调什么，导出就是什么」。
+ */
+function currentExportTypography(): ExportTypography {
+  const s = useSettingsStore.getState();
+  return {
+    fontSize: s.fontSize,
+    lineHeight: s.lineHeight,
+    paragraphSpacing: s.paragraphSpacing,
+    contentMaxWidth: s.contentMaxWidth,
+    fontFamily: s.fontFamily,
+  };
+}
 
 export async function renderMarkdownToHTML(md: string): Promise<string> {
   // R1(v0.10.0):导出 HTML/PDF/PNG 统一走 renderPipeline——typographer 恒 false
@@ -365,7 +430,7 @@ async function exportHTML(
   // 获取当前主题，生成对应的 PrismJS 高亮 CSS
   const theme = useSettingsStore.getState().theme;
   const prismCss = getPrismCss(isDarkTheme(theme));
-  const styles = includeCSS ? `<style>${EXPORT_CSS}\n${prismCss}</style>` : "";
+  const styles = includeCSS ? `<style>${buildExportCss(currentExportTypography())}\n${prismCss}</style>` : "";
   // 检测是否包含 mermaid 图表，注入 mermaid 脚本
   const hasMermaid = body.includes('class="mermaid"');
   // 检测是否包含数学公式，注入 KaTeX 脚本
@@ -516,15 +581,19 @@ async function exportPDFWithOptions(
   // v0.11.0 B2-2：页眉/页脚改用 fixed 常规元素（Chromium 打印每页重复），
   // 不再依赖 @page margin box（Chromium --print-to-pdf 不支持，原实现静默失效）；
   // 页码已降级停用（无法在现有导出引擎下实现）。
-  const printCss = generateFullPrintStylesheet(options, baseName);
+  // v0.12.2 P8：body 基础排版跟随 includeCSS（@page 与页眉页脚保持恒注入）
+  const printCss = generateFullPrintStylesheet(options, baseName, undefined, includeCSS);
   // 页眉/页脚的真实 DOM 片段（CSS content 属性只对伪元素生效，故需节点）
   const marginBoxHtml = generateFixedMarginBoxHtml(options, baseName);
 
-  // 组合样式：打印 CSS + 主题样式 + PrismJS 高亮 CSS
-  // 注意：@page 规则必须放在 <style> 中且作用于整个文档
-  // v0.11.0 B2-2 补充：includeCSS=false 时不再无条件注入 printCss
-  //（此前无论用户是否勾选「包含样式」都会拼上 printCss，语义不一致）
-  const styles = `<style>${printCss}${includeCSS ? "\n" + EXPORT_CSS + "\n" + prismCss : ""}</style>`;
+  // 组合样式：printCss 恒注入 + 主题/内容样式按 includeCSS 控制
+  //
+  // v0.12.2 P8 修正注释与实现的一致性：
+  //   原注释称「includeCSS=false 时不再无条件注入 printCss」，但 printCss 位于
+  //   三元之外 → 实际**仍然无条件注入**（注释与实现不符）。
+  //   现明确口径：`@page`（纸张/页边距）与页眉页脚是**分页结构性**的，必须恒注入；
+  //   `includeCSS` 只控制**内容排版**（导出样式表 + Prism 高亮 + body 基础样式）。
+  const styles = `<style>${printCss}${includeCSS ? "\n" + buildExportCss(currentExportTypography()) + "\n" + prismCss : ""}</style>`;
 
   // 检测是否包含 mermaid 图表，注入 mermaid 脚本
   const hasMermaid = body.includes('class="mermaid"');
@@ -622,7 +691,7 @@ async function exportPDFWithOptions(
  * G12：导出图片（PNG 长图）
  *
  * 实现：
- * 1. 创建隐藏的临时 div（宽度 860px，与 EXPORT_CSS 的 max-width 一致）
+ * 1. 创建隐藏的临时 div（宽度 = 内容区宽度设置，与导出样式表的 max-width 一致）
  * 2. 渲染 markdown + 主题样式到 div
  * 3. 将所有 <img> 的 src 转为 dataURL（避免跨域/相对路径导致截图空白或报错）
  * 4. R2：将 data-math 占位替换为 KaTeX 渲染结果、pre.mermaid 替换为 SVG
@@ -645,19 +714,23 @@ async function exportImage(
 
   // 创建临时隐藏 div
   // 使用 fixed + visibility:hidden 替代 left:-9999px，确保元素在视口内能正确渲染
+  // v0.12.2 P9：容器宽度跟随「内容区宽度」设置（此前恒 860px，与导出 CSS 的
+  // max-width 不一致；0/缺省时回落 860px）。
+  const typo = currentExportTypography();
+  const shotWidth = typo.contentMaxWidth && typo.contentMaxWidth > 0 ? typo.contentMaxWidth : 860;
   const container = document.createElement("div");
   container.style.position = "fixed";
   container.style.left = "0";
   container.style.top = "0";
-  container.style.width = "860px";
+  container.style.width = `${shotWidth}px`;
   container.style.padding = "20px";
   container.style.background = "#fff";
   container.style.color = "#1a1a1a";
   container.style.boxSizing = "border-box";
   container.style.zIndex = "-1";
   container.style.visibility = "hidden";
-  // 注入样式（EXPORT_CSS 已包含 .markdown-body 选择器，确保临时 div 也能应用基础排版样式）
-  container.innerHTML = `<style>${EXPORT_CSS}\n${prismCss}</style><div class="markdown-body">${body}</div>`;
+  // 注入样式（buildExportCss 已包含 .markdown-body 选择器，确保临时 div 也能应用基础排版样式）
+  container.innerHTML = `<style>${buildExportCss(typo)}\n${prismCss}</style><div class="markdown-body">${body}</div>`;
   document.body.appendChild(container);
 
   try {

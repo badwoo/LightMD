@@ -549,6 +549,8 @@ export const enUS: Record<string, string> = {
   "table.deleteRow": "Delete Row",
   "table.deleteColumn": "Delete Column",
   "table.deleteTable": "Delete Table",
+  // v0.12.2 P7
+  "table.deleteRowInHead": "Delete Row (header row cannot be deleted)",
   "table.alignLeft": "Align Left",
   "table.alignCenter": "Align Center",
   "table.alignRight": "Align Right",
@@ -661,6 +663,9 @@ export const enUS: Record<string, string> = {
   "command.task-done.name": "Completed Task",
   "command.math.name": "Math Formula",
   "command.mermaid.name": "Mermaid Diagram",
+  // v0.12.2 P7
+  "mermaid.empty": "Double-click to edit Mermaid diagram",
+  "mermaid.syntaxError": "Diagram syntax error",
   "command.table.name": "Table",
   "command.bold.name": "Bold",
   "command.italic.name": "Italic",

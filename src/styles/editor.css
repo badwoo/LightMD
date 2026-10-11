@@ -383,11 +383,30 @@
   flex-shrink: 0;
 }
 
+/* v0.12.2 P1：Emoji 短码在阅读模式显示为图形。
+   实现要点：不删原文本（DOM 文本长度必须与 doc 一致，否则 posAtDOM/光标定位失效），
+   而是把原短码用 font-size:0 收起，再用 ::before 叠加显示 emoji 图形。
+   · 光标进入该区间时（.ProseMirror-focused 且选区落在其中）恢复显示原短码？
+     不需要——用户在阅读模式看到图形、切源码模式看到原短码，语义与 v0.11.0 一致。
+   · 复制行为：font-size:0 的文字仍会被复制到剪贴板，保持「复制得到 :smile:」的原有语义。 */
+.emoji-shortcode {
+  font-size: 0;
+  /* 零宽占位，避免 font-size:0 让行内框塌陷影响点击区域 */
+  display: inline;
+}
+.emoji-shortcode::before {
+  content: attr(data-emoji);
+  font-size: var(--editor-font-size, 16px);
+  /* 伪元素不参与布局宽度计算会与 font-size:0 的原文本重叠，用 inline-block 撑开 */
+  display: inline-block;
+  line-height: inherit;
+  vertical-align: baseline;
+}
+
 /* E6(v0.9.4)：行内语法标记显示（光标进入 mark 区间时以伪元素显示源码符号） */
 .md-reveal::before {
   content: attr(data-md-open);
-}
-.md-reveal::after {
+}.md-reveal::after {
   content: attr(data-md-close);
 }
 .md-reveal::before,
@@ -1457,6 +1476,21 @@ body.format-painter-armed .source-editor {
   word-break: break-word;
   white-space: pre-wrap;
   user-select: none;
+}
+
+/* v0.12.2 P8 修复：分屏 iframe 复用了 `.ProseMirror` 类（为拿到字号/字体变量），
+   但 `.ProseMirror` 还带两条**只对编辑器正文元素成立**的规则：
+     · zoom: var(--doc-zoom) → iframe 元素自身被缩放，与 iframe 内部 body 的 zoom
+       **叠乘**（200% 时右侧实际约 4 倍、溢出被裁切）；
+     · max-width: 860px + margin: 0 auto → iframe 被钳制居中，不铺满分栏
+       （内联 width: calc(50% - 3px) 被覆盖）。
+   两条都会破坏分屏右侧的几何，进而让视口锚点补偿算错位置（焦点保持失效）。
+   这里显式重置：缩放与内容宽度只应由 iframe **内部**文档负责。 */
+iframe.split-preview {
+  zoom: 1;
+  max-width: none;
+  margin: 0;
+  padding: 0;
 }
 
 /* 分屏预览区 Markdown 内容样式 */

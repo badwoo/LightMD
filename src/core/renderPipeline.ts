@@ -22,7 +22,7 @@
  * - DOCX/LaTeX：exportBlocks.createDefaultMarkdownIt → getDocxLatexMarkdownIt
  */
 import type MarkdownIt from "markdown-it";
-import { createMarkdownIt, getMarkdownIt } from "./markdown/parser";
+import { createMarkdownIt } from "./markdown/parser";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { highlightCodeBlocksInHtml } from "../utils/highlight";
 
@@ -131,19 +131,37 @@ export function getRenderBreaks(): boolean {
 
 /**
  * 渲染/导出共用的 markdown-it 实例（分屏 + HTML/PDF/PNG 导出）。
- * 直接委托 parser.ts 的 getMarkdownIt——与编辑器 PM 解析共用同一工厂配置，
- * 保证"编辑器里能解析的语法"与"分屏/导出里渲染的语法"一致。
  *
- * v0.11.0 B1-3：注册 imageSizePlugin（图片 |W 尺寸后缀）。
- * 用模块级 flag 保证只包装一次 renderer rule（避免多次 push core rule 重复拆分）。
+ * ─── v0.12.2 P2 修复：不得复用 parser 的共享单例 ───
+ *
+ * 原实现 `getRenderMarkdownIt` 直接 `return getMarkdownIt(breaks)`，拿到的是
+ * `parser.ts` 的**模块级单例 `md`**——与 `markdownToDoc` 用的**同一个实例**。
+ * 而 `imageSizePlugin` 的 core rule 会在**每次 parse** 时就地改写 `token.content`
+ * （把 `"alt|300"` 改成 `"alt"`），于是污染是持久的：
+ *
+ *   实测：调用一次 renderMarkdownHtml 后，同一文档再走 PM 解析
+ *        `![alt|300](a.png)` → width 由 300 变 **null**（宽度丢失）；
+ *        若用户接着编辑该块，存盘即 **永久丢失 `|300`**（B6 原文快路径不再命中）。
+ *
+ * 修复：本管线使用**独立实例**（每次 `createMarkdownIt` 新建 + 装插件），
+ * 与 PM 解析彻底隔离。配置仍来自同一工厂，因此"编辑器能解析的语法"与
+ * "分屏/导出能渲染的语法"保持一致（R1 的统一目标不受影响）。
+ *
+ * 成本：模块级缓存一份实例（GFM / CommonMark 各一），不重复创建。
  */
-let imageSizeInstalled = false;
+const renderInstances: { gfm: MarkdownIt | null; commonmark: MarkdownIt | null } = {
+  gfm: null,
+  commonmark: null,
+};
+
 export function getRenderMarkdownIt(breaks: boolean = getRenderBreaks()): MarkdownIt {
-  const inst = getMarkdownIt(breaks);
-  if (!imageSizeInstalled) {
-    imageSizePlugin(inst);
-    imageSizeInstalled = true;
-  }
+  const slot = breaks ? "gfm" : "commonmark";
+  const cached = renderInstances[slot];
+  if (cached) return cached;
+  // 独立实例：与 parser.ts 的共享单例隔离，避免 imageSizePlugin 就地改写污染 PM 解析
+  const inst = createMarkdownIt({ breaks, html: true, htmlBlockDisabled: true });
+  imageSizePlugin(inst);
+  renderInstances[slot] = inst;
   return inst;
 }
 

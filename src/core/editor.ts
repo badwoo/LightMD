@@ -29,6 +29,8 @@ import { footnoteHoverPlugin } from "./plugins/footnote-hover";
 import { tocUpdatePlugin } from "./plugins/toc-update";
 // v0.11.0 B4-8：Emoji 短码渲染层显示为图形（不改 doc 与序列化）
 import { emojiRenderPlugin } from "./plugins/emoji-render";
+// v0.12.2 P6：标题锚点 id 与文本同步（改标题后重算 slug，避免 TOC/锚点失配）
+import { headingIdSyncPlugin } from "./plugins/heading-id-sync";
 // v0.11.0 B4-9：阅读模式图片灯箱（点击放大/遮罩关闭/键盘导航）
 import { imageLightboxPlugin } from "./plugins/image-lightbox";
 import { CodeBlockView } from "./plugins/code-block";
@@ -247,6 +249,10 @@ export function createEditor(options: EditorOptions): EditorView | null {
       footnoteHoverPlugin,
       // v0.11.0 B4-7：TOC 自动更新（appendTransaction + 300ms debounce）
       tocUpdatePlugin(),
+      // v0.12.2 P6：标题锚点 id 与文本同步（改标题后重算 slug）
+      // 注册在 tocUpdatePlugin 之后：两者都是 appendTransaction，PM 按顺序调用，
+      // 本插件同步执行、tocUpdate 防抖调度，互不干扰。
+      headingIdSyncPlugin(),
       // v0.11.0 B4-8：Emoji 短码渲染为图形（惰性取 md 实例，含 emoji 插件）
       emojiRenderPlugin(() => getMarkdownIt(true)),
       // v0.11.0 B4-9：图片灯箱（仅阅读模式生效）
@@ -272,20 +278,37 @@ export function createEditor(options: EditorOptions): EditorView | null {
   // 序列化防抖：连续输入时只序列化最后一次变更，减少内存分配
   let serializeRafId: number | null = null;
 
-  const view = new EditorView(parent, {
-    state,
-    nodeViews: {
-      code_block: (node, view, getPos) => new CodeBlockView(node, view, getPos),
-      mermaid_block: (node, view, getPos) => new MermaidBlockView(node, view, getPos),
-      math_inline: (node, view, getPos) => new MathInlineView(node, view, getPos),
-      math_block: (node, view, getPos) => new MathBlockView(node, view, getPos),
-      task_item: (node, view, getPos) => new TaskItemView(node, view, getPos),
-      table: (node, view, getPos) => new TableView(node, view, getPos),
-      // F1 修复：td/th 挂轻量 NodeView，忽略拖拽时直接写 style 的 attributes
-      // mutation，阻止 ProseMirror 重建单元格导致列宽丢失
-      table_cell: (node) => new TableCellView(node),
-      table_header: (node) => new TableCellView(node),
-    },
+  // v0.12.2 P1：编辑器创建兜底。
+  //
+  // 缺陷背景：v0.11.0 的 emoji text NodeView 会在含可识别短码的文档上让
+  // `new EditorView(...)` 抛 `RangeError: Text must be rendered as a DOM text node`，
+  // 而本函数与调用方（EditorContainer 的 useEffect）都没有 try/catch，
+  // 应用也没有 ErrorBoundary → React 树卸载、阅读/编辑模式白屏不可用。
+  //
+  // 该具体缺陷已在 emoji-render.ts 改为 Decoration 后修复；这里再加一道防线：
+  // 任何 NodeView / 插件在创建期抛错时，退化为「纯段落文本」的只读视图，
+  // 让用户至少能看到内容并切到源码模式，而不是白屏。
+  // v0.12.2 P1：先声明 view，供下方 dispatchTransaction 闭包引用（创建后才赋值）
+  let view: EditorView;
+
+  const buildView = (stateToUse: typeof state, plain = false): EditorView =>
+    new EditorView(parent, {
+      state: stateToUse,
+      // 兜底模式：不挂任何自定义 NodeView（排除 NodeView 抛错的可能）
+      nodeViews: plain
+        ? {}
+        : {
+            code_block: (node, view, getPos) => new CodeBlockView(node, view, getPos),
+            mermaid_block: (node, view, getPos) => new MermaidBlockView(node, view, getPos),
+            math_inline: (node, view, getPos) => new MathInlineView(node, view, getPos),
+            math_block: (node, view, getPos) => new MathBlockView(node, view, getPos),
+            task_item: (node, view, getPos) => new TaskItemView(node, view, getPos),
+            table: (node, view, getPos) => new TableView(node, view, getPos),
+            // F1 修复：td/th 挂轻量 NodeView，忽略拖拽时直接写 style 的 attributes
+            // mutation，阻止 ProseMirror 重建单元格导致列宽丢失
+            table_cell: (node) => new TableCellView(node),
+            table_header: (node) => new TableCellView(node),
+          },
     // G10：通过 attributes 设置 spellcheck 初始值（contenteditable 元素原生属性）
     // 后续切换由 EditorContainer 的 useEffect 同步更新 dom.spellcheck 属性
     attributes: {
@@ -365,6 +388,19 @@ export function createEditor(options: EditorOptions): EditorView | null {
       }
     },
   });
+
+  // v0.12.2 P1：创建失败时退化为「无自定义 NodeView」的简单视图（仍可读可切源码模式）
+  try {
+    view = buildView(state);
+  } catch (err) {
+    console.error("[createEditor] 编辑器创建失败，回退为简化视图:", err);
+    try {
+      view = buildView(state, true);
+    } catch (err2) {
+      console.error("[createEditor] 简化视图创建仍失败:", err2);
+      return null;
+    }
+  }
 
   // 通知父组件编辑器已就绪
   if (onReady) {

@@ -556,6 +556,8 @@ export const zhCN: Record<string, string> = {
   "table.deleteRow": "删除行",
   "table.deleteColumn": "删除列",
   "table.deleteTable": "删除表格",
+  // v0.12.2 P7：表头行禁用删除的提示（此前硬编码中文，英文界面穿帮）
+  "table.deleteRowInHead": "删除行（表头行不可删除）",
   "table.alignLeft": "左对齐",
   "table.alignCenter": "居中对齐",
   "table.alignRight": "右对齐",
@@ -668,6 +670,9 @@ export const zhCN: Record<string, string> = {
   "command.task-done.name": "已完成任务",
   "command.math.name": "数学公式",
   "command.mermaid.name": "Mermaid 图表",
+  // v0.12.2 P7：Mermaid NodeView 内联提示（此前硬编码中文，英文界面穿帮）
+  "mermaid.empty": "双击编辑 Mermaid 图表",
+  "mermaid.syntaxError": "图表语法错误",
   "command.table.name": "表格",
   "command.bold.name": "加粗",
   "command.italic.name": "斜体",

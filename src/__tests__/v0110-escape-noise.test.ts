@@ -27,6 +27,7 @@
 import { describe, it, expect } from "vitest";
 import { markdownToDoc } from "../core/markdown/parser";
 import { docToMarkdown } from "../core/markdown/serializer";
+import { lightMDSchema } from "../core/schema";
 
 /**
  * 模拟「用户编辑过该块」：重建顶层块节点使其脱离 B6 原文映射，
@@ -103,10 +104,20 @@ describe("v0.11.0 B3-4 转义噪音（绕过 B6 原文保留）", () => {
     expect(out).not.toContain("\\_");
   });
 
-  it("$ 保持无条件转义（两个裸 $ 会配对成行内公式）", () => {
-    // 即便只有一个 $ 也转义：金额($100)与公式($x$)在不看重上下文时无法区分
-    const out = reparse("价格 $100");
-    expect(out).toContain("\\$");
+  it("$ 只在真的能配对时才转义（v0.12.2 P5 修正）", () => {
+    // v0.11.0 曾无条件转义：即便只有一个 $ 也写成 `\$`，理由是"金额与公式无法区分"。
+    // v0.12.2 P5 改为与 ~ / ^ 同口径的**真实配对判定**（本机实测 markdown-it）：
+    //   · 单个 $（金额 $100）→ 不配对 → 不转义，消除反斜杠噪音；
+    //   · 两个 $ 且中间有内容 → 配对成行内公式 → 必须转义，否则语义被改写。
+    expect(reparse("价格 $100")).toBe("价格 $100\n");
+    expect(reparse("cost $5")).toBe("cost $5\n");
+    // 真配对场景：源文本已成 math_inline 节点时由节点自身输出 `$...$`，不经过
+    // escapeText；这里用**纯文本节点**验证 escapeText 的配对转义确实生效。
+    const doc = lightMDSchema.nodeFromJSON({
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "x$y$z" }] }],
+    });
+    expect(docToMarkdown(doc)).toContain("\\$");
   });
 
   it("行内代码内的 ~ ^ $ 不受影响（不叠加二次转义）", () => {

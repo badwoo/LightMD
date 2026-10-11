@@ -4644,13 +4644,32 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const blockAnchor = container ? captureAnchor(container, ".ProseMirror > *") : null;
     const ta = isSourceMode ? sourceTextareaRef.current : null;
     const textAnchor = ta ? captureTextAnchor(ta) : null;
-    return { container, blockAnchor, ta, textAnchor };
+    // v0.12.2 P8：分屏右侧 iframe 也要参与锚点补偿。
+    // 此前只处理了「preview 的阅读容器」与「edit/split 左侧 textarea」，
+    // 分屏右侧 iframe 的行高/段间距/内容宽度变化**完全没有补偿**
+    // → 拖设置滑条时只有右侧预览的阅读焦点丢失（三模式行为不一致）。
+    // 与既有 iframe 锚点效应同口径：锚 iframe 文档滚动元素内的 body > *。
+    let iframeScroller: Element | null = null;
+    let iframeBlockAnchor: ViewportAnchor | null = null;
+    if (viewMode === "split") {
+      const doc = previewIframeRef.current?.contentDocument;
+      const s = (doc?.scrollingElement ?? doc?.documentElement) ?? null;
+      if (s) {
+        iframeScroller = s;
+        iframeBlockAnchor = captureAnchor(s, "body > *");
+      }
+    }
+    return { container, blockAnchor, ta, textAnchor, iframeScroller, iframeBlockAnchor };
   }, [viewMode, isMdFile, isSourceMode]);
 
   const restoreTypographyAnchor = useCallback(
     (anchor: ReturnType<typeof captureTypographyAnchor>) => {
       if (anchor.container && anchor.blockAnchor) restoreAnchor(anchor.container, anchor.blockAnchor);
       if (anchor.ta && anchor.textAnchor) restoreTextAnchor(anchor.ta, anchor.textAnchor);
+      // v0.12.2 P8：分屏右侧 iframe 同步补偿
+      if (anchor.iframeScroller && anchor.iframeBlockAnchor) {
+        restoreAnchor(anchor.iframeScroller, anchor.iframeBlockAnchor);
+      }
     },
     [],
   );
@@ -4911,8 +4930,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   //
   // 用 rAF 节流：scroll 事件在拖动滚动条时可达 60+/s，直接 setState 会造成
   // 持续重渲染；且只在百分比变化时（整数）才 dispatch，进一步降低更新次数。
+  //
+  // ─── v0.12.2 P8 修复：分屏/编辑模式恒显 100% ───
+  //
+  // 原实现只监听 `editorRef.current`（PM 阅读容器），而该容器在 split 模式
+  // 是 `display:none`（见下方 render：仅 preview 模式 flex:1）→
+  // `scrollHeight - clientHeight = 0` → 判定为"无可滚动空间" → **恒报 100%**。
+  // 分屏实际滚动发生在左侧 textarea 与右侧 iframe，编辑模式发生在 textarea。
+  //
+  // 现按模式选择真正的滚动容器（阅读 → editor-container，编辑/分屏 → textarea），
+  // 分屏时以左侧 textarea 为准（与状态栏"光标行列"同源，语义一致）。
   useEffect(() => {
-    const container = editorRef.current;
+    const container = isSourceMode ? sourceTextareaRef.current : editorRef.current;
     if (!container) return;
     let raf = 0;
     let lastPct = -1;
@@ -4939,7 +4968,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       container.removeEventListener("scroll", onScroll);
       if (raf !== 0) cancelAnimationFrame(raf);
     };
-  }, [setScrollProgress]);
+    // isSourceMode 变化（切模式）时重新绑定到正确的滚动容器
+  }, [setScrollProgress, isSourceMode, viewMode]);
 
   // ─── G10：ProseMirror spellcheck 属性同步 ──────
   // 浏览器原生 spellcheck 通过 contenteditable 元素的 spellcheck 属性控制
@@ -5418,6 +5448,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       fontMono: v("--font-mono", "'Cascadia Code', 'Consolas', monospace"),
       fontSize: v("--editor-font-size", "16px"),
       fontFamily: v("--editor-font-family", "sans-serif"),
+      // v0.12.2 P8：分屏右侧 iframe 此前把行高/段间距/内容宽度**硬编码**
+      // （line-height:1.8 / max-width:860px / p{margin:.5em 0}），三项排版设置
+      // 只作用于阅读区与编辑区 → 分屏右侧不跟随、左右不一致。
+      // 现收集这三个变量（由 EditorContainer 写到 :root，与字号同一机制），
+      // 供 sharedStyles 用 var() 消费；值为 0 / 空时用兜底保持主题默认观感。
+      lineHeight: v("--editor-line-height", "1.8"),
+      paragraphSpacing: v("--editor-paragraph-spacing", "1"),
+      contentMaxWidth: v("--editor-content-max-width", "860px"),
       // v0.12.0 需求5：文档缩放比例（注入 iframe :root，body 用 var 引用）
       docZoom: v("--doc-zoom", "1"),
     };
@@ -5475,15 +5513,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         --doc-zoom: ${cv.docZoom};
       }
       body {
-        margin: 0; padding: 40px 60px; max-width: 860px; margin: 0 auto;
+        margin: 0; padding: 40px 60px; max-width: var(--editor-content-max-width, 860px); margin: 0 auto;
         background: ${cv.bgPrimary}; color: ${cv.textPrimary};
         font-size: ${cv.fontSize}; font-family: ${cv.fontFamily};
-        line-height: 1.8; word-break: break-word;
+        line-height: var(--editor-line-height, 1.8); word-break: break-word;
         zoom: var(--doc-zoom, 1);
       }
       h1,h2,h3,h4,h5,h6 { color: ${cv.headingColor}; margin: 1.2em 0 0.6em; line-height: 1.3; }
       h1 { font-size: 2em; } h2 { font-size: 1.5em; } h3 { font-size: 1.25em; } h4 { font-size: 1.1em; }
-      p { margin: 0.5em 0; }
+      p { margin: calc(0.8em * var(--editor-paragraph-spacing, 1)) 0; }
       ul, ol { padding-left: 2em; margin: 0.4em 0; }
       li { margin: 0.2em 0; }
       code { background: ${cv.codeBg}; color: ${cv.codeText}; padding: 0.15em 0.4em; border-radius: 3px; font-family: ${cv.fontMono}; font-size: 0.9em; }

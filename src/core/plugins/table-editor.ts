@@ -1128,7 +1128,7 @@ export class TableView implements NodeView {
     btn.disabled = disabled;
     btn.style.opacity = disabled ? "0.35" : "";
     btn.style.cursor = disabled ? "not-allowed" : "pointer";
-    btn.title = disabled ? `${baseTitle}（表头行不可删除）` : baseTitle;
+    btn.title = disabled ? t("table.deleteRowInHead") : baseTitle;
   }
 
   private onSelectionChange = () => {

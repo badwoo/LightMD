@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.12.1**
+**Current Version: v0.12.2**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -216,6 +216,31 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.12.2 (2026-10-12)
+
+**Defect convergence — 9 fixes (1 P0 crash, 2 data-loss/corruption)** (baseline 0.12.1)
+
+Based on the [LightMD 0.12.1 assessment report](../_plan/lightmd-0.12.1-assessment-report.md), this release adds **no new features** — it only converges defects and consistency.
+
+**Fixes**
+
+| Priority | Summary |
+|---|---|
+| **P0 crash** | **Documents containing emoji shortcodes could not be opened (blank screen)** — the old implementation registered a NodeView for `text` nodes and returned a `<span>`, but ProseMirror requires text nodes to render as DOM text nodes (`RangeError: Text must be rendered as a DOM text node`). Testing further showed a text-node NodeView is *also* unusable: it becomes a `CustomNodeViewDesc`, which does not implement `localPosFromDOM`, so `posAtDOM` degrades (all 15 offsets map to position 1 — clicking anywhere jumps to the paragraph start). Rewritten to use **Decorations**: the shortcode is collapsed with `font-size:0` and the glyph is drawn via `::before`, keeping DOM text length identical to the doc so position mapping stays correct. Also added a `createEditor` try/catch fallback and an app-level ErrorBoundary |
+| **Data loss** | **Image `![alt\|300](src)` width silently erased** — `getRenderMarkdownIt` returned the *shared singleton* from `parser.ts`, and `imageSizePlugin` mutated `token.content` in place. After one preview render or export, PM parsing saw the stripped content, so `width` became `null`; editing that block then **permanently lost the width** on save. Now uses a dedicated instance, fully isolated from PM parsing |
+| **Data corruption** | **Continuation lines after an in-paragraph break hijacked by block constructs** — typing `---`/`===` after Enter **swallowed the paragraph into a Setext heading** and lost literal text; `- `/`+ `/`* `/`1. `/`# `/`> `/`~~~`/`[^1]:` split the paragraph into lists/headings/quotes. Verified that **no line-break encoding fixes this** (two-space, backslash and bare newline all fail identically), so the only viable fix is **escaping the continuation line's leading character** — now applied precisely against a measured set of 21 dangerous constructs, with zero change to normal text |
+| Enter semantics | ① **Enter at paragraph end now creates a new paragraph** (a trailing hard break cannot be expressed in Markdown — `"abc  \n\n"` and `"abc\\\n\n"` both produce no hardbreak token — so it was always lost on save); ② **Enter on a cross-block selection no longer merges paragraphs** (added the missing empty-selection guard) |
+| Source noise | **`$` and `==` now use real pairing detection** — `价格 $100` is no longer saved as `价格 \$100`, nor `a == b` as `a \=\= b`, while genuine formula/highlight pairs are still escaped (same rule as the previously fixed `~`/`^`) |
+| Anchor mismatch | **Heading `id` is recomputed on rename** — new `heading-id-sync` plugin (appendTransaction, O(headings)) re-derives ids with the parser's own slugify + dedup rule, so `[toc]` and `#anchor` links no longer break |
+| Split geometry | **Split pane was double-zoomed and clamped** — the iframe reused the `.ProseMirror` class and inherited both `zoom: var(--doc-zoom)` (multiplying with the inner body zoom: 200% rendered ~400%) and `max-width:860px; margin:0 auto` (overriding the inline width and centring it). Now explicitly reset; zoom and width are owned solely by the inner document |
+| Three-mode consistency | **Focus retention completed + progress fixed** — ① the split iframe previously took no part in typography anchor compensation (focus was lost on the right when adjusting line-height/paragraph-spacing/content-width), now wired to the same block-anchor mechanism; ② the status-bar reading percentage previously measured only the `display:none` reading container, so it always showed 100% in split mode — it now selects the real scroll container per mode |
+| Export consistency | **Export styling follows app settings** — HTML/PDF/PNG font size, line height, paragraph spacing, content width and font family now come from settings (previously hard-coded 16px/1.8/860px); also corrected the `includeCSS` comment/implementation mismatch and clarified the contract: `@page` and header/footer are structural and always injected; `includeCSS` controls content typography only |
+| i18n | Added English for the table toolbar disabled hint and Mermaid empty/syntax-error hints (previously hard-coded Chinese) |
+
+**Quality verification**: frontend **253 files / 4117 tests all pass** (new `v0122-convergence` adds 52 **behavioural** assertions — real `createEditor` mounts, real edit→save→reopen round-trips, real render pipeline — not pure functions or source-text regex; 2 legacy assertions adapted); `tsc --noEmit` clean.
+
+**Known scope**: per request, P4 (`pairTabOut` winning Tab inside table cells) is **not** changed — it was confirmed to be the desired behaviour. DOCX/EPUB/LaTeX still have no style-customisation entry (PDF does); that is an unimplemented feature, not a defect.
 
 ### v0.12.1 (2026-10-09, round 2 on 2026-10-10)
 

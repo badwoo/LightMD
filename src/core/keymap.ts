@@ -69,7 +69,7 @@ const insertHardBreak: Command = (state, dispatch) => {
 };
 
 /**
- * v0.12.1 需求10：**回车 = 段内换行**（顶层普通段落内）。
+ * v0.12.1 需求10 / v0.12.2 P3+F3+F4：**回车 = 段内换行**（顶层普通段落内）。
  *
  * 用户反馈："阅读模式编辑的文字没有隔行，切到编辑/分屏就出现了隔行" —— 根因是
  * 阅读模式里按回车走的是 baseKeymap 的 splitBlock（新建段落），序列化后端每行之间
@@ -81,15 +81,35 @@ const insertHardBreak: Command = (state, dispatch) => {
  * 作用域严格限定在**顶层普通段落**（depth === 1 且父节点是 paragraph）：
  * 列表项/任务项（回车必须继续分裂条目）、引用内段落、标题、表格单元格一律不接管，
  * 交回原有链（splitListItem / baseKeymap），语义零回归。
+ *
+ * ─── v0.12.2 修复三处缺陷 ───
+ *
+ * **F4（跨块选区合并段落）**：原实现没有空选区守卫，而 `replaceSelectionWith`
+ * 会先删除整个选区 —— 选中跨两个段落的文字后按回车，两段被合并成一段。
+ * 现补 `selection.empty` 守卫，非空选区交回 `splitBlock`（与 `insertHardBreak` 口径一致）。
+ *
+ * **F3（段末换行存盘丢失）**：段落**末尾**的 `hard_break` 在 Markdown 里
+ * **无法表达**。实测（markdown-it，GFM 与 CommonMark 均同）：
+ *   `"abc  \n\n"` → paragraph（**无 hardbreak token**）
+ *   `"abc\\\n\n"` → paragraph（反斜杠同样无效，且反斜杠会被当字面文本）
+ *   `"abc  \ndef\n"` → hardbreak（只有"后面还有内容"才能往返）
+ * 即段末回车产生的换行存盘后必然静默丢失。现改为：光标已在段落末尾时返回 false，
+ * 交回 baseKeymap 的 `splitBlock` 新建段落 —— 既不丢内容，也与"回车换行"的直觉一致。
+ *
+ * 综合效果：段中回车 = 段内换行（可往返）；段末回车 = 新建段落（可往返）。
  */
 const insertSoftBreakOnEnter: Command = (state, dispatch) => {
-  const { $from } = state.selection;
+  const { selection } = state;
+  const { $from } = selection;
   if ($from.depth !== 1) return false;
   if ($from.parent.type.name !== "paragraph") return false;
+  // F4：非空选区交回 splitBlock（replaceSelectionWith 会删除整个选区并合并块）
+  if (!selection.empty) return false;
+  // F3：段落末尾交回 splitBlock（段末 hard_break 无法在 Markdown 中表达，存盘必丢）
+  if ($from.parentOffset === $from.parent.content.size) return false;
   if (!schema.nodes.hard_break) return false;
   if (dispatch) {
-    // 空选区=光标处插入；有选区=先删除再插入（replaceSelectionWith 两者都覆盖），
-    // 插入后选区落在 hard_break 之后，与"换行后继续输入"一致
+    // 空选区=光标处插入
     dispatch(state.tr.replaceSelectionWith(schema.nodes.hard_break.create()));
   }
   return true;
