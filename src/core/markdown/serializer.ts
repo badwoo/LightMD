@@ -468,6 +468,7 @@ const MARK_OUTER_ORDER: Record<string, number> = {
 
 function inlineToMarkdown(node: Node, context?: "table"): string {
   const parts: string[] = [];
+  const childCount = node.childCount;
 
   // v0.11.0 B3-4：`~`/`^` 的转义判定需要**整段行内文本**作为上下文——
   // 标记可能被 mark 拆散到多个文本节点，但回读时仍能跨节点配对。
@@ -478,7 +479,7 @@ function inlineToMarkdown(node: Node, context?: "table"): string {
     else pairContext += c.textContent;
   });
 
-  node.forEach((child) => {
+  node.forEach((child, _offset, index) => {
     if (child.type.name === "text") {
       let text = child.text || "";
 
@@ -506,11 +507,27 @@ function inlineToMarkdown(node: Node, context?: "table"): string {
       // v0.9.0 C3：目标地址含空格/括号/尖括号时用 <...> 包裹
       parts.push(`![${escapeText(alt || "")}${widthPart}](${escapeDest(src)}${titlePart})`);
     } else if (child.type.name === "hard_break") {
-      // v0.8.0 WP5 修复6：硬换行序列化为 CommonMark 两空格硬换行（"  \n"），
+      // v0.8.0 WP5 修复6：常规段内硬换行序列化为 CommonMark 两空格硬换行（"  \n"），
       // 与 parser 的 softbreak→hard_break 互逆，保证 md→doc→md 段内换行保真。
-      // v0.8.0 修复 P0-1：表格单元格内不能写 "  \n"（真实换行会截断 GFM 表格行），
-      // 改用 <br>，parser 端在表格上下文会把它还原为 hard_break。
-      parts.push(context === "table" ? "<br>" : "  \n");
+      //
+      // v0.12.3 需求12：回车 = 换行后，"段内换行"成为高频形态，补齐三类
+      // **用 "  \n" 无法表达**的边界（实测：只有 <br> 能原样往返）：
+      //   · 段首 / 段末：行首两空格会被当作空行、行尾两空格会被解析器吞掉
+      //     （`"abc  \n"` 重开 → hard_break 计数 0，换行丢失）；
+      //   · 相邻硬换行（连续两次回车）：中间行只剩空白 → 被判定为段落边界，
+      //     重开后一个段落被拆成两个；
+      //   · 表格单元格：真实换行会截断 GFM 表格行（v0.8.0 修复 P0-1 同源）。
+      // parser 的 HTML 白名单把 <br> 还原为同一个 hard_break 节点，往返稳定。
+      const prevIsBreak = index > 0 && node.child(index - 1).type.name === "hard_break";
+      const nextIsBreak =
+        index + 1 < childCount && node.child(index + 1).type.name === "hard_break";
+      const useBr =
+        context === "table" ||
+        index === 0 ||
+        index === childCount - 1 ||
+        prevIsBreak ||
+        nextIsBreak;
+      parts.push(useBr ? "<br>" : "  \n");
     } else if (child.type.name === "math_inline") {
       // 行内数学公式（v0.9.0 D8：剥整体 ZWSP 占位）
       const latex = stripZwsp(child.textContent || child.attrs.latex || "");
@@ -521,7 +538,90 @@ function inlineToMarkdown(node: Node, context?: "table"): string {
     }
   });
 
-  return parts.join("");
+  const out = parts.join("");
+  // 表格单元格内不出现真实换行（换行统一写成 <br>），无需续行转义
+  return context === "table" ? out : escapeContinuationLines(out);
+}
+
+/**
+ * v0.12.3 需求12：段内换行（`hard_break` → `"  \n"`）的**续行行首转义**。
+ *
+ * ─── 缺陷背景（v0.12.1 P3 实测复现，回退后同源风险仍在） ───
+ *
+ * Markdown 的**块级起始判定只看行首**，与上一行如何结尾无关 —— 于是用户
+ * "回车换行后写一条分隔线 / 列表 / 标题"时，续行会被块级规则劫持：
+ *
+ *   实测（真实 markdown-it + 本项目 parser）：
+ *     "abc  \n---\n"     → [heading:2("abc")]   段落升格为 Setext 标题，`---` 文本丢失
+ *     "abc  \n===\n"     → [heading:1("abc")]
+ *     "abc  \n- item\n"  → [paragraph, bullet_list]   块结构被拆
+ *     "abc  \n# h\n"     → [paragraph, heading:1]
+ *
+ * ─── 为什么不能改换行编码 ───
+ *
+ * 三种编码（两空格 `"  \n"` / 反斜杠 `"\\\n"` / 裸换行 `"\n"`）**全部同样失败**：
+ * Setext 与块起始是块级解释，与上一行结尾无关。故唯一可行修复是**转义续行行首字符**。
+ * （v0.12.3 另已把段首/段末/相邻换行改用 `<br>`，但那解决的是"换行本身丢失"，
+ *   与"续行被块级规则劫持"是两个独立问题。）
+ *
+ * ─── 规则 ───
+ *
+ * 对每个续行（第一个 `\n` 之后的行）：先剥离行首空白，若首个非空白字符会触发块级
+ * 解释，则在其前插入 `\`。已以 `\` 开头的行跳过（`escapeText` 已转义过，避免叠加）。
+ */
+function escapeContinuationLines(inline: string): string {
+  // 无换行 → 绝大多数段落在此短路，零开销
+  if (!inline.includes("\n")) return inline;
+
+  const lines = inline.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    lines[i] = escapeContinuationLine(lines[i]);
+  }
+  return lines.join("\n");
+}
+
+/** 续行危险行首：`{re, esc}` —— esc 接收「行首空白 + 正文」，返回转义后的行 */
+const CONTINUATION_GUARDS: Array<{
+  re: RegExp;
+  esc: (lead: string, body: string) => string;
+}> = [
+  // Setext 下划线（`=`）—— 单字符即可把上一行升格为 H1
+  { re: /^=+\s*$/, esc: (lead, body) => lead + "\\" + body },
+  // Setext 下划线（`-`）与主题分隔线 —— 单字符即可升格为 H2
+  { re: /^-+\s*$/, esc: (lead, body) => lead + "\\" + body },
+  // 主题分隔线（`*` / `_`，3 个以上；escapeText 已处理成对星号，此处兜底）
+  { re: /^([*_])(\s*\1)*\s*$/, esc: (lead, body) => lead + "\\" + body },
+  // ATX 标题
+  { re: /^#{1,6}(\s|$)/, esc: (lead, body) => lead + "\\" + body },
+  // 引用
+  { re: /^>/, esc: (lead, body) => lead + "\\" + body },
+  // 无序列表（含缩进场景：先剥空白再判定）
+  { re: /^[-+*](\s|$)/, esc: (lead, body) => lead + "\\" + body },
+  // 有序列表（只转义分隔符，保持 `1.` 可读）
+  {
+    re: /^(\d{1,9})([.)])(\s|$)/,
+    esc: (lead, body) => lead + body.replace(/^(\d{1,9})([.)])/, "$1\\$2"),
+  },
+  // 围栏代码块
+  { re: /^(`{3,}|~{3,})/, esc: (lead, body) => lead + "\\" + body },
+  // HTML 块（`<div>` / `<!--` / `<!DOCTYPE` / `<?xml`）
+  { re: /^<(\/?[a-zA-Z][a-zA-Z0-9-]*|[!?])/, esc: (lead, body) => lead + "\\" + body },
+  // 链接引用定义 / 脚注定义
+  { re: /^\[[^\]]*\]:/, esc: (lead, body) => lead + "\\" + body },
+];
+
+function escapeContinuationLine(line: string): string {
+  if (!line) return line;
+  const m = /^(\s*)/.exec(line)!;
+  const lead = m[1];
+  const body = line.slice(lead.length);
+  if (!body) return line;
+  // 已被 escapeText 转义过 → 跳过，避免叠加反斜杠
+  if (body.startsWith("\\")) return line;
+  for (const g of CONTINUATION_GUARDS) {
+    if (g.re.test(body)) return g.esc(lead, body);
+  }
+  return line;
 }
 
 function applyMark(text: string, mark: Mark, inTableCell = false): string {

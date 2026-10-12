@@ -11,7 +11,7 @@
 import { undo, redo } from "prosemirror-history";
 import type { Command, EditorState } from "prosemirror-state";
 import { Plugin, TextSelection } from "prosemirror-state";
-import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands } from "prosemirror-commands";
+import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands, splitBlock } from "prosemirror-commands";
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from "prosemirror-schema-list";
 import { keymap } from "prosemirror-keymap";
 import { lightMDSchema } from "./schema";
@@ -66,6 +66,86 @@ const insertHardBreak: Command = (state, dispatch) => {
     dispatch(state.tr.replaceSelectionWith(schema.nodes.hard_break.create()));
   }
   return true;
+};
+
+/**
+ * v0.12.3 需求12：**阅读模式回车 = 换行（与源文本一一对应）**。
+ *
+ * ─── 缺陷背景（用户反馈） ───
+ *
+ * ① **凭空多空行**：阅读模式里按回车走 baseKeymap 的 `splitBlock`（新建段落），
+ *    而 Markdown 的段落之间必须有空行 —— 用户只按了一次回车，切到编辑/分屏模式
+ *    却看到 `第一行\n\n第二行`（多出一个空行），三模式观感不一致。
+ * ② **行距忽大**：新建段落带 `.ProseMirror > p` 的 `0.8em` 上下 margin，段间间距
+ *    比段内换行（仅 line-height）明显更大 —— 用户反馈"阅读模式编辑文字行间距很高，
+ *    和打开的其他文档不一样"。
+ *
+ * 两个现象同源：**回车被解释成了"段落"而不是"换行"**。
+ *
+ * ─── 口径 ───
+ *
+ * 阅读模式按一次回车 = 源文本里多一个换行，与纯文本编辑器直觉一致：
+ *   · 光标在**行内**（前有内容）→ 插入 `hard_break`（段内换行，源码 `"  \n"`）；
+ *   · 光标已在**行首**（段首，或紧跟在段内换行之后）→ 兑现为**段落**（源码空行），
+ *     即"再按一次回车才另起一段"。
+ *
+ * 于是 N 次回车恰好得到 N 个换行（1 → 相邻两行；2 → 中间一个空行；3 → 两个空行），
+ * 与用户"阅读模式下有几个回车换行，编辑/分屏模式就对应几个"的要求一致。
+ *
+ * ─── 作用域与守卫 ───
+ *
+ * · **顶层普通段落**（`depth === 1` 且父节点是 paragraph）：列表项/任务项（回车必须
+ *   继续分裂条目）、引用内段落、标题、表格单元格一律不接管，交回原有链
+ *   （`splitListItem` / baseKeymap），语义零回归。
+ * · **空选区守卫**：`replaceSelectionWith` 会先删除整个选区 —— 跨块选区按回车会把
+ *   两段合并成一段（v0.12.2 P4 修过同类缺陷），非空选区一律交回 `splitBlock`。
+ * · **IME 守卫**：中文输入法候选确认期间（`view.composing`）不接管，
+ *   与 `insertHardBreak` / auto-pair 的 Backspace 守卫同口径。
+ * · **行首兑现段落时先撤掉上一个硬换行**：Markdown 无法表达"段末硬换行"
+ *   （行尾两空格会被解析器吞掉），留着会往返丢失，故删除后再分割块。
+ */
+const insertSoftBreakOnEnter: Command = (state, dispatch, view) => {
+  const { selection } = state;
+  const { $from } = selection;
+  if (!selection.empty) return false;
+  if ($from.depth !== 1) return false;
+  if ($from.parent.type.name !== "paragraph") return false;
+  if (!schema.nodes.hard_break) return false;
+  if (view?.composing) return false;
+
+  // 段首：不接管，交回 baseKeymap 的 splitBlock（与既有"段首回车另起一段"一致）
+  if ($from.parentOffset === 0) return false;
+
+  const before = $from.nodeBefore;
+  if (before && before.type === schema.nodes.hard_break) {
+    // 行首（上一次回车刚插入的段内换行）：这次回车兑现为段落。
+    // 先撤掉那个硬换行（Markdown 无法表达"段末硬换行"，留着会往返丢失），
+    // 再在同一位置分割块 —— **必须放在同一个事务里**：
+    // 两次 dispatch 会各自基于旧 state 派生 tr，第二个 tr 与 view.state 不匹配
+    // （实测抛 `RangeError: Applying a mismatched transaction`）。
+    if (dispatch) {
+      const breakFrom = $from.pos - before.nodeSize;
+      const tr = state.tr.delete(breakFrom, $from.pos);
+      const splitAt = tr.mapping.map(breakFrom);
+      tr.split(splitAt);
+      tr.setSelection(TextSelection.near(tr.doc.resolve(splitAt + 1)));
+      dispatch(tr.scrollIntoView());
+    }
+    return true;
+  }
+
+  if (dispatch) {
+    dispatch(state.tr.replaceSelectionWith(schema.nodes.hard_break.create()));
+  }
+  return true;
+};
+
+/**
+ * 顶层普通段落（v0.12.3 需求12 两种回车语义的作用面，判定与 insertSoftBreakOnEnter 同源）。
+ */
+const inTopLevelParagraph = (state: EditorState): boolean => {
+  const { $from } = state.selection;
+  return $from.depth === 1 && $from.parent.type.name === "paragraph";
 };
 
 /**
@@ -158,17 +238,23 @@ export function buildKeymap() {
     // 序列化时被合并成一行 → 模式切换后换行丢失。
     // chainCommands：两个命令互斥（各自在不适用的上下文返回 false），
     // 都不适用时返回 false，交回 baseKeymap 的 splitBlock 处理普通段落。
+    // v0.12.3 需求12：**顶层普通段落**里回车 = 换行（不再凭空新建段落，源码不出现多余空行）。
+    // 必须排在列表分裂之前：列表项内的段落 depth ≥ 2，本命令自动放行 → 仍走 splitListItem。
     Enter: chainCommands(
+      insertSoftBreakOnEnter,
       splitListItem(schema.nodes.task_item),
       splitListItem(schema.nodes.list_item),
     ),
 
-    // 段内硬换行（Shift+Enter）
+    // Shift+Enter：段内硬换行（列表/引用/标题/表格内语义不变）
     // v0.11.0 B1-1：包一层 IME 守卫——中文输入法候选确认过程中（view.composing）
     // 若触发 Shift+Enter，不得执行命令。理由与 auto-pair.ts 的 Backspace 守卫一致：
     // 不加此守卫时，候选确认会被误判为命令按键，进而在代码块内触发破坏性拆块。
+    // v0.12.3 需求12：与回车**对调**——顶层普通段落里 Shift+回车 = 新建段落，
+    // 保证"另起一段（源码空行）"始终有一个一次按键的入口；其余位置保持原有硬换行语义。
     "Shift-Enter": (state, dispatch, view) => {
       if (view?.composing) return false;
+      if (inTopLevelParagraph(state)) return splitBlock(state, dispatch);
       return insertHardBreak(state, dispatch);
     },
 
