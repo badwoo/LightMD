@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.12.2**
+**Current Version: v0.12.3**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -162,10 +162,10 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.12.1 installers:
+Visit the [Releases](../../releases) page to download the 0.12.3 installers:
 
-- **`LightMD_0.12.1_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.12.1_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.12.3_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.12.3_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
