@@ -80,7 +80,7 @@ export function docToMarkdown(doc: Node): string {
       return;
     }
 
-    const md = blockToMarkdown(node);
+    const md = blockToMarkdown(node, true);
     if (md !== null) {
       // 在块之间添加空行（v0.9.0 D2：表格不再豁免——列表后的表格必须有空行隔开）
       if (index < bodyCount && parts.length > 0) {
@@ -101,10 +101,15 @@ export function docToMarkdown(doc: Node): string {
 
 // ─── 块级序列化 ──────────────────────────────────────────
 
-function blockToMarkdown(node: Node): string | null {
+function blockToMarkdown(node: Node, topLevel = false): string | null {
   switch (node.type.name) {
-    case "paragraph":
-      return inlineToMarkdown(node) + "\n";
+    case "paragraph": {
+      // v0.12.3（二轮反馈）：顶层段落的段末硬换行写成 `"  \n"`（源码无 <br>）后，**不再追加段落
+      // 终止换行** —— 否则 `"A  \n"` + `"\n"` = `"A  \n\n"` 会被解析成两个段落
+      // （中间那个空行构成段落边界，实测往返后 doc 多出一个空段落）。
+      const body = inlineToMarkdown(node, topLevel ? "top" : undefined);
+      return body.endsWith("\n") ? body : body + "\n";
+    }
     case "heading":
       return headingToMarkdown(node);
     case "blockquote":
@@ -466,7 +471,7 @@ const MARK_OUTER_ORDER: Record<string, number> = {
   code: 99,
 };
 
-function inlineToMarkdown(node: Node, context?: "table"): string {
+function inlineToMarkdown(node: Node, context?: "table" | "top"): string {
   const parts: string[] = [];
   const childCount = node.childCount;
 
@@ -507,26 +512,33 @@ function inlineToMarkdown(node: Node, context?: "table"): string {
       // v0.9.0 C3：目标地址含空格/括号/尖括号时用 <...> 包裹
       parts.push(`![${escapeText(alt || "")}${widthPart}](${escapeDest(src)}${titlePart})`);
     } else if (child.type.name === "hard_break") {
-      // v0.8.0 WP5 修复6：常规段内硬换行序列化为 CommonMark 两空格硬换行（"  \n"），
-      // 与 parser 的 softbreak→hard_break 互逆，保证 md→doc→md 段内换行保真。
-      //
       // v0.12.3 需求12：回车 = 换行后，"段内换行"成为高频形态，补齐三类
       // **用 "  \n" 无法表达**的边界（实测：只有 <br> 能原样往返）：
-      //   · 段首 / 段末：行首两空格会被当作空行、行尾两空格会被解析器吞掉
-      //     （`"abc  \n"` 重开 → hard_break 计数 0，换行丢失）；
+      //   · 段首：行首两空格会被当作空行（实测 `"  \nA"` 直接拆成两个段落）；
       //   · 相邻硬换行（连续两次回车）：中间行只剩空白 → 被判定为段落边界，
       //     重开后一个段落被拆成两个；
       //   · 表格单元格：真实换行会截断 GFM 表格行（v0.8.0 修复 P0-1 同源）。
       // parser 的 HTML 白名单把 <br> 还原为同一个 hard_break 节点，往返稳定。
+      //
+      // v0.12.3（二轮反馈）：**顶层段落的段末换行改用两空格换行**，源码里不再出现
+      // `<br>`（源码看起来就是"多了一个换行"，与用户的直觉一致）。
+      // 为什么只在顶层：段末换行在 Markdown 里**无法表达**（行尾两空格会被解析器吞掉），
+      // 而列表项/引用/脚注的序列化会把段落内容**嵌进带前缀的行**（`- ` / `> ` / 缩进），
+      // 内嵌换行会把块拆开（实测 `"- A  \n\n"` → 列表被截断 + 多出一个游离段落），
+      // 故这些上下文仍用 <br> 保结构；顶层段落靠 `blockToMarkdown` 不再追加段落终止换行，
+      // 避免 `"A  \n"` + `"\n"` = `"A  \n\n"` 被解析成两个段落。
+      // 代价（与 CommonMark/其他编辑器一致）：段末那个空行不随文件重开保留；
+      // 一旦继续输入下一行，它就成为段中换行，完全保真。
       const prevIsBreak = index > 0 && node.child(index - 1).type.name === "hard_break";
       const nextIsBreak =
         index + 1 < childCount && node.child(index + 1).type.name === "hard_break";
+      const isTrailing = index === childCount - 1;
       const useBr =
         context === "table" ||
         index === 0 ||
-        index === childCount - 1 ||
         prevIsBreak ||
-        nextIsBreak;
+        nextIsBreak ||
+        (isTrailing && context !== "top");
       parts.push(useBr ? "<br>" : "  \n");
     } else if (child.type.name === "math_inline") {
       // 行内数学公式（v0.9.0 D8：剥整体 ZWSP 占位）

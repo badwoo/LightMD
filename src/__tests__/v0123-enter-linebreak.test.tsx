@@ -20,6 +20,12 @@ import { createEditor } from "../core/editor";
 import { markdownToDoc } from "../core/markdown/parser";
 import { docToMarkdown } from "../core/markdown/serializer";
 import { lightMDSchema } from "../core/schema";
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const readSrc = (rel: string) => readFileSync(join(here, rel), "utf8");
 
 /** 挂载真实编辑器（真实 createEditor + 全部插件/NodeView） */
 function mount(md: string): EditorView {
@@ -273,13 +279,58 @@ describe("段内换行的序列化边界（往返保真，防数据损坏）", (
     }
   });
 
-  it("段末换行用 <br> 表达（Markdown 无法写行尾硬换行，否则往返丢失）", () => {
+  it("段末换行写成两空格换行（源码里不再出现 <br>）", () => {
     const view = mount("第一行");
     caretToEnd(view);
     press(view, "Enter");
-    // 尚未输入下一行：这是一个"段末硬换行"
-    expect(source(view)).toBe("第一行<br>\n");
-    expect(shapeOfMarkdown(source(view))).toBe("paragraph#1");
+    // 尚未输入下一行：源码就是"多了一个换行"，不出现 <br>
+    expect(source(view)).toBe("第一行  \n");
+    // Markdown 无法表达段末换行（行尾两空格会被解析器吞掉）→ 重开只剩一个段落，
+    // 但**不会**多出空段落（序列化时不再追加段落终止换行）
+    expect(shapeOfMarkdown(source(view))).toBe("paragraph");
+    expect(markdownToDoc(source(view)).childCount).toBe(1);
+  });
+
+  it("段末换行不破坏列表 / 引用结构（仍用 <br> 保结构）", () => {
+    // 列表项内的段末硬换行：序列化路径把内容嵌进 `- ` 前缀行，内嵌换行会拆块
+    const liDoc = lightMDSchema.topNodeType.create(null, [
+      lightMDSchema.nodes.bullet_list.create(null, [
+        lightMDSchema.nodes.list_item.create(null, [
+          lightMDSchema.nodes.paragraph.create(null, [
+            lightMDSchema.text("A"),
+            lightMDSchema.nodes.hard_break.create(),
+          ]),
+        ]),
+      ]),
+    ]);
+    const liMd = docToMarkdown(liDoc);
+    expect(liMd).toBe("- A<br>\n");
+    expect(shapeOfMarkdown(liMd)).toContain("bullet_list");
+
+    // 引用内的段末硬换行同样保结构
+    const qDoc = lightMDSchema.topNodeType.create(null, [
+      lightMDSchema.nodes.blockquote.create(null, [
+        lightMDSchema.nodes.paragraph.create(null, [
+          lightMDSchema.text("A"),
+          lightMDSchema.nodes.hard_break.create(),
+        ]),
+      ]),
+    ]);
+    const qMd = docToMarkdown(qDoc);
+    expect(qMd).toBe("> A<br>\n");
+    expect(shapeOfMarkdown(qMd)).toContain("blockquote");
+  });
+
+  it("顶层段落段末换行 + 后续段落：不会多出空段落", () => {
+    const view = mount("第一行\n\n第二行");
+    // 光标放到第一段末尾（doc 起点后 1 + 文本长度）
+    const firstEnd = 1 + "第一行".length;
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, firstEnd)));
+    press(view, "Enter");
+    const md = source(view);
+    // 段末换行写成两空格；块间仍保留一个空行
+    expect(md).toBe("第一行  \n\n第二行\n");
+    expect(shapeOfMarkdown(md)).toBe("paragraph,paragraph");
   });
 
   it("连续段内换行不会把段落拆成两块", () => {
@@ -310,5 +361,42 @@ describe("段内换行的序列化边界（往返保真，防数据损坏）", (
       return true;
     });
     expect(strong).toBe(2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// v0.12.3（二轮反馈）：行高跟随设置（编辑区 + 分屏两侧）
+// ─────────────────────────────────────────────────────────
+
+describe("v0.12.3（二轮反馈）：行高跟随设置（编辑区 + 分屏两侧）", () => {
+  it("编辑区 textarea 消费 --editor-line-height（不再硬编码 1.8）", () => {
+    const css = readSrc("../styles/editor.css");
+    // 行首的 .source-editor 规则块（避免匹配到 `body.format-painter-armed .source-editor`）
+    const block = /^\.source-editor\s*\{[\s\S]*?\n\}/m.exec(css)?.[0] ?? "";
+    expect(block).toContain("line-height: var(--editor-line-height, 1.8)");
+  });
+
+  it("阅读区仍然消费同一个变量（三模式同源）", () => {
+    const css = readSrc("../styles/editor.css");
+    const pm = /\.ProseMirror\s*\{[\s\S]*?\n\}/.exec(css)?.[0] ?? "";
+    expect(pm).toContain("line-height: var(--editor-line-height, 1.8)");
+  });
+
+  it("分屏 iframe 把三项排版注入自己的 :root（iframe 不继承父文档 CSS 变量）", () => {
+    const src = readSrc("../components/editor/EditorContainer.tsx");
+    expect(src).toContain("--editor-line-height: ${cv.lineHeight}");
+    expect(src).toContain("--editor-paragraph-spacing: ${cv.paragraphSpacing}");
+    expect(src).toContain("--editor-content-max-width: ${cv.contentMaxWidth}");
+    // iframe 内部确实按变量消费
+    expect(src).toContain("line-height: var(--editor-line-height, 1.8)");
+  });
+
+  it("正文与排版同时变化时也刷新 iframe 样式表（否则右侧停在旧行高）", () => {
+    const src = readSrc("../components/editor/EditorContainer.tsx");
+    // 增量（else）分支里 typoChanged 时重写 <style>
+    const incrementBlock = src.slice(src.indexOf("增量更新：只替换 body 内容"));
+    expect(incrementBlock).toMatch(
+      /if \(typoChanged\) \{\s*const styleEl = doc\.querySelector\("style"\);/,
+    );
   });
 });

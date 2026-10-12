@@ -5511,6 +5511,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         --font-mono: ${cv.fontMono};
         /* v0.12.0 需求5：文档缩放比例（body zoom 引用，增量更新时由 setProperty 刷新） */
         --doc-zoom: ${cv.docZoom};
+        /* v0.12.3（二轮反馈）：**三项排版必须注入 iframe 自己的 :root**。
+           iframe 是独立文档，**不继承父文档的 CSS 变量** —— 此前 body/p 写的是
+           var(--editor-line-height, 1.8) 等，变量在 iframe 内从未定义，于是恒取兜底值：
+           在设置里拖「行高 / 段间距 / 内容区宽度」，分屏右侧预览纹丝不动（v0.12.2 P8
+           以为"消费 var() 即跟随"，实际漏了注入这一步）。此处把父文档实测值写好。 */
+        --editor-line-height: ${cv.lineHeight};
+        --editor-paragraph-spacing: ${cv.paragraphSpacing};
+        --editor-content-max-width: ${cv.contentMaxWidth};
       }
       body {
         margin: 0; padding: 40px 60px; max-width: var(--editor-content-max-width, 860px); margin: 0 auto;
@@ -5636,6 +5644,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 替换 body 内容（样式通过 :root 变量自动更新）
       // v0.12.0 需求5：缩放变化也走增量分支 —— 刷新 :root 的 --doc-zoom（body zoom 引用它）
       doc.documentElement.style.setProperty("--doc-zoom", cv.docZoom);
+      // v0.12.3（二轮反馈）：正文与排版**同时**变化时也要刷新样式表，否则 <style> 里注入的
+      // 排版变量（行高 / 段间距 / 内容宽度）会停留在旧值，右侧预览不跟随。
+      if (typoChanged) {
+        const styleEl = doc.querySelector("style");
+        if (styleEl) styleEl.textContent = sharedStyles + getPrismCss(isDarkTheme(theme));
+      }
       doc.body.innerHTML = previewHtml;
       // 重新触发 mermaid 渲染（脚本已加载，直接调用 run）
       if (hasMermaid && (doc as any).defaultView?.mermaid) {

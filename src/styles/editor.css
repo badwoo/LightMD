@@ -1276,7 +1276,12 @@ body.format-painter-armed .source-editor {
   resize: none;
   background: var(--bg-primary);
   color: var(--text-primary);
-  line-height: 1.8;
+  /* v0.12.3（二轮反馈）：编辑模式的**行高跟随设置**。
+     旧实现硬编码 1.8，而阅读区 `.ProseMirror` 用 var(--editor-line-height, 1.8)
+     → 把设置里的「行高」调到 1.8 以外时，只有阅读/分屏右侧会变、编辑区不动。
+     打字机滚动、视口锚点、专注遮罩都在运行时读 `getComputedStyle(textarea)` 的
+     line-height（resolveLineHeight），故这里改成变量后这些测量自动跟随。 */
+  line-height: var(--editor-line-height, 1.8);
   tab-size: 4;
   white-space: pre-wrap;
   word-break: break-word;
