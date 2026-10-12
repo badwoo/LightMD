@@ -44,7 +44,86 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 🔗 **Smart URL Paste** — pasting a URL creates `[link](URL)`, or turns selected text into a hyperlink (0.5.0)
 - 🖱 **Table Context Menu** — right-click a table in preview mode to insert/delete rows and columns (0.2.0)
 
+## 🆕 What's New (0.9.1 ~ 0.12.3)
+
+### 🚰 Unified Render Pipeline & Export Fidelity (0.10.0)
+
+- 🚰 **Unified render pipeline** — split preview and all export formats (HTML / PDF / PNG / DOCX / LaTeX) now share a single markdown-it configuration source: exports no longer rewrite straight quotes into curly quotes (matching what you see in the editor), and `javascript:` and other dangerous schemes are blocked across every export path (security fix); base64 images are unaffected
+- 🖼 **Formula & diagram fidelity in exports** — PNG / Word (.docx) / ePub exports render formulas with KaTeX (native MathML in ePub) and Mermaid diagrams as vector graphics instead of blank placeholders or raw source; large documents show per-item progress while exporting
+- 🔍 **Regex search & replace** — the `.*` toggle in the search box matches with regex semantics; replacements support `$1` / `$&` capture-group references; invalid patterns are flagged in red without crashing; source and reading modes behave identically
+- 📑 **Outline limit 100 → 1000** — long documents are no longer truncated, with a clear notice when the cap is exceeded
+
+### 🖱 Editing Experience Upgrades (0.12.0 ~ 0.12.3)
+
+- 📄 **Document-wide zoom (0.12.0)** — `Ctrl+wheel` or the zoom slider at the bottom right (appears on hover, click a tick to jump, draggable) works in reading / editing / split modes, 50%–200%, remembered across restarts
+- 🖌 **Format painter (0.12.0)** — via the context menu or the format bar in all three modes: click to apply once (Word-style default), double-click for continuous application (remaining count shown in the status bar, `Esc` to exit); overwrites instead of stacking; works on both block-level and inline formats
+- ⌨️ **Block selection & mouse dragging (0.12.0)** — click a code block / Mermaid diagram / formula / table / divider in reading mode to select the whole block (outlined); `Delete` removes it, or use the right-click "Delete XX"; drag the `⋮⋮` handle on the left of a selected block to reposition it (insertion indicator shown while dragging), fully undone with a single `Ctrl+Z`
+- 👻 **Format placeholders no longer persist (0.12.0)** — clicking "Bold" / "Heading" without a selection only inserts the syntax markers; the placeholder text becomes a grey ghost hint that is replaced as soon as you type, never written to the file
+- 🛡 **Reading focus preserved (0.12.0, enhanced 0.12.1)** — collapsing the sidebar, resizing the window, dragging the split divider, or toggling the outline keeps the first visible paragraph in place (including the split iframe side); dragging font size / line height / paragraph spacing / content width also keeps focus, with the settings window turning glassy while dragging and reverting immediately on cancel
+- 🎯 **Focus mode 3-line window (0.12.0)** — the highlight in editing / split modes expands from a single line to "previous / current / next", shrinking automatically at document boundaries
+- 🏷 **Heading level badges (0.12.1)** — the `#` marks left of headings in reading mode become `H1`/`H2`… badges; click to open an H1–H6 menu to change the level (outline indentation follows); typing `#` to change levels is fully preserved
+- ⌨️ **Auto-pairing rewritten (0.12.1)** — unified rules across all three modes: typing is skipped when the closing symbol already follows, selection is wrapped instead of replaced, one Backspace deletes an empty pair, `Tab` jumps out of a pair; no intervention inside words, after English apostrophes, in escaped state, or inside code blocks / inline code / formulas; pairing scope configurable per brackets / quotes / CJK punctuation
+- ↵ **Enter = line break in reading mode (0.12.3, first introduced 0.12.1)** — inside a top-level plain paragraph, `Enter` inserts a soft line break: N presses = N line breaks, exactly matching the line structure you see; `Shift+Enter` starts a new paragraph; behavior inside lists / quotes / headings / tables / code blocks is unchanged
+- 📐 **Typography settings apply in all modes (0.12.3)** — line height / paragraph spacing / content width now take effect in the reading area, editor and split right pane (previously the editor was pinned at 1.8 and the split pane ignored the settings)
+- ↗️ **`→` exits code blocks (0.12.1 round 2)** — with the cursor at the end of a code block (or the whole block selected), `→` moves past the block so you can keep typing; a new empty paragraph is created automatically when it is the last block
+- 📖 **Book button in editing mode (0.12.1 round 2)** — a small floating book button appears at the top right of editing mode, returning to reading mode in one click
+- 📜 **Editor scrollbar flush right (0.12.1)**; 🎬 **folder expand animations slowed twice (0.12.0 / 0.12.1)**; 📅 **creation time shown for open files (0.12.0)**; ℹ️ **"About LightMD" at the bottom of Settings (0.12.0)**
+
+### 📖 Reading Experience Enhancements (0.11.0 ~ 0.12.3)
+
+- 🖼 **Image lightbox (0.11.0)** — click any image in reading mode to view it full screen with zoom, prev/next navigation and `Esc` to close; clicking in editing mode still selects / drags the node
+- 📐 **Typography settings really applied (0.11.0)** — content width / line height / paragraph spacing previously only affected the editor; the status bar now also shows reading progress as a percentage
+- 🔗 **Heading anchors work (0.11.0)** — `[link](#heading)` jumps correctly in reading mode with top padding so the heading is not hidden; `[toc]` updates live; emoji short codes render as graphics in reading mode (the source text is preserved on save)
+- ✨ **Zero-shift heading symbols (0.12.0)** — source symbols (`#`, `>`, ` ``` `) are rendered with absolute positioning, so text no longer jitters when the cursor enters or leaves headings / quotes / code blocks
+
+### 🛡 Data Safety & Defect Fixes (0.11.0 ~ 0.12.3)
+
+- 🛡 **Three data-safety fixes (0.11.0)** — `Shift+Enter` inside code / math blocks no longer splits the block and rewrites the document; "delete row" on a table header no longer loses data; the Typora-style image sizing `![alt|300](src)` now works in split preview and all export formats
+- 📦 **Export fidelity (0.11.0)** — exported HTML is self-contained (KaTeX fully inlined, mermaid side-loaded to `_assets/`, formulas and diagrams open correctly offline, ~600KB+ with formulas); PDF headers/footers appear on every page and no longer leak internal temp paths; DOCX no longer silently drops content (task lists / definition lists / images / list numbering / formulas / table alignment)
+- 🛡 **Nine defect fixes (0.12.2)** — white-screen crash when opening documents containing Emoji short codes (P0, fixed via decorations plus an error boundary); image `|300` width silently erased by the export pipeline (data loss); spurious backslashes in `$100` / `a == b` on save; stale anchors / outline after renaming headings; double zoom in the split right pane; Enter merging two blocks after a cross-block selection; inconsistent focus preservation across modes; exports ignoring app settings; i18n gaps filled
+- 🔧 **Round 2, 11 items (0.12.1)** — heading badge alignment and wrapping fixes, images no longer lost when switching documents, task checkbox vertical alignment, square / round task icons, repainted format painter icon, settings window open/close animations, and more
+- 🛡 **Line-break round-trip fidelity (0.12.3)** — line breaks at the start of a paragraph, adjacent hard breaks, and inside tables / list items / quotes are saved as explicit `<br>` (trailing double spaces lose structure or split blocks); writing `---` / `# ` / `- ` and 20 other dangerous constructs after a line break is automatically escaped; a trailing line break no longer writes `<br>` (two spaces instead)
+
+### ⌨️ Typewriter-Style Input Rules (0.9.3)
+
+- ⌨️ **Six input rules, type as you go** — `$formula$`, `$$` block formulas, `[text](url)` links, `![alt|300](src)` images, `[^1]` footnote references and definitions, `[toc]` table of contents and two-line table syntax all convert as you type
+- 🧱 **Minimal HTML whitelist** — `<u>` `<br>` `<sub>` `<sup>` `<mark>` parse into the corresponding formats; other inline tags are stripped with content preserved; block-level HTML is kept literally
+- 🔤 **Underline `Ctrl+U`** and **insert link `Ctrl+Shift+K`**
+
+### 🖍 Inline Markers, Paste & Undo (0.9.4)
+
+- 🖍 **Inline syntax markers** — when the cursor enters a bold / italic / inline code / link range, the corresponding Markdown source symbols appear on both sides and hide when you leave
+- 📋 **Markdown-aware paste** — pasting Markdown text or web rich text restores real structure (headings / lists / tables / bold / links…), can be turned off in settings
+- ↩️ **Undo history across modes** — mode switches no longer create empty undo steps or clear history; source mode shows a clear notice when you undo to the very beginning
+
+### 🧹 Editing Consistency Fixes (0.9.2 / 0.11.0)
+
+- ✅ **Reading-mode format commands fixed (0.9.2)** — clicking "Bold" / "Italic" / "Heading" in the toolbar or command palette no longer inserts literal `****` / `## ` "fake commands"; they now run the same real commands as the keyboard shortcuts, and link / image commands write rich text directly
+- ⛔ **No more mis-conversion inside nested blocks (0.9.2)** — typing `---` or ` ``` ` inside list items / quotes stays literal; Backspace during pinyin composition no longer deletes paired symbols; header rows no longer offer "delete row"
+- ⌨️ **Editing consistency completed (0.11.0)** — the command palette gains 7 format commands; `Ctrl+Shift+8/9/.` really work in source mode; `Alt+↑/↓` becomes a true block move (old semantics moved to `Alt+Shift+↑/↓`); `~`/`^` are only escaped when a pair can actually form
+
+### 🖼 Images & Code Blocks (0.9.2 ~ 0.9.4)
+
+- 🖼 **Image size & alt text (0.9.3)** — `![alt|300](src)` sets the display width; the image edit dialog gains "alt text" and "width" inputs; dragged-in images are inserted at the drop point
+- 💻 **Code block language dropdown & soft wrap (0.9.4)** — switch language from the top-right of a code block for instant re-highlighting; built-in highlighting languages grew from 27 to 34
+- 📐 **In-paragraph line-break semantics (0.9.2)** — GFM (immediate line break, default) or CommonMark (two trailing spaces), followed by reading, preview and all export pipelines
+
+### ⚡ Navigation & Performance (0.9.5)
+
+- 🔗 **In-document link navigation** — relative / absolute paths open the target document directly, `#anchor` smooth-scrolls to the heading, external links go to the system browser; also works inside split preview
+- ⚡ **Focus mode & Mermaid rendering performance** — focus-mode decorations are cached in plugin state, so typing in hundred-thousand-character documents no longer stutters; Mermaid hits the cache by content comparison instead of re-rendering on unrelated operations
+- 📝 **Task items & footnotes content model** — nested lists / multiple paragraphs inside task items are no longer flattened, multi-paragraph footnotes keep their structure, editable directly in the editor
+
+### 🪟 Immersive Fullscreen & Shortcut Experience (0.9.1)
+
+- ⌨️ **`Ctrl+,` opens Settings again** — Chinese IMEs (e.g. Microsoft Pinyin) consume `Ctrl+,` as a reserved key before the page ever sees it; a Rust-level system hotkey (`RegisterHotKey`, below the IME in the raw input layer) now reclaims the shortcut while the app is focused and releases it immediately on blur
+- 🖥 **Keys no longer swallowed by browser accelerators** — WebView2 takes over `F11` / `Ctrl+P` / `Ctrl+F` by default; that takeover is now disabled at window creation and all keys reach the app
+- 🖥 **`F11` immersive fullscreen reworked** — large-text hint → system fullscreen → top / left / right / bottom bars collapse automatically, leaving only the document; `Esc` or `F11` again restores everything
+- 🎬 **Settings dialog polish** — no more background bleed-through on open; fade in/out on open and close; `Esc` closes
+- 📐 **Custom shortcut dialog 3×3 redesign** — 3-column category card layout, widened to 1180px, all shortcuts visible in one screen, with open/close animations
+
 ### 🗂 Tabs & File Management (strengthened throughout 0.8.0 ~ 0.8.5)
+
 - 🆕 **Untitled scratch tabs** — create with `Ctrl+N` or by double-clicking the empty tab-bar area; nothing is written to disk until the first save, and unsaved scratch tabs are restored on restart
 - 📌 **Tab bar upgrades** — left/right scroll buttons plus smooth wheel scrolling when tabs overflow; pin a tab (pin icon shown); 9-item context menu (Rename / Pin / Print / Save As / Close Others / Close Others Except Pinned / Close to the Left / Close to the Right / Close Unmodified)
 - 📋 **File tree copy / cut / paste / drag** — copy or cut from the context menu or with `Ctrl+C` / `Ctrl+V`; drag onto a folder to copy, hold `Shift` to move (tab paths follow automatically); name clashes get a " - Copy" suffix
