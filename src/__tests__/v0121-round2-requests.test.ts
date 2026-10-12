@@ -11,7 +11,6 @@
  * 需求7：格式刷图标重绘为小油漆刷
  * 需求8：设置窗口开启「从上方滑下 + 果冻回弹」、关闭「下压蓄力 + 上滑」
  * 需求9：排版四项实时预览 + 拖动时设置窗口玻璃透明 + 取消回滚
- * 需求10：阅读模式回车 = 段内换行（源码不出现空行），Shift+回车 = 新建段落
  * 需求11：编辑模式右上角也有小书本悬浮按钮，点击跳阅读模式
  */
 // @vitest-environment jsdom
@@ -350,26 +349,6 @@ describe("v0.12.1 需求9：排版实时预览", () => {
 
   it("保存走 handleSave：写入持久化设置并清预览", () => {
     expect(settingsSrc).toMatch(/const handleSave = \(\) => \{[\s\S]{0,700}?useTypographyPreviewStore\.getState\(\)\.clear\(\)/);
-  });
-});
-
-// ─── 需求10：回车 = 段内换行 ────────────────────────────────
-
-describe("v0.12.1 需求10：阅读模式回车=段内换行，Shift+回车=新段落", () => {
-  it("Enter 链首位是 insertSoftBreakOnEnter（顶层普通段落内插 hard_break）", () => {
-    expect(keymapSrc).toMatch(/Enter: chainCommands\(\s*insertSoftBreakOnEnter,/);
-    expect(keymapSrc).toContain("state.tr.replaceSelectionWith(schema.nodes.hard_break.create())");
-  });
-
-  it("Shift+Enter 在顶层普通段落里改为 splitBlock（与旧语义对调）", () => {
-    expect(keymapSrc).toContain("if (inTopLevelParagraph(state)) return splitBlock(state, dispatch);");
-    // 非顶层段落（列表项/引用/标题）行为不变
-    expect(keymapSrc).toContain("return insertHardBreak(state, dispatch);");
-  });
-
-  it("作用域判定：depth === 1 且父节点是 paragraph（列表/引用/表格零回归）", () => {
-    expect(keymapSrc).toMatch(/const inTopLevelParagraph[\s\S]{0,200}?\$from\.depth === 1 && \$from\.parent\.type\.name === "paragraph"/);
-    expect(keymapSrc).toMatch(/const insertSoftBreakOnEnter[\s\S]{0,400}?\$from\.depth !== 1\) return false/);
   });
 });
 

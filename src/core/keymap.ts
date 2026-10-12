@@ -11,7 +11,7 @@
 import { undo, redo } from "prosemirror-history";
 import type { Command, EditorState } from "prosemirror-state";
 import { Plugin, TextSelection } from "prosemirror-state";
-import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands, splitBlock } from "prosemirror-commands";
+import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands } from "prosemirror-commands";
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from "prosemirror-schema-list";
 import { keymap } from "prosemirror-keymap";
 import { lightMDSchema } from "./schema";
@@ -66,52 +66,6 @@ const insertHardBreak: Command = (state, dispatch) => {
     dispatch(state.tr.replaceSelectionWith(schema.nodes.hard_break.create()));
   }
   return true;
-};
-
-/**
- * v0.12.1 需求10 / v0.12.2 P3+F3+F4：**回车 = 段内换行**（顶层普通段落内）。
- *
- * 用户反馈："阅读模式编辑的文字没有隔行，切到编辑/分屏就出现了隔行" —— 根因是
- * 阅读模式里按回车走的是 baseKeymap 的 splitBlock（新建段落），序列化后端每行之间
- * 多出一个空行（`第一行\n\n第二行`）；而阅读模式视觉上只是普通行距，三模式观感不一致。
- *
- * 口径（已与用户确认）：**回车 = 段内换行（一个 hard_break，源码里两行相邻）**，
- * **Shift+回车 = 新建段落**（与旧的回车语义对调）。
- *
- * 作用域严格限定在**顶层普通段落**（depth === 1 且父节点是 paragraph）：
- * 列表项/任务项（回车必须继续分裂条目）、引用内段落、标题、表格单元格一律不接管，
- * 交回原有链（splitListItem / baseKeymap），语义零回归。
- *
- * ─── v0.12.2 修复三处缺陷 ───
- *
- * **F4（跨块选区合并段落）**：原实现没有空选区守卫，而 `replaceSelectionWith`
- * 会先删除整个选区 —— 选中跨两个段落的文字后按回车，两段被合并成一段。
- * 现补 `selection.empty` 守卫，非空选区交回 `splitBlock`（与 `insertHardBreak` 口径一致）。
- *
- * **段末硬换行**：Markdown 行尾空格硬换行在段尾会被解析器吞掉，因此 serializer
- * 将段末 `hard_break` 写成显式 `<br>`（parser 的 HTML 白名单会还原为同一节点）。
- * 这样即使用户在行尾按 Enter 后暂时没有继续输入，换行也能存盘往返；后续输入后
- * 同一节点自然变成普通行中硬换行，不会因切换模式被拆成两个段落。
- */
-const insertSoftBreakOnEnter: Command = (state, dispatch) => {
-  const { selection } = state;
-  const { $from } = selection;
-  if ($from.depth !== 1) return false;
-  if ($from.parent.type.name !== "paragraph") return false;
-  // F4：非空选区交回 splitBlock（replaceSelectionWith 会删除整个选区并合并块）
-  if (!selection.empty) return false;
-  if (!schema.nodes.hard_break) return false;
-  if (dispatch) {
-    // 空选区=光标处插入
-    dispatch(state.tr.replaceSelectionWith(schema.nodes.hard_break.create()));
-  }
-  return true;
-};
-
-/** 顶层普通段落（需求10 两种回车语义的适用面，判定与 insertSoftBreakOnEnter 同源） */
-const inTopLevelParagraph = (state: EditorState): boolean => {
-  const { $from } = state.selection;
-  return $from.depth === 1 && $from.parent.type.name === "paragraph";
 };
 
 /**
@@ -204,10 +158,7 @@ export function buildKeymap() {
     // 序列化时被合并成一行 → 模式切换后换行丢失。
     // chainCommands：两个命令互斥（各自在不适用的上下文返回 false），
     // 都不适用时返回 false，交回 baseKeymap 的 splitBlock 处理普通段落。
-    // v0.12.1 需求10：**顶层普通段落**里回车 = 段内换行（不再新建段落，源码不出现空行）。
-    // 必须排在列表分裂之前：列表项内的段落 depth ≥ 3，本命令自动放行 → 仍走 splitListItem。
     Enter: chainCommands(
-      insertSoftBreakOnEnter,
       splitListItem(schema.nodes.task_item),
       splitListItem(schema.nodes.list_item),
     ),
@@ -216,11 +167,8 @@ export function buildKeymap() {
     // v0.11.0 B1-1：包一层 IME 守卫——中文输入法候选确认过程中（view.composing）
     // 若触发 Shift+Enter，不得执行命令。理由与 auto-pair.ts 的 Backspace 守卫一致：
     // 不加此守卫时，候选确认会被误判为命令按键，进而在代码块内触发破坏性拆块。
-    // v0.12.1 需求10：与回车**对调**——顶层普通段落里 Shift+回车 = 新建段落，
-    // 其余位置（列表项内 / 引用内 / 标题内）保持原有的段内硬换行语义。
     "Shift-Enter": (state, dispatch, view) => {
       if (view?.composing) return false;
-      if (inTopLevelParagraph(state)) return splitBlock(state, dispatch);
       return insertHardBreak(state, dispatch);
     },
 
