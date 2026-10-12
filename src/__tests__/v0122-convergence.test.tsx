@@ -221,6 +221,120 @@ describe("v0.12.2 P3：段内换行的续行不再被劫持", () => {
       expect(r.inlineSame).toBe(true);
     }
   });
+
+  it("IME composition 期间 Enter 不插入 hard_break", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = createEditor({ parent: host, initialContent: "组合中" } as any)!;
+    try {
+      (view as any).input.composing = true;
+      const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      view.dom.dispatchEvent(event);
+      expect(view.state.doc.firstChild!.childCount).toBe(1);
+      expect(view.state.doc.textContent).toBe("组合中");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("真实 EditorView：段内连续按 Enter 后继续输入，保留单段内的多行空隙", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = createEditor({ parent: host, initialContent: "第一行" } as any)!;
+    try {
+      const end = view.state.doc.content.size - 1;
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, end)));
+      for (let i = 0; i < 2; i++) {
+        const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+        const handled = view.someProp("handleKeyDown", (handler) => handler(view, event));
+        expect(handled).toBe(true);
+      }
+      view.dispatch(view.state.tr.insertText("第二行"));
+
+      expect(view.state.doc.childCount).toBe(1);
+      expect(view.state.doc.firstChild!.childCount).toBe(4);
+      const markdown = docToMarkdown(view.state.doc);
+      expect(markdown).toBe("第一行<br><br>第二行\n");
+      const reopened = markdownToDoc(markdown);
+      expect(reopened.childCount).toBe(1);
+      expect(inlineOf(reopened)).toBe("第一行+<br>+<br>+第二行");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("Mark wrapper 覆盖段内硬换行时，编辑后序列化仍保留 hard_break 的 marks", () => {
+    const cases = [
+      { source: "**a  \nb**\n", mark: "strong" },
+      { source: "[a  \nb](https://example.com)\n", mark: "link" },
+    ];
+    for (const { source, mark } of cases) {
+      const doc = markdownToDoc(source);
+      const originalBreak = doc.firstChild!.content.content.find((node) => node.type.name === "hard_break")!;
+      expect(originalBreak.type.name).toBe("hard_break");
+      expect(originalBreak.marks.map((item) => item.type.name)).toContain(mark);
+
+      let state = EditorState.create({ doc, schema: lightMDSchema });
+      state = state.apply(state.tr.insertText("!", state.doc.content.size - 1));
+      const markdown = docToMarkdown(state.doc);
+      const reopened = markdownToDoc(markdown);
+      const reopenedBreak = reopened.firstChild!.content.content.find((node) => node.type.name === "hard_break");
+      expect(reopenedBreak?.marks.map((item) => item.type.name)).toContain(mark);
+      const inlineSignature = (paragraph: any): string[] => {
+        const signature: string[] = [];
+        paragraph.forEach((node: any) => {
+          const marks = node.marks.map((item: any) => ({ type: item.type.name, attrs: item.attrs }));
+          if (node.isText) {
+            for (const char of node.text as string) signature.push(JSON.stringify({ char, marks }));
+          } else {
+            signature.push(JSON.stringify({ type: node.type.name, marks }));
+          }
+        });
+        return signature;
+      };
+      expect(inlineSignature(reopened.firstChild)).toEqual(inlineSignature(state.doc.firstChild));
+    }
+  });
+
+  it("段首与段末硬换行均可往返，不序列化成空行", () => {
+    const cases = [
+      { label: "段末", content: [
+        { type: "text", text: "尾行" },
+        { type: "hard_break" },
+      ], expected: "尾行+<br>" },
+      { label: "段首", content: [
+        { type: "hard_break" },
+        { type: "text", text: "首行" },
+      ], expected: "<br>+首行" },
+      { label: "连续段末", content: [
+        { type: "text", text: "尾行" },
+        { type: "hard_break" },
+        { type: "hard_break" },
+      ], expected: "尾行+<br>+<br>" },
+      { label: "连续段内换行", content: [
+        { type: "text", text: "甲" },
+        { type: "hard_break" },
+        { type: "hard_break" },
+        { type: "text", text: "乙" },
+      ], expected: "甲+<br>+<br>+乙" },
+      { label: "仅换行段落", content: [
+        { type: "hard_break" },
+      ], expected: "<br>" },
+    ];
+    for (const { label, content, expected } of cases) {
+      const doc = lightMDSchema.nodeFromJSON({
+        type: "doc",
+        content: [{ type: "paragraph", content }],
+      });
+      const markdown = docToMarkdown(doc);
+      const reopened = markdownToDoc(markdown);
+      expect(reopened.childCount, `${label}: paragraph structure`).toBe(1);
+      expect(inlineOf(reopened), label).toBe(expected);
+      expect(markdown).not.toContain("\n\n");
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────

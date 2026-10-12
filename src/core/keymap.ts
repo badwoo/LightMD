@@ -88,15 +88,10 @@ const insertHardBreak: Command = (state, dispatch) => {
  * 会先删除整个选区 —— 选中跨两个段落的文字后按回车，两段被合并成一段。
  * 现补 `selection.empty` 守卫，非空选区交回 `splitBlock`（与 `insertHardBreak` 口径一致）。
  *
- * **F3（段末换行存盘丢失）**：段落**末尾**的 `hard_break` 在 Markdown 里
- * **无法表达**。实测（markdown-it，GFM 与 CommonMark 均同）：
- *   `"abc  \n\n"` → paragraph（**无 hardbreak token**）
- *   `"abc\\\n\n"` → paragraph（反斜杠同样无效，且反斜杠会被当字面文本）
- *   `"abc  \ndef\n"` → hardbreak（只有"后面还有内容"才能往返）
- * 即段末回车产生的换行存盘后必然静默丢失。现改为：光标已在段落末尾时返回 false，
- * 交回 baseKeymap 的 `splitBlock` 新建段落 —— 既不丢内容，也与"回车换行"的直觉一致。
- *
- * 综合效果：段中回车 = 段内换行（可往返）；段末回车 = 新建段落（可往返）。
+ * **段末硬换行**：Markdown 行尾空格硬换行在段尾会被解析器吞掉，因此 serializer
+ * 将段末 `hard_break` 写成显式 `<br>`（parser 的 HTML 白名单会还原为同一节点）。
+ * 这样即使用户在行尾按 Enter 后暂时没有继续输入，换行也能存盘往返；后续输入后
+ * 同一节点自然变成普通行中硬换行，不会因切换模式被拆成两个段落。
  */
 const insertSoftBreakOnEnter: Command = (state, dispatch) => {
   const { selection } = state;
@@ -105,8 +100,6 @@ const insertSoftBreakOnEnter: Command = (state, dispatch) => {
   if ($from.parent.type.name !== "paragraph") return false;
   // F4：非空选区交回 splitBlock（replaceSelectionWith 会删除整个选区并合并块）
   if (!selection.empty) return false;
-  // F3：段落末尾交回 splitBlock（段末 hard_break 无法在 Markdown 中表达，存盘必丢）
-  if ($from.parentOffset === $from.parent.content.size) return false;
   if (!schema.nodes.hard_break) return false;
   if (dispatch) {
     // 空选区=光标处插入

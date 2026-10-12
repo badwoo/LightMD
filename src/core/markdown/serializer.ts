@@ -478,48 +478,54 @@ function inlineToMarkdown(node: Node, context?: "table"): string {
     else pairContext += c.textContent;
   });
 
-  node.forEach((child) => {
+  const children: Node[] = [];
+  node.forEach((child) => children.push(child));
+  const inlineParts: Array<{ content: string; marks: Mark[] }> = [];
+
+  children.forEach((child, index) => {
+    let content = "";
+    const marks = child.marks;
     if (child.type.name === "text") {
-      let text = child.text || "";
-
-      const marks = child.marks;
-      // v0.9.0 C1：非 code 文本走转义层（code 内容是字面文本不转义；
-      // 表格上下文的管道转义见 applyMark/code 与 escapeText 的 inTableCell）
-      const hasCode = marks.some((m) => m.type.name === "code");
-      if (!hasCode) text = escapeText(text, context === "table", pairContext);
-
-      // 从外到内按优先级应用标记（B2/B3/B4 修复）
-      const ordered = [...marks].sort(
-        (a, b) =>
-          (MARK_OUTER_ORDER[a.type.name] ?? 50) - (MARK_OUTER_ORDER[b.type.name] ?? 50)
-      );
-      for (const m of ordered) {
-        text = applyMark(text, m, context === "table");
+      content = child.text || "";
+      // code 内容是字面文本不转义；其余文本只转义会被重新解析变义的语法。
+      if (!marks.some((m) => m.type.name === "code")) {
+        content = escapeText(content, context === "table", pairContext);
       }
-
-      parts.push(text);
     } else if (child.type.name === "image") {
       const { src, alt, title, width } = child.attrs;
       const titlePart = title ? ` "${escapeTitle(title)}"` : "";
-      // E11a(v0.9.3):宽度以 Typora 风格 |W 后缀表达;无宽度保持旧语法兼容旧文档
       const widthPart = typeof width === "number" && width > 0 ? `|${width}` : "";
-      // v0.9.0 C3：目标地址含空格/括号/尖括号时用 <...> 包裹
-      parts.push(`![${escapeText(alt || "")}${widthPart}](${escapeDest(src)}${titlePart})`);
+      content = `![${escapeText(alt || "")}${widthPart}](${escapeDest(src)}${titlePart})`;
     } else if (child.type.name === "hard_break") {
-      // v0.8.0 WP5 修复6：硬换行序列化为 CommonMark 两空格硬换行（"  \n"），
-      // 与 parser 的 softbreak→hard_break 互逆，保证 md→doc→md 段内换行保真。
-      // v0.8.0 修复 P0-1：表格单元格内不能写 "  \n"（真实换行会截断 GFM 表格行），
-      // 改用 <br>，parser 端在表格上下文会把它还原为 hard_break。
-      parts.push(context === "table" ? "<br>" : "  \n");
+      // 普通段内硬换行用两空格；段首/段末/相邻 break 与表格内换行用 <br>，
+      // 以避免行首/行尾吞换行及连续硬换行被解析为段落边界。
+      const adjacentBreak =
+        (index > 0 && children[index - 1].type.name === "hard_break") ||
+        (index + 1 < children.length && children[index + 1].type.name === "hard_break");
+      const isBoundaryBreak = index === 0 || index === children.length - 1 || adjacentBreak;
+      content = context === "table" || isBoundaryBreak ? "<br>" : "  \n";
     } else if (child.type.name === "math_inline") {
-      // 行内数学公式（v0.9.0 D8：剥整体 ZWSP 占位）
       const latex = stripZwsp(child.textContent || child.attrs.latex || "");
-      parts.push(`$${latex}$`);
+      content = `$${latex}$`;
     } else if (child.type.name === "footnote_ref") {
-      // 脚注引用 [^label]
-      parts.push(`[^${child.attrs.label || ""}]`);
+      content = `[^${child.attrs.label || ""}]`;
     }
+    if (content) inlineParts.push({ content, marks: [...marks] });
   });
+
+  // 按连续、完全相同的 mark 集合合并 span 再包语法。逐节点各自包裹会产生
+  // `**a****<br>****b**`，Markdown 会把换行排除在强强调外，导致 marks 丢失。
+  for (let start = 0; start < inlineParts.length;) {
+    let end = start + 1;
+    while (end < inlineParts.length && sameMarks(inlineParts[start].marks, inlineParts[end].marks)) end++;
+    let span = inlineParts.slice(start, end).map((part) => part.content).join("");
+    const ordered = [...inlineParts[start].marks].sort(
+      (a, b) => (MARK_OUTER_ORDER[a.type.name] ?? 50) - (MARK_OUTER_ORDER[b.type.name] ?? 50)
+    );
+    for (const mark of ordered) span = applyMark(span, mark, context === "table");
+    parts.push(span);
+    start = end;
+  }
 
   return escapeContinuationLines(parts.join(""));
 }
@@ -608,6 +614,10 @@ function escapeContinuationLine(line: string): string {
     if (g.re.test(body)) return g.esc(lead, body);
   }
   return line;
+}
+
+function sameMarks(a: readonly Mark[], b: readonly Mark[]): boolean {
+  return a.length === b.length && a.every((mark, index) => mark.eq(b[index]));
 }
 
 function applyMark(text: string, mark: Mark, inTableCell = false): string {
