@@ -380,9 +380,16 @@ describe("两个窗口同时编辑同一文件", () => {
 
   it("自动保存正常情况下仍按时写盘（暂停只在外部变更时生效）", async () => {
     vi.useFakeTimers();
+    const { noteSelfWrittenFile, __resetSelfWriteGuardForTest } = await import(
+      "../services/selfWriteGuard"
+    );
     try {
       enterTauri("main");
       seedTab({ dirty: true, content: "MY-EDITS" });
+      // v0.13.0 需求3：磁盘内容 === 本应用上次写入的内容（期间无第三方改动）
+      // → 三路判定为 write，正常写盘
+      diskContentIs("LAST-SAVED");
+      noteSelfWrittenFile(A_PATH, "LAST-SAVED");
       useSettingsStore.setState({ autoSaveIntervalMs: 1000 });
       const viewRef = { current: {} as EditorView };
       renderHook(() => useAutoSave(viewRef, { current: "MY-EDITS" }));
@@ -393,6 +400,7 @@ describe("两个窗口同时编辑同一文件", () => {
       expect(invokeMock.mock.calls.some((c) => c[0] === "write_file")).toBe(true);
       expect(notifyMock).not.toHaveBeenCalled();
     } finally {
+      __resetSelfWriteGuardForTest();
       vi.useRealTimers();
     }
   });

@@ -372,14 +372,29 @@ export const zhCN: Record<string, string> = {
   "multiwindow.externalSave.saveAs": "另存为…",
   /// 外部变更提示
   "multiwindow.fileChanged.reloaded": "\"{name}\" 已被外部修改，已自动重新载入",
+  // v0.13.0 需求2：脏标签遇外部修改的三选对话框
+  "externalChange.title": "文件已被外部修改",
+  "externalChange.message": "\"{name}\" 在磁盘上已被其他程序修改，本窗口有未保存的更改。请选择处理方式。",
+  "externalChange.takeLatest": "取最新（放弃本地未保存修改）",
+  "externalChange.keepLocal": "保留本地（稍后手动保存）",
+  "externalChange.saveAs": "另存为…",
+  "externalChange.tookLatest": "\"{name}\" 已取最新版本",
   "multiwindow.fileChanged.dirtyHint": "\"{name}\" 已被外部修改，保存前请确认",
   // v0.9.0 第五轮：本窗口有未保存修改、文件又被其他窗口保存过 → 暂停自动保存（绝不静默覆盖）
   "multiwindow.autoSavePaused": "\"{name}\" 已在其他窗口保存，自动保存已暂停：请按 Ctrl+S 手动保存并选择「覆盖」或「另存为」",
+  // v0.13.0 需求3：写盘前读盘发现第三方已改过 → 放弃本次自动保存（不覆盖外部编辑）
+  "multiwindow.autoSaveSkipped": "\"{name}\" 在磁盘上已被其他程序修改，本次自动保存已放弃（未覆盖磁盘）：请按 Ctrl+S 手动保存并选择「覆盖」或「另存为」",
   "multiwindow.fileChanged.missing": "\"{name}\" 已不存在，标签已自动关闭",
   "multiwindow.watchLimit": "已打开文件超过 {limit} 个，超出部分不再监听外部修改",
   /// 设置项
   "settings.general.openExternalFileIn": "外部文件打开方式",
   "settings.general.openExternalFileInHint": "双击 .md 等关联文件时打开到哪个窗口",
+  // v0.13.0 需求2：文件被外部修改后的处理策略
+  "settings.general.externalChangePolicy": "文件被外部修改时",
+  "settings.general.externalChangePolicy.reloadClean": "干净标签自动重载，有未保存修改时仅提示",
+  "settings.general.externalChangePolicy.alwaysReload": "干净标签自动重载；有未保存修改时让我选择（取最新/保留本地/另存为）",
+  "settings.general.externalChangePolicy.ask": "每次外部修改都询问",
+  "settings.general.externalChangePolicyHint": "以最新修改的为准：选择第二项后，即使本窗口有未保存的修改，也会弹出「取最新 / 保留本地 / 另存为」供你选择，绝不会静默丢弃",
   "settings.general.openExternalFileIn.current": "当前窗口",
   "settings.general.openExternalFileIn.new": "新窗口",
   "settings.general.openExternalFileIn.ask": "每次询问",

@@ -366,13 +366,28 @@ export const enUS: Record<string, string> = {
   "multiwindow.externalSave.overwrite": "Overwrite the file",
   "multiwindow.externalSave.saveAs": "Save as…",
   "multiwindow.fileChanged.reloaded": "\"{name}\" changed on disk; reloaded automatically",
+  // v0.13.0 req 2: three-way dialog when a dirty tab meets an external change
+  "externalChange.title": "File changed on disk",
+  "externalChange.message": "\"{name}\" was changed by another program on disk, and this window has unsaved edits. Choose what to do.",
+  "externalChange.takeLatest": "Take latest (discard local unsaved edits)",
+  "externalChange.keepLocal": "Keep local (save manually later)",
+  "externalChange.saveAs": "Save as…",
+  "externalChange.tookLatest": "\"{name}\" now shows the latest version from disk",
   "multiwindow.fileChanged.dirtyHint": "\"{name}\" changed on disk; review before saving",
   // v0.9.0 round 5: this window has unsaved edits and the file was saved by another window → auto-save paused (never overwrite silently)
   "multiwindow.autoSavePaused": "\"{name}\" was saved in another window; auto-save is paused. Press Ctrl+S and choose \"Overwrite\" or \"Save as\".",
+  // v0.13.0 req 3: the disk read before writing shows a third party already changed the file → this auto-save is abandoned (external edits are never overwritten)
+  "multiwindow.autoSaveSkipped": "\"{name}\" was changed by another program on disk; this auto-save was abandoned (the disk was not overwritten). Press Ctrl+S and choose \"Overwrite\" or \"Save as\".",
   "multiwindow.fileChanged.missing": "\"{name}\" no longer exists; the tab was closed",
   "multiwindow.watchLimit": "More than {limit} files are open; extra files are not watched for external changes",
   "settings.general.openExternalFileIn": "External files open in",
   "settings.general.openExternalFileInHint": "Which window opens files from double-click / file associations",
+  // v0.13.0 req 2: what to do when a file is changed externally
+  "settings.general.externalChangePolicy": "When a file changes on disk",
+  "settings.general.externalChangePolicy.reloadClean": "Reload clean tabs automatically; only notify when there are unsaved edits",
+  "settings.general.externalChangePolicy.alwaysReload": "Reload clean tabs automatically; when there are unsaved edits, ask me (Take latest / Keep local / Save as)",
+  "settings.general.externalChangePolicy.ask": "Ask every time",
+  "settings.general.externalChangePolicyHint": "Prefer the newest version on disk: with the second option, even when this window has unsaved edits you get \"Take latest / Keep local / Save as\" — local edits are never dropped silently",
   "settings.general.openExternalFileIn.current": "Current window",
   "settings.general.openExternalFileIn.new": "New window",
   "settings.general.openExternalFileIn.ask": "Ask every time",

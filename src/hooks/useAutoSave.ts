@@ -14,6 +14,12 @@ import { useEditorStore } from "../stores/useEditorStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { fileService, isTauri } from "../services/fileService";
 import { versionSnapshotService } from "../services/versionSnapshotService";
+import { getLastSelfWritten } from "../services/selfWriteGuard";
+import {
+  judgeAutoSaveWrite,
+  getCachedDiskRead,
+  putCachedDiskRead,
+} from "../utils/autoSaveGuard";
 import { safeSetItem } from "../utils/safeStorage";
 import { getMarkdownFromDoc } from "../core/editor";
 import { isMarkdownFile } from "../utils/constants";
@@ -86,6 +92,41 @@ export function useAutoSave(
 
     try {
       if (isTauri()) {
+        // v0.13.0 需求3：写盘前先读一次磁盘做三路判定。
+        //
+        // 背景：外部软件改文件、而 LightMD 正开着它时，若直接写盘会把内存里的
+        // 旧内容盖回去，外部编辑被静默覆盖回退（用户完全不知情）。
+        // 此前的 `externallyChanged` 标记不够——它依赖 watcher 事件先到达，
+        // 而事件可能因「目录未挂载 / mtime 去重命中 / Rust 回调调度晚于定时器」
+        // 迟到或缺失。所以这里不依赖事件，直接自己读盘判断。
+        const now = Date.now();
+        let disk = getCachedDiskRead(filePath, now);
+        if (disk === undefined) {
+          disk = await fileService.readFile(filePath, { silent: true });
+          putCachedDiskRead(filePath, disk, now);
+        }
+        const decision = judgeAutoSaveWrite({
+          diskContent: disk,
+          targetContent: markdown,
+          lastSelfWritten: getLastSelfWritten(filePath),
+        });
+        if (decision === "conflict") {
+          // 第三方已改过磁盘 → 放弃本次自动保存，绝不写盘。
+          // 标记「外部变更未处理」并提示：用户手动 Ctrl+S 时会走
+          // 「覆盖 / 另存为 / 取消」确认（知情后才会覆盖）。
+          const { activeTabIdx } = useEditorStore.getState();
+          useEditorStore.getState().setTabExternallyChanged(activeTabIdx, true);
+          void import("../services/notificationService").then(({ notify }) =>
+            notify(t("multiwindow.autoSaveSkipped", { name: fileNameOf(filePath) }), "warning"),
+          );
+          return;
+        }
+        if (decision === "skip") {
+          // 磁盘已是目标内容：无需写盘，直接清脏标记（省一次 IO + 一次快照）
+          setDirty(false);
+          updateTabDirty(useEditorStore.getState().activeTabIdx, false);
+          return;
+        }
         await fileService.writeFile(filePath, markdown);
         // v0.4.0 功能4：自动保存成功后记录版本快照（内容去重由服务内部处理）
         versionSnapshotService.recordSnapshot(filePath, markdown).catch(() => {});

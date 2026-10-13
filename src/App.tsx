@@ -48,6 +48,8 @@ import { versionSnapshotService } from "./services/versionSnapshotService";
 import { fileScrollProgress } from "./services/fileScrollProgress";
 // v0.9.0 第二轮修复（问题3）：自身写盘内容指纹——抑制 watcher 回声被误判为外部修改
 import { isSelfWrittenContent } from "./services/selfWriteGuard";
+// v0.13.0 需求2：外部修改处理策略（纯逻辑层）
+import { decideExternalChangeAction } from "./utils/externalChangePolicy";
 import { safeSetItem } from "./utils/safeStorage";
 // v0.8.0 WP1：临时（未落盘）标签的持久化与启动恢复
 import { loadUntitledTabs, saveUntitledTabs, clearUntitledTabs, isUntitledRestoreEnabled } from "./utils/untitledTabs";
@@ -339,6 +341,12 @@ function App() {
   const handleTabSwitchRef = useRef<(tab: TabInfo) => void>(() => {});
   /** v0.9.0 WP9：按路径关闭标签（文件被删除联动用；定义在组件尾部，故用 ref 转发） */
   const closeTabsByPathRef = useRef<(deletedPath: string) => void>(() => {});
+  /**
+   * v0.13.0 需求2：「取最新」与「另存为」由组件尾部的回调提供（watcher 事件处理器
+   * 注册在前，定义在后），故用 ref 转发。
+   */
+  const takeLatestRef = useRef<(idx: number, path: string, name: string) => void>(() => {});
+  const handleSaveAsFileRef = useRef<(tab?: TabInfo) => Promise<void>>(async () => {});
 
   /**
    * v0.9.0：统一的决策对话框状态。
@@ -347,7 +355,7 @@ function App() {
    * 避免为每处交互各写一套 state + effect 通道。
    */
   type PendingDialog = {
-    kind: "conflict" | "askOpen" | "closeConfirm" | "externalSave" | "mergeOffer";
+    kind: "conflict" | "askOpen" | "closeConfirm" | "externalSave" | "mergeOffer" | "externalChange";
     name: string;
     detail: string;
     options: ChoiceOption[];
@@ -502,6 +510,21 @@ function App() {
           // v0.4.0 功能4：记录初始版本快照（去重：已有 initial 则跳过）
           if (isTauri()) {
             versionSnapshotService.recordSnapshot(detail.path, detail.content, true).catch(() => {});
+          }
+          // v0.13.0 需求2：单文件（未挂任何文件夹）兜底监听。
+          //
+          // Rust 侧 watcher 只监听**目录**（`watch_folder`），所以「直接打开一个
+          // 不在任何已打开文件夹里的文件」时收不到 `lightmd:fileChanged`——外部
+          // 改了它，本窗口不会刷新，用户看到的一直是旧内容。
+          //
+          // 做法：把该文件的**父目录**挂上同一个 watcher（与工作区同路径，走既有
+          // 引用计数：引用归零时自动释放）。不新增「单文件 watch」模式——notify 的
+          // 单文件监听在 Windows 上对「文件被替换（原子保存）」不可靠，目录监听更稳。
+          if (isTauri() && !alreadyOpen) {
+            const dir = getParentDir(detail.path);
+            if (dir && !useFileStore.getState().openFolders.some((f) => pathCompareKey(f.path) === pathCompareKey(dir))) {
+              void fileService.watchFolder(dir).catch(() => undefined);
+            }
           }
         }
       }
@@ -1418,6 +1441,36 @@ function App() {
               if (isSelfWrittenContent(path, fresh)) return;
               const idx2 = findIdx();
               if (idx2 === -1) return;
+              // v0.13.0 需求2：按用户策略决定脏标签的处理方式。
+              // 默认 `reload-clean` 仍是「只标记 + 提示」；`always-reload` / `ask`
+              // 弹三选对话框，满足「以最新修改的为准」而不静默丢弃本地编辑。
+              const policy = useSettingsStore.getState().externalChangePolicy;
+              const action = decideExternalChangeAction(policy, true);
+              if (action === "askThreeWay") {
+                const current = useEditorStore.getState().openTabs[idx2];
+                if (!current) return;
+                useEditorStore.getState().setTabExternallyChanged(idx2, true);
+                void (async () => {
+                  const choice = await askChoice(
+                    "externalChange",
+                    t("externalChange.title"),
+                    t("externalChange.message", { name: current.name }),
+                    [
+                      { id: "takeLatest", label: t("externalChange.takeLatest") },
+                      { id: "keepLocal", label: t("externalChange.keepLocal") },
+                      { id: "saveAs", label: t("externalChange.saveAs") },
+                    ],
+                  );
+                  if (choice === "cancel") return;
+                  if (choice === "saveAs") {
+                    handleSaveAsFileRef.current(current);
+                    return;
+                  }
+                  if (choice === "keepLocal") return;
+                  takeLatestRef.current(idx2, path, current.name);
+                })();
+                return;
+              }
               useEditorStore.getState().setTabExternallyChanged(idx2, true);
               void import("./services/notificationService").then(({ notify: n }) =>
                 n(t("multiwindow.fileChanged.dirtyHint", { name: tab.name }), "warning"),
@@ -1801,6 +1854,44 @@ function App() {
       if (idx !== -1) updateTabDirty(idx, false);
     }
   }, [openFile, setDirty, addRecentFile, updateTabDirty, t]);
+
+  /**
+   * v0.13.0 需求2：「取最新」——用磁盘内容替换标签内容，放弃本地未保存修改。
+   *
+   * 入口有两处：① 外部修改三选对话框的「取最新」；② 标签上「已被外部修改」
+   * 徽标点击。**只有用户显式点击才会走到这里**——watcher 事件本身绝不静默
+   * 丢弃本地编辑（干净标签除外，它没有可丢的内容）。
+   *
+   * 复用干净标签自动重载的同一套四步：updateTabContent → setContent →
+   * setForceUpdateKey → 清 isExternallyChanged。
+   */
+  const takeLatest = useCallback(
+    async (idx: number, path: string, name: string) => {
+      let fresh: string;
+      try {
+        fresh = await fileService.readFile(path, { silent: true });
+      } catch {
+        void import("./services/notificationService").then(({ notify: n }) =>
+          n(t("multiwindow.fileChanged.missing", { name }), "warning"),
+        );
+        return;
+      }
+      useEditorStore.getState().updateTabContent(idx, fresh);
+      useEditorStore.getState().setTabExternallyChanged(idx, false);
+      if (useEditorStore.getState().activeTabIdx === idx) {
+        setContent(fresh);
+        safeSetItem(CONTENT_KEY, fresh);
+        setDirty(false);
+        setForceUpdateKey((k) => k + 1);
+      }
+      void import("./services/notificationService").then(({ notify: n }) =>
+        n(t("externalChange.tookLatest", { name }), "success"),
+      );
+    },
+    [setContent, setDirty, t],
+  );
+  takeLatestRef.current = takeLatest;
+  handleSaveAsFileRef.current = handleSaveAsFile;
 
   // ─── 保存文件（Ctrl+S）── 依赖 handleSaveAsFile ──
   const handleSaveFile = useCallback(async () => {
@@ -3382,7 +3473,13 @@ function App() {
 
 /** v0.9.0：决策对话框类型 → i18n 标题 key */
 function dialogTitleKey(
-  kind: "conflict" | "askOpen" | "closeConfirm" | "externalSave" | "mergeOffer",
+  kind:
+    | "conflict"
+    | "askOpen"
+    | "closeConfirm"
+    | "externalSave"
+    | "mergeOffer"
+    | "externalChange",
 ): string {
   switch (kind) {
     case "conflict":
@@ -3393,6 +3490,9 @@ function dialogTitleKey(
       return "multiwindow.closeConfirm.title";
     case "mergeOffer":
       return "multiwindow.mergeOffer.title";
+    case "externalChange":
+      // v0.13.0 需求2：脏标签遇外部修改的三选（取最新 / 保留本地 / 另存为）
+      return "externalChange.title";
     default:
       return "multiwindow.externalSave.title";
   }

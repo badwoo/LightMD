@@ -186,6 +186,17 @@ export const ALL_AI_BUBBLE_TASKS: readonly AiAssistBubbleTask[] = Object.freeze(
  */
 export type OpenExternalFileIn = "currentWindow" | "newWindow" | "ask";
 
+/**
+ * v0.13.0 需求2：文件被**外部**修改后的处理策略。
+ *
+ * - `reload-clean`（默认）：干净标签自动重载；脏标签只标记「保存前请确认」——
+ *   即 v0.9.0 以来的既有行为（不自动丢弃用户的未保存修改）；
+ * - `always-reload`：干净标签自动重载；脏标签弹「取最新 / 保留本地 / 另存为」，
+ *   满足「以最新修改的为准」的诉求，同时不静默丢弃本地编辑；
+ * - `ask`：两种情况都弹确认。
+ */
+export type ExternalChangePolicy = "reload-clean" | "always-reload" | "ask";
+
 interface SettingsState {
   theme: Theme;
   fontSize: number;
@@ -262,6 +273,11 @@ interface SettingsState {
    */
   openExternalFileIn: OpenExternalFileIn;
   /**
+   * v0.13.0 需求2：文件被外部修改后的处理策略。
+   * 策略判断放在前端：设置存在 WebView 的 localStorage 里，Rust 读不到（同 F14）。
+   */
+  externalChangePolicy: ExternalChangePolicy;
+  /**
    * v0.9.0（用户反馈新增）：启动时是否连同**其他窗口**一起恢复。
    *
    * - `false`（默认）：只恢复主窗口（主窗口的标签/打开文件夹仍按会话精确恢复）；
@@ -293,6 +309,9 @@ interface SettingsState {
 
   /** v0.9.0 WP7：设置外部文件打开策略 */
   setOpenExternalFileIn: (v: OpenExternalFileIn) => void;
+
+  /** v0.13.0 需求2：设置「文件被外部修改」的处理策略 */
+  setExternalChangePolicy: (v: ExternalChangePolicy) => void;
 
   /** v0.7.0：设置全局 AI 总开关（关闭时联动关闭翻译子开关） */
   setAiEnabled: (v: boolean) => void;
@@ -493,6 +512,8 @@ export const useSettingsStore = create<SettingsState>()(
       fileTreeSort: {},
       // v0.9.0 WP7：外部文件默认在当前窗口打开（与 v0.8.5 行为一致）
       openExternalFileIn: "currentWindow",
+      // v0.13.0 需求2：默认保持 v0.9.0 以来的行为（干净自动重载、脏则标记）
+      externalChangePolicy: "reload-clean",
       // v0.9.0：默认只恢复主窗口（用户主动关闭的窗口不复活）
       restoreOtherWindows: false,
       // v0.9.0 自定义快捷键：默认无覆盖（全部走 SHORTCUT_DEFS 默认值）
@@ -533,6 +554,9 @@ export const useSettingsStore = create<SettingsState>()(
 
       // v0.9.0 WP7：外部文件打开策略
       setOpenExternalFileIn: (v) => set({ openExternalFileIn: v }),
+
+      // v0.13.0 需求2：外部修改处理策略
+      setExternalChangePolicy: (v) => set({ externalChangePolicy: v }),
 
       // v0.7.0：关闭总开关时联动关闭翻译子开关（所有翻译入口静默）
       setAiEnabled: (v) =>

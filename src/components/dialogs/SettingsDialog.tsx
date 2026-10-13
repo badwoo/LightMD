@@ -628,6 +628,30 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               </div>
             </div>
 
+            {/* v0.13.0 需求2：文件被外部修改后的处理策略 */}
+            <div className="settings-field">
+              <label>{t("settings.general.externalChangePolicy")}</label>
+              <select
+                className="settings-select"
+                data-testid="settings-external-change-policy"
+                value={settings.externalChangePolicy}
+                onChange={(e) =>
+                  settings.setExternalChangePolicy(
+                    e.target.value as "reload-clean" | "always-reload" | "ask",
+                  )
+                }
+              >
+                <option value="reload-clean">
+                  {t("settings.general.externalChangePolicy.reloadClean")}
+                </option>
+                <option value="always-reload">
+                  {t("settings.general.externalChangePolicy.alwaysReload")}
+                </option>
+                <option value="ask">{t("settings.general.externalChangePolicy.ask")}</option>
+              </select>
+              <span className="settings-hint">{t("settings.general.externalChangePolicyHint")}</span>
+            </div>
+
             {/* G9：显示代码行号（实时生效） */}
             <div className="settings-field">
               <label>{t("settings.showCodeLineNumbers")}</label>

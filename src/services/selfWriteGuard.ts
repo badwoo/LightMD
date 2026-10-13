@@ -38,7 +38,6 @@ interface SelfWriteRecord {
   /** 写入时刻（`Date.now()`） */
   at: number;
 }
-
 /** 路径比较键 → 最近一次自身写盘记录（Map 迭代序 = 插入序，用于 LRU 淘汰） */
 const records = new Map<string, SelfWriteRecord>();
 
@@ -86,6 +85,27 @@ export function isSelfWrittenContent(path: string, diskContent: string): boolean
     return false;
   }
   return rec.content === diskContent;
+}
+
+/**
+ * 取本应用最近一次写入该路径的内容（v0.13.0 需求3）。
+ *
+ * 供自动保存写盘前的三路判定使用：磁盘内容若仍等于「我们上次写的」，说明期间
+ * 没有第三方改过，可以放心写盘；否则说明磁盘已被改动，必须放弃本次自动保存
+ * （否则会把外部编辑静默覆盖回退）。
+ *
+ * @returns 内容字符串；无记录或已过期时返回 null
+ */
+export function getLastSelfWritten(path: string): string | null {
+  if (!path) return null;
+  const key = pathCompareKey(path);
+  const rec = records.get(key);
+  if (!rec) return null;
+  if (Date.now() - rec.at > TTL_MS) {
+    records.delete(key);
+    return null;
+  }
+  return rec.content;
 }
 
 /** 测试用：清空指纹表 */
