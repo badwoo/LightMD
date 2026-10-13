@@ -10,7 +10,7 @@
  */
 import { undo, redo } from "prosemirror-history";
 import type { Command, EditorState } from "prosemirror-state";
-import { Plugin, TextSelection } from "prosemirror-state";
+import { Plugin, TextSelection, NodeSelection } from "prosemirror-state";
 import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands, splitBlock } from "prosemirror-commands";
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from "prosemirror-schema-list";
 import { keymap } from "prosemirror-keymap";
@@ -25,6 +25,10 @@ import { exitCodeBlockForward } from "./plugins/code-block-exit";
 import { pairTabOut } from "./plugins/auto-pair";
 // v0.11.0 B3-8：真正的块移动（Alt+↑/↓）
 import { moveBlockUp, moveBlockDown } from "./blockMove";
+// v0.13.0 需求1：块级复制/剪切（NodeSelection 态下的快捷键拦截）
+import { copySelectedBlock, cutSelectedBlock } from "../utils/blockClipboardOps";
+import { notify } from "../services/notificationService";
+import { t } from "../i18n/state";
 
 const schema = lightMDSchema;
 
@@ -230,6 +234,38 @@ function dynamicShortcutsPlugin(): Plugin {
   });
 }
 
+/**
+ * v0.13.0 需求1：块级剪贴板快捷键拦截。
+ *
+ * 仅在**当前是 NodeSelection（整块选中）**时拦截 `Ctrl+C` / `Ctrl+X`：
+ * 文本选区一律放行浏览器默认行为（否则会与普通复制打架）。
+ *
+ * `Ctrl+C`/`Ctrl+X` 在 `shortcuts.ts` 的「保留键位不可自定义」清单里，
+ * 所以此处不新增快捷键条目，只在 PM 侧加一层拦截。
+ *
+ * 放在动态快捷键插件**之前**注册（越靠前优先级越高），保证 NodeSelection 态下
+ * 一定走块级语义。
+ */
+function blockClipboardPlugin(): Plugin {
+  return new Plugin({
+    props: {
+      handleKeyDown(view, event) {
+        // 仅 NodeSelection 才走块级语义
+        if (!(view.state.selection instanceof NodeSelection)) return false;
+        const mod = event.ctrlKey || event.metaKey;
+        if (!mod || event.altKey || event.shiftKey) return false;
+        const key = event.key.toLowerCase();
+        if (key !== "c" && key !== "x") return false;
+        event.preventDefault();
+        void (key === "c" ? copySelectedBlock(view) : cutSelectedBlock(view)).then((ok) => {
+          if (!ok) notify(t("blockMenu.clipboardFailed"), "warning");
+        });
+        return true;
+      },
+    },
+  });
+}
+
 export function buildKeymap() {
   return keymap({
     // 列表项 / 任务项 Enter 分割（v0.8.0 修复 P11-6）
@@ -293,4 +329,4 @@ export function buildKeymap() {
   });
 }
 
-export { dynamicShortcutsPlugin };
+export { dynamicShortcutsPlugin, blockClipboardPlugin };

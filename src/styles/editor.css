@@ -487,6 +487,120 @@
   overflow: visible;
 }
 
+/* ─── v0.13.0 需求1：块操作常驻图标（左侧手柄 + 右上角三点菜单） ─────────
+   显示条件（三者任一，与需求描述完全一致）：
+   ① 鼠标悬停该块（`.pm-block-wrapper:hover`，各 wrapper 统一加此类）
+   ② 光标/选区落在该块内（`.pm-block-active`，由 block-drag 插件维护）
+   ③ 块被 NodeSelection（`.pm-block-selected`，既有）
+   默认隐藏 → 三个 class 任一命中即显示。伪元素/按钮都不进 PM 的 DOM 管理，
+   undo/redo 与 tr.mapping 不受影响。 */
+.ProseMirror .block-kebab {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 6;
+  width: 22px;
+  height: 22px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.12));
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+}
+
+/* 三个竖点图标（CSS 绘制，避免 i18n 侵入 DOM） */
+.ProseMirror .block-kebab::before {
+  content: "⋮";
+}
+
+.ProseMirror .block-kebab:hover {
+  opacity: 1;
+  background: var(--accent-color);
+  color: #fff;
+}
+
+/* ① 悬停 */
+.ProseMirror > .pm-block-wrapper:hover .block-kebab,
+.ProseMirror > :hover > .block-kebab,
+/* ② 光标/选区在块内 */
+.ProseMirror .pm-block-active .block-kebab,
+.ProseMirror .pm-block-active > .block-kebab,
+/* ③ 整块选中 */
+.ProseMirror > .pm-block-selected .block-kebab,
+.ProseMirror > .pm-block-selected > .block-kebab {
+  display: inline-flex;
+}
+
+/* 手柄（左侧 ⋮⋮）：v0.12.0 需求11 已有选中态版，此处补 hover / 光标在内两态 */
+.ProseMirror > .pm-block-wrapper,
+.ProseMirror > .code-block-wrapper,
+.ProseMirror > .mermaid-block-wrapper,
+.ProseMirror > .math-block-wrapper,
+.ProseMirror > .table-wrapper {
+  position: relative;
+}
+
+.ProseMirror > .pm-block-wrapper::after,
+.ProseMirror > .code-block-wrapper::after,
+.ProseMirror > .mermaid-block-wrapper::after,
+.ProseMirror > .math-block-wrapper::after,
+.ProseMirror > .table-wrapper::after {
+  content: "";
+  position: absolute;
+  left: -18px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 18px;
+  opacity: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  pointer-events: auto;
+  cursor: grab;
+  transition: opacity var(--transition-fast);
+  /* 图标由 block-drag 插件的热区判定使用；此处只做视觉提示 */
+  background: linear-gradient(
+    to bottom,
+    currentColor 0 2px,
+    transparent 2px 5px,
+    currentColor 5px 7px,
+    transparent 7px 10px,
+    currentColor 10px 12px,
+    transparent 12px 15px,
+    currentColor 15px 17px,
+    transparent 17px
+  );
+}
+
+.ProseMirror > .pm-block-wrapper:hover::after,
+.ProseMirror > .code-block-wrapper:hover::after,
+.ProseMirror > .mermaid-block-wrapper:hover::after,
+.ProseMirror > .math-block-wrapper:hover::after,
+.ProseMirror > .table-wrapper:hover::after,
+.ProseMirror .pm-block-active::after,
+.ProseMirror .pm-block-active > .pm-block-wrapper::after {
+  opacity: 0.6;
+}
+
+/* 三点菜单弹层（复用 MiniContextMenu 的 .mini-context-menu 样式） */
+.mini-context-menu-item.danger {
+  color: var(--error-color, #e5484d);
+}
+
+.mini-context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* v0.12.0 需求11：拖拽期间的插入指示线（2px 水平线，主题强调色）
    位置/宽度由 block-drag 插件内联设置 */
 .block-drag-indicator {

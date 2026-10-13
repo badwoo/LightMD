@@ -22,6 +22,8 @@ import { useSettingsStore } from "../../stores/useSettingsStore";
 import { t } from "../../i18n/state";
 // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除）
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
+// v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
+import { createBlockKebabButton } from "./blockKebab";
 
 /** 行号层固定宽度（em） */
 const LINE_NUMBERS_WIDTH_EM = 3;
@@ -41,6 +43,8 @@ export class CodeBlockView implements NodeView {
   private lineNumbersLayer: HTMLElement;
   /** E17(v0.9.4)：语言下拉（contentEditable=false，交互不冒泡到编辑器） */
   private langSelect: HTMLSelectElement;
+  /** v0.13.0 需求1：右上角三点菜单按钮（常驻显示由 CSS 控制） */
+  private kebabButton: HTMLButtonElement | null = null;
   private node: PMNode;
   private observer: MutationObserver | null = null;
   // 防抖定时器
@@ -126,6 +130,9 @@ export class CodeBlockView implements NodeView {
     // G9：读取初始 showCodeLineNumbers 设置
     this.showLineNumbers = useSettingsStore.getState().showCodeLineNumbers;
     this.applyLineNumbersVisibility();
+
+    // v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
+    this.kebabButton = createBlockKebabButton(this.dom, this.getPos);
 
     // E17：读取并应用代码块自动换行设置（双层必须同步）
     this.wrapEnabled = useSettingsStore.getState().codeBlockWrap;
@@ -354,6 +361,9 @@ export class CodeBlockView implements NodeView {
     this.observer?.disconnect();
     this.observer = null;
     this.contentDOM.removeEventListener("scroll", this.syncHorizontalScroll);
+    // v0.13.0 需求1：移除三点按钮
+    this.kebabButton?.remove();
+    this.kebabButton = null;
     // G9：取消 settings store 订阅，避免内存泄漏
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;

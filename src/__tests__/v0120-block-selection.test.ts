@@ -66,21 +66,54 @@ function fakeMouseEvent(over: Partial<{ button: number; detail: number; target: 
 }
 
 describe("v0.12.0 需求6：shouldSelectBlockOnMouseDown（纯函数）", () => {
-  it("左键单击 + 非交互 + 未选中 → true", () => {
+  it("左键单击 + 非交互 + 未选中 + 块不可放光标 → true", () => {
     expect(
-      shouldSelectBlockOnMouseDown({ isPlainLeftClick: true, onInteractive: false, alreadySelected: false }),
+      shouldSelectBlockOnMouseDown({
+        isPlainLeftClick: true,
+        onInteractive: false,
+        alreadySelected: false,
+        acceptsCaret: false,
+      }),
     ).toBe(true);
   });
 
   it("双击（detail≠1）/右键 / 交互控件 / 已选中 → false", () => {
     expect(
-      shouldSelectBlockOnMouseDown({ isPlainLeftClick: false, onInteractive: false, alreadySelected: false }),
+      shouldSelectBlockOnMouseDown({
+        isPlainLeftClick: false,
+        onInteractive: false,
+        alreadySelected: false,
+        acceptsCaret: false,
+      }),
     ).toBe(false);
     expect(
-      shouldSelectBlockOnMouseDown({ isPlainLeftClick: true, onInteractive: true, alreadySelected: false }),
+      shouldSelectBlockOnMouseDown({
+        isPlainLeftClick: true,
+        onInteractive: true,
+        alreadySelected: false,
+        acceptsCaret: false,
+      }),
     ).toBe(false);
     expect(
-      shouldSelectBlockOnMouseDown({ isPlainLeftClick: true, onInteractive: false, alreadySelected: true }),
+      shouldSelectBlockOnMouseDown({
+        isPlainLeftClick: true,
+        onInteractive: false,
+        alreadySelected: true,
+        acceptsCaret: false,
+      }),
+    ).toBe(false);
+  });
+
+  // v0.13.0 需求1：可放光标的块（代码块/公式块/表格单元格文本）不拦——
+  // 单击即进入编辑，不再需要点两次
+  it("块可放光标（acceptsCaret=true）→ false：单击直接进编辑", () => {
+    expect(
+      shouldSelectBlockOnMouseDown({
+        isPlainLeftClick: true,
+        onInteractive: false,
+        alreadySelected: false,
+        acceptsCaret: true,
+      }),
     ).toBe(false);
   });
 });
@@ -92,20 +125,39 @@ describe("v0.12.0 需求6：handleBlockStopEvent", () => {
     schema.node("paragraph", null, [schema.text("b")]),
   ]);
   const codePos = doc.child(0).nodeSize;
+  // v0.13.0 需求1：不可放光标的叶子块才拦 mousedown。用 horizontal_rule（无 content）
+  // 代表这一类——代码块/公式块现在都直接放行（单击即编辑）。
+  const leafDoc = schema.node("doc", null, [
+    schema.node("paragraph", null, [schema.text("a")]),
+    schema.node("horizontal_rule"),
+    schema.node("paragraph", null, [schema.text("b")]),
+  ]);
+  const hrPos = leafDoc.child(0).nodeSize;
 
-  it("单击 → 拦下并建立 NodeSelection（preventDefault 被调）", () => {
-    const { view, getState, focusCalls } = makeMockView(EditorState.create({ doc, schema }));
+  it("单击叶子块（horizontal_rule）→ 拦下并建立 NodeSelection（preventDefault 被调）", () => {
+    const { view, getState, focusCalls } = makeMockView(EditorState.create({ doc: leafDoc, schema }));
     const dom = document.createElement("div");
     const e = fakeMouseEvent({});
-    const handled = handleBlockStopEvent(dom, view, () => codePos, e);
+    const handled = handleBlockStopEvent(dom, view, () => hrPos, e);
     expect(handled).toBe(true);
     const sel = getState().selection;
     expect(sel).toBeInstanceOf(NodeSelection);
-    expect(sel.from).toBe(codePos);
+    expect(sel.from).toBe(hrPos);
     expect(e.preventDefault).toHaveBeenCalled();
     // v0.12.1 需求6：preventDefault 会吃掉浏览器的自动聚焦，必须显式把焦点交还编辑器，
     // 否则后续按键（→ 退出代码块 / Delete 删块）都到不了 ProseMirror
     expect(focusCalls.length).toBe(1);
+  });
+
+  // v0.13.0 需求1：代码块可放光标 → 不拦 mousedown，单击直接进编辑
+  it("单击代码块 → 放行（不再需要点两次才能编辑）", () => {
+    const { view, getState, focusCalls } = makeMockView(EditorState.create({ doc, schema }));
+    const e = fakeMouseEvent({});
+    const handled = handleBlockStopEvent(document.createElement("div"), view, () => codePos, e);
+    expect(handled).toBe(false);
+    expect(getState().selection).not.toBeInstanceOf(NodeSelection);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(focusCalls.length).toBe(0);
   });
 
   it("放行路径（双击/右键/交互控件）不得抢焦点", () => {
@@ -192,10 +244,10 @@ describe("v0.12.0 需求6：NodeView 选中接线", () => {
     expect(nv.dom.classList.contains(BLOCK_SELECTED_CLASS)).toBe(true);
     nv.deselectNode!();
     expect(nv.dom.classList.contains(BLOCK_SELECTED_CLASS)).toBe(false);
-    // 单击建 NodeSelection（view/getPos 已保存）
+    // v0.13.0 需求1：公式块可放光标 → 单击放行（直接进编辑，不再建 NodeSelection）
     const handled = nv.stopEvent!(fakeMouseEvent({}));
-    expect(handled).toBe(true);
-    expect(getState().selection).toBeInstanceOf(NodeSelection);
+    expect(handled).toBe(false);
+    expect(getState().selection).not.toBeInstanceOf(NodeSelection);
   });
 
   it("MermaidBlockView / TableView 源码接线（构造重，避免实例化）", () => {

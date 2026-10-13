@@ -16,6 +16,8 @@ import type { Node as PMNode } from "prosemirror-model";
 import mermaid from "mermaid";
 // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除）
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
+// v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
+import { createBlockKebabButton } from "./blockKebab";
 // v0.12.2 P7：内联提示文案走 i18n（此前硬编码中文，英文界面穿帮）
 import { t } from "../../i18n/state";
 
@@ -78,6 +80,8 @@ export class MermaidBlockView implements NodeView {
   private lastRenderedCode = "";
   private observer: MutationObserver | null = null;
   private handleDblClick: () => void;
+  /** v0.13.0 需求1：右上角三点菜单按钮（常驻显示由 CSS 控制） */
+  private kebabButton: HTMLButtonElement | null = null;
 
   constructor(node: PMNode, view: EditorView, getPos: () => number | undefined) {
     initMermaid();
@@ -107,6 +111,9 @@ export class MermaidBlockView implements NodeView {
     // 点击切换编辑/预览态
     this.handleDblClick = () => this.toggleEditMode();
     this.dom.addEventListener("dblclick", this.handleDblClick);
+
+    // v0.13.0 需求1：右上角三点菜单（常驻显示由 CSS 控制）
+    this.kebabButton = createBlockKebabButton(this.dom, this.getPos);
 
     // 初始渲染
     this.renderMermaid();
@@ -220,5 +227,8 @@ export class MermaidBlockView implements NodeView {
     this.observer?.disconnect();
     this.observer = null;
     this.dom.removeEventListener("dblclick", this.handleDblClick);
+    // v0.13.0 需求1：移除三点按钮
+    this.kebabButton?.remove();
+    this.kebabButton = null;
   }
 }

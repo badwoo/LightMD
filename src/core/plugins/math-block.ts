@@ -20,6 +20,8 @@ import type { Node as PMNode } from "prosemirror-model";
 import katex from "katex";
 // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除；行内公式不需要）
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
+// v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
+import { createBlockKebabButton } from "./blockKebab";
 
 /** 行内公式 NodeView */
 export class MathInlineView implements NodeView {
@@ -156,6 +158,8 @@ export class MathBlockView implements NodeView {
   deselectNode = () => clearBlockSelected(this.dom);
   stopEvent = (event: Event) =>
     handleBlockStopEvent(this.dom, this.view, this.getPos, event);
+  /** v0.13.0 需求1：右上角三点菜单按钮（常驻显示由 CSS 控制） */
+  private kebabButton: HTMLButtonElement | null = null;
 
   constructor(node: PMNode, view: EditorView, getPos: () => number | undefined) {
     this.node = node;
@@ -184,6 +188,9 @@ export class MathBlockView implements NodeView {
     // 双击切换编辑/预览态
     this.handleDblClick = () => this.toggleEditMode();
     this.dom.addEventListener("dblclick", this.handleDblClick);
+
+    // v0.13.0 需求1：右上角三点菜单（常驻显示由 CSS 控制）
+    this.kebabButton = createBlockKebabButton(this.dom, this.getPos);
 
     // 初始渲染
     this.renderKatex();
@@ -267,5 +274,8 @@ export class MathBlockView implements NodeView {
   destroy() {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.dom.removeEventListener("dblclick", this.handleDblClick);
+    // v0.13.0 需求1：移除三点按钮
+    this.kebabButton?.remove();
+    this.kebabButton = null;
   }
 }

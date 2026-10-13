@@ -38,6 +38,8 @@ export interface PmMenuContext {
   nodeKind: string | null;
   isMdFile: boolean;
   translateEnabled: boolean;
+  /** v0.13.0 需求1：剪贴板里是否有可用的块数据（无则禁用「粘贴」） */
+  hasBlockClipboard?: boolean;
 }
 
 /** 块类型 → 删除文案的 i18n key（未知类型回退通用「删除块」） */
@@ -50,10 +52,14 @@ export const NODE_DELETE_LABEL_KEYS: Record<string, string> = {
 
 /** 构建 PM 菜单项（纯函数，便于单测；文案经 t() 同步解析） */
 export function buildPmMenuItems(ctx: PmMenuContext): PmMenuItemConfig[] {
-  // ─── 块级选中（NodeSelection）：删除 XX ───
+  // ─── 块级选中（NodeSelection）：剪切/复制/粘贴/删除 XX ───
   if (ctx.nodeKind) {
     const key = NODE_DELETE_LABEL_KEYS[ctx.nodeKind] ?? "menu.deleteNode";
     return [
+      { type: "item", action: "blockCut", label: t("blockMenu.cut") },
+      { type: "item", action: "blockCopy", label: t("blockMenu.copy") },
+      { type: "item", action: "blockPaste", label: t("blockMenu.paste"), disabled: !ctx.hasBlockClipboard },
+      { type: "separator" },
       { type: "item", action: "formatPainter", label: t("menu.formatPainter") },
       { type: "separator" },
       { type: "item", action: "deleteNode", label: t(key) },
@@ -106,6 +112,8 @@ export interface PmContextMenuProps {
   nodeKind: string | null;
   isMdFile: boolean;
   translateEnabled: boolean;
+  /** v0.13.0 需求1：剪贴板是否有块数据（控制「粘贴」禁用态） */
+  hasBlockClipboard?: boolean;
   onAction: (action: string) => void;
   onClose: () => void;
 }
@@ -118,6 +126,7 @@ export function PmContextMenu({
   nodeKind,
   isMdFile,
   translateEnabled,
+  hasBlockClipboard,
   onAction,
   onClose,
 }: PmContextMenuProps) {
@@ -151,7 +160,13 @@ export function PmContextMenu({
 
   if (!open) return null;
 
-  const items = buildPmMenuItems({ hasSelection, nodeKind, isMdFile, translateEnabled });
+  const items = buildPmMenuItems({
+    hasSelection,
+    nodeKind,
+    isMdFile,
+    translateEnabled,
+    hasBlockClipboard,
+  });
   const pos = computeMenuPosition(x, y, { width: window.innerWidth, height: window.innerHeight }, {
     width: 200,
     height: 440,

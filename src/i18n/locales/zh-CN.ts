@@ -665,6 +665,16 @@ export const zhCN: Record<string, string> = {
   "menu.deleteMathBlock": "删除公式",
   "menu.deleteTable": "删除表格",
   "menu.deleteNode": "删除块",
+  // v0.13.0 需求1：块级复制/剪切/粘贴（三点菜单 + 右键菜单 + 快捷键共用）
+  "blockMenu.cut": "剪切",
+  "blockMenu.copy": "复制",
+  "blockMenu.paste": "粘贴",
+  "blockMenu.delete": "删除该块",
+  "blockMenu.formatPainter": "格式刷",
+  "blockMenu.select": "选中该块",
+  "blockMenu.moveUp": "移动到上方",
+  "blockMenu.moveDown": "移动到下方",
+  "blockMenu.clipboardFailed": "剪贴板不可用或权限被拒绝",
   "formatPainter.hintOnce": "格式刷：单击目标应用",
   "formatPainter.hintPersistent": "格式刷：持续应用中（剩余 {count} 次），按 Esc 退出",
   // ─── SlashCommand 命令菜单 ────────────────────────────────────

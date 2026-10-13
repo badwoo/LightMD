@@ -55,6 +55,19 @@ import {
   type FormatSnapshot,
 } from "../../utils/formatPainter";
 import { useFormatPainterStore } from "../../stores/useFormatPainterStore";
+// v0.13.0 需求1：块级复制/剪切/粘贴（三点菜单 + 右键菜单 + 快捷键共用一套核心逻辑）
+import {
+  copySelectedBlock,
+  cutSelectedBlock,
+  deleteSelectedBlock,
+  pasteBlockAtSelection,
+  readBlockClipboard,
+  selectBlockAt,
+} from "../../utils/blockClipboardOps";
+// v0.13.0 需求1：块三点菜单（NodeView 派发的事件名 + 菜单项构建）
+import { BLOCK_ACTION_EVENT } from "../../core/plugins/blockKebab";
+import { buildBlockMenuItems } from "../../utils/blockActionMenu";
+import { buildBlockMoveTr } from "../../core/plugins/block-drag";
 import type { SlashState } from "../../core/plugins/slash-command";
 import { readAutoPairConfig } from "../../core/plugins/auto-pair";
 import {
@@ -123,7 +136,7 @@ import {
   FullTranslateButton,
 } from "./FullTranslateButton";
 // v0.7.0 修复1：选区「译」浮动按钮右键菜单（与翻译气泡同款快捷菜单）
-import { MiniContextMenu } from "./MiniContextMenu";
+import { MiniContextMenu, type MiniMenuItem } from "./MiniContextMenu";
 import { translateTooltipKey, AI_BUBBLE_DEFS, type AiAssistTask } from "../../core/plugins/translateTooltip";
 import { ModeSwitchButton } from "./ModeSwitchButton";
 // v0.12.0 需求5：右下角文档缩放尺（hover 显现，拖动/点击调整缩放）
@@ -1680,7 +1693,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     y: number;
     hasSelection: boolean;
     nodeKind: string | null;
-  }>({ open: false, x: 0, y: 0, hasSelection: false, nodeKind: null });
+    /** v0.13.0 需求1：剪贴板是否有块数据（控制「粘贴」禁用态） */
+    hasBlockClipboard: boolean;
+  }>({ open: false, x: 0, y: 0, hasSelection: false, nodeKind: null, hasBlockClipboard: false });
+  // ─── v0.13.0 需求1：块右上角三点菜单（blockKebab 派发 lightmd:blockAction） ───
+  const [blockKebabMenu, setBlockKebabMenu] = useState<{
+    open: boolean;
+    x: number;
+    y: number;
+    /** 被点块的文档位置 */
+    pos: number;
+    /** 剪贴板是否有块数据（控制「粘贴」禁用态） */
+    hasClipboard: boolean;
+  }>({ open: false, x: 0, y: 0, pos: 0, hasClipboard: false });
   // v0.12.0 需求2：格式刷状态（订阅以驱动光标样式 / Esc 监听 / 状态栏提示）
   const formatPainterMode = useFormatPainterStore((s) => s.mode);
   // ─── Mermaid 模板下拉状态 ────────────────────────
@@ -4287,12 +4312,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (!isNode && !hasTextSelection) return; // → 原生菜单
       e.preventDefault();
       const { clientX: x, clientY: y } = e;
+      // v0.13.0 需求1：读剪贴板判断「粘贴」是否可用（异步，菜单打开时刷新）
+      void readBlockClipboard().then((data) => {
+        setPmContextMenu((s) => (s.open ? { ...s, hasBlockClipboard: !!data } : s));
+      });
       setPmContextMenu({
         open: true,
         x,
         y,
         hasSelection: hasTextSelection,
         nodeKind: isNode ? sel!.node.type.name : null,
+        hasBlockClipboard: false,
       });
     };
     container.addEventListener("contextmenu", onContextMenu);
@@ -4309,6 +4339,81 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (!applyHeadingLevelToView(view, pos, level)) return;
     view.focus();
   }, []);
+
+  /**
+   * v0.13.0 需求1：监听块右上角三点按钮派发的 `lightmd:blockAction`。
+   *
+   * NodeView 只负责派发（含块的 pos），这里统一弹菜单——业务层只在一处。
+   * 菜单复用 MiniContextMenu（portal + 视口自适应 + 键盘导航，既有实现）。
+   */
+  useEffect(() => {
+    const container = editorRef.current;
+    if (!container) return;
+    const onBlockAction = (e: Event) => {
+      const detail = (e as CustomEvent<{ action: string; pos: number }>).detail;
+      if (!detail || typeof detail.pos !== "number") return;
+      // 以按钮自身位置作为菜单锚点（三点在块右上角）
+      const btn = (e.target as HTMLElement | null)?.closest?.(".block-kebab") as HTMLElement | null;
+      const rect = btn?.getBoundingClientRect();
+      const anchor = { x: rect ? rect.left : 0, y: rect ? rect.bottom + 4 : 0 };
+      // 先以默认态打开（菜单立即可见），剪贴板结果到达后再刷新禁用态
+      setBlockKebabMenu({ open: true, ...anchor, pos: detail.pos, hasClipboard: false });
+      void readBlockClipboard().then((data) => {
+        setBlockKebabMenu((s) => (s.open ? { ...s, hasClipboard: !!data } : s));
+      });
+    };
+    container.addEventListener(BLOCK_ACTION_EVENT, onBlockAction);
+    return () => container.removeEventListener(BLOCK_ACTION_EVENT, onBlockAction);
+  }, [viewMode]);
+
+  /** v0.13.0 需求1：三点菜单 action 分发（复用块级剪贴板/移动/格式刷既有实现） */
+  const handleBlockKebabAction = useCallback(
+    (action: string) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const pos = blockKebabMenu.pos;
+      switch (action) {
+        case "cut":
+        case "copy": {
+          // 菜单触发时先确保该块处于选中态（NodeSelection），再走既有实现
+          selectBlockAt(view, pos);
+          if (action === "copy") {
+            void copySelectedBlock(view).then((ok) => {
+              if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+            });
+          } else {
+            void cutSelectedBlock(view).then((ok) => {
+              if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+            });
+          }
+          return;
+        }
+        case "paste":
+          void pasteBlockAtSelection(view).then((ok) => {
+            if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+          });
+          return;
+        case "delete":
+          selectBlockAt(view, pos);
+          deleteSelectedBlock(view);
+          return;
+        case "formatPainter":
+          armFormatPainter(false);
+          return;
+        case "select":
+          selectBlockAt(view, pos);
+          return;
+        case "moveUp":
+        case "moveDown": {
+          const dir = action === "moveUp" ? -1 : 1;
+          const tr = buildBlockMoveTr(view.state, pos, dir);
+          if (tr) view.dispatch(tr);
+          return;
+        }
+      }
+    },
+    [armFormatPainter, blockKebabMenu.pos],
+  );
 
   /** PM 右键菜单 action 分发 */
   const handlePmMenuAction = useCallback((action: string) => {
@@ -4334,6 +4439,28 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         if (view) {
           view.dispatch(view.state.tr.deleteSelection());
           view.focus();
+        }
+        return;
+      // ─── v0.13.0 需求1：块级复制/剪切/粘贴 ───
+      case "blockCopy":
+        if (view) {
+          void copySelectedBlock(view).then((ok) => {
+            if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+          });
+        }
+        return;
+      case "blockCut":
+        if (view) {
+          void cutSelectedBlock(view).then((ok) => {
+            if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+          });
+        }
+        return;
+      case "blockPaste":
+        if (view) {
+          void pasteBlockAtSelection(view).then((ok) => {
+            if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+          });
         }
         return;
       case "translate":
@@ -6266,9 +6393,34 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         nodeKind={pmContextMenu.nodeKind}
         isMdFile={isMdFile}
         translateEnabled={translateEnabled}
+        hasBlockClipboard={pmContextMenu.hasBlockClipboard}
         onAction={handlePmMenuAction}
         onClose={() => setPmContextMenu((s) => ({ ...s, open: false }))}
       />
+
+      {/* v0.13.0 需求1：块右上角三点菜单（复用 MiniContextMenu 弹层） */}
+      {blockKebabMenu.open && (
+        <MiniContextMenu
+          x={blockKebabMenu.x}
+          y={blockKebabMenu.y}
+          onClose={() => setBlockKebabMenu((s) => ({ ...s, open: false }))}
+          items={(() => {
+            const view = viewRef.current;
+            const doc = view?.state.doc;
+            const isFirst = !doc || blockKebabMenu.pos <= 0;
+            const isLast = !doc || blockKebabMenu.pos >= doc.content.size;
+            return buildBlockMenuItems({
+              hasClipboard: blockKebabMenu.hasClipboard,
+              isFirstBlock: isFirst,
+              isLastBlock: isLast,
+            }).map<MiniMenuItem>((item) => ({
+              action: item.id,
+              label: t(item.labelKey),
+              onClick: () => handleBlockKebabAction(item.id),
+            }));
+          })()}
+        />
+      )}
 
       {/* v0.12.1 需求1：标题级别下拉菜单（点击标题左侧 H1/H2 徽标打开） */}
       <HeadingLevelMenu

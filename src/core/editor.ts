@@ -15,7 +15,7 @@ import { lightMDSchema } from "./schema";
 import { markdownToDoc, getMarkdownIt } from "./markdown/parser";
 import { docToMarkdown } from "./markdown/serializer";
 import { buildInputRules } from "./inputrules";
-import { buildKeymap, dynamicShortcutsPlugin } from "./keymap";
+import { buildKeymap, dynamicShortcutsPlugin, blockClipboardPlugin } from "./keymap";
 // v0.8.3 需求3：光标行（结构化行号）与列的计算（纯函数，可单测）
 import { computeDocLine, computeBlockColumn } from "../utils/cursorPosition";
 import { wysiwygPlugin, createWysiwygPlugin } from "./plugins/wysiwyg";
@@ -228,7 +228,11 @@ export function createEditor(options: EditorOptions): EditorView | null {
     doc,
     plugins: [
       history(),
-      // v0.9.0 自定义快捷键：动态键位插件最先注册——每次 keydown 读生效键位表
+      // v0.13.0 需求1：块级剪贴板快捷键（NodeSelection 态下 Ctrl+C/X → 整块复制/剪切）。
+      // 必须**早于**动态快捷键插件与静态 keymap 注册（PM 的 props.handleKeyDown
+      // 越靠前优先级越高），否则 NodeSelection 态下的 Ctrl+C 会先被别处消费。
+      blockClipboardPlugin(),
+      // v0.9.0 自定义快捷键：动态键位插件次之——每次 keydown 读生效键位表
       // （默认 + 用户覆盖），命中即接管，未命中 fallthrough 到静态 keymap / baseKeymap
       dynamicShortcutsPlugin(),
       // v0.8.0 修复 P11-6：自定义键位必须**先于** baseKeymap 注册。

@@ -5,6 +5,22 @@ import type { Node, Mark } from "prosemirror-model";
 import { getBlockSource, type BlockSourceInfo } from "./blockSourceMap";
 
 /**
+ * v0.13.0 需求1：把**单个块节点**序列化为 Markdown（块级复制/剪切用）。
+ *
+ * 不能直接喂给 `docToMarkdown`——它吃的是 doc（内部 `doc.forEach`），且其 B6
+ * 快路径只在「顶层块行号连续覆盖」时生效。这里把该块包进一个临时 doc 再走
+ * 逐块路径：命中 B6 的块输出原文切片，未命中的走规范序列化。
+ *
+ * @param node 顶层块节点（code_block / table / paragraph / …）
+ * @returns 该块的 Markdown 源码（含尾部换行）
+ */
+export function nodeToMarkdown(node: Node): string {
+  if (!node) return "";
+  const doc = node.type.schema.nodes.doc.create(null, node);
+  return docToMarkdown(doc);
+}
+
+/**
  * 将 ProseMirror 文档序列化为 Markdown 字符串
  *
  * v0.6.6 问题1：空段落（空行）往返一致性

@@ -21,6 +21,8 @@ import { lightMDSchema as schema } from "../schema";
 import { t } from "../../i18n/state";
 // v0.12.0 需求6：块级选中（单击选中整个表格 → Delete 删除）
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
+// v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
+import { createBlockKebabButton } from "./blockKebab";
 
 // ─── TableCellView —— td/th 的轻量 NodeView（F1 修复） ────────────────
 
@@ -649,6 +651,8 @@ export class TableView implements NodeView {
   contentDOM: HTMLElement;
   private view: EditorView;
   private getPos: () => number | undefined;
+  /** v0.13.0 需求1：右上角三点菜单按钮（常驻显示由 CSS 控制） */
+  private kebabButton: HTMLButtonElement | null = null;
   private toolbar: HTMLElement | null = null;
   // 列宽拖拽状态
   private resizing: {
@@ -693,6 +697,9 @@ export class TableView implements NodeView {
     this.dom.addEventListener("mousemove", (e) => this.onHover(e));
     // 点击表格内任意位置时显示工具栏
     this.dom.addEventListener("click", () => this.showToolbar());
+
+    // v0.13.0 需求1：右上角三点菜单（常驻显示由 CSS 控制）
+    this.kebabButton = createBlockKebabButton(this.dom, this.getPos);
 
     // 初始应用列宽和行高
     this.applyColumnWidths(node);
@@ -1320,5 +1327,8 @@ export class TableView implements NodeView {
     document.removeEventListener("mousemove", this.onRowMouseMove);
     document.removeEventListener("mouseup", this.onRowMouseUp);
     document.removeEventListener("click", this.onDocClick);
+    // v0.13.0 需求1：移除三点按钮
+    this.kebabButton?.remove();
+    this.kebabButton = null;
   }
 }

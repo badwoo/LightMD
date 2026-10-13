@@ -17,6 +17,7 @@
  */
 import { NodeSelection, Plugin, PluginKey } from "prosemirror-state";
 import type { EditorState, Transaction } from "prosemirror-state";
+import { Decoration, DecorationSet } from "prosemirror-view";
 import type { EditorView } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
 
@@ -272,6 +273,25 @@ export function blockDragPlugin(): Plugin {
           if (dom0.style.cursor !== want) dom0.style.cursor = want;
           return false;
         },
+      },
+      // v0.13.0 需求1：光标/选区落在某块内时，给该块加 `.pm-block-active`
+      // （手柄与三点菜单的「常驻」显示条件之一）。选中态（NodeSelection）另由
+      // 各 NodeView 的 selectNode 加 `.pm-block-selected`，两者在 CSS 里并列。
+      decorations(state) {
+        const { selection } = state;
+        // NodeSelection 已由 selectNode 处理，跳过（避免重复劳动）
+        if (selection instanceof NodeSelection) return null;
+        const $from = selection.$from;
+        // 光标在文本节点内部（表格单元格等）：取深度为 1 的顶层块
+        let depth = $from.depth;
+        while (depth > 0 && $from.node(depth).isInline) depth--;
+        if (depth < 1) return null;
+        const pos = $from.before(1);
+        const dom = state.doc.nodeAt(pos);
+        if (!dom) return null;
+        return DecorationSet.create(state.doc, [
+          Decoration.node(pos, pos + dom.nodeSize, { class: "pm-block-active" }),
+        ]);
       },
     },
   });

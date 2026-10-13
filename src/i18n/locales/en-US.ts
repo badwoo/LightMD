@@ -658,6 +658,16 @@ export const enUS: Record<string, string> = {
   "menu.deleteMathBlock": "Delete Formula",
   "menu.deleteTable": "Delete Table",
   "menu.deleteNode": "Delete Block",
+  // v0.13.0 req 1: block-level copy/cut/paste (shared by the kebab menu, right-click menu and shortcuts)
+  "blockMenu.cut": "Cut",
+  "blockMenu.copy": "Copy",
+  "blockMenu.paste": "Paste",
+  "blockMenu.delete": "Delete Block",
+  "blockMenu.formatPainter": "Format Painter",
+  "blockMenu.select": "Select Block",
+  "blockMenu.moveUp": "Move Up",
+  "blockMenu.moveDown": "Move Down",
+  "blockMenu.clipboardFailed": "Clipboard unavailable or permission denied",
   "formatPainter.hintOnce": "Format Painter: click a target to apply",
   "formatPainter.hintPersistent": "Format Painter: persistent mode ({count} left), press Esc to exit",
   // ─── SlashCommand command menu ───────────────────────────────────
