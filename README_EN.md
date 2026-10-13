@@ -301,6 +301,38 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 ## 📋 Changelog
 
 
+### v0.13.0 (2026-10-13)
+
+**Editing catch-up and data safety — batch 1: block interaction rework + no more overwriting external edits** (baseline 0.12.3)
+
+Two user reports drove this batch: "clicking a block always activates the block first, so I have to click a second time before I can edit its contents", and "another program changed my .md file, yet auto-save overwrote it and my content went backwards". Both are fixed here.
+
+**Block interaction (reading mode)**
+
+| Item | Detail |
+| --- | --- |
+| **One click to edit** | Blocks that **can hold a caret** (code blocks, math blocks, Mermaid, table cells) go straight into editing on a single click — no more "click once to activate the block, click again to edit". Leaf blocks that **cannot hold a caret** (horizontal rules, `[toc]`) still select as a whole block, so Delete and drag still work |
+| **Handle and kebab menu stay visible** | While the mouse hovers a block, or the caret/selection is inside it, or the whole block is selected, the drag handle `⋮⋮` on the left and the `⋮` button in the top-right corner **appear together**; they hide when none of those hold. They stay put (no flicker) while you type inside the block |
+| **Kebab menu** | The top-right `⋮` opens 8 items: Cut / Copy / Paste / Delete block / Format painter / Select block / Move up / Move down. "Paste" is disabled when the clipboard holds no LightMD block data, and "Move up/down" are disabled on the first/last block |
+| **Block-level copy / cut** | Copying a block writes **three** clipboard entries: `text/plain` (the block's Markdown source, for external editors / source mode), `text/html` (rendered HTML, for web pages / Word), and `application/x-lightmd-block` (a LightMD-specific JSON that lets reading-mode paste **restore the original source of unedited blocks exactly**) |
+| **Three entries, one core** | The kebab menu, the right-click menu (its block branch gained cut/copy/paste), and the shortcuts (`Ctrl+C`/`Ctrl+X` with a block selected) all share one implementation. **Text selections are always passed through to the browser default**, so ordinary copying is never hijacked |
+| **Deleting never empties the document** | If deleting a block would leave the document empty, an empty paragraph is inserted automatically (ProseMirror requires at least one block); cut and delete are each **a single transaction, so one `Ctrl+Z` restores everything** |
+| **Failures are never silent** | When the clipboard is unavailable or permission is denied a toast is shown instead of failing silently |
+
+**Data safety (consistent across all three modes)**
+
+| Item | Detail |
+| --- | --- |
+| **Auto-save no longer overwrites external edits** | Auto-save now **reads the disk once before writing** and applies a three-way check: disk content == our last written content → save normally; disk content == the content about to be written → skip (saves a pointless write); **anything else (a third party changed it) → abandon this auto-save**, flag the tab as externally changed and notify, leaving you to press `Ctrl+S` and choose "Overwrite / Save as". The previous `externallyChanged` flag depended on the watcher event arriving first, and events can be **late or missing** (directory not mounted, mtime dedupe hit, or the Rust callback scheduled after the timer) — which silently reverted external edits |
+| **A failed disk read aborts the save** | If the file was deleted or is locked so the read fails, auto-save **never writes** (safety first); the dirty flag stays and your content is still in memory, ready for Save as |
+| **External-change policy** | New setting "When a file changes on disk" with three choices (the default preserves the old behaviour): ① reload clean tabs, only notify when there are unsaved edits; ② reload clean tabs and **ask "Take latest / Keep local / Save as" when there are unsaved edits** (honours "prefer the newest version on disk" without silently dropping local edits); ③ ask on every external change |
+| **Single files get external updates too** | Opening a file that is not inside any open folder now also mounts that file's **parent directory** as a watcher fallback (using the existing reference count, released automatically at zero). Previously the watcher only watched directories, so such files **never refreshed** when changed externally |
+| **Self-saves are not misreported** | Regression-locked with the `selfWriteGuard` content fingerprint: if the disk content equals what this app just wrote, the event is treated as our own save echo and no "changed externally" warning appears |
+
+**Quality verification**: frontend **258 files / 4188 tests all pass** (baseline 257/4173). New: `v0130-block-clipboard` 24 tests (three clipboard formats + the three-tier fallback read + menu construction + the `blockAcceptsCaret` truth table + empty-document repair after delete), `v0130-block-interaction` 15 tests (**real `createEditor` mounts**: a click inside a code block does not build a NodeSelection, a click on a horizontal rule still does, kebab DOM wiring and event dispatch, `Ctrl+C/X` intercepted under NodeSelection while text selections pass through, `.pm-block-active` caret tracking), `v0130-autosave-conflict` 19 tests (three-way decision truth table + the failed-read path + cache reuse, driving the real `useAutoSave`), `v0130-external-refresh` 13 tests (policy truth table + the dirty-tab three-way dialog + self-echo not misreported); `tsc --noEmit` clean.
+
+**Upgrade notes**: overwrite the install in place; no breaking changes. The old habit of "click once to select the whole block, click again to edit" changes — **a single click now edits directly**; to select a whole block use the kebab menu's "Select block", press `Esc`, or double-click. Auto-save behaves exactly as before in normal use (it only abandons the write and notifies when a third-party change is detected on disk).
+
 ### v0.12.3 (2026-10-12)
 
 **Enter = line break — line-break counts now match across the three modes, and line spacing is back to default** (baseline 0.12.2)
