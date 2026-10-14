@@ -38,6 +38,9 @@ import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { ExportDialog } from "./components/dialogs/ExportDialog";
 import { ImagePasteDialog } from "./components/dialogs/ImagePasteDialog";
 import { CommandPalette } from "./components/dialogs/CommandPalette";
+// v0.13.0 需求8：Ctrl+P 文件快速切换器
+import { QuickOpenDialog } from "./components/dialogs/QuickOpenDialog";
+import { flattenFileTree } from "./utils/quickOpen";
 import { VersionSnapshotDialog } from "./components/dialogs/VersionSnapshotDialog";
 import { setImageHandler, insertImageAtCursor, insertImagesAtPos, resolveDropInsertPos, type ImageDropContext } from "./core/plugins/image-paste";
 // E1(v0.9.2):阅读模式命令走 PM 真命令/节点构造(与快捷键同源)
@@ -269,6 +272,8 @@ function App() {
   const [showOutline, setShowOutline] = useState(true);
   // G8：命令面板开关
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  // v0.13.0 需求8：文件快速切换器开关（Ctrl+P）
+  const [showQuickOpen, setShowQuickOpen] = useState(false);
   // v0.9.0 自定义快捷键：标签栏折叠（Ctrl+Shift+B / 命令面板 view.toggleTag；会话级，不持久化）
   const [tabBarCollapsed, setTabBarCollapsed] = useState(false);
   // v0.4.0 功能4：版本快照窗口开关 + 目标文件路径
@@ -3084,6 +3089,8 @@ function App() {
         case "view.toggleTypewriter": toggleTypewriter(); return;
         case "view.toggleOutline": setShowOutline((v) => !v); return;
         case "view.commandPalette": setShowCommandPalette(true); return;
+        // v0.13.0 需求8：文件快速切换器（Ctrl+P）——与命令面板（Ctrl+Shift+P）互不干扰
+        case "view.quickOpen": setShowQuickOpen(true); return;
         case "view.snapshot": {
           const { openTabs, activeTabIdx } = useEditorStore.getState();
           const activeTab = openTabs[activeTabIdx];
@@ -3433,6 +3440,42 @@ function App() {
       {/* G8：命令面板（Ctrl+Shift+P） */}
       {showCommandPalette && (
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
+      )}
+      {/* v0.13.0 需求8：文件快速切换器（Ctrl+P）——三类来源去重排序 */}
+      {showQuickOpen && (
+        <QuickOpenDialog
+          open={showQuickOpen}
+          openTabs={useEditorStore
+            .getState()
+            .openTabs.filter((tb) => !tb.isUntitled && tb.path)
+            .map((tb) => ({
+              path: tb.path,
+              name: tb.name,
+              dir: getParentDir(tb.path),
+              group: "openTabs" as const,
+              isActive: tb.path === filePath,
+            }))}
+          recent={useFileStore
+            .getState()
+            .recentFiles.filter((f) => !f.stale)
+            .map((f) => ({
+              path: f.path,
+              name: f.name,
+              dir: getParentDir(f.path),
+              group: "recent" as const,
+            }))}
+          workspace={flattenFileTree(useFileStore.getState().fileTree).map((n) => ({
+            path: n.path,
+            name: n.name,
+            dir: getParentDir(n.path),
+            group: "workspace" as const,
+          }))}
+          onPick={(item) => {
+            setShowQuickOpen(false);
+            openFileByPath(item.path);
+          }}
+          onClose={() => setShowQuickOpen(false)}
+        />
       )}
       {/* v0.4.0 功能4：版本快照窗口（v0.8.0 起快捷键为 Ctrl+Alt+V） */}
       {showSnapshotDialog && snapshotFilePath && (

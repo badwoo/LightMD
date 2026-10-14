@@ -80,7 +80,9 @@ function headingDoc(count: number): string {
 describe("R5: 大纲渲染上限 1000", () => {
   it("1001 个标题渲染前 1000 项 + 截断提示文案", () => {
     const { container } = renderOutline(headingDoc(1001));
-    const items = container.querySelectorAll(".outline-list > .outline-item");
+    // v0.13.0 需求9：标题项外包了一层 .outline-row（折叠箭头 + 原按钮），
+    // 因此选择器从 `.outline-list > .outline-item` 改为 `.outline-list .outline-item`
+    const items = container.querySelectorAll(".outline-list .outline-item");
     expect(items.length).toBe(1000);
     expect(screen.queryByText("H1000")).not.toBeNull();
     expect(screen.queryByText("H1001")).toBeNull();
@@ -89,7 +91,7 @@ describe("R5: 大纲渲染上限 1000", () => {
 
   it("恰好 1000 个标题不出现截断提示（边界）", () => {
     const { container } = renderOutline(headingDoc(1000));
-    const items = container.querySelectorAll(".outline-list > .outline-item");
+    const items = container.querySelectorAll(".outline-list .outline-item");
     expect(items.length).toBe(1000);
     expect(container.querySelector(".outline-more")).toBeNull();
   });

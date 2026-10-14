@@ -41,8 +41,10 @@ export interface ImageEditDialogProps {
   imageAlt?: string;
   /** E11b(v0.9.3):初始宽度 px(来自 image 节点 attrs;null/undefined=未设置) */
   imageWidth?: number | null;
-  /** 确认回调:编辑后的 Base64 dataUrl + alt/宽度 meta(E11b) */
-  onConfirm: (newSrc: string, meta: { alt: string; width: number | null }) => void;
+  /** v0.13.0 需求4:初始水平对齐(来自 image 节点 attrs;缺省 left) */
+  imageAlign?: "left" | "center" | "right";
+  /** 确认回调:编辑后的 Base64 dataUrl + alt/宽度/对齐 meta(E11b + v0.13.0 需求4) */
+  onConfirm: (newSrc: string, meta: { alt: string; width: number | null; align: "left" | "center" | "right" }) => void;
   /** 关闭回调 */
   onClose: () => void;
 }
@@ -58,7 +60,7 @@ interface DisplayRect {
 /** 裁剪三态状态机：idle → selecting → confirmed → 应用 */
 type CropMode = "idle" | "selecting" | "confirmed";
 
-export function ImageEditDialog({ open, imageSrc, imageAlt, imageWidth, onConfirm, onClose }: ImageEditDialogProps) {
+export function ImageEditDialog({ open, imageSrc, imageAlt, imageWidth, imageAlign, onConfirm, onClose }: ImageEditDialogProps) {
   const t = useT();
   /** 当前编辑中的图片 src（应用变换后的） */
   const [currentSrc, setCurrentSrc] = useState("");
@@ -68,6 +70,8 @@ export function ImageEditDialog({ open, imageSrc, imageAlt, imageWidth, onConfir
   const [altText, setAltText] = useState("");
   /** E11b:宽度输入值(字符串态,空串=未设置) */
   const [widthText, setWidthText] = useState("");
+  /** v0.13.0 需求4:水平对齐 */
+  const [align, setAlign] = useState<"left" | "center" | "right">("left");
   /** 是否正在处理变换 */
   const [processing, setProcessing] = useState(false);
   /** 错误信息 */
@@ -90,13 +94,14 @@ export function ImageEditDialog({ open, imageSrc, imageAlt, imageWidth, onConfir
       setOriginalSrc(imageSrc);
       setAltText(imageAlt ?? "");
       setWidthText(typeof imageWidth === "number" && imageWidth > 0 ? String(imageWidth) : "");
+      setAlign(imageAlign ?? "left");
       setProcessing(false);
       setError("");
       setCropRect(null);
       setCropMode("idle");
       dragStartRef.current = null;
     }
-  }, [open, imageSrc, imageAlt, imageWidth]);
+  }, [open, imageSrc, imageAlt, imageWidth, imageAlign]);
 
   /** 计算图片显示坐标到原图坐标的缩放比例 */
   const getScale = useCallback((): { scaleX: number; scaleY: number } | null => {
@@ -290,11 +295,11 @@ export function ImageEditDialog({ open, imageSrc, imageAlt, imageWidth, onConfir
     return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
   }, [widthText]);
 
-  /** 确认：保存编辑后的图片与 alt/宽度 meta 到文档 */
+  /** 确认：保存编辑后的图片与 alt/宽度/对齐 meta 到文档 */
   const handleConfirm = useCallback(() => {
     if (processing || !currentSrc) return;
-    onConfirm(currentSrc, { alt: altText, width: parseWidthInput() });
-  }, [processing, currentSrc, altText, parseWidthInput, onConfirm]);
+    onConfirm(currentSrc, { alt: altText, width: parseWidthInput(), align });
+  }, [processing, currentSrc, altText, parseWidthInput, align, onConfirm]);
 
   // Esc 取消
   useEffect(() => {
@@ -357,6 +362,28 @@ export function ImageEditDialog({ open, imageSrc, imageAlt, imageWidth, onConfir
                 onChange={(e) => setWidthText(e.target.value)}
               />
             </label>
+          </div>
+
+          {/* v0.13.0 需求4：水平对齐三按钮（左/中/右）。
+              与 alt/宽度同属元信息，放在同一区块内；选中态用 aria-pressed 表达，
+              测试与读屏均可判定。 */}
+          <div className="image-edit-align" role="group" aria-label={t("image.alignLabel")}>
+            <span className="image-edit-meta-label">{t("image.alignLabel")}</span>
+            <div className="image-edit-align-btns">
+              {(["left", "center", "right"] as const).map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  className={`image-edit-align-btn ${align === a ? "active" : ""}`}
+                  aria-pressed={align === a}
+                  data-testid={`image-align-${a}`}
+                  title={t(`image.align.${a}`)}
+                  onClick={() => setAlign(a)}
+                >
+                  {t(`image.align.${a}`)}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div

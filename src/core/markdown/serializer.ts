@@ -521,12 +521,19 @@ function inlineToMarkdown(node: Node, context?: "table" | "top"): string {
 
       parts.push(text);
     } else if (child.type.name === "image") {
-      const { src, alt, title, width } = child.attrs;
+      const { src, alt, title, width, align } = child.attrs;
       const titlePart = title ? ` "${escapeTitle(title)}"` : "";
       // E11a(v0.9.3):宽度以 Typora 风格 |W 后缀表达;无宽度保持旧语法兼容旧文档
       const widthPart = typeof width === "number" && width > 0 ? `|${width}` : "";
+      // v0.13.0 需求4：对齐沿用**同一套 `|` 后缀约定** → `![alt|300|center](src)`。
+      // 为什么不用 `<img style>`：编辑管线的行内 HTML 白名单只放行 u/br/sub/sup/mark，
+      // `<img>` 会被整段剥掉（实测 doc 里只剩空段落）→ **图片直接丢失**。
+      // `|` 后缀由 parser 同源解析，往返稳定；未设对齐时不追加，文档零 diff。
+      const alignPart = align && align !== "left" ? `|${align}` : "";
       // v0.9.0 C3：目标地址含空格/括号/尖括号时用 <...> 包裹
-      parts.push(`![${escapeText(alt || "")}${widthPart}](${escapeDest(src)}${titlePart})`);
+      parts.push(
+        `![${escapeText(alt || "")}${widthPart}${alignPart}](${escapeDest(src)}${titlePart})`,
+      );
     } else if (child.type.name === "hard_break") {
       // v0.12.3 需求12：回车 = 换行后，"段内换行"成为高频形态，补齐三类
       // **用 "  \n" 无法表达**的边界（实测：只有 <br> 能原样往返）：

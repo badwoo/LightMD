@@ -1161,19 +1161,51 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
 
     if (t.type === "image") {
       // E11a(v0.9.3):alt 支持 Typora 风格尺寸后缀 ![alt|300](src) → alt + width
+      // v0.13.0 需求4：再扩展一档对齐后缀。三种写法都要支持：
+      //   ![alt|300|center](src)  宽度 + 对齐
+      //   ![alt|center](src)      仅对齐（无宽度）
+      //   ![alt|300](src)         仅宽度（E11a 既有）
+      //
+      // **只在后缀确实是「宽度或合法对齐值」时才剥离**——否则 alt 原样保留。
+      // 这样 alt 本身含竖线（如 "a|b"、"x|y|z"）不会被误判，与 E11a 的
+      // 「只有纯数字段才算宽度」口径一致。
       const rawAlt = getAttr(t, "alt") || t.content || "";
       let alt = rawAlt;
       let width: number | null = null;
-      const wMatch = /^(.*)\|(\d+)$/.exec(rawAlt);
-      if (wMatch) {
-        alt = wMatch[1];
-        width = Number(wMatch[2]);
+      let align: "left" | "center" | "right" = "left";
+      const segs = rawAlt.split("|");
+      if (segs.length >= 2) {
+        // 后缀段从第二段（下标 1）开始；按「宽度 → 对齐」顺序消费。
+        // alt 永远是**第一段**（下标 0），消费掉的后缀段不影响它。
+        let idx = 1;
+        let consumedAny = false;
+        // 宽度段：纯数字
+        if (/^\d+$/.test(segs[idx].trim())) {
+          const w = Number(segs[idx]);
+          if (Number.isFinite(w) && w > 0) {
+            width = Math.round(w);
+            idx++;
+            consumedAny = true;
+          }
+        }
+        // 对齐段：只认 center/right
+        if (idx < segs.length) {
+          const a = segs[idx].trim().toLowerCase();
+          if (a === "center" || a === "right") {
+            align = a;
+            idx++;
+            consumedAny = true;
+          }
+        }
+        // 只有真的消费掉至少一个后缀段才改写 alt（否则 alt 可能本身含竖线）
+        if (consumedAny) alt = segs[0];
       }
       nodes.push(schema.nodes.image.create({
         src: getAttr(t, "src") || "",
         alt,
         title: getAttr(t, "title") || "",
         width,
+        align,
       }));
       i++;
       continue;

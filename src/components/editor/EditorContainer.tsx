@@ -1681,6 +1681,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const [imageEditSrc, setImageEditSrc] = useState("");
   const [imageEditAlt, setImageEditAlt] = useState("");
   const [imageEditWidth, setImageEditWidth] = useState<number | null>(null);
+  /** v0.13.0 需求4：图片水平对齐（打开图片编辑对话框时从节点 attrs 带入） */
+  const [imageEditAlign, setImageEditAlign] = useState<"left" | "center" | "right">("left");
   const [imageEditPos, setImageEditPos] = useState<number | null>(null);
   // ─── 右键菜单状态 ────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; hasSelection: boolean }>({
@@ -1787,9 +1789,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (node && node.type.name === "image") {
         setImageEditAlt(node.attrs.alt || "");
         setImageEditWidth(typeof node.attrs.width === "number" ? node.attrs.width : null);
+        // v0.13.0 需求4：同时带入水平对齐
+        setImageEditAlign(
+          node.attrs.align === "center" || node.attrs.align === "right" ? node.attrs.align : "left",
+        );
       } else {
         setImageEditAlt("");
         setImageEditWidth(null);
+        setImageEditAlign("left");
       }
       setImageEditPos(pos);
       setImageEditDialogOpen(true);
@@ -1866,8 +1873,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   /**
    * G3：图片编辑确认回调 —— 通过 setNodeMarkup 修改 image 节点 attrs
    * E11b(v0.9.3)：除 src 外同时写回对话框编辑的 alt 与 width
+   * v0.13.0 需求4：同时写回水平对齐（非 left 时序列化为 `<img style>`）
    */
-  const handleImageEditConfirm = useCallback((newSrc: string, meta: { alt: string; width: number | null }) => {
+  const handleImageEditConfirm = useCallback((newSrc: string, meta: { alt: string; width: number | null; align: "left" | "center" | "right" }) => {
     const view = viewRef.current;
     if (!view || imageEditPos === null) {
       setImageEditDialogOpen(false);
@@ -1881,6 +1889,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           src: newSrc,
           alt: meta.alt,
           width: meta.width,
+          align: meta.align,
         });
         view.dispatch(tr);
       }
@@ -1892,6 +1901,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setImageEditSrc("");
     setImageEditAlt("");
     setImageEditWidth(null);
+    setImageEditAlign("left");
   }, [imageEditPos]);
 
   // ─── 格式工具栏操作 ────────────────────────────
@@ -6360,6 +6370,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         imageSrc={imageEditSrc}
         imageAlt={imageEditAlt}
         imageWidth={imageEditWidth}
+        imageAlign={imageEditAlign}
         onConfirm={handleImageEditConfirm}
         onClose={() => {
           setImageEditDialogOpen(false);
@@ -6367,6 +6378,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           setImageEditSrc("");
           setImageEditAlt("");
           setImageEditWidth(null);
+          setImageEditAlign("left");
         }}
       />
 

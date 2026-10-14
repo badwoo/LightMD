@@ -50,7 +50,8 @@ describe("v0.9.0 ShortcutSettingsDialog：渲染与搜索（A2）", () => {
       expect(screen.getByText(label)).toBeTruthy();
     }
     const rows = document.querySelectorAll(".shortcut-settings-row");
-    expect(rows.length).toBe(50);
+    // v0.13.0 需求8：新增「快速切换文件」（Ctrl+P）→ 50 → 51
+    expect(rows.length).toBe(51);
   });
 
   it("搜索框按功能名过滤", () => {

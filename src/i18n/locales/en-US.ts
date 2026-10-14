@@ -424,6 +424,9 @@ export const enUS: Record<string, string> = {
   "outline.searchEmpty": "No matching headings",
   // v0.8.4 feature 11 feedback 4: accessible label for the search-clear button
   "outline.searchClear": "Clear search",
+  // v0.13.0 req 9: outline panel heading collapse
+  "outline.collapse": "Collapse sub-headings",
+  "outline.expand": "Expand sub-headings",
   // ─── Recent files ───────────────────────────────────
   "recent.title": "Recent",
   "recent.justNow": "Just now",
@@ -470,6 +473,20 @@ export const enUS: Record<string, string> = {
   "codeblock.language": "Code language",
   "codeblock.langAuto": "Auto-detect",
   "codeblock.langPlain": "Plain text",
+  // v0.13.0 req 5: code block copy button
+  "codeblock.copy": "Copy code",
+  "codeblock.copied": "Copied",
+  "codeblock.copyFailed": "Clipboard unavailable or permission denied",
+  // v0.13.0 req 8: Ctrl+P quick open
+  "quickOpen.placeholder": "Search files by name and switch…",
+  "quickOpen.empty": "No matching files",
+  "quickOpen.group.openTabs": "Open tabs",
+  "quickOpen.group.recent": "Recent files",
+  "quickOpen.group.workspace": "Workspace files",
+  "quickOpen.navigate": "navigate",
+  "quickOpen.open": "open",
+  "quickOpen.close": "close",
+  "shortcut.view.quickOpen": "Quick open file",
   // ─── App.tsx application layer ───────────────────────────────────
   "app.untitled": "Untitled.md",
   // v0.8.0 WP1：临时文件命名（Untitled 1, Untitled 2 …）
@@ -628,6 +645,11 @@ export const enUS: Record<string, string> = {
   "image.altLabel": "Alt text",
   "image.altPlaceholder": "Image description (optional)",
   "image.widthLabel": "Width (px)",
+  // v0.13.0 req 4: image horizontal alignment
+  "image.alignLabel": "Align",
+  "image.align.left": "Left",
+  "image.align.center": "Center",
+  "image.align.right": "Right",
   "image.dropFallback": "The drop position is no longer valid; inserted at the cursor instead",
   // ─── Editor context menu ───────────────────────────────────
   "menu.undo": "Undo",

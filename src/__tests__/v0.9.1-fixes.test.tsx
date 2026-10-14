@@ -311,7 +311,8 @@ describe("v0.9.1 需求4：自定义快捷键弹窗横向 3×3 布局", () => {
       expect(cards).toBeGreaterThan(0);
       expect(cards).toBeLessThanOrEqual(3);
     }
-    expect(document.querySelectorAll(".shortcut-settings-row").length).toBe(50);
+    // v0.13.0 需求8：新增「快速切换文件」（Ctrl+P）→ 50 → 51
+    expect(document.querySelectorAll(".shortcut-settings-row").length).toBe(51);
     expect(document.querySelectorAll(".shortcut-settings-group").length).toBe(7);
   });
 

@@ -43,6 +43,13 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useT } from "../../i18n";
 import { calculateDragTransaction } from "../../utils/outlineDrag";
+// v0.13.0 需求9：大纲面板标题折叠（纯逻辑层）
+import {
+  computeOutlineVisibility,
+  toggleCollapsed,
+  canCollapse,
+  shouldApplyCollapse,
+} from "../../utils/outlineCollapse";
 import "./Outline.css";
 
 interface HeadingItem {
@@ -79,11 +86,25 @@ function SortableHeadingItem({
   heading,
   activeId,
   draggable,
+  /** v0.13.0 需求9：是否可折叠（有子级） */
+  collapsible,
+  /** v0.13.0 需求9：当前是否折叠 */
+  collapsed,
+  /** v0.13.0 需求9：折叠/展开按钮的 aria/title 文案（i18n，由父层注入） */
+  collapseLabel,
+  expandLabel,
+  /** v0.13.0 需求9：切换折叠 */
+  onToggleCollapse,
   onClick,
 }: {
   heading: HeadingItem;
   activeId: string | null;
   draggable: boolean;
+  collapsible: boolean;
+  collapsed: boolean;
+  collapseLabel: string;
+  expandLabel: string;
+  onToggleCollapse: (pos: number) => void;
   onClick: (pos: number) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -97,26 +118,46 @@ function SortableHeadingItem({
   };
 
   return (
-    <button
-      ref={setNodeRef}
-      style={style}
-      className={`outline-item outline-level-${heading.level} ${activeId === heading.id ? "active" : ""} ${isDragging ? "dragging" : ""}`}
-      onClick={() => onClick(heading.pos)}
-      title={heading.text}
-    >
-      {draggable && (
-        <span
-          className="outline-drag-handle"
-          aria-label="drag handle"
-          title="⋮⋮"
-          {...attributes}
-          {...listeners}
+    <div className={`outline-row outline-level-${heading.level} ${activeId === heading.id ? "active" : ""} ${isDragging ? "dragging" : ""}`}>
+      {/* v0.13.0 需求9：折叠箭头。不可折叠的标题也渲染占位，保持文本左对齐一致 */}
+      {collapsible ? (
+        <button
+          type="button"
+          className={`outline-collapse-toggle ${collapsed ? "collapsed" : ""}`}
+          aria-label={collapsed ? expandLabel : collapseLabel}
+          title={collapsed ? expandLabel : collapseLabel}
+          data-testid="outline-collapse-toggle"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleCollapse(heading.pos);
+          }}
         >
-          ⋮⋮
-        </span>
+          {collapsed ? "▸" : "▾"}
+        </button>
+      ) : (
+        <span className="outline-collapse-spacer" aria-hidden="true" />
       )}
-      <span className="outline-item-text">{heading.text}</span>
-    </button>
+      <button
+        ref={setNodeRef}
+        style={style}
+        className={`outline-item outline-level-${heading.level} ${activeId === heading.id ? "active" : ""} ${isDragging ? "dragging" : ""}`}
+        onClick={() => onClick(heading.pos)}
+        title={heading.text}
+      >
+        {draggable && (
+          <span
+            className="outline-drag-handle"
+            aria-label="drag handle"
+            title="⋮⋮"
+            {...attributes}
+            {...listeners}
+          >
+            ⋮⋮
+          </span>
+        )}
+        <span className="outline-item-text">{heading.text}</span>
+      </button>
+    </div>
   );
 }
 
@@ -127,6 +168,9 @@ export function Outline({ editorView }: OutlineProps) {
   const [hovered, setHovered] = useState(false);
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  // v0.13.0 需求9：大纲折叠态（被折叠标题的 pos 集合）。
+  // **不持久化**——重开文档/切换标签后自然重置，不新增存储 key。
+  const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set());
   const observerRef = useRef<IntersectionObserver | null>(null);
   // 缓存上一次的标题列表，避免内容未变时重复更新
   const lastHeadingsRef = useRef<string>("");
@@ -332,10 +376,47 @@ export function Outline({ editorView }: OutlineProps) {
   const filteredHeadings = normalizedQuery
     ? headings.filter((h) => h.text.toLowerCase().includes(normalizedQuery))
     : headings;
-  const displayHeadings = filteredHeadings.length > MAX_OUTLINE_ITEMS
-    ? filteredHeadings.slice(0, MAX_OUTLINE_ITEMS)
+
+  // v0.13.0 需求9：折叠可见性计算。
+  // 关键顺序：**先过滤、再应用折叠、最后截断**——这样「搜到的标题一定显示」
+  // （过滤优先于折叠，否则搜索不到内容比不折叠更难理解），且 MAX_OUTLINE_ITEMS
+  // 的「还有 N 项」提示仍然基于过滤后的真实条数。
+  const applyCollapse = shouldApplyCollapse(query);
+  const visibleByPos = useMemo(
+    () =>
+      applyCollapse
+        ? computeOutlineVisibility(
+            filteredHeadings.map((h) => ({ pos: h.pos, level: h.level })),
+            collapsed,
+          )
+        : null,
+    [applyCollapse, filteredHeadings, collapsed],
+  );
+  const visibleHeadings = visibleByPos
+    ? filteredHeadings.filter((h) => visibleByPos.get(h.pos) !== false)
     : filteredHeadings;
-  const hasMore = filteredHeadings.length > MAX_OUTLINE_ITEMS;
+
+  const displayHeadings = visibleHeadings.length > MAX_OUTLINE_ITEMS
+    ? visibleHeadings.slice(0, MAX_OUTLINE_ITEMS)
+    : visibleHeadings;
+  const hasMore = visibleHeadings.length > MAX_OUTLINE_ITEMS;
+
+  // v0.13.0 需求9：可折叠判定基于**全部标题**（不是过滤后的）——
+  // 否则搜索态下「有子级但子级被过滤掉」的标题会错误地失去箭头
+  const allNodes = useMemo(
+    () => headings.map((h) => ({ pos: h.pos, level: h.level })),
+    [headings],
+  );
+  const collapsibleByPos = useMemo(() => {
+    const map = new Map<number, boolean>();
+    allNodes.forEach((n, i) => map.set(n.pos, canCollapse(allNodes, i)));
+    return map;
+  }, [allNodes]);
+
+  // 折叠切换（纯函数产出新集合）
+  const handleToggleCollapse = useCallback((pos: number) => {
+    setCollapsed((prev) => toggleCollapsed(prev, pos));
+  }, []);
 
   // sortable items id 数组（用 pos 作为 id）
   const sortableItems = useMemo(
@@ -364,11 +445,16 @@ export function Outline({ editorView }: OutlineProps) {
           heading={h}
           activeId={activeId}
           draggable={dragActive}
+          collapsible={collapsibleByPos.get(h.pos) === true}
+          collapsed={collapsed.has(h.pos)}
+          collapseLabel={t("outline.collapse")}
+          expandLabel={t("outline.expand")}
+          onToggleCollapse={handleToggleCollapse}
           onClick={handleClick}
         />
       ))}
       {hasMore && (
-        <div className="outline-more">{t("outline.more", { count: filteredHeadings.length - MAX_OUTLINE_ITEMS })}</div>
+        <div className="outline-more">{t("outline.more", { count: visibleHeadings.length - MAX_OUTLINE_ITEMS })}</div>
       )}
       {/* v0.8.4 需求11：过滤后无匹配标题的空态提示 */}
       {hasQuery && filteredHeadings.length === 0 && (

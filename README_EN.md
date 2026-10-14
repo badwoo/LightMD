@@ -301,9 +301,9 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 ## 📋 Changelog
 
 
-### v0.13.0 (2026-10-13)
+### v0.13.0 (2026-10-14)
 
-**Editing catch-up and data safety — batch 1: block interaction rework + no more overwriting external edits** (baseline 0.12.3)
+**Editing catch-up and data safety — batches 1 + 2** (baseline 0.12.3)
 
 Two user reports drove this batch: "clicking a block always activates the block first, so I have to click a second time before I can edit its contents", and "another program changed my .md file, yet auto-save overwrote it and my content went backwards". Both are fixed here.
 
@@ -329,9 +329,18 @@ Two user reports drove this batch: "clicking a block always activates the block 
 | **Single files get external updates too** | Opening a file that is not inside any open folder now also mounts that file's **parent directory** as a watcher fallback (using the existing reference count, released automatically at zero). Previously the watcher only watched directories, so such files **never refreshed** when changed externally |
 | **Self-saves are not misreported** | Regression-locked with the `selfWriteGuard` content fingerprint: if the disk content equals what this app just wrote, the event is treated as our own save echo and no "changed externally" warning appears |
 
-**Quality verification**: frontend **258 files / 4188 tests all pass** (baseline 257/4173). New: `v0130-block-clipboard` 24 tests (three clipboard formats + the three-tier fallback read + menu construction + the `blockAcceptsCaret` truth table + empty-document repair after delete), `v0130-block-interaction` 15 tests (**real `createEditor` mounts**: a click inside a code block does not build a NodeSelection, a click on a horizontal rule still does, kebab DOM wiring and event dispatch, `Ctrl+C/X` intercepted under NodeSelection while text selections pass through, `.pm-block-active` caret tracking), `v0130-autosave-conflict` 19 tests (three-way decision truth table + the failed-read path + cache reuse, driving the real `useAutoSave`), `v0130-external-refresh` 13 tests (policy truth table + the dirty-tab three-way dialog + self-echo not misreported); `tsc --noEmit` clean.
+**Low-risk, high-visibility (batch 2)**
 
-**Upgrade notes**: overwrite the install in place; no breaking changes. The old habit of "click once to select the whole block, click again to edit" changes — **a single click now edits directly**; to select a whole block use the kebab menu's "Select block", press `Esc`, or double-click. Auto-save behaves exactly as before in normal use (it only abandons the write and notifies when a third-party change is detected on disk).
+| Item | Detail |
+| --- | --- |
+| **Image left/center/right alignment** | The image edit dialog gains three alignment buttons. Centering and right alignment are persisted with an `\|align` suffix (`![fig\|center](src)` / `![fig\|300\|center](src)`), the same convention as the existing `\|W` width suffix. **Documents without alignment are byte-identical**; the standard `![alt](src)` syntax stays fully compatible |
+| **Code block copy button** | A copy button sits in the code block's top-right corner (left of the language dropdown). Clicking copies the block's plain text (**no line numbers, no language name**); the icon briefly turns into ✓ for 1.5s, and a toast appears if the clipboard is unavailable |
+| **`Ctrl+P` quick open** | A new file switcher with three grouped sources (**open tabs first**, then recent files, then workspace files), de-duplicated by path. Subsequence fuzzy matching with scoring (contiguous runs, word starts, position decay) and hit highlighting; ↑↓ to move, Enter to open, Esc to close. Does not interfere with the `Ctrl+Shift+P` command palette |
+| **Outline heading collapse** | Every heading with children gets a collapse arrow (▾/▸); clicking hides/shows its deeper levels. Collapse state is **not persisted**; search, filtering and dragging keep working, and **search ignores collapse** so a match is always shown |
+
+**Quality verification**: frontend **262 files / 4284 tests all pass** (baseline 258/4188). New: `v0130-block-clipboard` 24 tests, `v0130-block-interaction` 15 tests (**real `createEditor` mounts**), `v0130-autosave-conflict` 19 tests (driving the real `useAutoSave`), `v0130-external-refresh` 13 tests, `v0130-image-align` 31 tests (schema / serialization / round-trip / dialog), `v0130-code-copy` 7 tests, `v0130-outline-collapse` 19 tests (collapse-stack truth table + RTL component behaviour), `v0130-quick-open` 39 tests (fuzzy-match truth table + component + shortcut registration); `tsc --noEmit` clean.
+
+**Upgrade notes**: overwrite the install in place; no breaking changes. The old habit of "click once to select the whole block, click again to edit" changes — **a single click now edits directly**; to select a whole block use the kebab menu's "Select block", press `Esc`, or double-click. Auto-save behaves exactly as before in normal use (it only abandons the write and notifies when a third-party change is detected on disk). The shortcut count goes 50 → 51 (new `Ctrl+P`).
 
 ### v0.12.3 (2026-10-12)
 

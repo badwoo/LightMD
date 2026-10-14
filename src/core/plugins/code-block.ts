@@ -43,6 +43,10 @@ export class CodeBlockView implements NodeView {
   private lineNumbersLayer: HTMLElement;
   /** E17(v0.9.4)：语言下拉（contentEditable=false，交互不冒泡到编辑器） */
   private langSelect: HTMLSelectElement;
+  /** v0.13.0 需求5：复制按钮（成功后图标短暂变 ✓） */
+  private copyButton: HTMLButtonElement;
+  /** v0.13.0 需求5：复制成功图标还原定时器 */
+  private copyResetTimer: ReturnType<typeof setTimeout> | null = null;
   /** v0.13.0 需求1：右上角三点菜单按钮（常驻显示由 CSS 控制） */
   private kebabButton: HTMLButtonElement | null = null;
   private node: PMNode;
@@ -127,6 +131,27 @@ export class CodeBlockView implements NodeView {
     this.langSelect.addEventListener("change", () => this.applyLanguageChange());
     this.dom.appendChild(this.langSelect);
 
+    // v0.13.0 需求5：代码块复制按钮（与语言下拉同位置同款交互）。
+    // 复制 `node.textContent` —— 行号层是 `user-select:none` 的独立层，
+    // 本就不在 textContent 中，因此无需特殊处理即「不含行号」。
+    this.copyButton = document.createElement("button");
+    this.copyButton.type = "button";
+    this.copyButton.className = "code-copy-btn";
+    this.copyButton.setAttribute("contenteditable", "false");
+    this.copyButton.title = t("codeblock.copy");
+    this.copyButton.setAttribute("aria-label", t("codeblock.copy"));
+    this.copyButton.dataset.testid = "code-copy-btn";
+    this.copyButton.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+    });
+    this.copyButton.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      void this.handleCopyClick();
+    });
+    this.dom.appendChild(this.copyButton);
+
     // G9：读取初始 showCodeLineNumbers 设置
     this.showLineNumbers = useSettingsStore.getState().showCodeLineNumbers;
     this.applyLineNumbersVisibility();
@@ -164,6 +189,46 @@ export class CodeBlockView implements NodeView {
       characterData: true,
       subtree: true,
     });
+  }
+
+  /**
+   * v0.13.0 需求5：点击复制按钮 —— 把代码块纯文本写入剪贴板。
+   *
+   * 复制 `node.textContent`（ProseMirror 权威数据源），**不含行号**
+   * （行号层是 `user-select:none` 的独立层，本就不在 textContent 中）。
+   * 成功后图标短暂变 ✓（1.5s 还原）；剪贴板不可用时 toast 提示，不静默失败。
+   */
+  private async handleCopyClick(): Promise<void> {
+    // contentDOM 优先（实时编辑场景），否则退回 node 文本
+    const contentDOMText = this.contentDOM.textContent;
+    const nodeText = this.node.textContent;
+    const code = (contentDOMText && contentDOMText !== "\u200B")
+      ? contentDOMText
+      : (nodeText && nodeText !== "\u200B" ? nodeText : "");
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(code);
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      void import("../../services/notificationService").then(({ notifyWarning }) =>
+        notifyWarning(t("codeblock.copyFailed")),
+      );
+      return;
+    }
+    // 成功反馈：图标变 ✓，1.5s 后还原（重复点击重置定时器）
+    this.copyButton.classList.add("copied");
+    this.copyButton.title = t("codeblock.copied");
+    if (this.copyResetTimer) clearTimeout(this.copyResetTimer);
+    this.copyResetTimer = setTimeout(() => {
+      this.copyResetTimer = null;
+      this.copyButton.classList.remove("copied");
+      this.copyButton.title = t("codeblock.copy");
+    }, 1500);
   }
 
   /** 防抖同步高亮：合并短时间内多次 DOM 变更 */
@@ -358,12 +423,15 @@ export class CodeBlockView implements NodeView {
 
   destroy() {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    if (this.copyResetTimer) clearTimeout(this.copyResetTimer);
     this.observer?.disconnect();
     this.observer = null;
     this.contentDOM.removeEventListener("scroll", this.syncHorizontalScroll);
     // v0.13.0 需求1：移除三点按钮
     this.kebabButton?.remove();
     this.kebabButton = null;
+    // v0.13.0 需求5：移除复制按钮
+    this.copyButton.remove();
     // G9：取消 settings store 订阅，避免内存泄漏
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;

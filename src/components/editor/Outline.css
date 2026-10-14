@@ -116,6 +116,63 @@
   padding: 4px 0;
 }
 
+/* ─── v0.13.0 需求9：标题折叠 ───────────────
+   每个标题包一层 .outline-row（flex：折叠箭头 + 原 outline-item 按钮）。
+   折叠箭头常驻显示（不像拖拽手柄那样 hover 才出现）——折叠是常用操作，
+   且箭头位置固定有助于形成肌肉记忆。 */
+.outline-row {
+  display: flex;
+  align-items: stretch;
+  position: relative;
+}
+
+.outline-row:hover {
+  background: var(--bg-hover);
+}
+
+.outline-row.active {
+  background: var(--bg-hover);
+}
+
+.outline-collapse-toggle {
+  flex-shrink: 0;
+  width: 16px;
+  padding: 5px 0 5px 4px;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.4;
+  cursor: pointer;
+  text-align: center;
+  transition: color var(--transition-fast);
+}
+
+.outline-collapse-toggle:hover {
+  color: var(--accent-color);
+}
+
+/* 不可折叠的标题：渲染同宽占位，保持各级文本左对齐一致 */
+.outline-collapse-spacer {
+  flex-shrink: 0;
+  width: 16px;
+}
+
+/* 折叠箭头放进 row 后，原 .outline-item 的缩进要减掉箭头宽度 */
+.outline-row .outline-item {
+  flex: 1;
+  min-width: 0;
+  padding-left: 0;
+}
+
+.outline-row .outline-item:hover {
+  background: none;
+}
+
+.outline-row .outline-item.active {
+  background: none;
+}
+
 .outline-item {
   display: block;
   width: 100%;

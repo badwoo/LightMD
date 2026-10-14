@@ -142,6 +142,45 @@
   border-color: var(--accent-color, #3b82f6);
 }
 
+/* ─── v0.13.0 需求4：水平对齐三按钮 ──────────────────── */
+.image-edit-align {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.image-edit-align-btns {
+  display: inline-flex;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.image-edit-align-btn {
+  height: 28px;
+  padding: 0 12px;
+  border: none;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.image-edit-align-btn + .image-edit-align-btn {
+  border-left: 1px solid var(--border-color);
+}
+
+.image-edit-align-btn:hover {
+  background: var(--bg-hover);
+}
+
+.image-edit-align-btn.active {
+  background: var(--accent-color, #3b82f6);
+  color: #fff;
+}
+
 /* ─── 工具栏 ──────────────────── */
 .image-edit-toolbar {
   display: flex;

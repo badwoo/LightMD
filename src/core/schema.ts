@@ -567,13 +567,16 @@ const nodeSpecs: Record<string, NodeSpec> = {
   image: {
     inline: true,
     group: "inline",
-    draggable: true,
-    attrs: {
+    draggable: true,    attrs: {
       src: { default: "" },
       alt: { default: "" },
       title: { default: "" },
       // E11a(v0.9.3):显示宽度(px),markdown 语法 ![alt|300](src);null=未指定
       width: { default: null },
+      // v0.13.0 需求4：水平对齐（left/center/right）。
+      // **不跨编辑器保真**——Markdown 无标准图片对齐语法，序列化为
+      // `<img style>` 形态（见 serializer 的 image 分支）。
+      align: { default: "left" },
     },
     parseDOM: [
       {
@@ -590,12 +593,14 @@ const nodeSpecs: Record<string, NodeSpec> = {
             alt: el.getAttribute("alt") || "",
             title: el.getAttribute("title") || "",
             width: Number.isFinite(raw) ? Math.round(raw) : null,
+            // v0.13.0 需求4：从 style 还原对齐（margin auto 形态）
+            align: parseImageAlign(el),
           };
         },
       },
     ],
     toDOM(node: Node): DOMOutputSpec {
-      const { src, alt, title, width } = node.attrs;
+      const { src, alt, title, width, align } = node.attrs;
       // 将相对路径转换为 Tauri webview 可访问的 asset:// URL
       // data-editable="true" 标记图片为可编辑，供阅读模式注入点击监听（G3）
       // v0.8.3 WP5 需求7：loading="lazy" + decoding="async"——大图同步解码会阻塞
@@ -610,6 +615,13 @@ const nodeSpecs: Record<string, NodeSpec> = {
       };
       // E11a:宽度在编辑器显示层即时生效;markdown 表达见 serializer 的 |W 后缀
       if (typeof width === "number" && width > 0) attrs.style = `width:${width}px`;
+      // v0.13.0 需求4：非左对齐时用 margin auto 把图片推到中间/右侧。
+      // 图片是 inline 节点，需要 display:block 才能让 margin auto 生效。
+      const alignStyle = imageAlignCss(align);
+      if (alignStyle) {
+        attrs.style = attrs.style ? `${attrs.style};${alignStyle}` : alignStyle;
+      }
+      if (align && align !== "left") attrs["data-align"] = align;
       return ["img", attrs];
     },
   },
@@ -699,6 +711,52 @@ const nodeSpecs: Record<string, NodeSpec> = {
     group: "inline",
   },
 };
+
+// ─── v0.13.0 需求4：图片对齐工具 ────────────────────────────────
+
+/** 图片对齐取值（与 schema image.attrs.align 一致） */
+export type ImageAlign = "left" | "center" | "right";
+
+/** 合法对齐值集合（解析/写回时校验用） */
+export const IMAGE_ALIGN_VALUES: readonly ImageAlign[] = ["left", "center", "right"];
+
+/** 归一化任意输入为合法对齐值（非法值回落 left） */
+export function normalizeImageAlign(v: unknown): ImageAlign {
+  return v === "center" || v === "right" ? v : "left";
+}
+
+/**
+ * 对齐 → CSS 片段（空串 = 左对齐，不加样式）。
+ *
+ * 图片是 **inline** 节点，`margin:auto` 只在 `display:block` 时生效，
+ * 因此三个值都要带上 display。左对齐不加样式——正文默认流式布局即左对齐，
+ * 这样未设对齐的文档零 diff（B6 原文快路径与 roundtrip 都不受影响）。
+ */
+export function imageAlignCss(align: unknown): string {
+  const a = normalizeImageAlign(align);
+  if (a === "left") return "";
+  if (a === "center") return "display:block;margin-left:auto;margin-right:auto";
+  return "display:block;margin-left:auto";
+}
+
+/**
+ * 从 DOM 元素还原对齐值（parseDOM 的 getAttrs 用）。
+ *
+ * 同时认三种形态，保证从本应用自己的序列化结果 / 富文本粘贴 / 手写 HTML
+ * 都能还原：`data-align` 属性、style 里的 margin auto、style 里的 float。
+ */
+export function parseImageAlign(el: HTMLElement): ImageAlign {
+  const attr = el.getAttribute("data-align");
+  if (attr === "center" || attr === "right") return attr;
+  const style = el.style;
+  if (!style) return "left";
+  const ml = style.marginLeft;
+  const mr = style.marginRight;
+  // 左右都 auto = 居中；仅左侧 auto = 右对齐（把元素推到右边）
+  if (ml === "auto" && mr === "auto") return "center";
+  if (ml === "auto") return "right";
+  return "left";
+}
 
 export const lightMDSchema = new Schema({
   nodes: nodeSpecs,

@@ -431,6 +431,9 @@ export const zhCN: Record<string, string> = {
   "outline.searchEmpty": "无匹配标题",
   // v0.8.4 需求11 反馈4：搜索框清空按钮的可访问文案
   "outline.searchClear": "清空搜索",
+  // v0.13.0 需求9：大纲面板标题折叠
+  "outline.collapse": "折叠子标题",
+  "outline.expand": "展开子标题",
   // ─── 最近文件 ────────────────────────────────────
   "recent.title": "最近打开",
   "recent.justNow": "刚刚",
@@ -477,6 +480,20 @@ export const zhCN: Record<string, string> = {
   "codeblock.language": "代码语言",
   "codeblock.langAuto": "自动检测",
   "codeblock.langPlain": "纯文本",
+  // v0.13.0 需求5：代码块复制按钮
+  "codeblock.copy": "复制代码",
+  "codeblock.copied": "已复制",
+  "codeblock.copyFailed": "剪贴板不可用或权限被拒绝",
+  // v0.13.0 需求8：Ctrl+P 快速切换器
+  "quickOpen.placeholder": "按文件名搜索并切换文件…",
+  "quickOpen.empty": "没有匹配的文件",
+  "quickOpen.group.openTabs": "已打开的标签",
+  "quickOpen.group.recent": "最近文件",
+  "quickOpen.group.workspace": "工作区文件",
+  "quickOpen.navigate": "选择",
+  "quickOpen.open": "打开",
+  "quickOpen.close": "关闭",
+  "shortcut.view.quickOpen": "快速切换文件",
   // ─── App.tsx 应用层 ────────────────────────────
   "app.untitled": "无标题.md",
   // v0.8.0 WP1：临时文件命名（新建文件1、新建文件2…）
@@ -635,6 +652,11 @@ export const zhCN: Record<string, string> = {
   "image.altLabel": "替代文本",
   "image.altPlaceholder": "图片描述(留空则无)",
   "image.widthLabel": "宽度(px)",
+  // v0.13.0 需求4：图片水平对齐
+  "image.alignLabel": "对齐",
+  "image.align.left": "左对齐",
+  "image.align.center": "居中",
+  "image.align.right": "右对齐",
   "image.dropFallback": "图片原位置已失效，已插入到光标处",
   // ─── 编辑器右键菜单 ────────────────────────────────────
   "menu.undo": "撤销",

@@ -152,6 +152,10 @@ export const SHORTCUT_DEFS: readonly ShortcutDef[] = Object.freeze([
   { id: "view.toggleTypewriter", category: "view", labelKey: "command.view.toggleTypewriter", defaultCombo: "F9", scope: "global", command: "view.toggleTypewriter" },
   { id: "view.toggleOutline", category: "view", labelKey: "command.view.toggleOutline", defaultCombo: "Ctrl+Shift+O", scope: "global", command: "view.toggleOutline" },
   { id: "view.commandPalette", category: "view", labelKey: "shortcut.view.commandPalette", defaultCombo: "Ctrl+Shift+P", scope: "global" },
+  // 🆕 v0.13.0 需求8：文件快速切换器（Ctrl+P）。
+  // Ctrl+P 在 WebView2 里的打印加速键已关（window/mod.rs 的 accelerator 禁用段），
+  // 与 Ctrl+Shift+P 命令面板互不干扰；scope=global 保证三种模式一致。
+  { id: "view.quickOpen", category: "view", labelKey: "shortcut.view.quickOpen", defaultCombo: "Ctrl+P", scope: "global" },
   { id: "view.snapshot", category: "view", labelKey: "shortcut.view.snapshot", defaultCombo: "Ctrl+Alt+V", scope: "global" },
   { id: "view.settings", category: "view", labelKey: "command.view.settings", defaultCombo: "Ctrl+,", scope: "global", command: "view.settings" },
   // 🆕 v0.9.0：侧栏/大纲栏折叠（AppShell 折叠功能已存在，经命令总线打通）

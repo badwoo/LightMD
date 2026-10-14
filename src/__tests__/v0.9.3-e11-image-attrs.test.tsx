@@ -162,6 +162,8 @@ describe("E11b: ImageEditDialog alt/宽度编辑", () => {
     expect(onConfirm).toHaveBeenCalledWith("data:image/png;base64,x", {
       alt: "新描述",
       width: 240,
+      // v0.13.0 需求4：meta 新增 align；未动对齐按钮时保持 left
+      align: "left",
     });
   });
 
@@ -183,6 +185,7 @@ describe("E11b: ImageEditDialog alt/宽度编辑", () => {
     expect(onConfirm).toHaveBeenCalledWith("data:image/png;base64,x", {
       alt: "a",
       width: null,
+      align: "left",
     });
   });
 
@@ -202,6 +205,7 @@ describe("E11b: ImageEditDialog alt/宽度编辑", () => {
     expect(onConfirm).toHaveBeenCalledWith("data:image/png;base64,x", {
       alt: "",
       width: null,
+      align: "left",
     });
   });
 });
