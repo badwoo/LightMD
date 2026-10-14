@@ -496,6 +496,11 @@ export const zhCN: Record<string, string> = {
   "shortcut.view.quickOpen": "快速切换文件",
   // v0.13.0 需求6：批量注释
   "shortcut.format.comment": "批量注释",
+  // v0.13.0 需求10：Emoji 短码补全
+  "emoji.complete.ariaLabel": "Emoji 短码候选",
+  "emoji.complete.loading": "加载中…",
+  "emoji.complete.empty": "没有匹配的短码",
+  "emoji.complete.more": "仅显示前 {max} 项，还有 {count} 个",
   // ─── App.tsx 应用层 ────────────────────────────
   "app.untitled": "无标题.md",
   // v0.8.0 WP1：临时文件命名（新建文件1、新建文件2…）

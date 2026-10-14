@@ -44,6 +44,8 @@ import { autoPairPlugin } from "./plugins/auto-pair";
 import { smartPastePlugin } from "./plugins/smart-paste";
 import { createTranslateTooltipPlugin, type AiAssistTask } from "./plugins/translateTooltip";
 import { createSlashCommandPlugin } from "./plugins/slash-command";
+// v0.13.0 需求10：Emoji 短码补全
+import { createEmojiCompletePlugin } from "./plugins/emoji-complete";
 // v0.7.0：AI 续写幽灵文本装饰（meta 驱动，无回调依赖）
 import { aiGhostPlugin } from "./plugins/ai-ghost";
 
@@ -184,6 +186,8 @@ export interface EditorOptions {
    * 由 EditorContainer 注入，驱动 SlashCommandPm 菜单渲染（触发 → SlashState；失效 → null）
    */
   onSlashStateChange?: (s: import("./plugins/slash-command").SlashState | null) => void;
+  /** v0.13.0 需求10：阅读模式 Emoji 短码补全触发状态回调 */
+  onEmojiStateChange?: (s: import("./plugins/emoji-complete").EmojiState | null) => void;
   /** v0.7.3 改进8(D5)：AI 续写 ghost 的采纳提示文案（i18n 注入，硬编码中文穿帮清理） */
   aiGhostHint?: string;
   /**
@@ -207,7 +211,7 @@ export interface EditorOptions {
  * 创建配置完整的 ProseMirror EditorView
  */
 export function createEditor(options: EditorOptions): EditorView | null {
-  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, aiGhostHint, editableGetter, onHeadingBadgeClick } = options;
+  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, onEmojiStateChange, aiGhostHint, editableGetter, onHeadingBadgeClick } = options;
 
   if (!parent) return null;
 
@@ -271,6 +275,8 @@ export function createEditor(options: EditorOptions): EditorView | null {
         : []),
       // v0.6.6 问题2：阅读模式 Slash 命令面板（未传回调时不注册）
       ...(onSlashStateChange ? [createSlashCommandPlugin(onSlashStateChange)] : []),
+      // v0.13.0 需求10：Emoji 短码补全（未传回调时不注册）
+      ...(onEmojiStateChange ? [createEmojiCompletePlugin(onEmojiStateChange)] : []),
       // v0.7.0：AI 续写幽灵文本（meta 驱动，常驻注册，无任务时零开销）
       aiGhostPlugin(aiGhostHint),
       // v0.12.0 需求11：块级鼠标拖拽移动（选中块后从左侧手柄热区拖动）

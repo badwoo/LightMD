@@ -489,6 +489,11 @@ export const enUS: Record<string, string> = {
   "shortcut.view.quickOpen": "Quick open file",
   // v0.13.0 req 6: batch comment
   "shortcut.format.comment": "Toggle comment",
+  // v0.13.0 req 10: emoji shortcode completion
+  "emoji.complete.ariaLabel": "Emoji shortcode candidates",
+  "emoji.complete.loading": "Loading…",
+  "emoji.complete.empty": "No matching shortcode",
+  "emoji.complete.more": "Showing first {max}, {count} more",
   // ─── App.tsx application layer ───────────────────────────────────
   "app.untitled": "Untitled.md",
   // v0.8.0 WP1：临时文件命名（Untitled 1, Untitled 2 …）

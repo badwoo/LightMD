@@ -414,6 +414,50 @@
   opacity: 0.75;
 }
 
+/* ─── v0.13.0 需求10：Emoji 短码补全菜单 ───────────────
+   视觉与 slash-command-menu 同族（portal + 圆角浮层 + 选中高亮）。 */
+.emoji-complete-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.emoji-complete-item.selected,
+.emoji-complete-item:hover {
+  background: var(--bg-hover);
+}
+
+.emoji-complete-glyph {
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.emoji-complete-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.emoji-complete-empty,
+.emoji-complete-more {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
 /* E6(v0.9.4)：行内语法标记显示（光标进入 mark 区间时以伪元素显示源码符号） */
 .md-reveal::before {
   content: attr(data-md-open);

@@ -44,6 +44,9 @@ import { SlashCommand, findSlashTrigger, isInCodeBlock, type InsertMode } from "
 // v0.8.0 修复 P1-3：textarea 侧行内代码/公式的上下文判定（与 PM 侧 inDisabledNode 对齐）
 import { isInInlineCodeOrMath } from "../../utils/inlineContext";
 import { SlashCommandPm } from "./SlashCommandPm";
+// v0.13.0 需求10：阅读模式 Emoji 短码补全菜单
+import { EmojiCompletePm } from "./EmojiCompletePm";
+import type { EmojiState } from "../../core/plugins/emoji-complete";
 // v0.12.0 需求2：格式刷（三模式通用 + 双击持续）——快照采集/应用纯函数 + 状态 store
 import {
   collectSourceSnapshot,
@@ -1015,6 +1018,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       aiGhostHint: translate("settings.translate.ghostHint"),
       // v0.6.6 问题2：阅读模式 Slash 命令触发状态（插件检测后回调，驱动 SlashCommandPm 渲染）
       onSlashStateChange: (s) => setPmSlash(s),
+      // v0.13.0 需求10：阅读模式 Emoji 短码补全触发状态（驱动 EmojiCompletePm 渲染）
+      onEmojiStateChange: (s) => setPmEmoji(s),
       // v0.12.1 需求1：标题级别徽标点击 → 打开 H1~H6 下拉菜单
       // （setState 稳定，无需经 ref 转发；只读标签的拦截在插件 click 处理器内）
       onHeadingBadgeClick: (headingPos, currentLevel, anchor) =>
@@ -1719,6 +1724,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const [slashCommandOpen, setSlashCommandOpen] = useState(false);
   // ─── v0.6.6 问题2：阅读模式 Slash 触发状态（由 ProseMirror 插件回调更新）───
   const [pmSlash, setPmSlash] = useState<SlashState | null>(null);
+  // v0.13.0 需求10：阅读模式 Emoji 短码补全触发状态
+  const [pmEmoji, setPmEmoji] = useState<EmojiState | null>(null);
   // ─── v0.12.1 需求1：标题级别下拉菜单状态（点击标题左侧 H1/H2 徽标打开）───
   const [headingMenu, setHeadingMenu] = useState<{
     open: boolean;
@@ -6458,6 +6465,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           view={viewRef.current}
           slash={pmSlash}
           onClose={() => setPmSlash(null)}
+        />
+      )}
+
+      {/* v0.13.0 需求10：阅读模式 Emoji 短码补全菜单（ProseMirror 插件触发） */}
+      {!isSourceMode && isMdFile && pmEmoji && (
+        <EmojiCompletePm
+          view={viewRef.current}
+          emoji={pmEmoji}
+          onClose={() => setPmEmoji(null)}
         />
       )}
 
