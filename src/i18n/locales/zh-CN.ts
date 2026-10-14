@@ -494,6 +494,8 @@ export const zhCN: Record<string, string> = {
   "quickOpen.open": "打开",
   "quickOpen.close": "关闭",
   "shortcut.view.quickOpen": "快速切换文件",
+  // v0.13.0 需求6：批量注释
+  "shortcut.format.comment": "批量注释",
   // ─── App.tsx 应用层 ────────────────────────────
   "app.untitled": "无标题.md",
   // v0.8.0 WP1：临时文件命名（新建文件1、新建文件2…）

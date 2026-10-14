@@ -20,19 +20,41 @@
  * - 装饰位置使用 $from.before(depth) / $from.after(depth)（节点边界）
  * - 简化内联标记装饰，避免位置冲突
  */
-import { Plugin, PluginKey } from "prosemirror-state";
+import { Plugin, PluginKey, NodeSelection } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import type { EditorView } from "prosemirror-view";
 import type { EditorState, Transaction } from "prosemirror-state";
 import type { Node } from "prosemirror-model";
 import { t } from "../../i18n/state";
+// v0.13.0 需求7：块级标记文本计算（纯函数层，10 类块的源码符号真值表）
+import {
+  computeBlockMarker,
+  computeListItemOrdinal,
+  isMarkableType,
+} from "../../utils/blockMarkers";
 
 export const wysiwygKey = new PluginKey("wysiwyg");
 
 /** v0.12.0 需求3：可显示标记的块类型。
  * 其余块（段落/列表项等）不作为查找终点——继续向外层找最近的标记块，
- * 否则引用块内的段落会抢先命中导致 "> " 标记永远不可达（旧实现的缺陷） */
-const MARKABLE_BLOCKS = new Set(["heading", "blockquote", "code_block"]);
+ * 否则引用块内的段落会抢先命中导致 "> " 标记永远不可达（旧实现的缺陷）
+ *
+ * v0.13.0 需求7：集合从 3 类扩到 10 类（见 utils/blockMarkers.ts）：
+ * 列表/任务/hr/math/toc 现在也能在光标进入时显示源码符号。 */
+const MARKABLE_BLOCKS = new Set([
+  "heading",
+  "blockquote",
+  "code_block",
+  "mermaid_block",
+  "bullet_list",
+  "ordered_list",
+  "list_item",
+  "task_list",
+  "task_item",
+  "horizontal_rule",
+  "math_block",
+  "toc",
+]);
 
 /** v0.12.1 需求1：标题级别徽标回调（headingPos = 标题节点起始位置） */
 export interface WysiwygOptions {
@@ -41,11 +63,42 @@ export interface WysiwygOptions {
 
 /**
  * 获取光标所在（或最近外层）的**可标记块级节点**及其节点边界
+ *
+ * v0.13.0 需求7：列表项需要额外算出**序号**（有序列表的 `2. ` 不能写成 `1. `），
+ * 并带上**父列表类型**（list_item 自身无 attrs，`- ` 与 `1. ` 的区分在父节点上）。
  */
 function getActiveBlockNode(
   state: EditorState
-): { node: Node; start: number; end: number } | null {
+): {
+  node: Node;
+  start: number;
+  end: number;
+  ordinal: number;
+  parentType?: string;
+  /** v0.13.0 需求7：列表项场景下已把父列表的 attrs（如 delim）合并进来 */
+  attrs: Record<string, unknown>;
+} | null {
   const { $from } = state.selection;
+
+  // v0.13.0 需求7：NodeSelection 落在**顶层叶子块**（hr / toc）上时
+  // $from.depth === 0，旧循环 `depth >= 1` 直接空转 → 标记永远不显示。
+  // 这里把 depth 0 也纳入（depth 0 即 doc 本身，需特判：直接看选区所在节点）。
+  if ($from.depth === 0) {
+    // NodeSelection 时 selection.$from 指向节点之前的位置；
+    // 用 nodeAt(from) 取该节点（hr/toc 是叶子节点，必然命中）
+    const node = state.doc.nodeAt(state.selection.from);
+    if (node && MARKABLE_BLOCKS.has(node.type.name)) {
+      return {
+        node,
+        start: state.selection.from,
+        end: state.selection.to,
+        ordinal: 1,
+        parentType: undefined,
+        attrs: node.attrs as Record<string, unknown>,
+      };
+    }
+    return null;
+  }
 
   for (let depth = $from.depth; depth >= 1; depth--) {
     const node = $from.node(depth);
@@ -53,7 +106,23 @@ function getActiveBlockNode(
       // v0.12.0 需求3：Decoration.node 需要**节点边界**（before/after）——
       // 不能用 $from.start(depth)（内容起点，装饰范围会偏移一个节点、标记挂到错误位置）。
       // focus-mode.ts 的 $from.start(d) - 1 即同一语义，可作参照。
-      return { node, start: $from.before(depth), end: $from.after(depth) };
+      const start = $from.before(depth);
+      // 序号用**父节点内容坐标系**：parent.forEach 给的 offset 是相对父节点
+      // 内容起点的，而 $from.before(depth) 是文档坐标 —— 必须减去父节点的
+      // 内容起点（start(level)）才是同一坐标系。
+      const parentContentStart = depth >= 2 ? $from.start(depth - 1) : 0;
+      const ordinal =
+        depth >= 2
+          ? computeListItemOrdinal($from.node(depth - 1), start - parentContentStart)
+          : 1;
+      const parentType = depth >= 2 ? $from.node(depth - 1).type.name : undefined;
+      // v0.13.0 需求7：有序列表的分隔符 `delim` 在**列表节点**上，不在项上；
+      // 列表项要显示 `1) ` 必须读父节点的 attrs → 合并进 attrs 传给纯函数层
+      const mergedAttrs: Record<string, unknown> =
+        node.type.name === "list_item" && depth >= 2
+          ? { ...($from.node(depth - 1).attrs as Record<string, unknown>), ...(node.attrs as Record<string, unknown>) }
+          : (node.attrs as Record<string, unknown>);
+      return { node, start, end: $from.after(depth), ordinal, parentType, attrs: mergedAttrs };
     }
   }
   return null;
@@ -107,14 +176,29 @@ export function createHeadingBadge(
 
 function computeDecorations(state: EditorState, options: WysiwygOptions): DecorationSet {
   const decorations: Decoration[] = [];
-  const { empty } = state.selection;
 
-  if (!empty) return DecorationSet.empty;
+  // 仅在「光标态」显示标记：文本选区（有实质范围）时不显示，避免遮挡选中内容。
+  // v0.13.0 需求7：**NodeSelection 也要显示**——hr / toc 这类叶子块没有可放
+  // 光标的位置，用户只能以 NodeSelection 选中它们，若按 from===to 判空会把
+  // 这两类块的标记永远挡掉（NodeSelection 的 from !== to）。
+  const sel = state.selection;
+  const isNodeSelection = sel instanceof NodeSelection;
+  const isTextSelection = !isNodeSelection && sel.from !== sel.to;
+  if (isTextSelection) return DecorationSet.empty;
 
   // 块级标记装饰（引用的 >、代码块的 ```；标题改为级别徽标）
   const activeBlock = getActiveBlockNode(state);
   if (activeBlock) {
-    addBlockDecorations(decorations, activeBlock.node, activeBlock.start, activeBlock.end, options);
+    addBlockDecorations(
+      decorations,
+      activeBlock.node,
+      activeBlock.start,
+      activeBlock.end,
+      activeBlock.ordinal,
+      activeBlock.parentType,
+      activeBlock.attrs,
+      options,
+    );
   }
 
   return DecorationSet.create(state.doc, decorations);
@@ -127,6 +211,9 @@ function addBlockDecorations(
   node: Node,
   start: number,
   end: number,
+  ordinal: number,
+  parentType: string | undefined,
+  attrs: Record<string, unknown>,
   options: WysiwygOptions
 ): void {
   // v0.12.1 需求1：标题 → 节点装饰只提供定位上下文，标记由可点击徽标 widget 承担
@@ -150,27 +237,22 @@ function addBlockDecorations(
     return;
   }
 
-  // 按块类型决定标记文本（不需要标记的块直接返回）
-  let marker: string;
-  switch (node.type.name) {
-    case "blockquote":
-      marker = "> ";
-      break;
-    case "code_block": {
-      const lang = node.attrs.language || "";
-      marker = "```" + lang;
-      break;
-    }
-    default:
-      return;
-  }
+  // v0.13.0 需求7：marker 文本由纯函数层计算（10 类块的真值表）
+  const computed = computeBlockMarker({
+    type: node.type.name,
+    attrs,
+    ordinal,
+    parentType,
+  });  // 不需要标记的块直接返回
+  if (!computed) return;
+
   // v0.12.0 需求3：Decoration.node 装饰整个节点（PM 会把 class/data 属性应用到
   // 节点 DOM 上，含自定义 NodeView 的 dom——updateInner→updateOuterDeco 自动完成），
   // 标记文本由 CSS ::before 以绝对定位渲染（脱离文档流，零布局影响）
   decos.push(
     Decoration.node(start, end, {
       class: "pm-block-marker",
-      "data-md-block-open": marker,
+      "data-md-block-open": computed.marker,
     })
   );
 }

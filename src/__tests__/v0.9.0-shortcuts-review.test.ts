@@ -98,11 +98,13 @@ const BASELINE: Array<[string, string, string]> = [
   ["insert.link", "insert", "Ctrl+Shift+K"],
   // v0.13.0 需求8：文件快速切换器（Ctrl+P）
   ["view.quickOpen", "view", "Ctrl+P"],
+  // v0.13.0 需求6：批量注释（Ctrl+/）
+  ["format.comment", "format", "Ctrl+/"],
 ];
 
 describe("v0.9.0 review：默认表与基线表逐项一致", () => {
-  it("51 条 ✅ 条目 id/分类/默认键位全部对上（双向，无多余无遗漏；v0.13.0 新增 1 条）", () => {
-    expect(BASELINE).toHaveLength(51);
+  it("52 条 ✅ 条目 id/分类/默认键位全部对上（双向，无多余无遗漏；v0.13.0 新增 2 条）", () => {
+    expect(BASELINE).toHaveLength(52);
     const byId = new Map(SHORTCUT_DEFS.map((d) => [d.id, d]));
     for (const [id, category, combo] of BASELINE) {
       const def = byId.get(id);

@@ -189,6 +189,22 @@ export function parseInlineTokens(tokens: Token[]): InlineRun[] {
     const t = tokens[i];
     if (!t) continue;
 
+    // v0.13.0 需求6：HTML 注释不出现在任何导出格式里。
+    // DOCX/LaTeX 实例 html:false → `<!--xxx-->` 是**普通 text token**（不是
+    // html_inline），会原样进入导出文本；此处按内容形态剔除。
+    if (t.type === "text" && /^<!--[\s\S]*-->$/.test(t.content.trim())) {
+      continue;
+    }
+    // 文本中**夹带**注释的（"a <!--x--> b" 会被拆成多个 token，但 html:false 下
+    // markdown-it 不拆）——兜底把内嵌注释字符串也去掉
+    if (t.type === "text" && t.content.includes("<!--")) {
+      const stripped = t.content.replace(/<!--[\s\S]*?-->/g, "");
+      if (stripped !== t.content) {
+        if (stripped) runs.push(makeRun(stripped));
+        continue;
+      }
+    }
+
     switch (t.type) {
       case "text":
       case "emoji":

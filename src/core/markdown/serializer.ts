@@ -681,6 +681,10 @@ function applyMark(text: string, mark: Mark, inTableCell = false): string {
     case "superscript":
       // 上标 ^sup^
       return `^${text}^`;
+    case "comment":
+      // v0.13.0 需求6：注释 <!--text-->。按 mark 序列化（与 underline 用
+      // <u> 同理——Markdown 无原生注释语法，且注释内容不应出现在任何渲染里）
+      return `<!--${text}-->`;
     case "link": {
       const { href, title } = mark.attrs;
       const titlePart = title ? ` "${escapeTitle(title)}"` : "";

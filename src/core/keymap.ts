@@ -25,6 +25,8 @@ import { exitCodeBlockForward } from "./plugins/code-block-exit";
 import { pairTabOut } from "./plugins/auto-pair";
 // v0.11.0 B3-8：真正的块移动（Alt+↑/↓）
 import { moveBlockUp, moveBlockDown } from "./blockMove";
+// v0.13.0 需求6：选区多行批量注释（Ctrl+/）
+import { toggleComment } from "./toggleComment";
 // v0.13.0 需求1：块级复制/剪切（NodeSelection 态下的快捷键拦截）
 import { copySelectedBlock, cutSelectedBlock } from "../utils/blockClipboardOps";
 import { notify } from "../services/notificationService";
@@ -170,6 +172,9 @@ const PM_COMMAND_BY_ID: Record<string, Command> = {
   "format.highlight": toggleMark(schema.marks.mark),
   // E8(v0.9.3):下划线 Ctrl+U(与 format.underline 快捷键条目同源)
   "format.underline": toggleMark(schema.marks.underline),
+  // v0.13.0 需求6：批量注释 Ctrl+/（comment mark，序列化为 <!--text-->）。
+  // 注册在动态表而非静态 keymap：用户改键后仍生效（静态键位不支持自定义）。
+  "format.comment": toggleComment,
 
   "format.heading1": setBlockType(schema.nodes.heading, { level: 1 }),
   "format.heading2": setBlockType(schema.nodes.heading, { level: 2 }),

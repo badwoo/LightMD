@@ -156,6 +156,10 @@ export const SHORTCUT_DEFS: readonly ShortcutDef[] = Object.freeze([
   // Ctrl+P 在 WebView2 里的打印加速键已关（window/mod.rs 的 accelerator 禁用段），
   // 与 Ctrl+Shift+P 命令面板互不干扰；scope=global 保证三种模式一致。
   { id: "view.quickOpen", category: "view", labelKey: "shortcut.view.quickOpen", defaultCombo: "Ctrl+P", scope: "global" },
+  // 🆕 v0.13.0 需求6：选区多行批量注释（Ctrl+/）。阅读模式走 PM keymap 的
+  // `Mod-/`；源码模式由 sourceFormat 侧按同一键位处理（行首/行尾插注释）。
+  // scope=rich-source —— 两模式都要生效，与 format.bold 等同口径。
+  { id: "format.comment", category: "format", labelKey: "shortcut.format.comment", defaultCombo: "Ctrl+/", scope: "rich-source" },
   { id: "view.snapshot", category: "view", labelKey: "shortcut.view.snapshot", defaultCombo: "Ctrl+Alt+V", scope: "global" },
   { id: "view.settings", category: "view", labelKey: "command.view.settings", defaultCombo: "Ctrl+,", scope: "global", command: "view.settings" },
   // 🆕 v0.9.0：侧栏/大纲栏折叠（AppShell 折叠功能已存在，经命令总线打通）

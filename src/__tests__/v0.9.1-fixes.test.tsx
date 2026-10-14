@@ -302,7 +302,7 @@ describe("v0.9.1 需求3：设置弹窗打开/关闭淡入淡出", () => {
 
 // ═══════════════════════════════════════════════════════════════════
 describe("v0.9.1 需求4：自定义快捷键弹窗横向 3×3 布局", () => {
-  it("渲染 3 列、每列最多 3 张分类卡片、50 条全在其中(v0.9.3 E8 新增 2 条)", () => {
+  it("渲染 3 列、每列最多 3 张分类卡片、52 条全在其中(v0.13.0 新增 2 条)", () => {
     render(<ShortcutSettingsDialog onClose={() => {}} />);
     const columns = [...document.querySelectorAll(".shortcut-settings-column")];
     expect(columns.length).toBe(3);
@@ -311,8 +311,8 @@ describe("v0.9.1 需求4：自定义快捷键弹窗横向 3×3 布局", () => {
       expect(cards).toBeGreaterThan(0);
       expect(cards).toBeLessThanOrEqual(3);
     }
-    // v0.13.0 需求8：新增「快速切换文件」（Ctrl+P）→ 50 → 51
-    expect(document.querySelectorAll(".shortcut-settings-row").length).toBe(51);
+    // v0.13.0 需求8 新增「快速切换文件」（Ctrl+P）、需求6 新增「批量注释」（Ctrl+/）
+    expect(document.querySelectorAll(".shortcut-settings-row").length).toBe(52);
     expect(document.querySelectorAll(".shortcut-settings-group").length).toBe(7);
   });
 

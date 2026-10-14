@@ -389,7 +389,7 @@ describe("快捷键：view.quickOpen（Ctrl+P）", () => {
     expect(RESERVED_COMBOS).not.toContain("Ctrl+P");
   });
 
-  it("基线 50 → 51（新增这一条）", () => {
-    expect(SHORTCUT_DEFS.length).toBe(51);
+  it("基线 51 → 52（本版新增 Ctrl+P 与 Ctrl+/ 两条）", () => {
+    expect(SHORTCUT_DEFS.length).toBe(52);
   });
 });

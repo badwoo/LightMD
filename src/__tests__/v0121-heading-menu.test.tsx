@@ -252,11 +252,18 @@ describe("v0.12.1 需求1：样式与接线契约", () => {
     expect(editorCss).toMatch(/\.heading-level-menu \{\s*animation: none;/);
   });
 
-  it("旧标题井号标记不再生成（仅引用/代码块保留）", () => {
+  it("旧标题井号标记不再生成（标题走徽标，其余块的 marker 由纯函数层提供）", () => {
     const src = readSrc("src/core/plugins/wysiwyg.ts");
+    // 标题不再拼 "#" 井号 marker（改为 H1~H6 徽标 widget）
     expect(src).not.toMatch(/marker = "#"/);
-    expect(src).toMatch(/marker = "> "/);
-    expect(src).toMatch(/marker = "```" \+ lang/);
+    // v0.13.0 需求7：引用/代码块等块的 marker 文本抽到 utils/blockMarkers.ts，
+    // wysiwyg 只负责「取哪个块 → 调纯函数 → 装饰」，不再本地拼字符串
+    expect(src).toMatch(/computeBlockMarker\(/);
+    expect(src).toMatch(/from "\.\.\/\.\.\/utils\/blockMarkers"/);
+    // 纯函数层仍持有这两类块的 marker 文本
+    const markerSrc = readSrc("src/utils/blockMarkers.ts");
+    expect(markerSrc).toContain('marker: "> "');
+    expect(markerSrc).toContain("attrs.language as string");
   });
 
   it("EditorContainer 接线：回调 → 菜单状态 → 改级别；并渲染菜单", () => {

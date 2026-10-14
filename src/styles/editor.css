@@ -403,6 +403,17 @@
   vertical-align: baseline;
 }
 
+/* ─── v0.13.0 需求6：注释标记（<!--text-->） ───────────────
+   视觉上置灰 + 删除线，让用户一眼看出「这段被注释了，不会出现在渲染/导出里」。
+   只在阅读/编辑（ProseMirror）内生效；分屏 iframe 与六种导出格式由
+   renderPipeline / exportBlocks 的 html_inline 分支排除注释内容。 */
+.ProseMirror [data-comment] {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-color);
+  opacity: 0.75;
+}
+
 /* E6(v0.9.4)：行内语法标记显示（光标进入 mark 区间时以伪元素显示源码符号） */
 .md-reveal::before {
   content: attr(data-md-open);

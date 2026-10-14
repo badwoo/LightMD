@@ -127,6 +127,10 @@ export function createMarkdownIt(opts: {
     instance.renderer.rules.html_inline = (tokens, idx) => {
       const content = tokens[idx]?.content || "";
       const trimmed = content.trim();
+      // v0.13.0 需求6：HTML 注释在预览/导出侧**原样透传**——浏览器本身就会
+      // 忽略注释内容，与编辑器「置灰显示」互补（用户看得到自己标了注释，
+      // 而渲染结果里它不出现）。若在此剥掉，则源码里的注释在重存后消失。
+      if (/^<!--[\s\S]*-->$/.test(trimmed)) return content;
       // 三层语义与 PM 解析层一致:
       // ① 白名单无属性标签放行(渲染为真实结构);
       // ② 块级标签转义为字面文本(编辑器内按原文显示,分屏一致);
@@ -1036,16 +1040,28 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
       if (/^<br\s*\/?>$/i.test(trimmed)) {
         nodes.push(schema.nodes.hard_break.create());
       } else {
-        const open = /^<(u|sub|sup|mark)\s*>$/i.exec(trimmed);
-        if (open) {
-          htmlMarkStack.push(htmlTagMark(open[1].toLowerCase()));
-        } else if (/^<\/(u|sub|sup|mark)\s*>$/i.test(trimmed)) {
-          htmlMarkStack.pop();
-        } else if (isBlockLevelHtmlTag(trimmed)) {
-          // 块级标签:字面文本保留(编辑器内可见原文,保存不丢)
-          nodes.push(schema.text(content, htmlMarkStack.length ? htmlMarkStack.slice() : undefined));
+        // v0.13.0 需求6：HTML 注释 <!--xxx--> → 带 comment mark 的文本节点。
+        // 必须在白名单开闭标签判定**之前**——`<!--` 不含在白名单正则里，
+        // 不处理会被当成「未白名单行内标签」剥掉（注释内容丢失）。
+        const commentOpen = /^<!--([\s\S]*?)-->$/.exec(trimmed);
+        if (commentOpen) {
+          const inner = commentOpen[1];
+          if (inner) {
+            nodes.push(schema.text(inner, [schema.marks.comment.create()]));
+          }
+          // 空注释（<!---->）不产生节点（PM 不允许空文本节点）
+        } else {
+          const open = /^<(u|sub|sup|mark)\s*>$/i.exec(trimmed);
+          if (open) {
+            htmlMarkStack.push(htmlTagMark(open[1].toLowerCase()));
+          } else if (/^<\/(u|sub|sup|mark)\s*>$/i.test(trimmed)) {
+            htmlMarkStack.pop();
+          } else if (isBlockLevelHtmlTag(trimmed)) {
+            // 块级标签:字面文本保留(编辑器内可见原文,保存不丢)
+            nodes.push(schema.text(content, htmlMarkStack.length ? htmlMarkStack.slice() : undefined));
+          }
+          // 其余(非块级未白名单):标签剥离,包裹的内容随 text token 自然保留
         }
-        // 其余(非块级未白名单):标签剥离,包裹的内容随 text token 自然保留
       }
       i++; continue;
     }

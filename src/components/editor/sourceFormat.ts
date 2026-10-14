@@ -52,6 +52,49 @@ export function wrapSelection(
 }
 
 /**
+ * v0.13.0 需求6：源码模式的多行注释包裹。
+ *
+ * 与阅读模式的 `comment` mark 序列化结果保持一致（`<!--text-->`）；
+ * **逐行**包裹（每行各自 `<!-- ` … ` -->`），这样任一行单独取消时不影响
+ * 其它行，也与「选中多行 → 行行都被注释」的直觉一致。
+ *
+ * toggle 语义：选中内容**每一行都已被注释**时 → 全部取消（去掉包裹符）；
+ * 否则 → 全部加上。
+ *
+ * @param selected 选中的文本（可能含换行）
+ */
+export function wrapSourceComment(selected: string): FormatResult {
+  const COMMENT_OPEN = "<!-- ";
+  const COMMENT_CLOSE = " -->";
+  if (!selected) {
+    // 无选区：只插入成对符号，光标居中，占位走 ghost（不落盘）
+    const replacement = `${COMMENT_OPEN}${COMMENT_CLOSE}`;
+    return { replacement, cursorOffset: COMMENT_OPEN.length, ghostText: "注释内容" };
+  }
+  const lines = selected.split("\n");
+  const allCommented = lines.every((l) => {
+    const t = l.trim();
+    return t.startsWith(COMMENT_OPEN.trim()) && t.endsWith(COMMENT_CLOSE.trim()) && t.length > COMMENT_OPEN.length + COMMENT_CLOSE.length - 1;
+  });
+  let replacement: string;
+  if (allCommented) {
+    // 取消：去掉每行的包裹符
+    replacement = lines
+      .map((l) => {
+        const t = l.trim();
+        const inner = t.slice(COMMENT_OPEN.length, t.length - COMMENT_CLOSE.length);
+        // 保留原有缩进
+        const indent = l.slice(0, l.length - l.trimStart().length);
+        return indent + inner;
+      })
+      .join("\n");
+  } else {
+    replacement = lines.map((l) => `${COMMENT_OPEN}${l}${COMMENT_CLOSE}`).join("\n");
+  }
+  return { replacement, cursorOffset: replacement.length };
+}
+
+/**
  * v0.12.0 需求1 返修：前缀/包裹类格式的 ghost 占位文案。
  * 用户反馈"还有好多格式符中间的文本没有设置为 ghost 文本"——
  * 列表/任务/有序列表/引用/链接/图片全部改为「只插语法符号 + ghost 提示」，
@@ -185,6 +228,11 @@ export function buildFormatReplacement(action: string, selected: string): Format
       return wrapSelection(selected, "<u>", "</u>", "下划线文本");
     case "code":
       return wrapSelection(selected, "`", "`", "代码");
+    case "comment":
+      // v0.13.0 需求6：源码模式注释 —— 选中多行时**逐行**包 `<!-- ` / ` -->`，
+      // 与阅读模式的 comment mark 序列化结果一致（<!--text-->）。
+      // 已注释的选中内容再次触发 → 取消（幂等 toggle）。
+      return wrapSourceComment(selected);
     case "codeblock":
       // v0.12.0 需求1 返修：块内容留空，占位提示走 ghost（不再把"代码内容"写进文档）
       return {
@@ -301,6 +349,8 @@ const SOURCE_ACTION_BY_ID: Record<string, string> = {
   "format.inlineCode": "code",
   // E8(v0.9.3):下划线源码模式以 <u> 包裹(Markdown 无原生语法)
   "format.underline": "underline",
+  // v0.13.0 需求6：源码模式批量注释（Ctrl+/，行首/行尾插 <!-- -->）
+  "format.comment": "comment",
   "format.math": "math",
   // v0.11.0 返修（B3-2）：这三条此前只有 shortcuts.ts 的 scope 改成了
   // `rich-source`，本表却缺映射 → parseShortcut 返回 null → 源码 textarea 里

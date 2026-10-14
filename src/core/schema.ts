@@ -101,6 +101,21 @@ const markSpecs: Record<string, MarkSpec> = {
       return ["sup", 0];
     },
   },
+
+  // v0.13.0 需求6：注释标记 <!--text-->。
+  //
+  // 为什么用 mark 而不是「源码侧插前缀」：三模式必须行为一致——
+  // 只在源码模式做行首/行尾插 `<!-- `/` -->` 的话，阅读模式做不到同样的事
+  // （那里的选区是 PM 选区，不是文本行）。用 mark 后两模式都能表达。
+  //
+  // toDOM 用 <span data-comment> 而非 <span style>：CSS 统一置灰，
+  // 且导出层可按标签名过滤（见 utils/exportBlocks 与 renderPipeline）。
+  comment: {
+    parseDOM: [{ tag: "span[data-comment]" }],
+    toDOM(): DOMOutputSpec {
+      return ["span", { "data-comment": "" }, 0];
+    },
+  },
 };
 
 // ─── TOC 辅助函数 ────────────────────────────────────────────

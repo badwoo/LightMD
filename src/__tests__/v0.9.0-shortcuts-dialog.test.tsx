@@ -43,15 +43,15 @@ afterEach(() => {
 });
 
 describe("v0.9.0 ShortcutSettingsDialog：渲染与搜索（A2）", () => {
-  it("按分类渲染全部 50 条可自定义条目(v0.9.3 E8 新增 2 条)", () => {
+  it("按分类渲染全部 52 条可自定义条目(v0.13.0 新增 2 条)", () => {
     openDialog();
     for (const label of ["新建文件", "保存文件", "另存为", "撤销", "加粗", "删除线", "标题 4",
       "命令面板", "左侧栏展开/收缩", "标签栏展开/收缩", "下一个标签", "新建窗口", "插入表格"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
     const rows = document.querySelectorAll(".shortcut-settings-row");
-    // v0.13.0 需求8：新增「快速切换文件」（Ctrl+P）→ 50 → 51
-    expect(rows.length).toBe(51);
+    // v0.13.0 需求8 新增「快速切换文件」（Ctrl+P）、需求6 新增「批量注释」（Ctrl+/）
+    expect(rows.length).toBe(52);
   });
 
   it("搜索框按功能名过滤", () => {
