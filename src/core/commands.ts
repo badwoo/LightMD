@@ -210,6 +210,14 @@ export const commands: Command[] = [
     keywords: ["设置", "preferences", "settings"],
     action: () => dispatchCommand("view.settings"),
   },
+  // 🆕 v0.13.0 需求11：图片管理面板（只管当前文档：列图片/转 assets/重命名/清理未引用）
+  {
+    id: "view.imageManager",
+    titleKey: "command.view.imageManager",
+    group: "view",
+    keywords: ["图片", "管理", "assets", "清理", "image", "manager"],
+    action: () => dispatchCommand("view.imageManager"),
+  },
   // 🆕 v0.9.0：侧栏/大纲栏/标签栏折叠（Ctrl+Alt+←/→、Ctrl+Shift+B 快捷键共用同一命令入口）
   {
     id: "view.toggleLeft",

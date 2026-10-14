@@ -40,6 +40,8 @@ import { ImagePasteDialog } from "./components/dialogs/ImagePasteDialog";
 import { CommandPalette } from "./components/dialogs/CommandPalette";
 // v0.13.0 需求8：Ctrl+P 文件快速切换器
 import { QuickOpenDialog } from "./components/dialogs/QuickOpenDialog";
+// v0.13.0 需求11：图片管理面板（只管当前文档）
+import { ImageManagerDialog } from "./components/dialogs/ImageManagerDialog";
 import { flattenFileTree } from "./utils/quickOpen";
 import { VersionSnapshotDialog } from "./components/dialogs/VersionSnapshotDialog";
 import { setImageHandler, insertImageAtCursor, insertImagesAtPos, resolveDropInsertPos, type ImageDropContext } from "./core/plugins/image-paste";
@@ -274,6 +276,8 @@ function App() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   // v0.13.0 需求8：文件快速切换器开关（Ctrl+P）
   const [showQuickOpen, setShowQuickOpen] = useState(false);
+  // v0.13.0 需求11：图片管理面板开关（只管当前文档）
+  const [showImageManager, setShowImageManager] = useState(false);
   // v0.9.0 自定义快捷键：标签栏折叠（Ctrl+Shift+B / 命令面板 view.toggleTag；会话级，不持久化）
   const [tabBarCollapsed, setTabBarCollapsed] = useState(false);
   // v0.4.0 功能4：版本快照窗口开关 + 目标文件路径
@@ -3091,6 +3095,8 @@ function App() {
         case "view.commandPalette": setShowCommandPalette(true); return;
         // v0.13.0 需求8：文件快速切换器（Ctrl+P）——与命令面板（Ctrl+Shift+P）互不干扰
         case "view.quickOpen": setShowQuickOpen(true); return;
+        // v0.13.0 需求11：图片管理面板（只管当前文档）
+        case "view.imageManager": setShowImageManager(true); return;
         case "view.snapshot": {
           const { openTabs, activeTabIdx } = useEditorStore.getState();
           const activeTab = openTabs[activeTabIdx];
@@ -3237,6 +3243,59 @@ function App() {
   );
 
   const fileName = filePath ? getFileName(filePath) : t("app.untitled");
+
+  // ─── v0.13.0 需求11：图片管理面板的引用改写 ──────────────────────────
+  /**
+   * 把图片引用批量改写为新引用（转 assets / 重命名共用）。
+   *
+   * 双模式分流：
+   * - 源码模式（edit/split）：textarea 是唯一事实源 → 在**当前源码文本**上做
+   *   字符串替换，再走 handleContentChange 回推（与手动编辑同一条通路，
+   *   脏标记/防抖/localStorage 全部自动生效）；
+   * - 阅读模式（preview）：PM doc 是事实源 → 单事务内对所有 image 节点
+   *   setNodeMarkup（一次撤销，符合 v1 决策）。
+   *
+   * 注意：源码模式的替换按「整个引用串」匹配，不会误伤同名文件的其它写法
+   * （例如 `./assets/a.png` 与 `assets/a.png` 是两个不同引用串，各自精确替换）。
+   */
+  const handleImageRefsRewrite = useCallback(
+    (ops: Array<{ oldSrc: string; newSrc: string }>) => {
+      if (ops.length === 0) return;
+      const mode = useEditorStore.getState().viewMode;
+      const isSourceMode = mode === "edit" || mode === "split";
+      if (isSourceMode) {
+        let text = contentRef.current;
+        let changed = false;
+        for (const op of ops) {
+          if (!op.oldSrc || op.oldSrc === op.newSrc) continue;
+          // 全局替换（文档可能多处引用同一张图）
+          const escaped = op.oldSrc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const next = text.replace(new RegExp(escaped, "g"), op.newSrc);
+          if (next !== text) {
+            text = next;
+            changed = true;
+          }
+        }
+        if (changed) handleContentChange(text);
+        return;
+      }
+      // 阅读模式：PM 事务
+      const view = editorViewRef.current;
+      if (!view) return;
+      const tr = view.state.tr;
+      let touched = false;
+      view.state.doc.descendants((node, pos) => {
+        if (node.type.name !== "image") return true;
+        const hit = ops.find((o) => o.oldSrc === node.attrs.src);
+        if (!hit) return false;
+        tr.setNodeMarkup(pos, undefined, { ...node.attrs, src: hit.newSrc });
+        touched = true;
+        return false;
+      });
+      if (touched) view.dispatch(tr);
+    },
+    [handleContentChange],
+  );
 
   // ─── 标签页切换回调 ──────────────────────────
   const handleTabSwitch = useCallback((tab: TabInfo) => {
@@ -3475,6 +3534,18 @@ function App() {
             openFileByPath(item.path);
           }}
           onClose={() => setShowQuickOpen(false)}
+        />
+      )}
+      {/* v0.13.0 需求11：图片管理面板（只管当前文档）。
+          数据源取当前 PM doc（阅读模式）或当前源码文本反解析（源码模式由
+          handleImageRefsRewrite 内部处理，此处统一传 doc 供列表面板展示）。 */}
+      {showImageManager && (
+        <ImageManagerDialog
+          open={showImageManager}
+          doc={editorViewRef.current?.state.doc ?? null}
+          docPath={filePath}
+          onRewriteRefs={handleImageRefsRewrite}
+          onClose={() => setShowImageManager(false)}
         />
       )}
       {/* v0.4.0 功能4：版本快照窗口（v0.8.0 起快捷键为 Ctrl+Alt+V） */}

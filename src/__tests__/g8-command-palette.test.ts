@@ -116,8 +116,19 @@ describe("G8: 命令注册中心", () => {
     // v0.11.0 B3-7 新增 format.math——此前 Ctrl+Shift+M 在阅读模式是死键且面板无入口；
     // v0.11.0 B3-1 返修新增 7 条 format.heading4-6 / paragraph / bulletList /
     //   orderedList / blockquote——验收①要求这些能**从面板执行**，此前只写了
-    //   App.tsx 的回落路由、面板却没有条目，属不可达配置）
-    expect(commands.length).toBe(54);
+    //   App.tsx 的回落路由、面板却没有条目，属不可达配置；
+    // v0.13.0 需求11 新增 view.imageManager——图片管理面板（只管当前文档））
+    expect(commands.length).toBe(55);
+  });
+
+  it("v0.13.0 需求11：注册图片管理面板命令（view.imageManager）", () => {
+    const cmd = commands.find((c) => c.id === "view.imageManager");
+    expect(cmd, "view.imageManager 应注册到命令面板").toBeDefined();
+    expect(cmd!.group).toBe("view");
+    expect(cmd!.titleKey).toBe("command.view.imageManager");
+    expect(typeof cmd!.action).toBe("function");
+    // 无默认快捷键：面板只作为入口，不占用新键位
+    expect(cmd!.shortcut).toBeUndefined();
   });
 
   it("v0.11.0 B3-1 返修：面板可执行 标题4-6/正文/无序列表/有序列表/引用", () => {
