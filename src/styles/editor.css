@@ -492,38 +492,73 @@
   border-radius: 4px;
 }
 
-/* ─── v0.12.0 需求11：块级拖拽手柄（选中块的左侧外缘 ⋮⋮） ─────────
+/* ─── v0.12.0 需求11 + v0.13.0 返修（问题3）：块级拖拽手柄（左侧外缘 ⋮⋮） ────
    伪元素不进 ProseMirror 的 DOM 管理（undo/redo 与 tr.mapping 不受影响）；
-   仅顶层块显示；拖拽热区由 block-drag 插件按坐标判定（此处纯视觉提示）。
-   与需求3的语法 marker 互斥：marker 装饰仅空选区（光标）时出现，选中态不渲染。
+   拖拽热区由 block-drag 插件按坐标判定（此处只做视觉提示 + 提供 hover 命中区）。
 
    v0.12.0 返修（问题2）：手柄必须对**所有可拖块**可见，此前只有表格能看到——
    ① 用 `::after` 而非 `::before`：代码块/图表/公式的 wrapper 已用 `::before`
       画语言角标（`.code-block-wrapper.has-lang-select::before { display:none }`
       与本规则同权重且更靠后，会把 before 版手柄一并 display:none 掉）；
    ② 这三类 wrapper 都设了 `overflow: hidden`，手柄在左缘外 20px 会被裁掉 →
-      选中态临时放开裁剪（其子层都按 inset:0 定位，正常态本就不溢出）。 */
-.ProseMirror > .pm-block-selected,
-.ProseMirror > .ProseMirror-selectednode {
+      选中态临时放开裁剪（其子层都按 inset:0 定位，正常态本就不溢出）。
+
+   v0.13.0 返修（问题3）：**改为对所有顶层块生效**。
+   缺陷背景：v0.12.0 只在 5 个 wrapper class（.pm-block-wrapper / .code-block-wrapper /
+   .mermaid-block-wrapper / .math-block-wrapper / .table-wrapper）上画手柄，而段落、
+   标题、列表、引用这些普通块**根本没有 wrapper class**（`pm-block-wrapper` 全仓只有
+   CSS 引用、没有任何代码添加它）→ 普通块永远看不到手柄。
+   叠加 v0.13.0 的「单击即编辑」让 NodeSelection 不再自动产生，手柄就彻底消失了，
+   用户感知为「原来的小手柄被去掉了」。现改为 `.ProseMirror > *` 全覆盖。 */
+.ProseMirror > * {
   position: relative;
 }
 
-.ProseMirror > .pm-block-selected::after,
-.ProseMirror > .ProseMirror-selectednode::after {
+.ProseMirror > *::after {
   content: "⋮⋮";
   position: absolute;
   left: -20px;
   top: 50%;
   transform: translateY(-50%);
+  width: 12px;
+  height: 18px;
   color: var(--text-tertiary);
-  opacity: 0.55;
+  opacity: 0;
   font-size: 12px;
-  line-height: 1;
+  line-height: 18px;
   font-weight: normal;
   font-style: normal;
-  pointer-events: none;
+  text-align: center;
+  /* 必须 auto：手柄在块左缘**外**，若 pointer-events:none 则鼠标移向手柄时
+     块自身的 :hover 立即失效 → 手柄一闪即逝，永远抓不住。 */
+  pointer-events: auto;
+  cursor: grab;
   user-select: none;
   transition: opacity var(--transition-fast);
+  /* 图标由 block-drag 插件的热区判定使用；此处只做视觉提示 */
+  background: linear-gradient(
+    to bottom,
+    currentColor 0 2px,
+    transparent 2px 5px,
+    currentColor 5px 7px,
+    transparent 7px 10px,
+    currentColor 10px 12px,
+    transparent 12px 15px,
+    currentColor 15px 17px,
+    transparent 17px
+  );
+}
+
+/* 显示条件（与三点菜单完全一致）：① 鼠标悬停该块 ② 光标/选区在块内 ③ 整块选中
+   注意：`.pm-block-active` 由 block-drag 插件用 Decoration.node 加在**顶层块**上，
+   所以只匹配 `.pm-block-active::after` 自身即可。**不能**再写
+   `.pm-block-active > *::after`：那会给顶层块的**内部子元素**（如 table、
+   inner code）也画一个手柄，与顶层那个位置重合、形成重影。 */
+.ProseMirror > *:hover::after,
+.ProseMirror .pm-block-active::after,
+.ProseMirror > .pm-block-selected::after,
+.ProseMirror > .ProseMirror-selectednode::after {
+  opacity: 0.6;
 }
 
 .ProseMirror > .pm-block-selected:hover::after,
@@ -532,13 +567,24 @@
   color: var(--text-secondary);
 }
 
-/* v0.12.0 返修（问题2）：放开选中态的 overflow，让左侧手柄不被 wrapper 裁剪 */
+/* v0.12.0 返修（问题2）：放开选中态的 overflow，让左侧手柄不被 wrapper 裁剪
+   v0.13.0 返修（问题3）：**悬停态与光标在内态也必须放开**。
+   手柄显示条件有三个（hover / .pm-block-active / 选中），而这三类 wrapper 都设了
+   `overflow: hidden`，只放开选中态的话，鼠标悬停时手柄仍被裁掉——
+   用户"根本看不到手柄"，与问题3的现象一致。其子层均按 inset:0 定位，
+   正常态本就不溢出，放开不改变观感。 */
 .ProseMirror > .code-block-wrapper.pm-block-selected,
 .ProseMirror > .mermaid-block-wrapper.pm-block-selected,
 .ProseMirror > .math-block-wrapper.pm-block-selected,
 .ProseMirror > .code-block-wrapper.ProseMirror-selectednode,
 .ProseMirror > .mermaid-block-wrapper.ProseMirror-selectednode,
-.ProseMirror > .math-block-wrapper.ProseMirror-selectednode {
+.ProseMirror > .math-block-wrapper.ProseMirror-selectednode,
+.ProseMirror > .code-block-wrapper:hover,
+.ProseMirror > .mermaid-block-wrapper:hover,
+.ProseMirror > .math-block-wrapper:hover,
+.ProseMirror > .code-block-wrapper.pm-block-active,
+.ProseMirror > .mermaid-block-wrapper.pm-block-active,
+.ProseMirror > .math-block-wrapper.pm-block-active {
   overflow: visible;
 }
 
@@ -594,57 +640,10 @@
   display: inline-flex;
 }
 
-/* 手柄（左侧 ⋮⋮）：v0.12.0 需求11 已有选中态版，此处补 hover / 光标在内两态 */
-.ProseMirror > .pm-block-wrapper,
-.ProseMirror > .code-block-wrapper,
-.ProseMirror > .mermaid-block-wrapper,
-.ProseMirror > .math-block-wrapper,
-.ProseMirror > .table-wrapper {
-  position: relative;
-}
-
-.ProseMirror > .pm-block-wrapper::after,
-.ProseMirror > .code-block-wrapper::after,
-.ProseMirror > .mermaid-block-wrapper::after,
-.ProseMirror > .math-block-wrapper::after,
-.ProseMirror > .table-wrapper::after {
-  content: "";
-  position: absolute;
-  left: -18px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 12px;
-  height: 18px;
-  opacity: 0;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  line-height: 18px;
-  pointer-events: auto;
-  cursor: grab;
-  transition: opacity var(--transition-fast);
-  /* 图标由 block-drag 插件的热区判定使用；此处只做视觉提示 */
-  background: linear-gradient(
-    to bottom,
-    currentColor 0 2px,
-    transparent 2px 5px,
-    currentColor 5px 7px,
-    transparent 7px 10px,
-    currentColor 10px 12px,
-    transparent 12px 15px,
-    currentColor 15px 17px,
-    transparent 17px
-  );
-}
-
-.ProseMirror > .pm-block-wrapper:hover::after,
-.ProseMirror > .code-block-wrapper:hover::after,
-.ProseMirror > .mermaid-block-wrapper:hover::after,
-.ProseMirror > .math-block-wrapper:hover::after,
-.ProseMirror > .table-wrapper:hover::after,
-.ProseMirror .pm-block-active::after,
-.ProseMirror .pm-block-active > .pm-block-wrapper::after {
-  opacity: 0.6;
-}
+/* 手柄（左侧 ⋮⋮）的定位与显隐已统一由上方 `.ProseMirror > *::after` 规则承担
+   （v0.13.0 返修问题3：不再只对 5 个 wrapper class 生效）。
+   此处**不得**再为 wrapper 单独写 `::after` 规则：后写的 `content: ""` 会覆盖
+   上面 `content: "⋮⋮"`，导致代码块/图表/公式/表格的手柄变空而不可见。 */
 
 /* ─── v0.13.0 需求12：单元格范围选区（拖拽跨格的高亮）────────────────
    只做背景色，不动边框/尺寸——合并格本身有 colspan/rowspan，
@@ -667,6 +666,15 @@
 .mini-context-menu-item:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* v0.13.0 返修（问题5）：菜单分组分隔线。
+   buildBlockMenuItems 早已产出 separatorBefore（删除/格式刷/上移前分组），
+   但弹层此前既不渲染也不定义样式 → 8 项挤成一团、难以扫读。 */
+.mini-context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-color, rgba(128, 128, 128, 0.3));
 }
 
 /* v0.12.0 需求11：拖拽期间的插入指示线（2px 水平线，主题强调色）

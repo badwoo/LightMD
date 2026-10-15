@@ -15,7 +15,7 @@ import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view"
 import type { Node as PMNode } from "prosemirror-model";
 import mermaid from "mermaid";
 // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除）
-import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
+import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent, placeCaretInsideBlock } from "./blockSelection";
 // v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
 import { createBlockKebabButton } from "./blockKebab";
 // v0.12.2 P7：内联提示文案走 i18n（此前硬编码中文，英文界面穿帮）
@@ -79,7 +79,9 @@ export class MermaidBlockView implements NodeView {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRenderedCode = "";
   private observer: MutationObserver | null = null;
-  private handleDblClick: () => void;
+  private handleDblClick: (e: MouseEvent) => void;
+  /** v0.13.0 返修（问题2）：最近一次进入编辑态的时刻（区分"单击进编辑"引发的 dblclick） */
+  private lastEnterEditAt = 0;
   /** v0.13.0 需求1：右上角三点菜单按钮（常驻显示由 CSS 控制） */
   private kebabButton: HTMLButtonElement | null = null;
 
@@ -108,9 +110,12 @@ export class MermaidBlockView implements NodeView {
       "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;";
     this.dom.appendChild(this.contentDOM);
 
-    // 点击切换编辑/预览态
-    this.handleDblClick = () => this.toggleEditMode();
+    // 点击切换编辑/预览态（双击预览层可切回预览）
+    this.handleDblClick = (e: MouseEvent) => this.onDblClick(e);
     this.dom.addEventListener("dblclick", this.handleDblClick);
+    // v0.13.0 返修（问题2）：**单击即进入编辑**（编辑层默认 display:none，
+    // 不展开则 PM 找不到可见的可编辑位置，单击毫无反应）
+    this.dom.addEventListener("mousedown", this.handleMouseDown);
 
     // v0.13.0 需求1：右上角三点菜单（常驻显示由 CSS 控制）
     this.kebabButton = createBlockKebabButton(this.dom, this.getPos);
@@ -129,18 +134,51 @@ export class MermaidBlockView implements NodeView {
     });
   }
 
+  /**
+   * v0.13.0 返修（问题2）：单击展开编辑层并放置光标。
+   * 只在「左键单击 + 未处于编辑态 + 非交互控件」时生效。
+   */
+  private handleMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest?.("button, select, input, textarea, a")) return;
+    if (this.isEditing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.enterEditMode();
+    const pos = this.getPos();
+    if (pos == null) return;
+    placeCaretInsideBlock(this.view, pos, e.clientX, e.clientY);
+  };
+
+  /**
+   * v0.13.0 返修（问题2）：双击语义（与公式块同款，避免"单击进编辑、
+   * 紧接着的 dblclick 又退出"）。
+   */
+  private onDblClick(e: MouseEvent) {
+    const target = e.target as HTMLElement | null;
+    if (this.isEditing && target && this.contentDOM.contains(target)) return;
+    if (this.isEditing && Date.now() - this.lastEnterEditAt < 600) return;
+    this.toggleEditMode();
+  }
+
+  /** 进入编辑态（单击 / 双击共用，保证状态一致） */
+  private enterEditMode() {
+    this.isEditing = true;
+    this.lastEnterEditAt = Date.now();
+    this.previewLayer.style.display = "none";
+    this.contentDOM.style.cssText =
+      "display:block !important;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
+      "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;" +
+      "color:var(--text-primary);caret-color:var(--text-primary);background:transparent;";
+    this.dom.classList.add("mermaid-editing");
+  }
+
   /** 切换编辑/预览态 */
   private toggleEditMode() {
     this.isEditing = !this.isEditing;
     if (this.isEditing) {
-      // 切换到编辑态
-      this.previewLayer.style.display = "none";
-      this.contentDOM.style.display = "block";
-      this.contentDOM.style.cssText =
-        "display:block !important;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
-        "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;" +
-        "color:var(--text-primary);caret-color:var(--text-primary);background:transparent;";
-      this.dom.classList.add("mermaid-editing");
+      this.enterEditMode();
     } else {
       // 切换到预览态
       this.contentDOM.style.display = "none";
@@ -227,6 +265,7 @@ export class MermaidBlockView implements NodeView {
     this.observer?.disconnect();
     this.observer = null;
     this.dom.removeEventListener("dblclick", this.handleDblClick);
+    this.dom.removeEventListener("mousedown", this.handleMouseDown);
     // v0.13.0 需求1：移除三点按钮
     this.kebabButton?.remove();
     this.kebabButton = null;

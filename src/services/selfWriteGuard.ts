@@ -29,6 +29,21 @@ import { pathCompareKey } from "../utils/path";
 /** 指纹保留时长：足够覆盖 watcher 事件的所有正常延迟路径 */
 export const TTL_MS = 10_000;
 
+/**
+ * v0.13.0 返修（问题8）：**磁盘基线**的保留时长。
+ *
+ * 与 [`TTL_MS`] 的短 TTL 不同，基线必须活得足够久：自动保存的默认间隔是
+ * **60 秒**，而短 TTL 只有 10 秒——若两者共用一张表，第二次自动保存时
+ * `getLastSelfWritten` 已经过期返回 null，三路判定会把「磁盘仍是自己上次写的」
+ * 误判成「第三方改过」，于是标记 `isExternallyChanged` 并弹
+ * 「已在其他窗口保存，自动保存已暂停」。这就是用户报告的问题 8：
+ * **没有任何外部程序改过文档，却收到该提示**。
+ *
+ * 基线只用于「磁盘是否被第三方改过」的判定，不参与 watcher 回声抑制
+ * （回声抑制必须用短 TTL，否则会掩盖真实的外部修改）。
+ */
+export const BASELINE_TTL_MS = 6 * 60 * 60 * 1000;
+
 /** 同时保留的路径数上限（LRU：超限淘汰最旧条目） */
 export const MAX_ENTRIES = 32;
 
@@ -40,6 +55,19 @@ interface SelfWriteRecord {
 }
 /** 路径比较键 → 最近一次自身写盘记录（Map 迭代序 = 插入序，用于 LRU 淘汰） */
 const records = new Map<string, SelfWriteRecord>();
+
+/**
+ * v0.13.0 返修（问题8）：路径 → 「本应用所知的磁盘内容」基线。
+ *
+ * 写入时机：
+ * - 打开文件时（读到的磁盘内容 = 当时的基线）；
+ * - 本应用每次写盘后（[`noteSelfWrittenFile`] 内部同步登记）。
+ *
+ * 用途：自动保存写盘前的三路判定。磁盘内容 === 基线 ⇒ 自上次基线以来
+ * 没有第三方改动 ⇒ 可以安全写盘。**没有基线时不能证明安全**，仍然保守放弃
+ * （返回 conflict），但打开文件即登记基线，正常流程下不会缺。
+ */
+const baselines = new Map<string, SelfWriteRecord>();
 
 /** 淘汰超龄条目（惰性调用，避免定时器） */
 function prune(now: number): void {
@@ -66,6 +94,72 @@ export function noteSelfWrittenFile(path: string, content: string): void {
     if (oldest === undefined) break;
     records.delete(oldest);
   }
+  // v0.13.0 返修（问题8）：写盘后磁盘基线同步推进——本应用刚写的即当前磁盘状态。
+  noteDiskBaseline(path, content);
+}
+
+/**
+ * v0.13.0 返修（问题8）：登记「本应用所知的该路径磁盘内容」。
+ *
+ * **必须只在真正读过/写过磁盘时调用**，且**不能**放在通用的
+ * `fileService.readFile` 里：自动保存的写盘前判定本身也要读盘，若读盘顺手
+ * 推进基线，判定就会永远看到「磁盘 === 基线」→ 恒判为可写 → 外部编辑被静默覆盖。
+ * 因此基线只在「打开文件」（拿到初始磁盘内容）与「本应用写盘成功」两处推进。
+ */
+export function noteDiskBaseline(path: string, content: string): void {
+  if (!path || typeof content !== "string") return;
+  const now = Date.now();
+  pruneBaselines(now);
+  const key = pathCompareKey(path);
+  baselines.delete(key);
+  baselines.set(key, { content, at: now });
+  while (baselines.size > MAX_ENTRIES) {
+    const oldest = baselines.keys().next().value;
+    if (oldest === undefined) break;
+    baselines.delete(oldest);
+  }
+}
+
+/** 淘汰超龄基线（惰性调用，避免定时器） */
+function pruneBaselines(now: number): void {
+  for (const [key, rec] of baselines) {
+    if (now - rec.at > BASELINE_TTL_MS) baselines.delete(key);
+  }
+}
+
+/**
+ * v0.13.0 返修（问题8）：取「本应用所知的该路径磁盘内容」。
+ *
+ * 优先返回最近一次**自身写盘**的内容（短 TTL，回声抑制窗口内最精确），
+ * 否则回退到**磁盘基线**（长 TTL，打开文件时登记的初始内容）。
+ *
+ * 为什么需要基线：打开一个文件后编辑它、但**从未保存过**时，`records` 里
+ * 没有任何条目 → 三路判定无法证明「磁盘未被第三方改过」→ 判为 conflict →
+ * 自动保存被放弃并误报「已在其他窗口保存」。有了基线（= 打开时读到的内容），
+ * 磁盘仍等于基线即可安全写盘。
+ */
+export function getKnownDiskContent(path: string): string | null {
+  const self = getLastSelfWritten(path);
+  if (self !== null) return self;
+  if (!path) return null;
+  const key = pathCompareKey(path);
+  const rec = baselines.get(key);
+  if (!rec) return null;
+  if (Date.now() - rec.at > BASELINE_TTL_MS) {
+    baselines.delete(key);
+    return null;
+  }
+  return rec.content;
+}
+
+/** 测试用：清空磁盘基线 */
+export function __resetDiskBaselineForTest(): void {
+  baselines.clear();
+}
+
+/** 测试用：当前基线条目数 */
+export function __diskBaselineSize(): number {
+  return baselines.size;
 }
 
 /**

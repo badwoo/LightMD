@@ -97,6 +97,47 @@ export function buildBlockMoveTr(
   return tr;
 }
 
+/**
+ * v0.13.0 返修（问题5）：把 srcPos 处的顶层块与相邻块交换（dir = -1 上移 / +1 下移）。
+ *
+ * 缺陷背景：三点菜单此前把 `dir`（-1/1）**当成文档位置**传给 [`buildBlockMoveTr`]，
+ * 后者的第二参数是「插入点位置」而非方向：
+ *   - 上移传 -1 → `tr.insert(-1, node)` 抛错 → 被 catch 吞掉 → 返回 null → **静默无反应**；
+ *   - 下移传 1  → 把块插到文档位置 1（首个块内部）→ 结构非法 → 同样返回 null。
+ * 于是「移动到上方 / 移动到下方」两项完全不可用。这里按方向正确算出插入点。
+ *
+ * @returns 事务；已在首/末块或结构非法时返回 null
+ */
+export function buildBlockMoveByDir(
+  state: EditorState,
+  srcPos: number,
+  dir: -1 | 1,
+): Transaction | null {
+  const doc = state.doc;
+  const node = doc.nodeAt(srcPos);
+  if (!node) return null;
+  // 找到 srcPos 对应的顶层子节点下标（nodeAt 对非顶层位置也会命中，故显式校验）
+  let index = -1;
+  let acc = 0;
+  for (let i = 0; i < doc.childCount; i++) {
+    if (acc === srcPos) {
+      index = i;
+      break;
+    }
+    acc += doc.child(i).nodeSize;
+  }
+  if (index < 0) return null;
+  const target = index + dir;
+  if (target < 0 || target >= doc.childCount) return null;
+
+  // 插入点：上移 = 前一个块的起点；下移 = 后一个块的终点
+  const insertPos =
+    dir === -1
+      ? srcPos - doc.child(index - 1).nodeSize
+      : srcPos + node.nodeSize + doc.child(index + 1).nodeSize;
+  return buildBlockMoveTr(state, srcPos, insertPos);
+}
+
 /** 当前缩放比例（视觉坐标 → 布局坐标换算；jsdom 下回退 1） */
 function docZoomRatio(): number {
   try {
@@ -225,51 +266,106 @@ export function beginBlockDrag(view: EditorView, srcPos: number, startEvent: Mou
 }
 
 /**
- * 拖拽插件：在编辑器内 mousedown 时判定「手柄热区 + 已选中的可拖块」→ 开始拖拽。
+ * 拖拽插件：在编辑器内 mousedown 时判定「手柄热区 + 可拖块」→ 开始拖拽。
  * 其余 mousedown 一律放行（不影响选文字/点击）；mousemove 仅在热区显示 grab 光标。
+ *
+ * v0.13.0 返修（问题3）：**不再要求先有 NodeSelection**。
+ *
+ * 缺陷背景：v0.12.0 要求「块已被 NodeSelection 选中」才允许从手柄拖拽；而
+ * v0.13.0 的「单击即编辑」让普通块单击只放光标（TextSelection），块几乎永远不会
+ * 进入 NodeSelection → 手柄虽然显示却拖不动，用户感知为「手柄失效/被去掉」。
+ *
+ * 现在改为：mousedown 落在「某顶层块的左缘热区」内即开始拖拽该块，与当前选区无关。
  */
 export function blockDragPlugin(): Plugin {
+  /** 由鼠标坐标找出落点所在的顶层块起点（不在任何块内 → null） */
+  function topLevelBlockAt(view: EditorView, clientX: number, clientY: number): number | null {
+    const coords = view.posAtCoords({ left: clientX, top: clientY });
+    if (!coords) return null;
+    const doc = view.state.doc;
+    const $pos = doc.resolve(coords.pos);
+    // 落点在块间边界（depth 0）时取其后紧邻的块
+    if ($pos.depth === 0) {
+      const node = doc.nodeAt(coords.pos);
+      return node ? coords.pos : null;
+    }
+    return $pos.before(1);
+  }
+
+  /** 顶层块的起点位置列表（用于候选回退） */
+  function topLevelStarts(doc: EditorView["state"]["doc"]): number[] {
+    const out: number[] = [];
+    let acc = 0;
+    for (let i = 0; i < doc.childCount; i++) {
+      out.push(acc);
+      acc += doc.child(i).nodeSize;
+    }
+    return out;
+  }
+
+  /** 坐标是否落在该块的「手柄热区」内（块左缘外扩 BLOCK_DRAG_HANDLE_WIDTH） */
+  function inHandleZone(view: EditorView, pos: number, clientX: number, clientY: number): boolean {
+    const dom = view.nodeDOM(pos) as HTMLElement | null;
+    if (!dom || !dom.getBoundingClientRect) return false;
+    const rect = dom.getBoundingClientRect();
+    const handleW = BLOCK_DRAG_HANDLE_WIDTH * docZoomRatio();
+    return (
+      clientX >= rect.left - handleW &&
+      clientX <= rect.left + 2 &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  }
+
+  /**
+   * 找出「手柄热区包含该坐标」的顶层块。
+   *
+   * 为什么要候选回退：`posAtCoords` 返回的是**离坐标最近的文档位置**，而手柄热区
+   * 在块的左缘**外**（正文区之外）。鼠标停在 A 块左缘外时，最近位置可能是上一块
+   * 的末尾而不是 A 的开头 → 直接判定会落到错误的块（拖错块或干脆拖不动）。
+   * 因此以解析结果为中心，连同前后各 2 个顶层块一起试，取第一个热区命中的。
+   * 只做常数个 `getBoundingClientRect`，大文档下开销可控（不遍历全文档）。
+   */
+  function handleZoneBlockAt(
+    view: EditorView,
+    clientX: number,
+    clientY: number,
+  ): number | null {
+    const starts = topLevelStarts(view.state.doc);
+    if (starts.length === 0) return null;
+    const hit = topLevelBlockAt(view, clientX, clientY);
+    const center = hit == null ? 0 : starts.indexOf(hit);
+    const base = center < 0 ? 0 : center;
+    for (const delta of [0, -1, 1, -2, 2]) {
+      const idx = base + delta;
+      if (idx < 0 || idx >= starts.length) continue;
+      const pos = starts[idx];
+      if (!isDraggableBlock(view.state.doc, pos)) continue;
+      if (inHandleZone(view, pos, clientX, clientY)) return pos;
+    }
+    return null;
+  }
+
   return new Plugin({
     key: blockDragKey,
     props: {
       handleDOMEvents: {
         mousedown(view, event) {
           if (event.button !== 0) return false;
-          const sel = view.state.selection;
-          if (!(sel instanceof NodeSelection)) return false;
-          if (!isDraggableBlock(view.state.doc, sel.from)) return false;
-          const dom = view.nodeDOM(sel.from) as HTMLElement | null;
-          if (!dom || !dom.getBoundingClientRect) return false;
-          const rect = dom.getBoundingClientRect();
-          // 热区：块左缘外扩 BLOCK_DRAG_HANDLE_WIDTH（视觉 px → zoom 换算）
-          const handleW = BLOCK_DRAG_HANDLE_WIDTH * docZoomRatio();
-          const inHandle =
-            event.clientX >= rect.left - handleW &&
-            event.clientX <= rect.left + 2 &&
-            event.clientY >= rect.top &&
-            event.clientY <= rect.bottom;
-          if (!inHandle) return false;
-          beginBlockDrag(view, sel.from, event);
+          // 落在块内交互控件（三点菜单 / 语言下拉 / 表格工具栏）上时放行
+          const target = event.target as HTMLElement | null;
+          if (target?.closest?.("button, select, input, textarea, a, .table-toolbar")) return false;
+          // v0.13.0 返修（问题3）：按「热区命中」找块（posAtCoords 在块外会吸附到邻块）
+          const pos = handleZoneBlockAt(view, event.clientX, event.clientY);
+          if (pos == null) return false;
+          beginBlockDrag(view, pos, event);
           return true;
         },
         // hover 到手柄热区时显示 grab 光标（伪元素不能单独设 cursor，按坐标判定）
         mousemove(view, event) {
           const dom0 = view.dom as HTMLElement;
-          const sel = view.state.selection;
-          if (!(sel instanceof NodeSelection) || !isDraggableBlock(view.state.doc, sel.from)) {
-            if (dom0.style.cursor) dom0.style.cursor = "";
-            return false;
-          }
-          const dom = view.nodeDOM(sel.from) as HTMLElement | null;
-          if (!dom || !dom.getBoundingClientRect) return false;
-          const rect = dom.getBoundingClientRect();
-          const handleW = BLOCK_DRAG_HANDLE_WIDTH * docZoomRatio();
-          const inHandle =
-            event.clientX >= rect.left - handleW &&
-            event.clientX <= rect.left + 2 &&
-            event.clientY >= rect.top &&
-            event.clientY <= rect.bottom;
-          const want = inHandle ? "grab" : "";
+          const pos = handleZoneBlockAt(view, event.clientX, event.clientY);
+          const want = pos != null ? "grab" : "";
           if (dom0.style.cursor !== want) dom0.style.cursor = want;
           return false;
         },

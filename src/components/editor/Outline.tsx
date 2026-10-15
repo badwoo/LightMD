@@ -90,6 +90,13 @@ function SortableHeadingItem({
   collapsible,
   /** v0.13.0 需求9：当前是否折叠 */
   collapsed,
+  /**
+   * v0.13.0 返修（问题7）：该行是否处于"折叠隐藏"态。
+   *
+   * 隐藏行**保留在 DOM 中**（只加 class 收缩高度），这样才能做平滑动画——
+   * 直接从 DOM 摘掉节点是瞬时消失，无法过渡。
+   */
+  hidden,
   /** v0.13.0 需求9：折叠/展开按钮的 aria/title 文案（i18n，由父层注入） */
   collapseLabel,
   expandLabel,
@@ -102,6 +109,7 @@ function SortableHeadingItem({
   draggable: boolean;
   collapsible: boolean;
   collapsed: boolean;
+  hidden: boolean;
   collapseLabel: string;
   expandLabel: string;
   onToggleCollapse: (pos: number) => void;
@@ -118,7 +126,11 @@ function SortableHeadingItem({
   };
 
   return (
-    <div className={`outline-row outline-level-${heading.level} ${activeId === heading.id ? "active" : ""} ${isDragging ? "dragging" : ""}`}>
+    <div
+      className={`outline-row outline-level-${heading.level} ${activeId === heading.id ? "active" : ""} ${isDragging ? "dragging" : ""} ${hidden ? "outline-hidden" : ""}`}
+      aria-hidden={hidden || undefined}
+      data-collapsed-hidden={hidden ? "true" : undefined}
+    >
       {/* v0.13.0 需求9：折叠箭头。不可折叠的标题也渲染占位，保持文本左对齐一致 */}
       {collapsible ? (
         <button
@@ -396,9 +408,13 @@ export function Outline({ editorView }: OutlineProps) {
     ? filteredHeadings.filter((h) => visibleByPos.get(h.pos) !== false)
     : filteredHeadings;
 
-  const displayHeadings = visibleHeadings.length > MAX_OUTLINE_ITEMS
-    ? visibleHeadings.slice(0, MAX_OUTLINE_ITEMS)
-    : visibleHeadings;
+  // v0.13.0 返修（问题7）：**折叠的行保留在 DOM 中**（只加 .outline-hidden 收缩高度），
+  // 这样才能做平滑的展开/收缩动画——直接从 DOM 摘掉节点是瞬时消失，无法过渡。
+  // 渲染条数仍以 MAX_OUTLINE_ITEMS 为上限（正常情况与"可见条数"一致；
+  // 仅当被折叠的子树占满前 1000 项时，才会把更靠后的可见项挤出，属可接受的极端边界）。
+  const displayHeadings = filteredHeadings.length > MAX_OUTLINE_ITEMS
+    ? filteredHeadings.slice(0, MAX_OUTLINE_ITEMS)
+    : filteredHeadings;
   const hasMore = visibleHeadings.length > MAX_OUTLINE_ITEMS;
 
   // v0.13.0 需求9：可折叠判定基于**全部标题**（不是过滤后的）——
@@ -447,6 +463,7 @@ export function Outline({ editorView }: OutlineProps) {
           draggable={dragActive}
           collapsible={collapsibleByPos.get(h.pos) === true}
           collapsed={collapsed.has(h.pos)}
+          hidden={visibleByPos ? visibleByPos.get(h.pos) === false : false}
           collapseLabel={t("outline.collapse")}
           expandLabel={t("outline.expand")}
           onToggleCollapse={handleToggleCollapse}

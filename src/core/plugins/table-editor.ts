@@ -15,7 +15,8 @@
  */
 import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view";
 import type { Node, ResolvedPos } from "prosemirror-model";
-import type { Transaction } from "prosemirror-state";
+// v0.13.0 返修（问题1）：整表选中需要 NodeSelection
+import { NodeSelection, type Transaction } from "prosemirror-state";
 import { lightMDSchema as schema } from "../schema";
 // 直接从 state.ts 导入 t，避免触发 i18n/index.ts 的 useSettingsStore 副作用订阅
 import { t } from "../../i18n/state";
@@ -1171,6 +1172,10 @@ export class TableView implements NodeView {
     if (hitResizeZone(cell, e.clientX, e.clientY).row) return;
     const coord = this.cellCoordOf(cell);
     if (!coord) return;
+    // v0.13.0 返修（问题1）：在单元格内按下即**作废上一次的范围选区**。
+    // 旧行为下范围高亮会一直留着，用户单击别处也消不掉，看起来像"表格被选中"，
+    // 与"一点就全选"的问题叠加放大。现在单击即开始一次全新选择。
+    this.clearCellRange();
     this.rangeAnchor = { ...coord, cellEl: cell };
   }
 
@@ -1667,8 +1672,16 @@ export class TableView implements NodeView {
   // stopEvent：在 cell 左/右边缘 8px 或底边缘 6px 范围内的 mousedown 阻止 ProseMirror 处理
   // 否则 PM 会先设置选区，干扰列宽/行高拖拽逻辑
   // v0.4.5 修复：同时检测 cell 左边缘，配合 onMouseDown 的左边缘拖拽逻辑
-  // v0.12.0 需求6：非边缘的左键单击 → 选中整个表格（handleBlockStopEvent）；
-  //   块内交互控件（工具栏按钮等）放行，不抢交互；已选中本表时再次单击放行进编辑
+  //
+  // v0.13.0 返修（问题1）：单元格内左键单击**必须放行给 PM**，让光标落到该单元格。
+  //
+  // 缺陷背景：旧实现在非热区的单元格点击上调用 `handleBlockStopEvent`，而当时
+  // `blockAcceptsCaret(table)` 为 false（表格被当成"不可放光标的块"）→ 建立**整表
+  // NodeSelection**。用户的表现是「鼠标一点击表格就全选了」，于是：
+  //   - 选不中单元格、光标进不去，无法编辑单元格文字；
+  //   - 拖拽跨格的范围选区（合并单元格的前提）被整表选中覆盖，合并功能等于不可用。
+  // 表格显然可以在单元格内放光标（table_cell 是 inline*），`blockAcceptsCaret`
+  // 已改为递归判定容器块；这里同步显式放行，避免以后回归。
   stopEvent(event: Event): boolean {
     if (event.type === "mousedown" && event instanceof MouseEvent) {
       if (event.button !== 0) return false;
@@ -1677,22 +1690,52 @@ export class TableView implements NodeView {
       if (target.closest("button, select, input, a, .table-toolbar")) return false;
       const cell = target.closest("td, th") as HTMLElement | null;
       if (!cell) {
-        // 点击表格边框/外沿（非 cell 区域）：交给通用块级选中判定
-        return handleBlockStopEvent(this.dom, this.view, this.getPos, event);
+        // 点击表格边框/外沿（非 cell 区域）→ **整表选中**。
+        //
+        // v0.13.0 返修（问题1）补充：这里不能再用 `handleBlockStopEvent` ——
+        // `blockAcceptsCaret(table)` 修好后为 true，通用判定会直接放行，
+        // 导致「点表格外沿整表选中」这个入口失效。整表选中是本条明确要保留的
+        // 能力（Delete 删表、三点菜单、拖拽），故在此显式建立 NodeSelection。
+        return this.selectWholeTable(event);
       }
       const rect = cell.getBoundingClientRect();
       // v0.4.5 修复：同时检测左边缘和右边缘
       const offsetXRight = event.clientX - rect.right;
       const offsetXLeft = rect.left - event.clientX;
       const offsetY = event.clientY - rect.bottom;
-      // 列宽热区（左边缘或右边缘 8px）或行高热区（底边缘 6px）
+      // 列宽热区（左边缘或右边缘 8px）或行高热区（底边缘 6px）→ 拦下给拖拽逻辑
       if (Math.abs(offsetXRight) <= 8) return true;
       if (Math.abs(offsetXLeft) <= 8) return true;
       if (Math.abs(offsetY) <= 6) return true;
-      // 单元格内左键单击 → 选中整个表格（双击/已选中时放行进编辑）
-      return handleBlockStopEvent(this.dom, this.view, this.getPos, event);
+      // v0.13.0 返修（问题1）：单元格内单击 → **放行**，PM 把光标放进该单元格。
+      // 不再建立整表 NodeSelection（那会让"一点就全选"）。
+      // 整表选中仍有明确入口：三点菜单「选中该块」、点表格外沿、Esc 选父节点。
+      return false;
     }
     return false;
+  }
+
+  /**
+   * v0.13.0 返修（问题1）：建立**整表** NodeSelection（点表格外沿时使用）。
+   *
+   * 为什么不用 `handleBlockStopEvent`：表格现在被判为「可放光标」（递归判定到
+   * `table_cell` 是 `inline*`），通用判定会直接放行 → 点外沿也选不中整表。
+   * 但整表选中是必须保留的能力（Delete 删表 / 三点菜单 / 拖拽），
+   * 因此这里显式建选区，并保持与通用实现一致的「双击/右键放行」语义。
+   */
+  private selectWholeTable(event: MouseEvent): boolean {
+    // 双击（detail≥2）/ 非左键 → 放行，交给 PM（双击进单元格编辑）
+    if (event.button !== 0 || event.detail !== 1) return false;
+    const pos = this.getPos();
+    if (pos === undefined) return false;
+    const { state } = this.view;
+    const already =
+      state.selection instanceof NodeSelection && state.selection.from === pos;
+    if (already) return false;
+    this.view.focus();
+    this.view.dispatch(state.tr.setSelection(NodeSelection.create(state.doc, pos)));
+    event.preventDefault();
+    return true;
   }
 
   // v0.12.0 需求6：块级选中（单击选中整个表格 → Delete 删除；双击进单元格编辑）

@@ -72,6 +72,48 @@ export function collectDocImages(doc: Node): DocImage[] {
 }
 
 /**
+ * v0.13.0 返修（问题6）：文档中是否至少有一张图片。
+ *
+ * 用于决定右上角「图片管理」悬浮入口是否显示——用户明确要求
+ * **只有文档中有图片才会显示该图标**。
+ *
+ * 纯函数 + 早停（找到第一张即返回），不做整篇收集，避免大文档每次渲染都全量遍历。
+ */
+export function docHasImage(doc: Node | null | undefined): boolean {
+  if (!doc) return false;
+  let found = false;
+  doc.descendants((node) => {
+    if (found) return false;
+    if (node.type.name === "image" && String(node.attrs.src ?? "")) {
+      found = true;
+      return false;
+    }
+    return true;
+  });
+  return found;
+}
+
+/** Markdown 图片语法：`![alt](src)`；src 不可为空 */
+const IMAGE_SYNTAX_RE = /!\[[^\]]*\]\(\s*[^)\s][^)]*\)/;
+
+/**
+ * v0.13.0 返修（问题6）：**源码模式**下文档是否含图片。
+ *
+ * 源码模式（edit）没有 ProseMirror 视图，拿不到文档树，只能在 Markdown 文本上判断。
+ * 先剔除围栏代码块（``` / ~~~）与行内代码，避免把「代码示例里的 `![x](y)`」
+ * 误判成真实图片——那正是用户会看到的假入口。
+ */
+export function markdownHasImage(markdown: string | null | undefined): boolean {
+  if (!markdown) return false;
+  const stripped = markdown
+    // 围栏代码块（含语言标识与缩进），整体删除
+    .replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[^\n]*$/gm, "")
+    // 行内代码
+    .replace(/`[^`\n]*`/g, "");
+  return IMAGE_SYNTAX_RE.test(stripped);
+}
+
+/**
  * 转 assets 是否需要用户确认（外部图片）。
  *
  * 判定：**相对路径之外**的引用（http(s)/data/绝对路径）需要复制到 assets。

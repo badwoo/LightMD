@@ -197,8 +197,16 @@ describe("v0.12.0 返修（问题2）：拖拽手柄视觉（CSS 落点断言）
       expect(editorCss).toContain(`.ProseMirror > .${cls}.pm-block-selected`);
       expect(editorCss).toContain(`.ProseMirror > .${cls}.ProseMirror-selectednode`);
     }
-    // 该组规则体为 overflow: visible
-    expect(editorCss).toMatch(/\.math-block-wrapper\.ProseMirror-selectednode\s*\{\s*overflow: visible;/);
+    // v0.13.0 返修（问题3）：只放开选中态不够——手柄在 hover / .pm-block-active
+    // 两态也要显示，而 wrapper 的 overflow:hidden 会把左缘外 20px 的手柄裁掉。
+    // 因此该组规则同时覆盖 hover 与 .pm-block-active，规则体仍为 overflow: visible。
+    for (const cls of ["code-block-wrapper", "mermaid-block-wrapper", "math-block-wrapper"]) {
+      expect(editorCss).toContain(`.ProseMirror > .${cls}:hover`);
+      expect(editorCss).toContain(`.ProseMirror > .${cls}.pm-block-active`);
+    }
+    expect(editorCss).toMatch(
+      /\.math-block-wrapper\.pm-block-active\s*\{\s*overflow: visible;/,
+    );
   });
 
   it("手柄定位在选中块左缘外（left: -20px），与拖拽热区（左 18px）对齐", () => {

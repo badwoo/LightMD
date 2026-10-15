@@ -63,14 +63,17 @@ import {
   copySelectedBlock,
   cutSelectedBlock,
   deleteSelectedBlock,
+  hasInAppBlockClipboard,
   pasteBlockAtSelection,
   readBlockClipboard,
   selectBlockAt,
 } from "../../utils/blockClipboardOps";
 // v0.13.0 需求1：块三点菜单（NodeView 派发的事件名 + 菜单项构建）
-import { BLOCK_ACTION_EVENT } from "../../core/plugins/blockKebab";
+import { BLOCK_ACTION_EVENT, type BlockActionDetail } from "../../core/plugins/blockKebab";
 import { buildBlockMenuItems } from "../../utils/blockActionMenu";
-import { buildBlockMoveTr } from "../../core/plugins/block-drag";
+import { docHasImage, markdownHasImage } from "../../utils/imageManager";
+import { ImageManagerButton } from "./ImageManagerButton";
+import { buildBlockMoveTr, buildBlockMoveByDir } from "../../core/plugins/block-drag";
 import type { SlashState } from "../../core/plugins/slash-command";
 import { readAutoPairConfig } from "../../core/plugins/auto-pair";
 import {
@@ -563,6 +566,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // v0.6.0：AI 翻译总开关（右键菜单项显示 + 入口判断）
   const translateEnabled = useSettingsStore((s) => s.translate.translateEnabled);
 
+  /**
+   * v0.13.0 返修（问题6）：文档中是否有图片（决定图片管理入口是否显示）。
+   *
+   * 用 PM 文档而非 content 字符串判断——字符串里可能是代码围栏内的示例
+   * `![x](y)`，那并不是真实图片节点。
+   */
+  const [docHasImageFlag, setDocHasImageFlag] = useState(false);
+
   const isSourceMode = viewMode === "edit" || viewMode === "split";
 
   // v0.4.0：分屏分割条拖拽 hook（direction="split"，按容器总宽计算 ratio）
@@ -583,6 +594,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // → 会被当成"非 Markdown 文件"，preview 模式渲染只读的 plaintext-preview（空白文件更只剩
   // 空状态 Logo），用户看到"新建后没跳转、也不能编辑"。未命名文档按 Markdown 处理。
   const isMdFile = filePath ? isMarkdownFile(filePath) : true;
+
+  /**
+   * v0.13.0 返修（问题6）：「译」入口是否真的渲染。
+   *
+   * 必须与下方 JSX 的渲染条件**完全一致**——图片管理入口的槽位取决于它
+   * （AI 翻译开启 → 图片管理在第 3 格；未开启 → 接在模式切换之后第 2 格）。
+   */
+  const translateSlotShown =
+    (viewMode === "preview" || viewMode === "split") && isMdFile && translateEnabled;
   // v0.8.0 修复 P11-2：是否有已打开的文档（用于区分"新建的空临时文档"与"确实没打开文件"）
   const openTabCount = useEditorStore((s) => s.openTabs.length);
   // v0.4.0：当前文件语言标识（由 App.tsx 在打开文件时设置），用于代码文件语法高亮
@@ -1071,6 +1091,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     container.addEventListener("scroll", handler, { passive: true });
     return () => container.removeEventListener("scroll", handler);
   }, [content, forceUpdateKey]);
+
+  // ─── v0.13.0 返修（问题6）：同步「文档是否含图片」标志 ──────────
+  // 阅读/分屏模式读 PM 文档（真实图片节点）；纯源码模式没有 PM 视图，
+  // 退回在 Markdown 文本上判定（已剔除代码块/行内代码，避免假入口）。
+  // 依赖 content：每次编辑都会经 onContentChange 回写 content，因此能跟随增删图片。
+  useEffect(() => {
+    const view = viewRef.current;
+    const has =
+      viewMode === "preview" && view
+        ? docHasImage(view.state.doc)
+        : markdownHasImage(content);
+    setDocHasImageFlag((prev) => (prev === has ? prev : has));
+  }, [content, viewMode, forceUpdateKey]);
 
   // ─── v0.7.4 修复1/2 / v0.7.5 功能2/3：AI 气泡设置变化 → 刷新浮动按钮 ──────────
   // AI 气泡的显示/颜色由设置驱动，而设置变化不会产生 PM 事务，
@@ -4367,14 +4400,26 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const container = editorRef.current;
     if (!container) return;
     const onBlockAction = (e: Event) => {
-      const detail = (e as CustomEvent<{ action: string; pos: number }>).detail;
+      const detail = (e as CustomEvent<BlockActionDetail>).detail;
       if (!detail || typeof detail.pos !== "number") return;
-      // 以按钮自身位置作为菜单锚点（三点在块右上角）
-      const btn = (e.target as HTMLElement | null)?.closest?.(".block-kebab") as HTMLElement | null;
-      const rect = btn?.getBoundingClientRect();
-      const anchor = { x: rect ? rect.left : 0, y: rect ? rect.bottom + 4 : 0 };
-      // 先以默认态打开（菜单立即可见），剪贴板结果到达后再刷新禁用态
-      setBlockKebabMenu({ open: true, ...anchor, pos: detail.pos, hasClipboard: false });
+      // v0.13.0 返修（问题4）：菜单必须锚定在三点按钮**下方**。
+      //
+      // 缺陷背景：旧实现从 `e.target` 反查 `.block-kebab`，但事件是从 NodeView 的
+      // 容器 dom 派发的，`e.target` 是容器 → `closest()` 返回 null → 锚点退化为
+      // (0, 4) → **菜单弹到窗口左上角**。
+      // 现在按钮自身派发事件并直接携带矩形（detail.anchor），不依赖 target 形态；
+      // 取按钮**左缘**对齐 + 下缘偏移，使菜单左边界与三点对齐（符合"在三个点下面"）。
+      const a = detail.anchor;
+      const x = a ? a.left : 0;
+      const y = a ? a.bottom + 4 : 0;
+      // 剪贴板禁用态：应用内兜底是同步可知的，先给准确初值再异步补系统剪贴板结果
+      setBlockKebabMenu({
+        open: true,
+        x,
+        y,
+        pos: detail.pos,
+        hasClipboard: hasInAppBlockClipboard(),
+      });
       void readBlockClipboard().then((data) => {
         setBlockKebabMenu((s) => (s.open ? { ...s, hasClipboard: !!data } : s));
       });
@@ -4415,6 +4460,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           deleteSelectedBlock(view);
           return;
         case "formatPainter":
+          // v0.13.0 返修（问题5）：`armFormatPainter` 在「无选区」（from === to）时
+          // 直接 return —— 点三点菜单时通常只有光标，于是格式刷**毫无反应**。
+          // 先建立该块的 NodeSelection 再采集，与复制/剪切同一前置。
+          selectBlockAt(view, pos);
           armFormatPainter(false);
           return;
         case "select":
@@ -4422,9 +4471,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           return;
         case "moveUp":
         case "moveDown": {
+          // v0.13.0 返修（问题5）：按**方向**算插入点（旧实现把 -1/1 当位置传入，
+          // 结构非法被吞 → 两项完全无反应）
           const dir = action === "moveUp" ? -1 : 1;
-          const tr = buildBlockMoveTr(view.state, pos, dir);
-          if (tr) view.dispatch(tr);
+          const tr = buildBlockMoveByDir(view.state, pos, dir);
+          if (tr) {
+            view.dispatch(tr);
+            view.focus();
+          }
           return;
         }
       }
@@ -6126,7 +6180,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           />
         )}
 
-        {/* v0.7.0 修复1：选区「译」浮动按钮右键快捷菜单（关闭 AI 翻译 / 隐藏翻译小气泡） */}
+        {/* v0.13.0 返修（问题6）：图片管理悬浮入口。
+          位置：AI 翻译图标下面；AI 翻译未开启时接在切换模式图标下面。
+          仅当文档中确实有图片时显示。 */}
+      {isMdFile && docHasImageFlag && (
+        <ImageManagerButton
+          slot={translateSlotShown ? 2 : 1}
+          onOpen={() => window.dispatchEvent(
+            new CustomEvent("lightmd:command", { detail: { id: "view.imageManager" } }),
+          )}
+        />
+      )}
+
+      {/* v0.7.0 修复1：选区「译」浮动按钮右键快捷菜单（关闭 AI 翻译 / 隐藏翻译小气泡） */}
         {triggerMenuPos && (
           <MiniContextMenu
             x={triggerMenuPos.x}
@@ -6436,6 +6502,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               action: item.id,
               label: t(item.labelKey),
               onClick: () => handleBlockKebabAction(item.id),
+              // v0.13.0 返修（问题5）：把纯函数算出的禁用/危险/分隔线**透传给弹层**。
+              // 缺陷背景：这三项此前被整体丢弃 → 所有菜单项都渲染成可点、
+              // 无分隔线、删除项也不标红；再加上移动/格式刷的实现缺陷，
+              // 用户看到的就是「除了删除该块，其余功能都不能用」。
+              disabled: item.disabled,
+              danger: item.danger,
+              separator: item.separatorBefore,
             }));
           })()}
         />

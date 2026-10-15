@@ -374,6 +374,30 @@ npm run tauri build
 
 ## 📋 更新历史
 
+### v0.13.0 返修（2026-10-15）
+
+**实机测试发现的 8 个缺陷 —— 全部为「已实现但不可用」**
+
+v0.13.0 的 12 项需求虽然都写了代码，但原有测试全是**源码字符串断言**（`readSrc` + `toContain`），只验证「代码里写了某句话」，没有验证真实交互，因此下面 8 个缺陷全部漏过。本批把测试改为**行为级**（真建视图、真派事件、真调事务），并修复根因。
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 鼠标一点表格就**全选整张表**，选不中单元格、无法拖拽跨格合并 | `blockAcceptsCaret` 只看 `table` 自身 `content`（`table_row+`，不含 `inline/text`）→ 判为「不可放光标」→ 单击建立整表 `NodeSelection` | 改为**递归**判定容器块（`table → table_row → table_cell` 是 `inline*`）；`table-editor.stopEvent` 在单元格内单击显式 `return false` 交回 PM 放光标。**点表格外沿仍可整表选中** |
+| 2 | 公式块 / Mermaid 块**单击没反应**，必须双击 | 这两块的编辑层 `contentDOM` 默认 `display:none`，PM 找不到可见的可编辑位置。v0.13.0 只做到「不拦 mousedown」，没有真正展开编辑层 | 新增 `mousedown → enterEditMode + placeCaretInsideBlock`，与代码块表现一致；并处理「单击进编辑后紧接着的 dblclick 又退出」的时间窗（600ms 内忽略），双击仍可切回预览 |
+| 3 | 块左侧的**小手柄消失**，无法拖拽 | 手柄只在选中态画（`.pm-block-selected::after`），而 v0.13.0「单击即编辑」后普通块几乎不会进入 `NodeSelection`；且通用手柄规则只覆盖 5 个 wrapper class，而 `pm-block-wrapper` 全仓**只有 CSS 引用、没有任何代码添加它** | 手柄改为 `.ProseMirror > *::after` **覆盖所有顶层块**；`block-drag` 插件不再要求「先有 NodeSelection」，改为按坐标找块 + 左缘热区判定即可拖拽。另修正三类 wrapper 的 `overflow:hidden` 在 **hover/active 态**也会裁掉左缘外手柄的问题 |
+| 4 | 三点菜单弹到**窗口左上角** | 事件从 NodeView 容器 `dom` 派发，`e.target` 是容器 → 监听方 `closest(".block-kebab")` 取到 `null` → 锚点退化为 `(0,4)` | 改为**从按钮自身派发**并在 `detail.anchor` 携带按钮矩形，定位不再依赖 `e.target` 形态 |
+| 5 | 三点菜单里**除了「删除该块」其余都不能用** | 四个独立缺陷叠加：① 上移/下移把方向 `-1/1` 当成**文档位置**传给 `buildBlockMoveTr` → 结构非法被 `catch` 吞掉 → 静默无反应；② 格式刷在无选区（`from===to`）时直接 `return` → 点菜单（通常只有光标）永远无效；③ 复制/粘贴依赖 `navigator.clipboard.read()`，**WebView2 默认拒绝**该权限 → 粘贴永远失败；④ 菜单项的 `disabled`/`danger`/`separatorBefore` 在映射到弹层时被**整体丢弃**，弹层也不支持 `disabled` | 新增 `buildBlockMoveByDir` 按方向正确算插入点；格式刷先 `selectBlockAt` 再采集；新增**应用内剪贴板兜底**（系统剪贴板不可用时「复制→粘贴」仍可用）；`MiniContextMenu` 支持并透传 `disabled`/`danger`/分隔线 |
+| 6 | 命令面板搜到「图片管理」**回车无反应**；也没有可见入口 | `App.tsx` 的 `lightmd:command` 路由**没有** `view.imageManager` 分支（只有键盘路径有）→ 事件落到格式/插入双路分发、查不到该 id → 静默返回。`view.quickOpen` 同样缺失 | 路由补上 `view.imageManager` 与 `view.quickOpen`；新增**右上角悬浮入口**（`ImageManagerButton`），位于 AI 翻译图标下方、AI 翻译未开启时接在切换模式图标下方，**仅当文档中有图片时显示**（源码模式会剔除代码块里的示例图片语法，避免假入口）。三个悬浮图标统一尺寸与居中对齐 |
+| 7 | 大纲标题折叠**没有动画** | 折叠是直接从 DOM 摘除节点，瞬时消失，无法做过渡 | 折叠行**保留在 DOM**（加 `.outline-hidden` 收缩 `max-height`/`opacity`），420ms 平滑过渡；箭头旋转反馈；折叠完成才置 `visibility:hidden`（把隐藏行移出 Tab 顺序）；尊重系统「减少动态效果」设置 |
+| 8 | 没有外部程序改文档，却弹「某某文件已在其他窗口保存，自动保存已暂停」 | `judgeAutoSaveWrite` 用 `getLastSelfWritten`（**TTL 仅 10 秒**）判断「磁盘是否被第三方改过」，而自动保存默认间隔是 **60 秒**。于是「打开文件 → 编辑 → 从未手动保存」或「上次保存已过 10 秒」时该函数返回 `null` → 无法证明磁盘未被改动 → 判为 `conflict` → 放弃自动保存并弹暂停提示 | 新增**磁盘基线**（`noteDiskBaseline`/`getKnownDiskContent`，长 TTL）：打开文件时登记磁盘内容，本应用写盘后同步推进，采纳外部内容（自动重载/「取最新」）时也推进。磁盘等于基线即说明**无第三方改动**，可安全写盘。真冲突仍然拦下 |
+
+**关于问题 8 的两个要点**
+
+- **读盘本身不得推进基线**：自动保存的写盘前判定也要读盘，若读盘顺手推进基线，判定就会永远看到「磁盘 === 基线」→ 恒判可写 → **外部编辑被静默覆盖**。因此基线只在「打开文件」与「本应用写盘成功」两处推进，`fileService.readFile` 明确不登记（有回归测试锁定）。
+- **需求 2 / 3 语义保持**：外部程序修改当前打开的文档 → 立即刷新（干净标签自动重载；脏标签按设置策略提示或弹三选）；自动保存只针对 LightMD 打开且有改动的文档；**没有外部修改时不会有任何提示**。
+
+**质量验证**：前端 **272 文件 4545 用例全部通过**（本批新增 `v0130-fix-round1` 38 项行为级回归）；`tsc --noEmit` 零错误。同时修正了 3 个**固化旧缺陷**的基线测试（`v0120-block-drag` 的 overflow 断言、`v0130-outline-collapse` 的可见条数统计）。
+
 ### v0.13.0（2026-10-14）
 
 **编辑补课与数据安全 —— 第一批 + 第二批**（基线 0.12.3）

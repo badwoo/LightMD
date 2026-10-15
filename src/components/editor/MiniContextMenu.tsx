@@ -5,7 +5,7 @@
  * 行为：Esc / 点击菜单外 / 滚轮 关闭；菜单项点击后自动关闭。
  * 主题：CSS 变量（复用 TranslateBubble.css 的菜单样式）。
  */
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
 export interface MiniMenuItem {
@@ -13,6 +13,21 @@ export interface MiniMenuItem {
   action: string;
   label: string;
   onClick: () => void;
+  /**
+   * v0.13.0 返修（问题5）：禁用态。
+   *
+   * `buildBlockMenuItems` 早就产出了 `disabled`（如无剪贴板时禁用「粘贴」、
+   * 首块禁用「上移」），但本组件此前**完全忽略**该字段——所有菜单项看起来都可点，
+   * 点了没反应，用户感知为「菜单里的功能都不能用」。这里补上真正的禁用渲染。
+   */
+  disabled?: boolean;
+  /**
+   * v0.13.0 返修（问题5）：危险项（如「删除该块」）红色显示。
+   * editor.css 早已定义 `.mini-context-menu-item.danger`，但从未被使用。
+   */
+  danger?: boolean;
+  /** 分隔线：在该项**之前**画一条分隔线（buildBlockMenuItems 的 separator 语义） */
+  separator?: boolean;
 }
 
 interface MiniContextMenuProps {
@@ -86,19 +101,27 @@ export function MiniContextMenu({ x, y, items, onClose }: MiniContextMenuProps) 
       role="menu"
     >
       {items.map((item) => (
-        <button
-          key={item.action}
-          type="button"
-          role="menuitem"
-          className="mini-context-menu-item"
-          data-action={item.action}
-          onClick={() => {
-            item.onClick();
-            onClose();
-          }}
-        >
-          {item.label}
-        </button>
+        <Fragment key={item.action}>
+          {/* v0.13.0 返修（问题5）：分隔线（删除/格式刷/上移前的分组线） */}
+          {item.separator && <div className="mini-context-menu-separator" role="separator" />}
+          <button
+            type="button"
+            role="menuitem"
+            className={`mini-context-menu-item${item.danger ? " danger" : ""}`}
+            data-action={item.action}
+            // v0.13.0 返修（问题5）：禁用项真正不可点（此前 disabled 被忽略，
+            // 所有菜单项都可点但无反应）
+            disabled={item.disabled === true}
+            aria-disabled={item.disabled === true || undefined}
+            onClick={() => {
+              if (item.disabled) return;
+              item.onClick();
+              onClose();
+            }}
+          >
+            {item.label}
+          </button>
+        </Fragment>
       ))}
     </div>,
     document.body

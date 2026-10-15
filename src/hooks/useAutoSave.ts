@@ -14,7 +14,7 @@ import { useEditorStore } from "../stores/useEditorStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { fileService, isTauri } from "../services/fileService";
 import { versionSnapshotService } from "../services/versionSnapshotService";
-import { getLastSelfWritten } from "../services/selfWriteGuard";
+import { getKnownDiskContent } from "../services/selfWriteGuard";
 import {
   judgeAutoSaveWrite,
   getCachedDiskRead,
@@ -108,7 +108,15 @@ export function useAutoSave(
         const decision = judgeAutoSaveWrite({
           diskContent: disk,
           targetContent: markdown,
-          lastSelfWritten: getLastSelfWritten(filePath),
+          // v0.13.0 返修（问题8）：这里必须用「本应用所知的磁盘内容」——
+          // 优先自身写盘记录（短 TTL），否则回退打开文件时登记的磁盘基线（长 TTL）。
+          //
+          // 缺陷背景：此前用 `getLastSelfWritten`（TTL 仅 10s），而自动保存默认间隔
+          // 是 **60s**。于是「打开文件 → 编辑 → 从未手动保存」或「上次保存已过 10s」
+          // 时，该函数返回 null → 三路判定无法证明磁盘未被第三方改过 → 判为 conflict
+          // → 放弃自动保存并弹「已在其他窗口保存，自动保存已暂停」。
+          // 实际**没有任何外部程序改过文档**，这就是用户报告的误报。
+          lastSelfWritten: getKnownDiskContent(filePath),
         });
         if (decision === "conflict") {
           // 第三方已改过磁盘 → 放弃本次自动保存，绝不写盘。

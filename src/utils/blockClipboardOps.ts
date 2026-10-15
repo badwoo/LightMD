@@ -48,11 +48,36 @@ export function serializeBlock(state: EditorState, from: number): BlockClipboard
 }
 
 /**
+ * v0.13.0 返修（问题5）：**应用内剪贴板兜底**。
+ *
+ * 缺陷背景：`readBlockClipboard` 依赖 `navigator.clipboard.read()`，而 WebView2
+ * 默认**拒绝** clipboard-read 权限（该权限需要显式授权，Tauri 下拿不到）→ read() 抛错
+ * → 返回 null → 「粘贴」**永远失败**，即使用户刚刚用同一菜单「复制」过。
+ *
+ * 因此在本进程内保留最后一份块数据：系统剪贴板读得到就用系统剪贴板（可跨窗口/
+ * 跨应用），读不到就用这份兜底。这样「复制 → 粘贴」在同一应用内必定可用。
+ */
+let inAppBlockClipboard: BlockClipboardData | null = null;
+
+/** 当前应用内是否有可粘贴的块数据（供菜单「粘贴」禁用态同步判定） */
+export function hasInAppBlockClipboard(): boolean {
+  return inAppBlockClipboard !== null;
+}
+
+/** 测试用：清空应用内剪贴板 */
+export function __resetInAppBlockClipboardForTest(): void {
+  inAppBlockClipboard = null;
+}
+
+/**
  * 写块数据到剪贴板（三份格式）。
  *
  * @returns 是否成功写入（WebView2 权限拒绝时返回 false，调用方应 toast 提示）
  */
 export async function writeBlockClipboard(data: BlockClipboardData): Promise<boolean> {
+  // v0.13.0 返修（问题5）：无论系统剪贴板是否成功，都先记下应用内兜底，
+  // 保证「复制 → 粘贴」在本应用内可用。
+  inAppBlockClipboard = data;
   const payload = serializeBlockClipboard(data);
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.write) {
@@ -74,34 +99,39 @@ export async function writeBlockClipboard(data: BlockClipboardData): Promise<boo
   } catch {
     // ignore
   }
-  return false;
+  // 系统剪贴板完全不可用：应用内兜底仍然有效，故对「本应用内粘贴」算成功
+  return true;
 }
 
 /**
- * 从剪贴板读块数据（三级降级：专用格式 → Markdown 文本 → 纯文本）。
+ * 从剪贴板读块数据（三级降级：专用格式 → Markdown 文本 → **应用内兜底**）。
  *
- * 非 Tauri / 无 Clipboard API 时返回 null。
+ * v0.13.0 返修（问题5）：系统剪贴板读不到（WebView2 拒绝 clipboard-read）时
+ * 回退到应用内兜底，让「复制 → 粘贴」在应用内必定可用。
  */
 export async function readBlockClipboard(): Promise<BlockClipboardData | null> {
   try {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.read) return null;
-    const items = await navigator.clipboard.read();
-    const entries: Array<{ type: string; content: string }> = [];
-    for (const item of items) {
-      for (const type of item.types) {
-        if (type !== "text/plain" && type !== BLOCK_CLIPBOARD_MIME) continue;
-        try {
-          entries.push({ type, content: await (await item.getType(type)).text() });
-        } catch {
-          // 单个类型读取失败跳过
+    if (typeof navigator !== "undefined" && navigator.clipboard?.read) {
+      const items = await navigator.clipboard.read();
+      const entries: Array<{ type: string; content: string }> = [];
+      for (const item of items) {
+        for (const type of item.types) {
+          if (type !== "text/plain" && type !== BLOCK_CLIPBOARD_MIME) continue;
+          try {
+            entries.push({ type, content: await (await item.getType(type)).text() });
+          } catch {
+            // 单个类型读取失败跳过
+          }
         }
       }
+      const { parseBlockClipboard } = await import("./blockClipboard");
+      const parsed = parseBlockClipboard(entries);
+      if (parsed) return parsed;
     }
-    const { parseBlockClipboard } = await import("./blockClipboard");
-    return parseBlockClipboard(entries);
   } catch {
-    return null;
+    // 权限被拒 / API 不可用 → 走应用内兜底
   }
+  return inAppBlockClipboard;
 }
 
 /** PM 侧块级复制（不删块） */

@@ -19,7 +19,7 @@ import type { NodeView, EditorView } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
 import katex from "katex";
 // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除；行内公式不需要）
-import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
+import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent, placeCaretInsideBlock } from "./blockSelection";
 // v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
 import { createBlockKebabButton } from "./blockKebab";
 
@@ -149,7 +149,9 @@ export class MathBlockView implements NodeView {
   private lastRenderedLatex = "";
   private rafId: number | null = null;
   private previewLayer: HTMLElement;
-  private handleDblClick: () => void;
+  private handleDblClick: (e: MouseEvent) => void;
+  /** v0.13.0 返修（问题2）：最近一次进入编辑态的时刻（区分"单击进编辑"引发的 dblclick） */
+  private lastEnterEditAt = 0;
   // v0.12.0 需求6：块级选中需要 view/getPos（原实现未保存，无法建 NodeSelection）
   private view: EditorView;
   private getPos: () => number | undefined;
@@ -185,9 +187,13 @@ export class MathBlockView implements NodeView {
       "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;";
     this.dom.appendChild(this.contentDOM);
 
-    // 双击切换编辑/预览态
-    this.handleDblClick = () => this.toggleEditMode();
+    // 双击切换编辑/预览态（保留：双击预览层可切回预览）
+    this.handleDblClick = (e: MouseEvent) => this.onDblClick(e);
     this.dom.addEventListener("dblclick", this.handleDblClick);
+    // v0.13.0 返修（问题2）：**单击即进入编辑**。
+    // 编辑层默认 display:none，PM 找不到可见的可编辑位置 → 单击无反应。
+    // 这里在左键单击时先展开编辑层，再把光标放进块内（与代码块表现一致）。
+    this.dom.addEventListener("mousedown", this.handleMouseDown);
 
     // v0.13.0 需求1：右上角三点菜单（常驻显示由 CSS 控制）
     this.kebabButton = createBlockKebabButton(this.dom, this.getPos);
@@ -196,24 +202,68 @@ export class MathBlockView implements NodeView {
     this.renderKatex();
   }
 
+  /**
+   * v0.13.0 返修（问题2）：单击展开编辑层并放置光标。
+   *
+   * 只在「左键单击 + 未处于编辑态 + 非交互控件」时生效；右键/交互控件放行，
+   * 双击仍由 dblclick 走 toggleEditMode（切换回预览）。
+   */
+  private handleMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest?.("button, select, input, textarea, a")) return;
+    if (this.isEditing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.enterEditMode();
+    const pos = this.getPos();
+    if (pos == null) return;
+    placeCaretInsideBlock(this.view, pos, e.clientX, e.clientY);
+  };
+
+  /**
+   * v0.13.0 返修（问题2）：双击语义。
+   *
+   * 单击已经进入编辑态，因此双击**不能**再简单地 toggle —— 否则「单击进编辑、
+   * 紧接着的第二次点击（dblclick）又退出」，用户看到的是双击后什么都没发生；
+   * 而且在编辑区内双击选词也会意外退出编辑。
+   *
+   * 规则：
+   * - 双击落在**编辑区**内 → 放行（交给浏览器选词），不切换状态；
+   * - 刚由单击进入编辑（同一手势的 dblclick）→ 忽略，保持编辑态；
+   * - 其余情况（双击预览层）→ 切换（可切回预览）。
+   */
+  private onDblClick(e: MouseEvent) {
+    const target = e.target as HTMLElement | null;
+    if (this.isEditing && target && this.contentDOM.contains(target)) return;
+    if (this.isEditing && Date.now() - this.lastEnterEditAt < 600) return;
+    this.toggleEditMode();
+  }
+
   private toggleEditMode() {
     this.isEditing = !this.isEditing;
     if (this.isEditing) {
-      // N3：编辑态实时预览 —— 编辑区在上、预览层在下并列显示（不再隐藏预览）
-      this.contentDOM.style.display = "block";
-      this.contentDOM.style.cssText =
-        "display:block !important;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
-        "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;" +
-        "color:var(--text-primary);caret-color:var(--text-primary);background:transparent;";
-      this.previewLayer.style.display = "block";
-      this.dom.classList.add("math-editing");
-      this.lastRenderedLatex = "";
-      this.renderKatex();
+      this.enterEditMode();
     } else {
       this.contentDOM.style.display = "none";
       this.dom.classList.remove("math-editing");
       this.renderKatex();
     }
+  }
+
+  /** v0.13.0 返修（问题2）：进入编辑态（单击 / 双击共用同一入口，保证状态一致） */
+  private enterEditMode() {
+    this.isEditing = true;
+    this.lastEnterEditAt = Date.now();
+    // N3：编辑态实时预览 —— 编辑区在上、预览层在下并列显示（不再隐藏预览）
+    this.contentDOM.style.cssText =
+      "display:block !important;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
+      "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;" +
+      "color:var(--text-primary);caret-color:var(--text-primary);background:transparent;";
+    this.previewLayer.style.display = "block";
+    this.dom.classList.add("math-editing");
+    this.lastRenderedLatex = "";
+    this.renderKatex();
   }
 
   private renderKatex() {
@@ -274,6 +324,7 @@ export class MathBlockView implements NodeView {
   destroy() {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.dom.removeEventListener("dblclick", this.handleDblClick);
+    this.dom.removeEventListener("mousedown", this.handleMouseDown);
     // v0.13.0 需求1：移除三点按钮
     this.kebabButton?.remove();
     this.kebabButton = null;

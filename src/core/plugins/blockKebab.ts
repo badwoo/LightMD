@@ -35,6 +35,15 @@ export interface BlockActionDetail {
   action: BlockActionKind;
   /** 块在文档中的位置（NodeView 的 getPos()） */
   pos: number;
+  /**
+   * v0.13.0 返修（问题4）：按钮的视口矩形，供菜单锚点定位。
+   *
+   * 缺陷背景：此前事件从 NodeView 的 `dom`（容器）派发，`e.target` 是容器而非
+   * 按钮本身 → 监听方 `closest(".block-kebab")` 取到 null → 锚点退化成 (0,4)
+   * → **菜单弹在窗口左上角**。现在改为从按钮自身派发并直接带上矩形，
+   * 定位不再依赖 `e.target` 的形态。
+   */
+  anchor?: { left: number; right: number; top: number; bottom: number };
 }
 
 /**
@@ -68,11 +77,18 @@ export function createBlockKebabButton(
     e.preventDefault();
     const pos = getPos();
     if (pos == null) return;
+    // v0.13.0 返修（问题4）：**从按钮自身派发**（而不是从 container），
+    // 这样 e.target 就是按钮，配合 detail.anchor 让菜单精确锚定在按钮下方。
+    const r = btn.getBoundingClientRect();
     // 由 EditorContainer 统一监听并弹出菜单（它持有 MiniContextMenu 状态），
     // NodeView 不直接依赖业务层。
-    container.dispatchEvent(
+    btn.dispatchEvent(
       new CustomEvent<BlockActionDetail>(BLOCK_ACTION_EVENT, {
-        detail: { action: "select", pos },
+        detail: {
+          action: "select",
+          pos,
+          anchor: { left: r.left, right: r.right, top: r.top, bottom: r.bottom },
+        },
         bubbles: true,
       }),
     );

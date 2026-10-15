@@ -29,7 +29,7 @@
  * 删除：PM baseKeymap 已含 Backspace/Delete → deleteSelection，对 NodeSelection
  * 整节点删除 —— 建得出 NodeSelection 就自然可删，无需改 keymap。
  */
-import { NodeSelection } from "prosemirror-state";
+import { NodeSelection, TextSelection } from "prosemirror-state";
 import type { Node as PMNode } from "prosemirror-model";
 import type { EditorView } from "prosemirror-view";
 
@@ -70,20 +70,39 @@ export function shouldSelectBlockOnMouseDown(ctx: BlockClickContext): boolean {
  * v0.13.0 需求1：该节点是否能容纳文本光标。
  *
  * 判据（与「PM 能不能在此放置 TextSelection」一致）：
- * - `isAtom` / 无 content 的叶子节点（`horizontal_rule`、`toc`）→ false；
+ * - `isAtom` 且无内容（`horizontal_rule`、`toc`、行内 `image`）→ false；
  * - `content` 声明为 `text*` / `inline*` 且非 atom → true
- *   （`code_block` / `mermaid_block` / `math_block` / `table_cell` 内的文本）。
+ *   （`code_block` / `mermaid_block` / `math_block` 内的文本）；
+ * - **容器块**（`table`）→ 递归看是否含可放光标的子块（`table_cell` 是 `inline*`）
+ *   → true。
+ *
+ * v0.13.0 返修（问题1）：表格此前被判为「不可放光标」→ 单击表格任意单元格会
+ * 建立整表 NodeSelection，用户**一点就全选整张表**，无法选中多个单元格、
+ * 也就无法合并。表格显然可以在单元格内放光标，必须递归判定。
  *
  * 纯函数，便于单测真值表。
  */
 export function blockAcceptsCaret(node: PMNode | null | undefined): boolean {
   if (!node) return false;
-  if (node.isAtom) return false;
   if (node.isText) return false;
-  // 有 inline 内容说明可以放光标；`text*`（代码类块）同样可放
+  // atom 且无内容 = 真正的叶子（horizontal_rule / toc / image）：没有可放光标的位置
+  if (node.isAtom && node.content.size === 0) return false;
+  return nodeAcceptsCaret(node);
+}
+
+/** 递归判定：该节点或其任意后代能容纳文本光标 */
+function nodeAcceptsCaret(node: PMNode): boolean {
   const content = node.type.spec.content ?? "";
   if (content === "") return false;
-  return content.includes("inline") || content.includes("text");
+  if (content.includes("inline") || content.includes("text")) return true;
+  // 容器块（table → table_body → table_row → table_cell）：看子节点
+  if (typeof node.forEach !== "function") return false;
+  let found = false;
+  node.forEach((child) => {
+    if (found) return;
+    if (nodeAcceptsCaret(child)) found = true;
+  });
+  return found;
 }
 
 /**
@@ -145,4 +164,47 @@ export function applyBlockSelected(dom: HTMLElement): void {
 /** deselectNode 公共实现：移除描边 class */
 export function clearBlockSelected(dom: HTMLElement): void {
   dom.classList.remove(BLOCK_SELECTED_CLASS);
+}
+
+/**
+ * v0.13.0 返修（问题2）：把光标放进指定块内部（单击即编辑用）。
+ *
+ * 缺陷背景：公式块 / Mermaid 块的编辑层（contentDOM）默认 `display:none`，
+ * 只有双击才会显示。而 v0.13.0 的「单击即编辑」只做到了「不拦 mousedown」——
+ * 对这两个块来说 PM 根本没有可见的可编辑位置可放光标，用户单击后**毫无反应**，
+ * 必须再双击一次。这与代码块（编辑层常驻可见）的表现不一致。
+ *
+ * 做法：调用方先让 contentDOM 可见，再用本函数把选区落到块内文本上。
+ * 位置优先按点击坐标换算；换算不出（或落在块外）时退到块内容起点。
+ *
+ * @param view 编辑器视图
+ * @param pos 块节点在文档中的位置
+ * @param clientX/clientY 点击坐标（可选；缺省则落到块内容起点）
+ */
+export function placeCaretInsideBlock(
+  view: EditorView,
+  pos: number,
+  clientX?: number,
+  clientY?: number,
+): void {
+  const node = view.state.doc.nodeAt(pos);
+  if (!node || node.isAtom || node.isText) return;
+  const start = pos + 1;
+  const end = pos + node.content.size;
+  let target = start;
+  if (clientX !== undefined && clientY !== undefined) {
+    const coords = view.posAtCoords({ left: clientX, top: clientY });
+    if (coords) target = coords.pos;
+  }
+  // 点击坐标可能落在块外（预览层/角标）→ 收敛到块内容区间内
+  target = Math.max(start, Math.min(end, target));
+  try {
+    view.dispatch(
+      view.state.tr.setSelection(TextSelection.create(view.state.doc, target)),
+    );
+  } catch {
+    // 位置非法（结构变化等）→ 静默放弃，至少不抛错
+    return;
+  }
+  view.focus();
 }

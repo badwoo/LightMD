@@ -124,6 +124,52 @@
   display: flex;
   align-items: stretch;
   position: relative;
+  /* v0.13.0 返修（问题7）：折叠/展开的**平滑慢速**动画。
+     折叠的行不摘除 DOM，只把高度/透明度收缩到 0 —— 摘除节点是瞬时消失，无法过渡。
+     动画时长取 420ms（明显慢于 --transition-fast，用户能看清展开/收缩过程）。
+     visibility 用 0s + 延迟参与过渡：展开时立即可见，折叠时等动画放完再真正隐藏，
+     从而把隐藏行移出 Tab 顺序与命中测试（只靠 opacity:0 仍可被键盘聚焦）。 */
+  max-height: 60px; /* 单行足够高度，作为过渡上限 */
+  opacity: 1;
+  visibility: visible;
+  overflow: hidden;
+  transition:
+    max-height 420ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 320ms ease,
+    transform 420ms cubic-bezier(0.4, 0, 0.2, 1),
+    visibility 0s linear 0s;
+}
+
+.outline-row.outline-hidden {
+  max-height: 0;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-6px);
+  pointer-events: none;
+  /* visibility 延迟到动画结束才切换，避免折叠过程被中途掐断 */
+  transition:
+    max-height 420ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 320ms ease,
+    transform 420ms cubic-bezier(0.4, 0, 0.2, 1),
+    visibility 0s linear 420ms;
+}
+
+/* 折叠/展开箭头本身也做一个轻量的旋转过渡，强化"展开中"的反馈 */
+.outline-collapse-toggle {
+  transition: color var(--transition-fast), transform 420ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.outline-collapse-toggle.collapsed {
+  transform: rotate(-90deg);
+}
+
+/* 尊重系统「减少动态效果」设置 */
+@media (prefers-reduced-motion: reduce) {
+  .outline-row,
+  .outline-row.outline-hidden,
+  .outline-collapse-toggle {
+    transition: none;
+  }
 }
 
 .outline-row:hover {

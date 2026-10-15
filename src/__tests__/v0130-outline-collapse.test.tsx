@@ -204,6 +204,20 @@ function mountOutline() {
   return utils;
 }
 
+/**
+ * v0.13.0 返修（问题7）：折叠/展开改为**平滑动画**后，被折叠的行不再从 DOM 摘除，
+ * 而是加 `.outline-hidden` 收缩高度（摘除节点无法做过渡动画）。
+ * 因此"可见条数"要按 `.outline-row:not(.outline-hidden)` 统计，而不是
+ * `.outline-item` 总数——后者会把动画中的隐藏行也算进去。
+ */
+function visibleRowCount(container: HTMLElement): number {
+  return container.querySelectorAll(".outline-row:not(.outline-hidden)").length;
+}
+
+function hiddenRowCount(container: HTMLElement): number {
+  return container.querySelectorAll(".outline-row.outline-hidden").length;
+}
+
 describe("Outline 组件：折叠行为", () => {
   it("默认渲染全部标题，且仅有子级的标题带折叠箭头", () => {
     const { container } = mountOutline();
@@ -212,6 +226,7 @@ describe("Outline 组件：折叠行为", () => {
     // 可折叠的只有 2 个：「一级标题」（下有 二级A）与「二级 A」（下有 三级A1）。
     // 三级A1 下一个是 二级B（更浅）、二级B 下一个是一级（更浅）、末节点无后继 → 都不可折叠
     expect(container.querySelectorAll('[data-testid="outline-collapse-toggle"]').length).toBe(2);
+    expect(visibleRowCount(container)).toBe(5);
   });
 
   it("点击折叠箭头 → 子级隐藏；再点 → 恢复", () => {
@@ -223,12 +238,14 @@ describe("Outline 组件：折叠行为", () => {
     act(() => {
       fireEvent.click(toggles[0]);
     });
-    expect(container.querySelectorAll(".outline-item").length).toBe(2); // 只剩两个一级
+    expect(visibleRowCount(container)).toBe(2); // 只剩两个一级
+    expect(hiddenRowCount(container)).toBe(3); // 隐藏项仍在 DOM 中（供动画过渡）
     // 再点恢复
     act(() => {
       fireEvent.click(toggles[0]);
     });
-    expect(container.querySelectorAll(".outline-item").length).toBe(5);
+    expect(visibleRowCount(container)).toBe(5);
+    expect(hiddenRowCount(container)).toBe(0);
   });
 
   it("折叠箭头点击不触发标题跳转（stopPropagation）", () => {
@@ -263,11 +280,12 @@ describe("Outline 组件：折叠行为", () => {
     act(() => {
       fireEvent.click(toggle!);
     });
-    expect(first.container.querySelectorAll(".outline-item").length).toBe(2);
+    expect(visibleRowCount(first.container)).toBe(2);
     first.unmount();
     cleanup();
     // 重新挂载 → 折叠态丢失，全部显示
     const again = mountOutline();
-    expect(again.container.querySelectorAll(".outline-item").length).toBe(5);
+    expect(visibleRowCount(again.container)).toBe(5);
+    expect(hiddenRowCount(again.container)).toBe(0);
   });
 });

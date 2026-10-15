@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, THEMES, type Theme } from "./stores/useSettingsStore";
 import { useEditorStore, type TabInfo } from "./stores/useEditorStore";
@@ -42,6 +42,8 @@ import { CommandPalette } from "./components/dialogs/CommandPalette";
 import { QuickOpenDialog } from "./components/dialogs/QuickOpenDialog";
 // v0.13.0 需求11：图片管理面板（只管当前文档）
 import { ImageManagerDialog } from "./components/dialogs/ImageManagerDialog";
+// v0.13.0 返修（问题6）：源码模式下图片管理需要现场反解析当前文本
+import { markdownToDoc } from "./core/markdown/parser";
 import { flattenFileTree } from "./utils/quickOpen";
 import { VersionSnapshotDialog } from "./components/dialogs/VersionSnapshotDialog";
 import { setImageHandler, insertImageAtCursor, insertImagesAtPos, resolveDropInsertPos, type ImageDropContext } from "./core/plugins/image-paste";
@@ -52,7 +54,7 @@ import { versionSnapshotService } from "./services/versionSnapshotService";
 // v0.7.0 bug修复：文件浏览进度（重新打开/关闭标签时清除，标签切换保留）
 import { fileScrollProgress } from "./services/fileScrollProgress";
 // v0.9.0 第二轮修复（问题3）：自身写盘内容指纹——抑制 watcher 回声被误判为外部修改
-import { isSelfWrittenContent } from "./services/selfWriteGuard";
+import { isSelfWrittenContent, noteDiskBaseline, getKnownDiskContent } from "./services/selfWriteGuard";
 // v0.13.0 需求2：外部修改处理策略（纯逻辑层）
 import { decideExternalChangeAction } from "./utils/externalChangePolicy";
 import { safeSetItem } from "./utils/safeStorage";
@@ -450,6 +452,17 @@ function App() {
         // EditorContainer 的 useEffect（更新 ProseMirror）会先执行，导致图片用旧路径渲染失败
         if (detail.path) {
           setCurrentDocPath(detail.path);
+        }
+        // v0.13.0 返修（问题8）：登记「本应用所知的磁盘内容」基线。
+        //
+        // 必须在**打开文件**这一处登记（而不是在 fileService.readFile 里）：
+        // 自动保存的写盘前判定本身也要读盘，若读盘顺手推进基线，判定就会永远
+        // 看到「磁盘 === 基线」→ 恒判可写 → 外部编辑被静默覆盖。
+        //
+        // 只有「首次打开」（detail.content 直接来自磁盘）与「切回干净的已打开标签」
+        // 才登记；脏标签的 content 是未保存的内存内容，登记它会污染基线。
+        if (detail.path && (!alreadyOpen || !st0.openTabs[existingIdx].isDirty)) {
+          noteDiskBaseline(detail.path, targetContent);
         }
         // 只通过 React 状态更新编辑器内容，避免双重 dispatch
         // EditorContainer 的 useEffect([content, forceUpdateKey]) 会统一处理 ProseMirror 更新
@@ -1447,7 +1460,15 @@ function App() {
           void fileService
             .readFile(path)
             .then((fresh) => {
+              // v0.13.0 返修（问题8）：回声识别同时用「短 TTL 自身写盘指纹」与
+              // 「长 TTL 磁盘基线」。
+              //
+              // 只用短 TTL（10s）时：watcher 线程调度延迟、或自动保存间隔（默认 60s）
+              // 远大于 TTL，都会让指纹过期 → 把自己刚写的磁盘内容误判成"外部修改"
+              // → 弹「已被其他程序修改，保存前请确认」并暂停自动保存。
+              // 磁盘内容等于**本应用所知的磁盘状态**即说明没有第三方改动，直接忽略。
               if (isSelfWrittenContent(path, fresh)) return;
+              if (getKnownDiskContent(path) === fresh) return;
               const idx2 = findIdx();
               if (idx2 === -1) return;
               // v0.13.0 需求2：按用户策略决定脏标签的处理方式。
@@ -1498,6 +1519,9 @@ function App() {
             // 以及编辑器已是最新的重复事件）→ 无需重载，也不弹「已自动重新载入」。
             const current = useEditorStore.getState().openTabs[idx2];
             if (current && current.content === fresh) return;
+            // v0.13.0 返修（问题8）：自动重载采纳了磁盘内容 → 基线同步推进，
+            // 否则后续自动保存会把「磁盘 ≠ 旧基线」误判成第三方改动。
+            noteDiskBaseline(path, fresh);
             useEditorStore.getState().updateTabContent(idx2, fresh);
             if (useEditorStore.getState().activeTabIdx === idx2) {
               setContent(fresh);
@@ -1887,6 +1911,10 @@ function App() {
       }
       useEditorStore.getState().updateTabContent(idx, fresh);
       useEditorStore.getState().setTabExternallyChanged(idx, false);
+      // v0.13.0 返修（问题8）：采纳磁盘内容后必须把磁盘基线推进到 fresh。
+      // 否则基线仍停留在旧内容 → 下一次自动保存的写盘前判定会看到
+      // 「磁盘 ≠ 基线」→ 误判为第三方改动 → 再次弹「已在其他窗口保存」并暂停自动保存。
+      noteDiskBaseline(path, fresh);
       if (useEditorStore.getState().activeTabIdx === idx) {
         setContent(fresh);
         safeSetItem(CONTENT_KEY, fresh);
@@ -2783,6 +2811,16 @@ function App() {
       // v0.9.0 自定义快捷键：标签栏折叠（Ctrl+Shift+B / 命令面板共用）
       if (id === "view.toggleTag") { setTabBarCollapsed((v) => !v); return; }
       if (id === "view.settings") { setShowSettings(true); return; }
+      // v0.13.0 返修（问题6）：图片管理面板。
+      //
+      // 缺陷背景：命令面板的 Enter 会派发 `lightmd:command`，而本路由**没有**
+      // `view.imageManager` 分支 → 落到下方「格式/插入命令」双路分发，
+      // `COMMAND_SYNTAX` 里查不到该 id → `runPreviewCommand` 也不认识 → 静默返回。
+      // 于是命令面板搜到「图片管理」、回车后**没有任何反应**。
+      if (id === "view.imageManager") { setShowImageManager(true); return; }
+      // v0.13.0 返修（问题8）：快速切换器（Ctrl+P）同样走命令事件，
+      // 缺失该分支时键盘与命令面板两条入口都不生效。
+      if (id === "view.quickOpen") { setShowQuickOpen(true); return; }
 
       // 导出命令
       if (id === "export.html" || id === "export.pdf") { setShowExport(true); return; }
@@ -3259,8 +3297,7 @@ function App() {
    * （例如 `./assets/a.png` 与 `assets/a.png` 是两个不同引用串，各自精确替换）。
    */
   const handleImageRefsRewrite = useCallback(
-    (ops: Array<{ oldSrc: string; newSrc: string }>) => {
-      if (ops.length === 0) return;
+    (ops: Array<{ oldSrc: string; newSrc: string }>) => {      if (ops.length === 0) return;
       const mode = useEditorStore.getState().viewMode;
       const isSourceMode = mode === "edit" || mode === "split";
       if (isSourceMode) {
@@ -3296,6 +3333,28 @@ function App() {
     },
     [handleContentChange],
   );
+
+  /**
+   * v0.13.0 返修（问题6）：图片管理面板的数据源。
+   *
+   * 缺陷背景：面板此前直接读 `editorViewRef.current.state.doc`，但在
+   * **编辑 / 分屏模式**下 ProseMirror 视图是 `display:none`、且用户在 textarea 里
+   * 输入时 PM doc **不会同步更新**（只有切回阅读模式才由切换 effect 反解析一次）。
+   * 于是源码模式下打开面板：列表显示的是**上次切模式时**的旧图片集合——
+   * 刚粘贴/删除的图片看不到，列出的还可能已被删掉，「转 assets / 重命名」会按
+   * 过期数据改写引用。
+   *
+   * 现在按模式取真实数据源：阅读模式用 PM doc；源码模式用当前文本现场解析。
+   */
+  const imageManagerDoc = useMemo(() => {
+    if (!showImageManager) return null;
+    if (viewMode === "preview") return editorViewRef.current?.state.doc ?? null;
+    try {
+      return markdownToDoc(content);
+    } catch {
+      return null;
+    }
+  }, [showImageManager, viewMode, content]);
 
   // ─── 标签页切换回调 ──────────────────────────
   const handleTabSwitch = useCallback((tab: TabInfo) => {
@@ -3542,7 +3601,7 @@ function App() {
       {showImageManager && (
         <ImageManagerDialog
           open={showImageManager}
-          doc={editorViewRef.current?.state.doc ?? null}
+          doc={imageManagerDoc}
           docPath={filePath}
           onRewriteRefs={handleImageRefsRewrite}
           onClose={() => setShowImageManager(false)}

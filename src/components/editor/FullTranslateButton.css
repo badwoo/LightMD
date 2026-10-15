@@ -68,10 +68,15 @@
 }
 
 /* TranslateUndoToast —— "取消翻译"浮动气泡（v0.6.1 问题2）
-   悬浮于「译」按钮正下方 */
+   悬浮于右上角图标列的正下方。
+   v0.13.0 返修（问题6）：图标列最多占 3 格（模式切换 / AI 翻译 / 图片管理），
+   原 top:90px 会与第 3 格的图片管理入口重叠 → 下移到图标列之后。 */
 .translate-undo-toast {
   position: absolute;
-  top: 90px;
+  top: calc(
+    var(--float-icon-top, 10px) + 3 *
+      (var(--float-icon-size, 34px) + var(--float-icon-gap, 6px))
+  );
   right: 14px;
   z-index: 30;
   display: inline-flex;
@@ -292,6 +297,80 @@
   gap: 6px;
   flex: 1;
   justify-content: flex-end;
+}
+
+/* ─── v0.13.0 返修（问题6）：右上角三个悬浮图标统一尺寸与居中对齐 ───────────
+   用户明确要求：「悬浮这3个小图标大小要一致，并且要居中对齐」。
+   三者此前各自写死尺寸（模式切换 34×34 / 「译」height:34+min-width:34 且含
+   gap 与文字进度），图标中心并不在一条竖线上。这里用统一的
+   --float-icon-size 与 --float-icon-gap 驱动全部三个按钮：
+   - 统一 34×34、圆形、右缘对齐 → 竖直中线自然重合；
+   - 纵向按 --imb-slot 排布，槽位间距 = 尺寸 + 间距，等距且不重叠。 */
+:root {
+  --float-icon-size: 34px;
+  --float-icon-gap: 6px;
+  --float-icon-right: 14px;
+  --float-icon-top: 10px;
+}
+
+.mode-switch-btn,
+.image-manager-btn {
+  position: absolute;
+  right: var(--float-icon-right);
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--float-icon-size);
+  height: var(--float-icon-size);
+  min-width: var(--float-icon-size);
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary, var(--text-primary));
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.mode-switch-btn {
+  top: var(--float-icon-top);
+}
+
+/* 图片管理入口：接在第 slot 个槽位之后（slot=2 → AI 翻译下方；slot=1 → 模式切换下方） */
+.image-manager-btn {
+  top: calc(
+    var(--float-icon-top) + var(--imb-slot, 1) *
+      (var(--float-icon-size) + var(--float-icon-gap))
+  );
+}
+
+.mode-switch-btn:hover,
+.image-manager-btn:hover {
+  opacity: 1;
+  border-color: var(--accent-color, #4a9eff);
+  color: var(--accent-color, #4a9eff);
+}
+
+/* 「译」按钮同样收敛到统一尺寸与同一右缘；宽度允许随进度文字增长，
+   但用 min-width + 居中保证**图标本身**仍与上下两个按钮同轴。 */
+.ftb-wrap {
+  right: var(--float-icon-right);
+}
+
+.full-translate-btn {
+  height: var(--float-icon-size);
+  min-width: var(--float-icon-size);
+  padding: 0 8px;
+  border-radius: calc(var(--float-icon-size) / 2);
+}
+
+/* 「译」按钮所在槽位：模式切换下方（第 1 槽之后） */
+.ftb-wrap {
+  top: calc(
+    var(--float-icon-top) + 1 * (var(--float-icon-size) + var(--float-icon-gap))
+  );
 }
 
 .ftb-color-row input[type="color"] {

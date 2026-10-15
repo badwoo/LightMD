@@ -253,10 +253,20 @@ describe("v0.12.0 需求6：NodeView 选中接线", () => {
   it("MermaidBlockView / TableView 源码接线（构造重，避免实例化）", () => {
     const mermaid = readSrc("core/plugins/mermaid-block.ts");
     expect(mermaid).toContain("selectNode = () => applyBlockSelected(this.dom)");
+    // v0.13.0 返修（问题2）：Mermaid 可放光标 → stopEvent 走通用判定（放行，单击即编辑）
     expect(mermaid).toContain("handleBlockStopEvent(this.dom, this.view, this.getPos, event)");
     const table = readSrc("core/plugins/table-editor.ts");
     expect(table).toContain("selectNode = () => applyBlockSelected(this.dom)");
-    expect(table).toContain("handleBlockStopEvent(this.dom, this.view, this.getPos, event)");
+    // v0.13.0 返修（问题1）：表格**不能**再用通用判定 —— blockAcceptsCaret(table)
+    // 修好后为 true，通用判定会直接放行，于是：
+    //   · 单元格内单击 → 放行（正确，光标进单元格）；
+    //   · 点表格外沿   → 也放行 → 整表选中入口失效（错误）。
+    // 故外沿改走显式的 selectWholeTable()（自建整表 NodeSelection）。
+    expect(table).toContain("private selectWholeTable(event: MouseEvent)");
+    expect(table).toContain("selectWholeTable(event)");
+    expect(table).toMatch(/NodeSelection\.create\(state\.doc, pos\)/);
+    // 单元格内单击必须放行，不得再建整表 NodeSelection
+    expect(table).not.toMatch(/return\s+handleBlockStopEvent\(this\.dom, this\.view, this\.getPos, event\)/);
   });
 
   it("选中样式用 outline（不得用 border——会改变表格布局）", () => {
