@@ -2,6 +2,22 @@ import { Schema, type DOMOutputSpec, type NodeSpec, type MarkSpec } from "prosem
 import type { Node, Mark } from "prosemirror-model";
 import { resolveImageSrc } from "../utils/imagePath";
 
+// ─── v0.13.0 需求12：表格 colspan/rowspan 属性解析 ──────────────────
+
+/**
+ * 解析 DOM 的 colspan/rowspan 属性为整数（下限 1）。
+ *
+ * 为什么单独抽函数而不是内联在 getAttrs 里：
+ * - `td` 与 `th` 两份 parseDOM 需要**同源**判定（漏一份会导致粘贴的表格
+ *   表头/表体跨度不一致）；
+ * - 非法值（"abc" / "0" / "-1" / ""）必须回落 1，否则 schema 校验会拒绝
+ *   整个表格节点（实测 `<td colspan="0">` 会让 PM 抛 "Invalid content"）。
+ */
+function parseSpanAttr(raw: string | null): number {
+  const n = Number.parseInt(raw ?? "", 10);
+  return Number.isFinite(n) && n > 1 ? n : 1;
+}
+
 // ─── 内联标记 ────────────────────────────────────────────
 
 const markSpecs: Record<string, MarkSpec> = {
@@ -688,18 +704,34 @@ const nodeSpecs: Record<string, NodeSpec> = {
     content: "inline*",
     attrs: {
       align: { default: "left" },
+      // v0.13.0 需求12：合并单元格（横向）。1=普通格。
+      // 序列化走 `<td colspan="N">`（声明不跨编辑器保真）。
+      colspan: { default: 1 },
+      // v0.13.0 需求12：合并单元格（纵向）。1=普通格。
+      rowspan: { default: 1 },
     },
     parseDOM: [
       {
         tag: "td",
         getAttrs(dom: string | HTMLElement) {
-          return { align: (dom as HTMLElement).style.textAlign || "left" };
+          return {
+            align: (dom as HTMLElement).style.textAlign || "left",
+            colspan: parseSpanAttr((dom as HTMLElement).getAttribute("colspan")),
+            rowspan: parseSpanAttr((dom as HTMLElement).getAttribute("rowspan")),
+          };
         },
       },
     ],
     toDOM(node: Node): DOMOutputSpec {
-      const style = node.attrs.align !== "left" ? `text-align:${node.attrs.align}` : "";
-      return ["td", style ? { style } : {}, 0];
+      const attrs: Record<string, string | number> = {};
+      if (node.attrs.align !== "left") attrs.style = `text-align:${node.attrs.align}`;
+      // v0.13.0 需求12：只在 >1 时输出属性——未合并的表格 DOM 与旧版完全一致
+      // （HTML 粘贴/既有测试的 DOM 快照零变化）
+      const cs = Number(node.attrs.colspan) || 1;
+      if (cs > 1) attrs.colspan = cs;
+      const rs = Number(node.attrs.rowspan) || 1;
+      if (rs > 1) attrs.rowspan = rs;
+      return ["td", attrs, 0];
     },
   },
 
@@ -707,18 +739,29 @@ const nodeSpecs: Record<string, NodeSpec> = {
     content: "inline*",
     attrs: {
       align: { default: "left" },
+      colspan: { default: 1 },
+      rowspan: { default: 1 },
     },
     parseDOM: [
       {
         tag: "th",
         getAttrs(dom: string | HTMLElement) {
-          return { align: (dom as HTMLElement).style.textAlign || "left" };
+          return {
+            align: (dom as HTMLElement).style.textAlign || "left",
+            colspan: parseSpanAttr((dom as HTMLElement).getAttribute("colspan")),
+            rowspan: parseSpanAttr((dom as HTMLElement).getAttribute("rowspan")),
+          };
         },
       },
     ],
     toDOM(node: Node): DOMOutputSpec {
-      const style = node.attrs.align !== "left" ? `text-align:${node.attrs.align}` : "";
-      return ["th", style ? { style } : {}, 0];
+      const attrs: Record<string, string | number> = {};
+      if (node.attrs.align !== "left") attrs.style = `text-align:${node.attrs.align}`;
+      const cs = Number(node.attrs.colspan) || 1;
+      if (cs > 1) attrs.colspan = cs;
+      const rs = Number(node.attrs.rowspan) || 1;
+      if (rs > 1) attrs.rowspan = rs;
+      return ["th", attrs, 0];
     },
   },
 

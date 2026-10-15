@@ -65,7 +65,7 @@ function keysOf(items: ReturnType<typeof buildContextMenuItems>): string[] {
 }
 
 describe("E4: buildContextMenuItems 数据驱动", () => {
-  it("tbody cell 的菜单:行操作/分隔/列操作/分隔/删除行+删除列", () => {
+  it("tbody cell 的菜单:行操作/分隔/列操作/分隔/删除行+删除列/分隔/合并+拆分", () => {
     const $pos = findCellContentPos(makeDocWithTable(), 2); // tbody 第 1 行第 1 格
     expect($pos).not.toBeNull();
     const items = buildContextMenuItems($pos!);
@@ -76,6 +76,9 @@ describe("E4: buildContextMenuItems 数据驱动", () => {
       "table.addColumnRight",
       "table.deleteRow",
       "table.deleteColumn",
+      // v0.13.0 需求12：合并/拆分（无 op，走 NodeView 专用 handler）
+      "table.mergeCells",
+      "table.splitCell",
     ]);
   });
 

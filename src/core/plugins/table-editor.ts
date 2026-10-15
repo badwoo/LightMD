@@ -23,6 +23,15 @@ import { t } from "../../i18n/state";
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
 // v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
 import { createBlockKebabButton } from "./blockKebab";
+// v0.13.0 需求12：表格单元格合并/拆分
+import {
+  checkMergeable,
+  checkSplittable,
+  mergeCells,
+  splitCell,
+  type CellRect,
+} from "../tableMerge";
+import { buildTableGridFromTable } from "../tableGrid";
 
 // ─── TableCellView —— td/th 的轻量 NodeView（F1 修复） ────────────────
 
@@ -77,6 +86,27 @@ export class TableCellView implements NodeView {
 
 
 let activeMenu: HTMLElement | null = null;
+
+/**
+ * v0.13.0 需求12：合并/拆分被拒绝时的提示（纯函数映射，便于单测）。
+ *
+ * 为什么不静默：合并/拆分失败的原因（跨既有合并格 / 选区太小 / 光标不在
+ * 表格内）对用户完全不可见，静默会让功能看起来"坏了"。统一走 console.warn
+ * + 按钮 title 更新（组件层已有 toast 体系，但 NodeView 不适合直接弹 toast）。
+ */
+function notifyTableOpRejected(reason: string): void {
+  const msg = TABLE_OP_REJECT_MSG[reason] ?? TABLE_OP_REJECT_MSG.empty;
+  console.warn("[table]", msg);
+}
+
+/** 拒绝原因 → 提示文案（i18n key 与文案同源，避免两处漂移） */
+const TABLE_OP_REJECT_MSG: Record<string, string> = {
+  "too-few": "合并失败：请先选中至少两个单元格",
+  "has-span": "合并失败：选区与既有合并单元格冲突，请先拆分",
+  "no-table": "合并失败：光标不在表格内",
+  empty: "合并失败：选区为空",
+  "not-split": "拆分失败：该单元格未合并",
+};
 
 function closeMenu() {
   if (activeMenu) { activeMenu.remove(); activeMenu = null; }
@@ -203,6 +233,12 @@ export function buildContextMenuItems($pos: ResolvedPos): ContextMenuItem[] {
   } else {
     items.push({ key: "table.deleteColumn", op: deleteColumn, danger: true });
   }
+  // v0.13.0 需求12：合并/拆分（拆分为条件项——仅光标格已合并时出现）
+  items.push(
+    { key: null },
+    { key: "table.mergeCells" },
+    { key: "table.splitCell" },
+  );
   return items;
 }
 
@@ -673,6 +709,17 @@ export class TableView implements NodeView {
     /** v0.12.0 需求5：拖拽开始时的文档缩放比例 */
     zoom: number;
   } | null = null;
+  /**
+   * v0.13.0 需求12：单元格范围选区（拖拽跨格选出矩形，供合并/拆分）。
+   *
+   * 为什么不用 PM 的 CellSelection：本项目的表格是自建 schema
+   * （无 prosemirror-tables 依赖），引入 CellSelection 会连带拖进整套
+   * table 插件。范围选区只是「合并操作的一次性输入」，用轻量状态 +
+   * DOM 高亮即可，鼠标松开后由工具栏/右键菜单消费。
+   */
+  private cellRange: CellRect | null = null;
+  /** 范围选区拖拽起点（DOM cell → 行列坐标的映射在 pointerdown 时算好） */
+  private rangeAnchor: { r: number; c: number; cellEl: HTMLElement } | null = null;
 
   constructor(node: Node, view: EditorView, getPos: () => number | undefined) {
     this.view = view;
@@ -693,6 +740,12 @@ export class TableView implements NodeView {
     this.dom.addEventListener("contextmenu", (e) => this.onContextMenu(e));
     // 列宽拖拽：mousedown 监听 cell 右边缘
     this.dom.addEventListener("mousedown", (e) => this.onMouseDown(e));
+    // v0.13.0 需求12：单元格范围选区（mousedown 起点 + mousemove 扩展）
+    this.dom.addEventListener("mousedown", (e) => this.onRangeMouseDown(e));
+    this.dom.addEventListener("mousemove", (e) => this.onRangeMouseMove(e));
+    // 范围选区结束：松开按键定型；移出表格放弃
+    this.dom.addEventListener("mouseup", () => this.endRangeDrag());
+    this.dom.addEventListener("mouseleave", () => this.endRangeDrag());
     // 列宽拖拽视觉提示：mousemove 检测鼠标是否靠近 cell 右边缘，显示 col-resize 光标
     this.dom.addEventListener("mousemove", (e) => this.onHover(e));
     // 点击表格内任意位置时显示工具栏
@@ -1028,6 +1081,253 @@ export class TableView implements NodeView {
 
   // ─── 工具栏 ──────────────────────────────────────
 
+  // ─── v0.13.0 需求12：单元格范围选区 + 合并/拆分 ──────────────────
+
+  /**
+   * 把 DOM cell 反查为（行, 列）网格坐标。
+   *
+   * 做法：先由 posAtDOM 拿到 doc 位置 → 解析出 table → 用**裁剪后的网格**
+   * 找到该 cell 的锚点坐标。失败返回 null（DOM 已不在文档中）。
+   */
+  private cellCoordOf(cellEl: HTMLElement): { r: number; c: number } | null {
+    const tablePos = this.getPos();
+    if (tablePos === undefined) return null;
+    let tableNode: Node | null = null;
+    try {
+      tableNode = this.view.state.doc.nodeAt(tablePos);
+    } catch {
+      return null;
+    }
+    if (!tableNode || tableNode.type.name !== "table") return null;
+
+    // 目标 cell 在 doc 中的位置
+    let cellPos = -1;
+    try {
+      cellPos = this.view.posAtDOM(cellEl, 0);
+    } catch {
+      return null;
+    }
+    if (cellPos < 0) return null;
+
+    // 遍历行的真实 cell，累加 nodeSize 定位
+    let sectionPos = tablePos + 1;
+    let r = -1;
+    let c = -1;
+    tableNode.forEach((section) => {
+      if (section.type.name !== "table_head" && section.type.name !== "table_body") {
+        sectionPos += section.nodeSize;
+        return;
+      }
+      let rowPos = sectionPos + 1;
+      section.forEach((row) => {
+        r++;
+        let acc = rowPos + 1;
+        for (let i = 0; i < row.childCount; i++) {
+          const child = row.child(i);
+          if (acc === cellPos) {
+            // 用网格反查列坐标（裁剪后的网格与真实 cell 下标在前面段对齐）
+            const grid = buildTableGridFromTable(tableNode!, tablePos);
+            const gc = grid[r]?.[i];
+            c = gc && gc.rowIdx === r && gc.colIdx === i ? gc.colIdx : i;
+            return;
+          }
+          acc += child.nodeSize;
+        }
+        rowPos += row.nodeSize;
+      });
+      sectionPos += section.nodeSize;
+    });
+    if (r < 0 || c < 0) return null;
+    return { r, c };
+  }
+
+  /** 当前 table 的行数（含 thead） */
+  private tableRowCount(): number {
+    const tablePos = this.getPos();
+    if (tablePos === undefined) return 0;
+    const node = this.view.state.doc.nodeAt(tablePos);
+    if (!node) return 0;
+    let n = 0;
+    node.forEach((section) => {
+      if (section.type.name === "table_head" || section.type.name === "table_body") {
+        section.forEach(() => n++);
+      }
+    });
+    return n;
+  }
+
+  /**
+   * 范围选区起点：仅左键 + 落在 cell 内 + 不在列宽/行高热区时启动。
+   * 热区优先归列宽/行高拖拽（既有行为不回归）。
+   */
+  private onRangeMouseDown(e: MouseEvent) {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const cell = target.closest("td, th") as HTMLElement | null;
+    if (!cell) return;
+    // 热区内不启动范围选区
+    if (hitResizeZone(cell, e.clientX, e.clientY).col) return;
+    if (hitResizeZone(cell, e.clientX, e.clientY).row) return;
+    const coord = this.cellCoordOf(cell);
+    if (!coord) return;
+    this.rangeAnchor = { ...coord, cellEl: cell };
+  }
+
+  /** 拖拽经过其它 cell → 扩展范围选区（mousemove 已绑定在 dom 上，这里扩展判定） */
+  private onRangeMouseMove(e: MouseEvent) {
+    if (!this.rangeAnchor) return;
+    if (e.buttons === 0) {
+      // 鼠标已松开但没收到 mouseup（极端情况）——清理
+      this.rangeAnchor = null;
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const cell = target.closest("td, th") as HTMLElement | null;
+    if (!cell) return;
+    const coord = this.cellCoordOf(cell);
+    if (!coord) return;
+    const a = this.rangeAnchor;
+    this.cellRange = {
+      r0: Math.min(a.r, coord.r),
+      c0: Math.min(a.c, coord.c),
+      r1: Math.max(a.r, coord.r),
+      c1: Math.max(a.c, coord.c),
+    };
+    this.applyRangeHighlight();
+    this.refreshMergeSplitButtons();
+  }
+
+  /** 拖拽结束：清掉 anchor（范围本身保留，供工具栏/右键菜单消费） */
+  private endRangeDrag() {
+    this.rangeAnchor = null;
+  }
+
+  /** 范围高亮：给矩形内的 DOM cell 加 class（拖拽中的可见反馈） */
+  private applyRangeHighlight() {
+    const cells = Array.from(this.contentDOM.querySelectorAll("td, th")) as HTMLElement[];
+    for (const el of cells) {
+      const coord = this.cellCoordOf(el);
+      const inRange =
+        !!this.cellRange &&
+        !!coord &&
+        coord.r >= this.cellRange.r0 &&
+        coord.r <= this.cellRange.r1 &&
+        coord.c >= this.cellRange.c0 &&
+        coord.c <= this.cellRange.c1;
+      el.classList.toggle("pm-cell-in-range", inRange);
+    }
+  }
+
+  /** 清除范围选区（点击表格外 / 执行完合并拆分 / 文档变更） */
+  private clearCellRange() {
+    if (!this.cellRange) return;
+    this.cellRange = null;
+    this.rangeAnchor = null;
+    const cells = this.contentDOM.querySelectorAll(".pm-cell-in-range");
+    cells.forEach((el) => el.classList.remove("pm-cell-in-range"));
+  }
+
+  /** 当前范围选区（供工具栏/右键菜单读取） */
+  getCellRange(): CellRect | null {
+    return this.cellRange;
+  }
+
+  /** 合并当前范围选区 */
+  private mergeSelectedCells(): boolean {
+    const rect = this.cellRange;
+    const tablePos = this.getPos();
+    if (!rect || tablePos === undefined) return false;
+    const tableNode = this.view.state.doc.nodeAt(tablePos);
+    if (!tableNode) return false;
+    const check = checkMergeable(tableNode, rect, this.tableRowCount());
+    if (!check.ok) {
+      notifyTableOpRejected(check.reason);
+      return false;
+    }
+    const tr = this.view.state.tr;
+    const out = mergeCells(tr, tablePos, tableNode, rect);
+    if (!out) {
+      notifyTableOpRejected("empty");
+      return false;
+    }
+    this.view.dispatch(out);
+    this.clearCellRange();
+    return true;
+  }
+
+  /** 拆分光标所在格（或范围选区的锚点格） */
+  private splitCurrentCell(): boolean {
+    const tablePos = this.getPos();
+    if (tablePos === undefined) return false;
+    const tableNode = this.view.state.doc.nodeAt(tablePos);
+    if (!tableNode) return false;
+    // 优先用光标所在格；否则用范围选区的锚点格
+    let $cell = this.view.state.selection.$from;
+    let cellInfo = cellAround($cell);
+    if (!cellInfo && this.cellRange) {
+      // 范围锚点格：由 (r,c) 反查 doc 位置
+      const pos = this.cellPosOfCoord(this.cellRange.r0, this.cellRange.c0);
+      if (pos === null) return false;
+      $cell = this.view.state.doc.resolve(pos);
+      cellInfo = cellAround($cell);
+    }
+    if (!cellInfo) return false;
+    if (!checkSplittable(cellInfo.node)) {
+      notifyTableOpRejected("not-split");
+      return false;
+    }
+    const out = splitCell(this.view.state.tr, tablePos, tableNode, cellInfo.pos);
+    if (!out) return false;
+    this.view.dispatch(out);
+    this.clearCellRange();
+    return true;
+  }
+
+  /** 由网格坐标反查 cell 的 doc 位置 */
+  private cellPosOfCoord(r: number, c: number): number | null {
+    const tablePos = this.getPos();
+    if (tablePos === undefined) return null;
+    const tableNode = this.view.state.doc.nodeAt(tablePos);
+    if (!tableNode) return null;
+    const grid = buildTableGridFromTable(tableNode, tablePos);
+    const cell = grid[r]?.[c];
+    if (!cell) return null;
+    // 网格坐标 → 真实 cell 下标 → doc 位置
+    let sectionPos = tablePos + 1;
+    let rr = -1;
+    let result: number | null = null;
+    tableNode.forEach((section) => {
+      if (section.type.name !== "table_head" && section.type.name !== "table_body") {
+        sectionPos += section.nodeSize;
+        return;
+      }
+      let rowPos = sectionPos + 1;
+      section.forEach((row) => {
+        rr++;
+        if (rr !== r) {
+          rowPos += row.nodeSize;
+          return;
+        }
+        // 该行内第几个 cell 对应网格列 c
+        let acc = rowPos + 1;
+        for (let i = 0; i < row.childCount; i++) {
+          const child = row.child(i);
+          const gc = grid[r]?.[i];
+          if (gc && gc.rowIdx === r && gc.colIdx === c && gc.colIdx === i) {
+            result = acc;
+            return;
+          }
+          acc += child.nodeSize;
+        }
+        rowPos += row.nodeSize;
+      });
+      sectionPos += section.nodeSize;
+    });
+    return result;
+  }
+
   private showToolbar() {
     // 仅当选中表格（光标在表格内）时显示
     if (!this.isSelectionInTable()) {
@@ -1051,6 +1351,8 @@ export class TableView implements NodeView {
       op?: (tr: Transaction, $pos: ResolvedPos) => Transaction | null;
       align?: "left" | "center" | "right";
       danger?: boolean;
+      /** v0.13.0 需求12：合并/拆分（data-action 标记，禁用态实时刷新） */
+      action?: string;
     };
     const buttons: Btn[] = [
       { label: "⬆️", title: t("table.addRowAbove"), op: insertRowAbove },
@@ -1065,11 +1367,20 @@ export class TableView implements NodeView {
       { label: "⟹", title: t("table.alignRight"), align: "right" },
     ];
 
-    buttons.forEach(({ label, title, op, align, danger }) => {
+    // v0.13.0 需求12：合并 / 拆分（不用 op——它们需要**范围选区**或
+    // 单元格节点，与"当前光标 $pos"这一组操作的签名不同，单独挂 handler。
+    // 用 data-action 标记（与 deleteRow 同型），禁用态由
+    // refreshMergeSplitButtons() 按范围选区实时刷新）
+    buttons.push(
+      { label: "🔗", title: t("table.mergeCells"), action: "mergeCells" } as unknown as Btn,
+      { label: "✂️", title: t("table.splitCell"), action: "splitCell" } as unknown as Btn,
+    );
+
+    buttons.forEach(({ label, title, op, align, danger, action }) => {
       const btn = document.createElement("button");
       btn.textContent = label;
-      btn.title = title;
       btn.type = "button";
+      btn.title = title;
       btn.style.cssText =
         "padding:3px 6px;border:1px solid transparent;background:none;cursor:pointer;border-radius:3px;";
 
@@ -1078,6 +1389,8 @@ export class TableView implements NodeView {
       // 注意：禁用态**不能只在创建时算一次**——工具栏在表格内会被复用，必须由
       // refreshDeleteRowButton() 按当前选区实时刷新（见该方法注释）。
       if (op === deleteRow) btn.dataset.action = "deleteRow";
+      // v0.13.0 需求12：合并/拆分同样需要实时禁用态
+      if (action) btn.dataset.action = action;
 
       if (danger) btn.style.color = "#d32f2f";
       btn.addEventListener("mouseenter", () => (btn.style.background = "var(--bg-hover,#f0f0f0)"));
@@ -1085,6 +1398,15 @@ export class TableView implements NodeView {
       btn.addEventListener("click", (ev) => {
         ev.stopPropagation();
         ev.preventDefault();
+        // v0.13.0 需求12：合并/拆分分支
+        if (action === "mergeCells") {
+          this.mergeSelectedCells();
+          return;
+        }
+        if (action === "splitCell") {
+          this.splitCurrentCell();
+          return;
+        }
         const $pos = this.getCurrentCellPos();
         if (!$pos) return;
         const tr = this.view.state.tr;
@@ -1102,6 +1424,8 @@ export class TableView implements NodeView {
     this.dom.appendChild(toolbar);
     this.toolbar = toolbar;
     this.refreshDeleteRowButton();
+    // v0.13.0 需求12：合并/拆分按钮初始禁用态
+    this.refreshMergeSplitButtons();
     this.positionToolbar();
 
     // v0.11.0 B1-2 返修：工具栏存活期间跟踪选区变化（含键盘方向键在表格内移动），
@@ -1141,7 +1465,62 @@ export class TableView implements NodeView {
   private onSelectionChange = () => {
     if (!this.toolbar) return;
     this.refreshDeleteRowButton();
+    this.refreshMergeSplitButtons();
   };
+
+  /**
+   * v0.13.0 需求12：刷新「合并 / 拆分」按钮的禁用态。
+   *
+   * 与 refreshDeleteRowButton 同一机制（每次 selectionchange 重算）：
+   * - 合并：需要**有效范围选区**（≥2 个逻辑格且不切碎既有合并）；
+   * - 拆分：光标所在格（或范围锚点格）带跨度。
+   *
+   * 为什么必须实时：范围选区是拖拽产生的，拖拽过程中选区在变；
+   * 光标移动也会改变"当前格是否已合并"。僵在创建那一刻会让按钮
+   * 时好时坏（v0.11.0 B1-2 已踩过同一个坑）。
+   */
+  private refreshMergeSplitButtons() {
+    const mergeBtn = this.toolbar?.querySelector<HTMLButtonElement>(
+      'button[data-action="mergeCells"]',
+    );
+    const splitBtn = this.toolbar?.querySelector<HTMLButtonElement>(
+      'button[data-action="splitCell"]',
+    );
+    const tablePos = this.getPos();
+    const tableNode =
+      tablePos === undefined ? null : this.view.state.doc.nodeAt(tablePos);
+
+    if (mergeBtn) {
+      const rect = this.cellRange;
+      let ok = false;
+      if (rect && tableNode) {
+        ok = checkMergeable(tableNode, rect, this.tableRowCount()).ok;
+      }
+      mergeBtn.disabled = !ok;
+      mergeBtn.style.opacity = ok ? "" : "0.35";
+      mergeBtn.style.cursor = ok ? "pointer" : "not-allowed";
+      mergeBtn.title = ok
+        ? t("table.mergeCells")
+        : t("table.mergeCellsHint");
+    }
+
+    if (splitBtn) {
+      let splittable = false;
+      if (tableNode) {
+        const cellInfo = cellAround(this.view.state.selection.$from);
+        if (cellInfo) {
+          splittable = checkSplittable(cellInfo.node);
+        } else if (this.cellRange) {
+          const grid = buildTableGridFromTable(tableNode, tablePos!);
+          const gc = grid[this.cellRange.r0]?.[this.cellRange.c0];
+          if (gc) splittable = checkSplittable(gc.node);
+        }
+      }
+      splitBtn.disabled = !splittable;
+      splitBtn.style.opacity = splittable ? "" : "0.35";
+      splitBtn.style.cursor = splittable ? "pointer" : "not-allowed";
+    }
+  }
 
   private onDocClick = (e: MouseEvent) => {
     if (!this.toolbar) return;
@@ -1247,6 +1626,15 @@ export class TableView implements NodeView {
       btn.addEventListener("click", (ev) => {
         ev.stopPropagation();
         closeMenu();
+        // v0.13.0 需求12：合并/拆分（无 op，走 NodeView 的专用 handler）
+        if (key === "table.mergeCells") {
+          this.mergeSelectedCells();
+          return;
+        }
+        if (key === "table.splitCell") {
+          this.splitCurrentCell();
+          return;
+        }
         // 执行表格操作；op 返回 null 表示受 schema 限制不执行
         if (op) {
           const tr = this.view.state.tr;

@@ -3,6 +3,8 @@
  */
 import type { Node, Mark } from "prosemirror-model";
 import { getBlockSource, type BlockSourceInfo } from "./blockSourceMap";
+// v0.13.0 需求12：表格合并/拆分（逻辑列网格）
+import { buildTableGridFromTable, gridColumnCount, tableHasSpan, type TableGrid } from "../tableGrid";
 
 /**
  * v0.13.0 需求1：把**单个块节点**序列化为 Markdown（块级复制/剪切用）。
@@ -399,7 +401,34 @@ function taskListToMarkdown(node: Node): string {
 
 // ─── 表格 ────────────────────────────────────────────────
 
+/**
+ * v0.13.0 需求12：表格序列化 —— **逻辑列网格**模型。
+ *
+ * ─── 为什么重写 ───
+ * 原实现假设「每行等长」（colCount = rows[0].length），合并单元格后
+ * （`| <td colspan="2">A</td> | B |`）该假设立刻失效：
+ *   · 行长度不等 → 短行被 `while (cells.length < colCount)` 补空串，
+ *     合并格与后续格的**列对应关系错位**；
+ *   · 更糟的是补空串会凭空造出列，重开文档后表格列数变化。
+ *
+ * ─── 双管道（回归锁）──
+ * ① 纯管道表格（无任何 colspan/rowspan）→ **走原算法逐字输出**，
+ *    `md → doc → md` 零 diff（v0.11.0 回归锁的最高优先级）；
+ * ② 含合并的表格 → 逻辑列网格：展开为 grid[row][col]，跨格按
+ *    `<td colspan rowspan>` 输出，被占位的空洞不输出，
+ *    分隔行**始终按逻辑列数**输出（合并不影响列数）。
+ *
+ * 合并形态与 `parser.extractTdWrapper` 同源（v1 决策 B/3：
+ * HTML `<td colspan>` + 声明不跨编辑器保真）。
+ */
 function tableToMarkdown(node: Node): string {
+  const hasSpan = tableHasSpan(node);
+  if (!hasSpan) return tableToMarkdownPlain(node);
+  return tableToMarkdownMerged(node);
+}
+
+/** 原实现（纯管道表格零 diff 路径）——v0.13.0 需求12 起更名保留 */
+function tableToMarkdownPlain(node: Node): string {
   const rows: string[][] = [];
   const aligns: string[] = [];
 
@@ -464,6 +493,103 @@ function tableToMarkdown(node: Node): string {
   }
 
   return result.join("\n") + "\n";
+}
+
+/**
+ * v0.13.0 需求12：含合并单元格的表格序列化（逻辑列网格管道）。
+ *
+ * 输出规则：
+ * - 分隔行**始终按逻辑列数**输出（合并不改变列数）；
+ * - 跨格输出 `<td colspan="N" [rowspan="M"]>inner</td>`（表头跨格用 `<th>`）；
+ * - 被 rowspan/colspan 占位的**空洞不输出**（行内 cell 数因此可变，
+ *   由 parser 的网格展开还原）；
+ * - 普通格与纯管道表格的输出形态完全一致（`| A | B |`）。
+ *
+ * 对齐：按**逻辑列**取表头行该列的对齐值；表头行因合并而少于逻辑列数时，
+ * 未覆盖的列回落 "left"（与纯管道表格的补齐行为一致）。
+ */
+function tableToMarkdownMerged(node: Node): string {
+  // 收集全部行（文档顺序）+ 每行的 isHead 标记（网格本身由
+  // buildTableGridFromTable 统一构建，保证与合并/拆分事务同口径）
+  const rowCount: number[] = [];
+  const headFlags: boolean[] = [];
+  let hasHead = false;
+  node.forEach((section) => {
+    const isHead = section.type.name === "table_head";
+    if (isHead) hasHead = true;
+    section.forEach(() => {
+      rowCount.push(1);
+      headFlags.push(isHead);
+    });
+  });
+
+  if (rowCount.length === 0) return "";
+
+  const grid = buildTableGridFromTable(node);
+  const colCount = Math.max(gridColumnCount(grid), 1);
+
+  // 表头行的每列对齐（按逻辑列索引；合并格的对齐取其起始列的值）
+  const aligns: string[] = new Array(colCount).fill("left");
+  if (hasHead) {
+    const headRow = grid[0] ?? [];
+    for (let c = 0; c < colCount; c++) {
+      const cell = headRow[c];
+      if (cell) aligns[c] = (cell.node.attrs.align as string) || "left";
+    }
+  }
+
+  const result: string[] = [];
+
+  // 表头行（无 table_head 时补一行空表头——与纯管道管道的 B1-2 防线一致）
+  if (hasHead) {
+    result.push("| " + serializeGridRow(grid[0] ?? [], true).join(" | ") + " |");
+  } else {
+    result.push("| " + new Array(colCount).fill(" ").join(" | ") + " |");
+  }
+
+  // 分隔行：逻辑列数
+  const sep = aligns.map((a) => {
+    switch (a) {
+      case "center": return ":---:";
+      case "right": return "---:";
+      default: return "---";
+    }
+  });
+  while (sep.length < colCount) sep.push("---");
+  result.push("| " + sep.join(" | ") + " |");
+
+  // 数据行
+  for (let r = hasHead ? 1 : 0; r < grid.length; r++) {
+    result.push("| " + serializeGridRow(grid[r] ?? [], headFlags[r] === true).join(" | ") + " |");
+  }
+
+  return result.join("\n") + "\n";
+}
+
+/**
+ * 把网格中的一行序列化为单元格文本数组（跳过被占位的空洞）。
+ *
+ * 空单元格输出 " "（与纯管道管道的 `c || " "` 一致，保证 `| A |  | B |`
+ * 的管道形态稳定；markdown-it 对空 cell 的解析与原路径同源）。
+ */
+function serializeGridRow(gridRow: TableGrid[number], isHead: boolean): string[] {
+  const out: string[] = [];
+  for (const cell of gridRow) {
+    if (!cell) continue; // 被 rowspan/colspan 占位的空洞
+    const inner = inlineToMarkdown(cell.node, "table").trim();
+    const isSpan = cell.colspan > 1 || cell.rowspan > 1;
+    if (!isSpan) {
+      out.push(inner || " ");
+      continue;
+    }
+    const tag = cell.node.type.name === "table_header" || isHead ? "th" : "td";
+    const attrs: string[] = [];
+    if (cell.colspan > 1) attrs.push(`colspan="${cell.colspan}"`);
+    if (cell.rowspan > 1) attrs.push(`rowspan="${cell.rowspan}"`);
+    const attrStr = attrs.length > 0 ? " " + attrs.join(" ") : "";
+    out.push(`<${tag}${attrStr}>${inner || " "}</${tag}>`);
+  }
+  return out;
 }
 
 // ─── Inline 序列化 ───────────────────────────────────────

@@ -646,6 +646,19 @@
   opacity: 0.6;
 }
 
+/* ─── v0.13.0 需求12：单元格范围选区（拖拽跨格的高亮）────────────────
+   只做背景色，不动边框/尺寸——合并格本身有 colspan/rowspan，
+   任何布局改动都会让浏览器重排、破坏列宽拖拽量到的几何值。 */
+.ProseMirror .pm-table td.pm-cell-in-range,
+.ProseMirror .pm-table th.pm-cell-in-range {
+  background-color: rgba(25, 118, 210, 0.16);
+}
+
+.ProseMirror .pm-table td.pm-cell-in-range:empty,
+.ProseMirror .pm-table th.pm-cell-in-range:empty {
+  background-color: rgba(25, 118, 210, 0.1);
+}
+
 /* 三点菜单弹层（复用 MiniContextMenu 的 .mini-context-menu 样式） */
 .mini-context-menu-item.danger {
   color: var(--error-color, #e5484d);

@@ -593,6 +593,10 @@ export const enUS: Record<string, string> = {
   "table.alignLeft": "Align Left",
   "table.alignCenter": "Align Center",
   "table.alignRight": "Align Right",
+  // v0.13.0 req 12: merge / split cells
+  "table.mergeCells": "Merge Cells",
+  "table.mergeCellsHint": "Merge cells (drag to select at least two cells first)",
+  "table.splitCell": "Split Cell",
   // ─── Image insert dialog ───────────────────────────────────
   "imageInsert.title": "Insert Image",
   "imageInsert.imageFilter": "Image",

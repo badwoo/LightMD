@@ -16,6 +16,8 @@ import { taskListPlugin } from "./task-list-plugin";
 import { headingAnchorPlugin, collectHeadings, type TocHeading } from "./heading-anchor";
 import { tocPlugin } from "./toc-plugin";
 import { setBlockSource } from "./blockSourceMap";
+// v0.13.0 需求12：表格合并单元格形态识别（`<td colspan>` 包裹）
+import { extractTdWrapper } from "../tableGrid";
 // E14(v0.9.2):段内换行语义默认值取自设置(与 auto-pair 同款 getState 先例)
 import { useSettingsStore } from "../../stores/useSettingsStore";
 
@@ -761,6 +763,8 @@ function parseTable(tokens: Token[], index: number): ParseResult {
   const bodyRows: Node[] = [];
   let isHead = false;
   let currentRowCells: Token[][] = [[]];
+  /** v0.13.0 需求12：每个 cell 的跨度（与 currentRowCells 同索引；缺省 {1,1}） */
+  const currentRowSpans: Array<{ colspan: number; rowspan: number }> = [];
   let cellIdx = 0;
   const cellAligns: string[] = [];
   let hasSeenHead = false;
@@ -775,31 +779,33 @@ function parseTable(tokens: Token[], index: number): ParseResult {
     if (t.type === "thead_open") { isHead = true; hasSeenHead = true; continue; }
     if (t.type === "thead_close") {
       if (currentRowCells.length > 0 && currentRowCells.some(c => c.length > 0)) {
-        headRows.push(buildTableRow(currentRowCells, cellAligns, true));
+        headRows.push(buildTableRow(currentRowCells, cellAligns, true, currentRowSpans));
       }
-      currentRowCells = [[]]; cellIdx = 0; isHead = false;
+      currentRowCells = [[]]; currentRowSpans.length = 0; cellIdx = 0; isHead = false;
       continue;
     }
     if (t.type === "tbody_open") { isHead = false; continue; }
     if (t.type === "tbody_close") {
       if (currentRowCells.length > 0 && currentRowCells.some(c => c.length > 0)) {
-        bodyRows.push(buildTableRow(currentRowCells, cellAligns, false));
+        bodyRows.push(buildTableRow(currentRowCells, cellAligns, false, currentRowSpans));
       }
-      currentRowCells = [[]]; cellIdx = 0;
+      currentRowCells = [[]]; currentRowSpans.length = 0; cellIdx = 0;
       continue;
     }
 
-    if (t.type === "tr_open") { currentRowCells = [[]]; cellIdx = 0; continue; }
+    if (t.type === "tr_open") {
+      currentRowCells = [[]]; currentRowSpans.length = 0; cellIdx = 0;
+      continue;
+    }
     if (t.type === "tr_close") {
-      const row = buildTableRow(currentRowCells, cellAligns, isHead && !hasSeenHead);
       // 第一行没有 thead 包裹时视为表头
       const effectiveIsHead = isHead || (!hasSeenHead && headRows.length === 0 && bodyRows.length === 0);
       if (effectiveIsHead) {
-        headRows.push(buildTableRow(currentRowCells, cellAligns, true));
+        headRows.push(buildTableRow(currentRowCells, cellAligns, true, currentRowSpans));
       } else {
-        bodyRows.push(buildTableRow(currentRowCells, cellAligns, false));
+        bodyRows.push(buildTableRow(currentRowCells, cellAligns, false, currentRowSpans));
       }
-      currentRowCells = [[]]; cellIdx = 0;
+      currentRowCells = [[]]; currentRowSpans.length = 0; cellIdx = 0;
       continue;
     }
 
@@ -808,11 +814,22 @@ function parseTable(tokens: Token[], index: number): ParseResult {
       const align = styleVal.replace("text-align:", "") || "left";
       cellAligns[cellIdx] = align;
       currentRowCells[cellIdx] = [];
+      currentRowSpans[cellIdx] = { colspan: 1, rowspan: 1 };
       continue;
     }
     if (t.type === "th_close" || t.type === "td_close") { cellIdx++; continue; }
     if (t.type === "inline" && currentRowCells[cellIdx]) {
-      currentRowCells[cellIdx].push(t);
+      // v0.13.0 需求12：合并单元格形态 `<td colspan="2">A</td>` 由 markdown-it
+      // 留在 cell 的 inline.content 里（td_open/th_open 本身不带 attrs——实测）。
+      // 在此识别并剥离：跨度写进 currentRowSpans，内层内容替换为待解析文本，
+      // 使 PM 节点带上 colspan/rowspan，而编辑器里不再显示裸 HTML 标签。
+      const wrapped = extractTdWrapper(t.content || "");
+      if (wrapped) {
+        currentRowSpans[cellIdx] = wrapped.span;
+        currentRowCells[cellIdx].push({ ...t, content: wrapped.inner, children: null });
+      } else {
+        currentRowCells[cellIdx].push(t);
+      }
     }
   }
 
@@ -833,7 +850,12 @@ function parseTable(tokens: Token[], index: number): ParseResult {
   return { node: schema.nodes.table.create(null, tableChildren), nextIndex: i };
 }
 
-function buildTableRow(cells: Token[][], aligns: string[], isHeader: boolean): Node {
+function buildTableRow(
+  cells: Token[][],
+  aligns: string[],
+  isHeader: boolean,
+  spans?: Array<{ colspan: number; rowspan: number }>,
+): Node {
   const cellNodes: Node[] = [];
   for (let idx = 0; idx < cells.length; idx++) {
     const cellTokens = cells[idx];
@@ -853,7 +875,13 @@ function buildTableRow(cells: Token[][], aligns: string[], isHeader: boolean): N
       }
     }
     const cellType = isHeader ? schema.nodes.table_header : schema.nodes.table_cell;
-    cellNodes.push(cellType.create({ align }, inlineNodes));
+    // v0.13.0 需求12：合并单元格跨度（缺省 1/1，纯管道表格不受影响）
+    const span = spans?.[idx];
+    cellNodes.push(cellType.create({
+      align,
+      colspan: span ? span.colspan : 1,
+      rowspan: span ? span.rowspan : 1,
+    }, inlineNodes));
   }
   return schema.nodes.table_row.create(null, cellNodes);
 }

@@ -136,6 +136,25 @@ export interface ParseResult {
 
 // ─── markdown-it token → Block[] 转换 ──────────────────────
 
+/**
+ * v0.13.0 需求12：剥离表格单元格里的 `<td colspan rowspan>inner</td>` 包裹。
+ *
+ * 背景：合并单元格在 markdown 里以「格内嵌 HTML」表达（v1 决策 B/3），
+ * 而 DOCX/LaTeX 实例是 `html:false`——HTML 标签会**原样进文本**，
+ * 实测导出结果里出现字面量 `<td colspan="2">M</td>`。
+ *
+ * 处理：只剥最外层一层的 td/th 标签，保留 inner 内容（**不丢内容**，
+ * 符合验收「DOCX/LaTeX 导出不丢内容」）。跨度信息本身不进导出
+ * （DOCX/LaTeX 的 Block[] 结构不承载 colspan）——这是已声明的不保真项。
+ */
+export function stripTdWrapperText(text: string): string {
+  if (!text || !/^<(?:td|th)\b/i.test(text.trim())) return text;
+  const trimmed = text.trim();
+  const m = /^<(?:td|th)\b[^>]*>([\s\S]*)<\/(?:td|th)\s*>$/i.exec(trimmed);
+  if (!m) return text;
+  return (m[1] ?? "").trim();
+}
+
 /** 从 token.attrs 数组中获取属性值 */
 export function getTokenAttr(token: Token, name: string): string | null {
   if (!token.attrs) return null;
@@ -201,6 +220,16 @@ export function parseInlineTokens(tokens: Token[]): InlineRun[] {
       const stripped = t.content.replace(/<!--[\s\S]*?-->/g, "");
       if (stripped !== t.content) {
         if (stripped) runs.push(makeRun(stripped));
+        continue;
+      }
+    }
+
+    // v0.13.0 需求12：表格合并格的 `<td colspan>` 包裹（html:false 下是字面文本）。
+    // 剥掉标签保留内容，DOCX/LaTeX 导出不出现裸 HTML（不丢内容）。
+    if (t.type === "text" && /^<(?:td|th)\b/i.test(t.content.trim())) {
+      const inner = stripTdWrapperText(t.content);
+      if (inner !== t.content) {
+        if (inner) runs.push(makeRun(inner));
         continue;
       }
     }

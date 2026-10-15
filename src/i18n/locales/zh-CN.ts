@@ -600,6 +600,10 @@ export const zhCN: Record<string, string> = {
   "table.alignLeft": "左对齐",
   "table.alignCenter": "居中对齐",
   "table.alignRight": "右对齐",
+  // v0.13.0 需求12：单元格合并/拆分
+  "table.mergeCells": "合并单元格",
+  "table.mergeCellsHint": "合并单元格（先拖拽选中至少两个单元格）",
+  "table.splitCell": "拆分单元格",
   // ─── 图片插入对话框 ────────────────────────────────────
   "imageInsert.title": "插入图片",
   "imageInsert.imageFilter": "图片",
