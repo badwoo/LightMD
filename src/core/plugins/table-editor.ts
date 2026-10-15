@@ -32,7 +32,7 @@ import {
   splitCell,
   type CellRect,
 } from "../tableMerge";
-import { buildTableGridFromTable, cellPositionsOfGrid } from "../tableGrid";
+import { buildTableGridFromTable, cellPositionsOfGrid, normalizeSpan } from "../tableGrid";
 
 // ─── TableCellView —— td/th 的轻量 NodeView（F1 修复） ────────────────
 
@@ -60,12 +60,40 @@ export class TableCellView implements NodeView {
     // contentDOM 指向自身：内容仍由 ProseMirror 管理渲染
     this.contentDOM = this.dom;
     this.applyAlign(node);
+    this.applySpan(node);
   }
 
   /** 同步 align 属性到 DOM（与 schema.toDOM 的 text-align 输出保持一致） */
   private applyAlign(node: Node) {
     const align = node.attrs.align as string;
     this.dom.style.textAlign = align && align !== "left" ? align : "";
+  }
+
+  /**
+   * v0.13.0 返修第三轮（问题5/7）：把 colspan/rowspan 同步到 DOM。
+   *
+   * 缺陷背景（**用户报告「选中两个单元格点合并没反应」的真正根因**）：
+   * schema 的 table_cell/table_header 支持 colspan/rowspan，`toDOM` 也会输出它们，
+   * 但 td/th 一旦挂上本 NodeView，DOM 就**完全由本类创建**——PM 不再调用
+   * `toDOM`，于是这两个属性从未写进 DOM。
+   *
+   * 实测（真实 Chrome + 真实编辑器，合并表头两格后）：
+   *   doc：`<th colspan="2">A</th>`  ← 合并**确实生效**，源码也正确序列化
+   *   DOM：`<th>A</th><th>C</th>`    ← colspan 丢失，且被吞掉的 B 格也消失
+   * 浏览器因此按普通格排版：被合并的第二列宽度留在原位，视觉上只是"B 的内容
+   * 不见了"，用户感知为「点合并没反应 / 合并错了」。
+   *
+   * 注意必须**同时**在 update 里调用：PM 复用 NodeView 时只调 update，
+   * 不重新构造（合并事务走的就是这条路）。
+   */
+  private applySpan(node: Node) {
+    const colspan = normalizeSpan(node.attrs.colspan);
+    const rowspan = normalizeSpan(node.attrs.rowspan);
+    // 与 schema.toDOM 一致：仅在 >1 时输出属性，未合并的表格 DOM 与旧版逐字节相同
+    if (colspan > 1) this.dom.setAttribute("colspan", String(colspan));
+    else this.dom.removeAttribute("colspan");
+    if (rowspan > 1) this.dom.setAttribute("rowspan", String(rowspan));
+    else this.dom.removeAttribute("rowspan");
   }
 
   update(node: Node): boolean {
@@ -76,6 +104,8 @@ export class TableCellView implements NodeView {
       return false;
     }
     this.applyAlign(node);
+    // v0.13.0 返修第三轮（问题5/7）：合并/拆分后必须刷新跨度，否则 DOM 永远停在 1/1
+    this.applySpan(node);
     return true;
   }
 
@@ -145,6 +175,15 @@ function hitResizeZone(
   // 列宽热区优先于行高热区
   return { col: inRightEdge || inLeftEdge, row: inBottomEdge };
 }
+
+/**
+ * v0.13.0 返修第三轮（问题5/7）：把热区判定暴露给测试。
+ *
+ * 该判定是"缩放 vs 范围选区"仲裁的输入，且热区宽度（列宽 8px / 行高 6px）
+ * 相对窄单元格占比很大（可达 40% / 20%）—— 正是旧实现吞掉拖拽起手点的原因。
+ * 导出以便单测直接锁住口径，避免以后被静默改动。
+ */
+export const hitResizeZoneForTest = hitResizeZone;
 
 /** 判断 cell 是否为其所在行的第一个单元格（第一列） */
 function isFirstCellInRow(cell: HTMLElement): boolean {
@@ -216,8 +255,18 @@ export interface ContextMenuItem {
  * 构建表格右键菜单项(纯函数,便于单测)。
  * 表头行(table_head 内)不提供"删除行":GFM 表头恒一行,
  * 删除行实为删除整个 table_head,行为反直觉(仍可删列)。
+ *
+ * v0.13.0 返修第三轮（问题6）：**合并应用层的行内格式菜单**。
+ *
+ * 缺陷背景（用户报告「表格里点右键会出现两个菜单，加粗/斜体/删除线这个菜单把表格
+ * 操作菜单盖住了，请把这两个菜单的功能合成一个，分上下两栏」）：
+ * 表格 NodeView 在自己的 `dom` 上弹出本菜单，而 EditorContainer 也在祖先容器上
+ * 监听 contextmenu 并弹 PmContextMenu（行内格式）→ 两个菜单同时出现、互相遮挡。
+ * 现在：
+ *   · `onContextMenu` 里 `stopPropagation()`，应用层菜单不再出现；
+ *   · 本菜单在表格操作**下方**接一栏行内格式（有非空文本选区时才显示）。
  */
-export function buildContextMenuItems($pos: ResolvedPos): ContextMenuItem[] {
+export function buildContextMenuItems($pos: ResolvedPos, hasTextSelection = false): ContextMenuItem[] {
   const items: ContextMenuItem[] = [
     { key: "table.addRowAbove", op: insertRowAbove },
     { key: "table.addRowBelow", op: insertRowBelow },
@@ -240,7 +289,47 @@ export function buildContextMenuItems($pos: ResolvedPos): ContextMenuItem[] {
     { key: "table.mergeCells" },
     { key: "table.splitCell" },
   );
+  // v0.13.0 返修第三轮（问题6）：下半栏 —— 行内格式（仅在有文本选区时）
+  if (hasTextSelection) {
+    items.push(
+      { key: null },
+      { key: "menu.bold", op: (tr) => toggleMarkOp(tr, "strong") },
+      { key: "menu.italic", op: (tr) => toggleMarkOp(tr, "em") },
+      { key: "menu.strikethrough", op: (tr) => toggleMarkOp(tr, "strike") },
+      { key: "menu.inlineCode", op: (tr) => toggleMarkOp(tr, "code") },
+      { key: "menu.highlight", op: (tr) => toggleMarkOp(tr, "mark") },
+      { key: "menu.underline", op: (tr) => toggleMarkOp(tr, "underline") },
+    );
+  }
   return items;
+}
+
+/**
+ * v0.13.0 返修第三轮（问题6）：在**当前选区**上切换某个 mark。
+ *
+ * 与 EditorContainer 的 `handlePmMenuAction` 同款语义（`toggleMark`），
+ * 但这里返回事务，以便复用既有 `op(tr, $pos)` 的菜单项形状。
+ *
+ * 「切换」而非「只加」：与 prosemirror-commands 的 toggleMark 一致 ——
+ * 选区**任一部分**已有该 mark 就整段移除，否则整段添加。只加不减的话，
+ * 用户点第二次会以为按钮坏了（mark 不会消失）。
+ * mark 不存在 / 选为空 / 非文本选区 → 返回 null（点了不动，不抛错）。
+ */
+export function toggleMarkOp(tr: Transaction, markName: string): Transaction | null {
+  const markType = schema.marks[markName];
+  if (!markType) return null;
+  const { from, to, empty } = tr.selection;
+  if (empty) return null;
+  // NodeSelection（整块选中）不是文本选区，加行内 mark 无意义
+  if (tr.selection instanceof NodeSelection) return null;
+  // 与 toggleMark 同判据：任一部分已有 → 移除，否则添加
+  const has = tr.doc.rangeHasMark(from, to, markType);
+  try {
+    return has ? tr.removeMark(from, to, markType) : tr.addMark(from, to, markType.create());
+  } catch {
+    // 该位置不允许此 mark（如表格外/原子节点）→ 静默不执行
+    return null;
+  }
 }
 
 /** 计算 cell 在所属 row 中的索引 */
@@ -721,6 +810,19 @@ export class TableView implements NodeView {
   private cellRange: CellRect | null = null;
   /** 范围选区拖拽起点（DOM cell → 行列坐标的映射在 pointerdown 时算好） */
   private rangeAnchor: { r: number; c: number; cellEl: HTMLElement } | null = null;
+  /**
+   * v0.13.0 返修第三轮（问题5/7）：待定的缩放手势。
+   *
+   * 起手点落在 cell 边缘热区（列宽 8px / 行高 6px）时，还不能确定用户是要**缩放**
+   * 还是**跨格选范围**（窄单元格里热区能占到 40% 宽度）。先记下，等首次 mousemove
+   * 按位移方向定夺：沿边框轴 → 缩放；明显离开边框 → 范围选区。
+   */
+  private pendingResize: {
+    cell: HTMLElement;
+    zone: { col: boolean; row: boolean };
+    x: number;
+    y: number;
+  } | null = null;
 
   constructor(node: Node, view: EditorView, getPos: () => number | undefined) {
     this.view = view;
@@ -859,6 +961,19 @@ export class TableView implements NodeView {
     }
   }
 
+  /**
+   * v0.13.0 返修第三轮（问题5/7）：**热区内不再立即启动缩放**，改为登记"待定手势"。
+   *
+   * 缺陷背景：本方法此前与 `onRangeMouseDown` 各自独立判定 cell 边缘热区，
+   * 而它先注册、先执行 —— 于是落在边缘 8px（列宽）/ 6px（行高）内的任何按下
+   * 都被它变成缩放拖拽。用户想"横向/纵向选中两个单元格"时，起手点一旦落在边缘
+   * 就被缩放吞掉 → `rangeAnchor` 永不设置 → 合并按钮永久禁用
+   * （实测窄单元格下热区占掉 40% 宽度、行热区占 20% 高度）。
+   *
+   * 现在：这里只**判定热区并登记** `pendingResize`；由首次 `mousemove`
+   * （见 `resolvePendingResize`）按「是否离开起始格 / 主导轴」定夺
+   * 「缩放 vs 范围选区」，两者不再互相吞掉。
+   */
   private onMouseDown(e: MouseEvent) {
     // 仅响应左键
     if (e.button !== 0) return;
@@ -866,48 +981,16 @@ export class TableView implements NodeView {
     const cell = target.closest("td, th") as HTMLElement;
     if (!cell) return;
 
-    // F1 修复：统一使用 hitResizeZone 判定
-    const rect = cell.getBoundingClientRect();
+    // 统一使用 hitResizeZone 判定（与 onHover/stopEvent 同口径）
     const zone = hitResizeZone(cell, e.clientX, e.clientY);
-    const inLeftEdge = Math.abs(rect.left - e.clientX) <= COL_RESIZE_HOTZONE;
-    const inRightEdge = Math.abs(e.clientX - rect.right) <= COL_RESIZE_HOTZONE;
-
-    // 行高拖拽：cell 底边缘热区内（且不在列宽热区内）
-    if (zone.row && !zone.col) {
-      e.preventDefault();
-      const row = cell.parentElement as HTMLTableRowElement | null;
-      if (!row) return;
-      const rows = Array.from(this.contentDOM.querySelectorAll("tr"));
-      const rowIdx = rows.indexOf(row);
-      if (rowIdx < 0) return;
-      this.startRowResize(rowIdx, e.clientY, row);
-      return;
-    }
-
-    // 列宽拖拽：cell 左边缘或右边缘热区内
-    if (!zone.col) return;
-
-    // 第一列左边缘不触发拖拽（表格左外侧框线无相邻列可调整），
-    // 事件放行给 ProseMirror（stopEvent 同步返回 false，见下），避免死区
-    if (inLeftEdge && !inRightEdge && isFirstCellInRow(cell)) return;
-
-    e.preventDefault();
-    // 计算列索引
-    const row = cell.parentElement;
-    if (!row) return;
-    const cells = Array.from(row.querySelectorAll("td, th"));
-    const cellIdx = cells.indexOf(cell);
-    if (cellIdx < 0) return;
-
-    // 计算被拖拽的列索引：
-    // - 右边缘触发：colIdx = cellIdx（当前列右边缘，调整当前列和下一列）
-    // - 左边缘触发：colIdx = cellIdx - 1（前一列右边缘，调整前一列和当前列）
-    let colIdx = cellIdx;
-    if (inLeftEdge && !inRightEdge && cellIdx > 0) {
-      colIdx = cellIdx - 1;
-    }
-
-    this.startResize(colIdx, e.clientX, cell);
+    if (!zone.col && !zone.row) return;
+    // 登记待定手势；真正启动缩放推迟到首次 mousemove（见 resolvePendingResize）
+    this.pendingResize = { cell, zone, x: e.clientX, y: e.clientY };
+    // 定夺用的监听挂在 **document** 上：拖拽时指针可能移出表格（甚至移出窗口），
+    // 只挂 wrapper 会收不到 mousemove → 缩放手势永远不启动
+    // （既有测试也正是在 document 上派发 mousemove）。
+    document.addEventListener("mousemove", this.onPendingResolveMove);
+    document.addEventListener("mouseup", this.onPendingResolveUp);
   }
 
   private startResize(colIdx: number, clientX: number, cellEl: HTMLElement) {
@@ -1165,9 +1248,19 @@ export class TableView implements NodeView {
     if (!target) return;
     const cell = target.closest("td, th") as HTMLElement | null;
     if (!cell) return;
-    // 热区内不启动范围选区
-    if (hitResizeZone(cell, e.clientX, e.clientY).col) return;
-    if (hitResizeZone(cell, e.clientX, e.clientY).row) return;
+    // v0.13.0 返修第三轮（问题5/7）：**热区内也要武装范围选区锚点**。
+    //
+    // 缺陷背景（用户报告「横向选中两个单元格点合并没反应」「没法纵向选中两个单元格」）：
+    // 旧实现在热区内直接 `return`，于是
+    //   · 列宽热区是 cell 左/右边缘 8px —— 单元格宽约 40px 时占掉 **40%** 宽度；
+    //   · 行高热区是 cell 底边缘 6px —— 行高约 30px 时占掉 **20%** 高度。
+    // 用户拖拽跨格时（尤其是**向下拖**，手自然按在格子中下部）起手点很容易落进热区，
+    // 于是 rangeAnchor 永不设置 → cellRange 永不赋值 → 选不出范围 → 合并按钮永久禁用。
+    // 实测该路径在纯函数层完全正常，属于"只有真实鼠标手势才踩到"的缺陷。
+    //
+    // 现在：热区内的"待定缩放"由 onMouseDown 登记（见该方法），本方法只负责
+    // 武装范围选区锚点。首次 mousemove 时由 resolvePendingResize 定夺：
+    // 离开起始格 → 范围选区；仍在本格内沿边框轴移动 → 缩放。两者不再互相吞掉。
     const coord = this.cellCoordOf(cell);
     if (!coord) return;
     // v0.13.0 返修（问题1）：在单元格内按下即**作废上一次的范围选区**。
@@ -1175,6 +1268,115 @@ export class TableView implements NodeView {
     // 与"一点就全选"的问题叠加放大。现在单击即开始一次全新选择。
     this.clearCellRange();
     this.rangeAnchor = { ...coord, cellEl: cell };
+  }
+
+  /**
+   * v0.13.0 返修第三轮（问题5/7）：document 级"待定缩放"定夺监听。
+   *
+   * 为什么挂 document 而不是 wrapper：拖拽指针会移出表格；既有实现
+   * （`startResize`）也是 document 级。挂在 wrapper 上会导致缩放手势收不到
+   * mousemove → 永远不启动（实测既有测试在 document 上派发 mousemove 即因此失败）。
+   */
+  private onPendingResolveMove = (e: MouseEvent) => {
+    if (!this.pendingResize) return;
+    this.resolvePendingResize(e);
+  };
+
+  /** 松开时若仍未定夺（只是点了一下边缘）→ 作废待定状态，不启动缩放 */
+  private onPendingResolveUp = () => {
+    this.clearPendingResize();
+  };
+
+  private clearPendingResize(): void {
+    if (!this.pendingResize) return;
+    this.pendingResize = null;
+    document.removeEventListener("mousemove", this.onPendingResolveMove);
+    document.removeEventListener("mouseup", this.onPendingResolveUp);
+  }
+
+  /**
+   * v0.13.0 返修第三轮（问题5/7）：首次移动时在「缩放」与「范围选区」之间定夺。
+   *
+   * 判据（按可靠性排序）：
+   * ① 指针已进入**另一个** cell → 用户显然在跨格选范围，作废缩放；
+   * ② 仍在本 cell 内且位移够大 → 按主导轴启动缩放（列宽/行高）；
+   * ③ 位移还太小 → 暂不判定（保持两种可能）。
+   *
+   * 为什么不能只看位移方向：**纵向跨格拖拽本身就是纵向的**，
+   * 若按"纵向 = 行高缩放"判定，⑦（纵向选中两格）会被永远吞掉。
+   * 因此"是否离开起始格"才是第一判据。
+   *
+   * @returns true = 已提升为缩放拖拽（范围选区作废）
+   */
+  private resolvePendingResize(e: MouseEvent): boolean {
+    const p = this.pendingResize;
+    if (!p) return false;
+    const dx = Math.abs(e.clientX - p.x);
+    const dy = Math.abs(e.clientY - p.y);
+    // 位移还太小 → 暂不判定（保持两种可能）
+    if (dx < 3 && dy < 3) return true;
+    // ① 已离开起始格 → 范围选区（缩放作废）
+    const target = e.target as HTMLElement | null;
+    const nowCell = target?.closest?.("td, th") as HTMLElement | null;
+    if (nowCell && nowCell !== p.cell) {
+      this.clearPendingResize();
+      return false;
+    }
+    const zone = p.zone;
+    const cell = p.cell;
+    const startX = p.x;
+    const startY = p.y;
+    this.clearPendingResize();
+    const colDrag = zone.col && dx >= dy;
+    const rowDrag = zone.row && dy > dx;
+    if (colDrag) {
+      // 提升为列宽拖拽（复用既有 startResize 路径）
+      this.rangeAnchor = null;
+      this.clearCellRange();
+      e.preventDefault();
+      this.beginResizeFromGesture(cell, startX, e);
+      return true;
+    }
+    if (rowDrag) {
+      this.rangeAnchor = null;
+      this.clearCellRange();
+      e.preventDefault();
+      this.beginRowResizeFromGesture(cell, startY, e);
+      return true;
+    }
+    // 明显离开边框 → 当作跨格范围选区
+    return false;
+  }
+
+  /** 由一次已确认的列宽手势启动缩放（与 onMouseDown 的判定口径一致） */
+  private beginResizeFromGesture(cell: HTMLElement, clientX: number, e?: MouseEvent): void {
+    const row = cell.parentElement;
+    if (!row) return;
+    const cells = Array.from(row.querySelectorAll("td, th"));
+    const cellIdx = cells.indexOf(cell);
+    if (cellIdx < 0) return;
+    const rect = cell.getBoundingClientRect();
+    const inLeftEdge = Math.abs(rect.left - clientX) <= COL_RESIZE_HOTZONE;
+    const inRightEdge = Math.abs(clientX - rect.right) <= COL_RESIZE_HOTZONE;
+    if (inLeftEdge && !inRightEdge && isFirstCellInRow(cell)) return;
+    let colIdx = cellIdx;
+    if (inLeftEdge && !inRightEdge && cellIdx > 0) colIdx = cellIdx - 1;
+    this.startResize(colIdx, clientX, cell);
+    // 手势是在**本次 mousemove 的分发过程中**才确认的，而 `startResize` 刚注册的
+    // document mousemove 监听对当前事件不会触发（DOM 规范：分发中新增的监听不参与
+    // 本次分发）。不补这一下，第一次移动就没有实时反馈（要等 mouseup 才看到宽度变化）。
+    if (e) this.onMouseMove(e);
+  }
+
+  /** 由一次已确认的行高手势启动缩放 */
+  private beginRowResizeFromGesture(cell: HTMLElement, clientY: number, e?: MouseEvent): void {
+    const row = cell.parentElement as HTMLTableRowElement | null;
+    if (!row) return;
+    const rows = Array.from(this.contentDOM.querySelectorAll("tr"));
+    const rowIdx = rows.indexOf(row);
+    if (rowIdx < 0) return;
+    this.startRowResize(rowIdx, clientY, row);
+    if (e) this.onRowMouseMove(e);
   }
 
   /** 拖拽经过其它 cell → 扩展范围选区（mousemove 已绑定在 dom 上，这里扩展判定） */
@@ -1205,6 +1407,7 @@ export class TableView implements NodeView {
   /** 拖拽结束：清掉 anchor（范围本身保留，供工具栏/右键菜单消费） */
   private endRangeDrag() {
     this.rangeAnchor = null;
+    this.clearPendingResize();
   }
 
   /** 范围高亮：给矩形内的 DOM cell 加 class（拖拽中的可见反馈） */
@@ -1531,7 +1734,13 @@ export class TableView implements NodeView {
     // v0.12.0 需求5：两个 rect 是视觉值，而工具栏 absolute 于 zoom 坐标系内
     // （px 为布局值）→ 差值需除以 zoom 换算
     const zoom = this.docZoomRatio();
-    const top = (tableRect.top - wrapperRect.top) / zoom - 36;
+    let top = (tableRect.top - wrapperRect.top) / zoom - 36;
+    // v0.13.0 返修第三轮（问题5）：表格贴近容器顶部（或已滚到视口顶端）时，
+    // 上方放不下工具栏 → 负 top 会被祖先的 overflow 裁掉，用户"看不到/点不到"
+    // 合并按钮。此时改为放到表格**下方**，保证按钮始终可点。
+    if (top < 0) {
+      top = (tableRect.bottom - wrapperRect.top) / zoom + 4;
+    }
     // 水平居中于 wrapper（两 offsetWidth 同系，无需换算）
     const left = Math.max(0, (this.dom.offsetWidth - this.toolbar.offsetWidth) / 2);
     this.toolbar.style.top = `${top}px`;
@@ -1571,6 +1780,10 @@ export class TableView implements NodeView {
 
   private onContextMenu(e: MouseEvent) {
     e.preventDefault();
+    // v0.13.0 返修第三轮（问题6）：**阻止冒泡**，否则 EditorContainer 在祖先容器上
+    // 也会弹出行内格式菜单（PmContextMenu）→ 两个菜单叠在一起互相遮挡。
+    // 行内格式已并入本菜单下半栏（见 buildContextMenuItems）。
+    e.stopPropagation();
     const cell = (e.target as HTMLElement).closest("td, th") as HTMLElement;
     if (!cell) return;
 
@@ -1590,7 +1803,10 @@ export class TableView implements NodeView {
     menu.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:999;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:6px;box-shadow:var(--shadow-md);padding:4px 0;min-width:155px;font-size:13px;color:var(--text-primary);`;
 
     // E4:菜单项数据驱动(i18n key + danger 字段),表头行不含"删除行"
-    const actions = buildContextMenuItems($pos);
+    // v0.13.0 返修第三轮（问题6）：有文本选区时附带下半栏行内格式
+    const sel = this.view.state.selection;
+    const hasTextSelection = !(sel instanceof NodeSelection) && sel.from !== sel.to;
+    const actions = buildContextMenuItems($pos, hasTextSelection);
 
     actions.forEach(({ key, op, danger }) => {
       if (key === null) {
@@ -1730,6 +1946,8 @@ export class TableView implements NodeView {
     closeMenu();
     this.hideToolbar();
     removeResizeIndicator();
+    // v0.13.0 返修第三轮（问题5/7）：清理"待定缩放"的 document 级监听
+    this.clearPendingResize();
     document.removeEventListener("mousemove", this.onMouseMove);
     document.removeEventListener("mouseup", this.onMouseUp);
     document.removeEventListener("mousemove", this.onRowMouseMove);

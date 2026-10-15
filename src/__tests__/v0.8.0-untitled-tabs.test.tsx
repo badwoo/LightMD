@@ -11,7 +11,7 @@
  */
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, cleanup } from "@testing-library/react";
 import { useEditorStore } from "../stores/useEditorStore";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import {
@@ -151,6 +151,15 @@ describe("v0.8.0 WP1 临时文件体系", () => {
       });
     });
     afterEach(() => {
+      // v0.13.0 返修第三轮（问题⑭）：**必须卸载本组测试挂载的 hook**。
+      // 缺陷背景：本仓库没有全局 setupFiles（每个测试文件自己 cleanup），
+      // 而本组测试此前不清理 → 前一个用例的 useAutoSave 一直活着。
+      // 自动保存改为「自续期循环」后，遗留 hook 会在下一个用例把 store 的
+      // filePath 改成 "D:/docs/a.md" 时被唤醒（续期条件读的是 store 实时状态），
+      // 抢先写入**上一个用例**的 sourceRef 内容并清掉 isDirty →
+      // 下一个用例的 hook 因 isDirty=false 正确跳过 → 断言拿到陈旧内容。
+      // 这是测试污染，不是产品缺陷。
+      cleanup();
       vi.useRealTimers();
       act(() => {
         useSettingsStore.setState({ autoSaveIntervalMs: 30000 });

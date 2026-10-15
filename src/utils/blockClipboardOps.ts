@@ -64,6 +64,19 @@ export function hasInAppBlockClipboard(): boolean {
   return inAppBlockClipboard !== null;
 }
 
+/**
+ * v0.13.0 返修第三轮（问题2）：**同步**读取应用内块剪贴板。
+ *
+ * 缺陷背景：三点菜单一打开就调 `readBlockClipboard()`（内部 `navigator.clipboard.read()`）
+ * 只为算「粘贴」的禁用态，而 WebView2 对 `clipboard.read` 会弹出系统授权气泡
+ * 「http://tauri.localhost 想要查看复制到剪贴板的文本和图像」——用户完全没打算
+ * 粘贴，只是点了三个点看菜单，却被弹窗打断。菜单禁用态用本函数同步判定即可，
+ * **不触发任何系统剪贴板访问**。
+ */
+export function getInAppBlockClipboard(): BlockClipboardData | null {
+  return inAppBlockClipboard;
+}
+
 /** 测试用：清空应用内剪贴板 */
 export function __resetInAppBlockClipboardForTest(): void {
   inAppBlockClipboard = null;
@@ -104,12 +117,23 @@ export async function writeBlockClipboard(data: BlockClipboardData): Promise<boo
 }
 
 /**
- * 从剪贴板读块数据（三级降级：专用格式 → Markdown 文本 → **应用内兜底**）。
+ * 从剪贴板读块数据（三级降级：**应用内兜底** → 专用格式 → Markdown 文本）。
  *
  * v0.13.0 返修（问题5）：系统剪贴板读不到（WebView2 拒绝 clipboard-read）时
  * 回退到应用内兜底，让「复制 → 粘贴」在应用内必定可用。
+ *
+ * v0.13.0 返修第三轮（问题2）：**应用内兜底优先，且命中时完全不碰系统剪贴板**。
+ * 缺陷背景：旧实现先 `navigator.clipboard.read()`，而 WebView2 会为它弹出系统
+ * 授权气泡「http://tauri.localhost 想要查看复制到剪贴板的文本和图像」。
+ * 本应用内刚复制过块时，应用内兜底就是最权威的来源（专用格式、无损），
+ * 直接返回即可——既不弹窗、也不再依赖权限。
+ * 只有应用内没有数据（例如用户从**别的应用**复制了 Markdown 想粘进来）时，
+ * 才去读系统剪贴板。
  */
 export async function readBlockClipboard(): Promise<BlockClipboardData | null> {
+  // ① 应用内兜底优先（同步、零权限、零弹窗）
+  if (inAppBlockClipboard) return inAppBlockClipboard;
+  // ② 系统剪贴板
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.read) {
       const items = await navigator.clipboard.read();
@@ -129,9 +153,9 @@ export async function readBlockClipboard(): Promise<BlockClipboardData | null> {
       if (parsed) return parsed;
     }
   } catch {
-    // 权限被拒 / API 不可用 → 走应用内兜底
+    // 权限被拒 / API 不可用 → 没有可用块数据
   }
-  return inAppBlockClipboard;
+  return null;
 }
 
 /** PM 侧块级复制（不删块） */
@@ -172,17 +196,31 @@ export function deleteSelectedBlock(view: EditorView): void {
  *
  * 优先走专用格式的**结构级精确还原**（保留 B6 原文切片）；只有 Markdown 文本时
  * 走 `markdownToDoc` 重新解析。
+ *
+ * v0.13.0 返修第三轮（问题4）：**NodeSelection 时替换被选中的块**，不再一律
+ * `insert(selection.from)`。
+ *
+ * 缺陷背景：用户在块被整块选中（NodeSelection，三点菜单「选中该块」/ 点表格外沿
+ * 都会产生）时点「粘贴」，旧实现把载荷插到 `selection.from`（**该块起点之前**），
+ * 于是原块还在、新块又插进来 —— 用户感知为「粘贴多出来一整个块」。
+ * 现在选中块时用 `replaceSelection` 语义（替换该块），与通用编辑器一致。
  */
 export async function pasteBlockAtSelection(view: EditorView): Promise<boolean> {
   const data = await readBlockClipboard();
   if (!data) return false;
   const { state } = view;
   const tr = state.tr;
-  const insertPos = state.selection.from;
   try {
     const doc = markdownToDoc(data.markdown);
     if (!doc || doc.childCount === 0) return false;
-    tr.replaceWith(insertPos, insertPos, doc.content);
+    const { selection } = state;
+    if (selection instanceof NodeSelection) {
+      // 替换被选中的块（from/to 即该块区间）
+      tr.replaceWith(selection.from, selection.to, doc.content);
+    } else {
+      tr.replaceWith(selection.from, selection.from, doc.content);
+    }
+    if (!tr.docChanged) return false;
     view.dispatch(tr);
     view.focus();
     return true;

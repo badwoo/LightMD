@@ -23,14 +23,24 @@
 }
 
 /* ─── v0.8.3 需求3：光标行列 + 选中字数 ───────────── */
-/* v0.11.0 B4-10：阅读进度百分比（等宽数字，滚动时不引起底栏抖动） */
+/* v0.11.0 B4-10：阅读进度百分比（等宽数字，滚动时不引起底栏抖动）
+   v0.13.0 返修第三轮（问题8）：**固定宽度**。
+   缺陷背景（用户报告「带图片的文档进行阅读滚动时，底部栏的按钮（搜索、专注模式等）
+   会轻微颤动」）：滚动时阅读进度百分比在 0%~100% 之间变化（1/2/3 位数字），
+   而百分比与后面的「行 N 列 M」都是**内容宽度自适应**的 flex 项；
+   数字位数一变，右侧整块（搜索/专注/打字机等按钮）就被挤动几像素 —— 视觉上就是"颤动"。
+   `font-variant-numeric: tabular-nums` 只能让单个数字等宽，不能阻止位数变化引起的宽度变化。
+   这里按最大位数预留固定宽度（百分比 ≤ 3 位 + "%"），右侧按钮位置恒定。 */
 .statusbar-progress {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   margin-right: 10px;
   opacity: 0.75;
+  /* 3 位数字 + "%" 的稳定占位（12px 字号下约 28px） */
+  min-width: 3.2em;
 }
 
 .statusbar-cursor {
@@ -40,6 +50,10 @@
   /* 等宽数字：行列跳动时不引起底栏左右抖动 */
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  /* v0.13.0 返修第三轮（问题8）：滚动时行号/列号位数变化同样会挤动右侧按钮。
+     预留一个稳定宽度（不设 min-width 时 "行 9 列 1" → "行 100 列 12" 会变宽）。 */
+  min-width: 9.5em;
+  justify-content: flex-start;
 }
 
 .statusbar-selected {

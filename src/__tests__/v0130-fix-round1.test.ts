@@ -149,7 +149,13 @@ describe("问题1：表格可放光标（单击单元格不再全选整表）", 
   it("单元格内单击会作废旧的范围选区（避免残留高亮看起来像全选）", () => {
     const src = SRC("core/plugins/table-editor.ts");
     const fn = src.slice(src.indexOf("private onRangeMouseDown"));
-    expect(fn.slice(0, 900)).toContain("this.clearCellRange();");
+    // 取到方法体结束（不用固定字符数：注释会随返修增长，固定窗口会误判）
+    const body = fn.slice(0, fn.indexOf("\n  }\n"));
+    expect(body).toContain("this.clearCellRange();");
+    // v0.13.0 返修第三轮（问题5/7）：热区内也要先登记锚点（旧实现在热区直接 return，
+    // 导致起手点落在边缘时选不出范围 → 合并按钮永久禁用）
+    expect(body).toContain("this.rangeAnchor = { ...coord, cellEl: cell };");
+    expect(body).toContain("this.pendingResize =");
   });
 
   it("点表格外沿仍建立整表 NodeSelection（保留 Delete 删表 / 拖拽入口）", () => {
@@ -213,20 +219,44 @@ describe("问题2：公式块与 Mermaid 块单击即进入编辑", () => {
 // ───────── 问题3：块级拖拽手柄保留且无需先选中 ─────────
 
 describe("问题3：块级拖拽手柄（⋮⋮）保留且可直接拖拽", () => {
-  it("CSS 对**所有**顶层块画手柄（不再只覆盖 5 个 wrapper class）", () => {
+  // v0.13.0 返修第三轮（问题1）：本组断言按**用户实机反馈**更新。
+  // 上一轮为了让手柄"对所有块可见"，CSS 用了无差别的 `.ProseMirror > *::after`，
+  // 结果每个段落左缘都冒出手柄；用户明确要求「只需要代码块、图表、公式、图片等
+  // 这些才需要加小手柄」。故选择器收窄为四类 wrapper + 含图片的段落，
+  // 断言随之从"所有顶层块"改为"这组特殊块"。
+  it("CSS 对**特殊块**（代码/图表/公式/表格/图片块）画手柄", () => {
     const css = SRC("styles/editor.css");
-    expect(css).toContain(".ProseMirror > *::after");
+    for (const cls of [
+      "code-block-wrapper",
+      "mermaid-block-wrapper",
+      "math-block-wrapper",
+      "table-wrapper",
+    ]) {
+      expect(css).toContain(`.ProseMirror > .${cls}::after`);
+    }
+    // 图片块（图片是行内节点，故用 :has 匹配含图片的段落）
+    expect(css).toContain(".ProseMirror > p:has(> img)::after");
     expect(css).toContain('content: "⋮⋮"');
     // 手柄必须常驻可交互（pointer-events:auto），否则鼠标移向手柄时块 hover 失效
-    const rule = css.slice(css.indexOf(".ProseMirror > *::after"));
+    const rule = css.slice(css.indexOf('content: "⋮⋮"'));
     expect(rule.slice(0, 900)).toContain("pointer-events: auto");
   });
 
-  it("不再有会覆盖手柄内容为空的 wrapper ::after 规则", () => {
+  it("不再有无差别的 `.ProseMirror > *` 手柄规则（普通段落不该有手柄）", () => {
     const css = SRC("styles/editor.css");
-    // 旧实现有一段 `content: ""` 的 wrapper::after，会覆盖上面的 "⋮⋮"
-    expect(css).not.toContain('.ProseMirror > .table-wrapper::after');
-    expect(css).not.toContain('.ProseMirror > .code-block-wrapper::after');
+    // 只看真实选择器行，不看解释性注释
+    const selectorLines = css
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("/*") && l.includes("{"));
+    expect(selectorLines.some((l) => l.includes(".ProseMirror > *::after"))).toBe(false);
+    expect(selectorLines.some((l) => l.includes(".ProseMirror > *:hover::after"))).toBe(false);
+  });
+
+  it("不再有会把手柄内容覆盖为空的 wrapper ::after 规则", () => {
+    const css = SRC("styles/editor.css");
+    // 旧实现有一段 `content: ""` 的 wrapper::after，会覆盖上面的 "⋮⋮" 让手柄变空。
+    // 现在 wrapper::after 是**手柄本身**，故改为断言"没有空 content 的那条"。
+    expect(css).not.toMatch(/\.ProseMirror > \.(?:table|code-block|math-block|mermaid-block)-wrapper::after\s*\{[^}]*content:\s*""/);
   });
 
   it("拖拽插件不再要求先有 NodeSelection（v0.13.0 单击即编辑后块几乎不会整块选中）", () => {

@@ -15,7 +15,7 @@
  * - update() 用 rAF 合并渲染：连续输入只在下一帧渲染一次，减少 KaTeX 开销
  * - 语法错误时显示友好提示
  */
-import type { NodeView, EditorView } from "prosemirror-view";
+import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
 import katex from "katex";
 // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除；行内公式不需要）
@@ -116,6 +116,20 @@ export class MathInlineView implements NodeView {
     return "";
   }
 
+  /**
+   * v0.13.0 返修第三轮（问题3）：忽略自身编辑态的 DOM 突变（与块级公式同因）。
+   *
+   * toggleEditMode() 改 `this.dom` 的 class 与 contentDOM 的 display，
+   * 不忽略的话 PM 会把这些当成文档改动 → 重建节点 DOM → 编辑态被重置。
+   * contentDOM 内的真实文本编辑照常放行。
+   */
+  ignoreMutation(mutation: ViewMutationRecord): boolean {
+    const target = mutation.target as globalThis.Node;
+    if (target === this.dom && mutation.type === "attributes") return true;
+    if (target === this.contentDOM && mutation.type === "attributes") return true;
+    return false;
+  }
+
   update(node: PMNode): boolean {
     if (node.type !== this.node.type) return false;
     this.node = node;
@@ -162,6 +176,33 @@ export class MathBlockView implements NodeView {
     handleBlockStopEvent(this.dom, this.view, this.getPos, event);
   /** v0.13.0 需求1：右上角三点菜单按钮（常驻显示由 CSS 控制） */
   private kebabButton: HTMLButtonElement | null = null;
+
+  /**
+   * v0.13.0 返修第三轮（问题3）：**忽略自身编辑态造成的全部 DOM 突变**。
+   *
+   * 缺陷背景（用户报告「mermaid 图表块和公式块单击没有立即进入编辑，点击整个块会闪动」）：
+   * `enterEditMode()` 改了三处 DOM：contentDOM 的 `style`（display:none→block）、
+   * previewLayer 的 `style`、以及 `this.dom` 的 `class`（math-editing）与 `data-latex`。
+   * 这些都是**编辑器自己的**变化，但本类没有实现 `ignoreMutation` → ProseMirror 的
+   * DOMObserver 把它们当成「文档内容被外部改动」→ 节点标脏 → 下一帧**重建整个节点 DOM**
+   * （实测 80ms 后 wrapper 与 contentDOM 都换成新对象、class 与 display 全部回到初始值）。
+   * 用户看到的就是编辑层一闪即没（"闪动"），等于没进编辑态。
+   *
+   * 实测抓到的突变序列：contentDOM.style / previewLayer.style /
+   * wrapper.class / wrapper.data-latex / previewLayer 子节点变化。
+   * 本方法把它们全部忽略；**contentDOM 内部的真实文本编辑**（characterData /
+   * childList）仍交给 PM 正常处理，否则在公式里打字不会进文档。
+   */
+  ignoreMutation(mutation: ViewMutationRecord): boolean {
+    const target = mutation.target as globalThis.Node;
+    // 预览层：整体是渲染产物，与文档内容无关
+    if (this.previewLayer.contains(target)) return true;
+    // 编辑层自身的 style 变化（display 切换）不是文档内容
+    if (target === this.contentDOM && mutation.type === "attributes") return true;
+    // wrapper 自身的 class / data-latex（编辑态标记 + 预览缓存）
+    if (target === this.dom && mutation.type === "attributes") return true;
+    return false;
+  }
 
   constructor(node: PMNode, view: EditorView, getPos: () => number | undefined) {
     this.node = node;

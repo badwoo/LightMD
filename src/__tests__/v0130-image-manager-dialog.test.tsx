@@ -108,8 +108,13 @@ describe("v0.13.0 需求11 图片管理面板：文档图片页签", () => {
   it("未保存文档 → 提示先保存，转 assets 按钮禁用", () => {
     renderPanel({ docPath: null });
     expect(screen.getByText(/请先保存/)).toBeTruthy();
-    const migrateBtn = screen.getByTitle(/复制到文档同级/);
-    expect((migrateBtn as HTMLButtonElement).disabled).toBe(true);
+    // v0.13.0 返修第三轮（问题12）：面板改为**一行一次出现**（同一 src 出现两次 = 两行），
+    // 故这里会有多个「转 assets」按钮，全部应被禁用。
+    const migrateBtns = screen.getAllByTitle(/复制到文档同级/);
+    expect(migrateBtns.length).toBeGreaterThanOrEqual(1);
+    for (const b of migrateBtns) {
+      expect((b as HTMLButtonElement).disabled).toBe(true);
+    }
   });
 });
 
@@ -129,17 +134,24 @@ describe("v0.13.0 需求11 转 assets", () => {
     expect(screen.getByText(/已转存为 a\.png/)).toBeTruthy();
   });
 
-  it("data URL 图 → 无文件名，提示失败且不改写引用", async () => {
+  it("data URL 图 → 转 assets 按 mime 合成 image.png 落盘并改写引用", async () => {
+    // v0.13.0 返修第三轮（问题10）：本条断言按**新需求**更新。
+    // 旧行为是「data URL 取不到文件名 → 转存失败」；而 ⑩ 明确要求面板自动识别
+    // 内联 base64，且其可用的操作就是「转 assets」（把内联图落盘成 assets 文件）。
     mockWriteFile.mockResolvedValue(undefined);
     const { onRewriteRefs } = renderPanel({
       markdown: "![图](data:image/png;base64,iVBORw0KGgo=)\n",
     });
-    fireEvent.click(screen.getByTitle(/复制到文档同级/));
-    await waitFor(() => expect(screen.getByText(/转存失败/)).toBeTruthy());
-    // data URL 没有文件名（末段是 base64 载荷）→ 不得写盘、不得改写引用
-    expect(mockWriteFile).not.toHaveBeenCalled();
-    expect(mockReadFile).not.toHaveBeenCalled();
-    expect(onRewriteRefs).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByTitle(/复制到文档同级/)[0]);
+
+    await waitFor(() => expect(mockWriteFile).toHaveBeenCalledTimes(1));
+    // 文件名由 mime 合成（png → image.png），并落到 assets 目录
+    const writtenPath = String(mockWriteFile.mock.calls[0][0]);
+    expect(writtenPath).toContain("assets/image.png");
+    expect(onRewriteRefs).toHaveBeenCalledWith([
+      { oldSrc: "data:image/png;base64,iVBORw0KGgo=", newSrc: "assets/image.png" },
+    ]);
+    expect(screen.getByText(/已转存为 image\.png/)).toBeTruthy();
   });
 
   it("相对路径图 → 直接 copyFile（不删源文件，v1 决策）", async () => {
@@ -158,10 +170,13 @@ describe("v0.13.0 需求11 重命名", () => {
   it("输入新名 → rename_file + onRewriteRefs", async () => {
     mockRenameFile.mockResolvedValue(undefined);
     const { onRewriteRefs } = renderPanel({ markdown: "![图](./assets/a.png)\n" });
-    const input = screen.getByPlaceholderText("a.png");
-    fireEvent.change(input, { target: { value: "b.png" } });
+    // v0.13.0 返修第三轮（问题13）：输入框只显示/编辑**主名**，后缀由原名自动保留，
+    // 故 placeholder 是 "a"（不再是 "a.png"）；用户只填 "b" 即可。
+    const input = screen.getByPlaceholderText("a");
+    fireEvent.change(input, { target: { value: "b" } });
     fireEvent.click(screen.getByTitle(/重命名文件/));
     await waitFor(() => expect(mockRenameFile).toHaveBeenCalledTimes(1));
+    // 后缀 .png 自动补回
     expect(onRewriteRefs).toHaveBeenCalledWith([{ oldSrc: "./assets/a.png", newSrc: "./assets/b.png" }]);
     expect(screen.getByText(/已重命名为 b\.png/)).toBeTruthy();
   });

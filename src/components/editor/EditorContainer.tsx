@@ -65,7 +65,6 @@ import {
   deleteSelectedBlock,
   hasInAppBlockClipboard,
   pasteBlockAtSelection,
-  readBlockClipboard,
   selectBlockAt,
 } from "../../utils/blockClipboardOps";
 // v0.13.0 需求1：块三点菜单（NodeView 派发的事件名 + 菜单项构建）
@@ -1093,17 +1092,25 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, [content, forceUpdateKey]);
 
   // ─── v0.13.0 返修（问题6）：同步「文档是否含图片」标志 ──────────
-  // 阅读/分屏模式读 PM 文档（真实图片节点）；纯源码模式没有 PM 视图，
-  // 退回在 Markdown 文本上判定（已剔除代码块/行内代码，避免假入口）。
-  // 依赖 content：每次编辑都会经 onContentChange 回写 content，因此能跟随增删图片。
+  // 用于决定右上角「图片管理」悬浮入口是否显示。
+  //
+  // v0.13.0 返修第三轮（问题9）：**改为只依据 `content` 文本判定**。
+  //
+  // 缺陷背景（用户报告「打开带图片的文档，右上角的图片管理图标没有自动出现」）：
+  // 旧实现在阅读模式下读 `viewRef.current.state.doc`，但本 effect 的声明位置在
+  // 「文件切换重建 doc」那个 effect **之前**（React 按声明顺序执行 effect）→
+  // 切文件时这里读到的还是**上一个文档**的文档树；而依赖数组 `[content, viewMode,
+  // forceUpdateKey]` 在「无图文档 → 有图文档」且两者 content 结构不同时虽会变化，
+  // 但读到的仍是旧 doc，于是标志被算成 false。实测：从无图文档切到有图文档后
+  // 图标不出现；反向切回后图标也不消失（双向错）。
+  //
+  // `markdownHasImage(content)` 已经在**文本层**判定并剔除了围栏/行内代码里的假图片
+  // （v0.13.0 返修问题6 引入，有单测），而 `content` 是 App 侧的唯一内容源、
+  // 文件切换与每次编辑都会更新 → 与 effect 执行顺序无关，不存在读到旧文档的问题。
   useEffect(() => {
-    const view = viewRef.current;
-    const has =
-      viewMode === "preview" && view
-        ? docHasImage(view.state.doc)
-        : markdownHasImage(content);
+    const has = markdownHasImage(content);
     setDocHasImageFlag((prev) => (prev === has ? prev : has));
-  }, [content, viewMode, forceUpdateKey]);
+  }, [content, viewMode, forceUpdateKey, filePath]);
 
   // ─── v0.7.4 修复1/2 / v0.7.5 功能2/3：AI 气泡设置变化 → 刷新浮动按钮 ──────────
   // AI 气泡的显示/颜色由设置驱动，而设置变化不会产生 PM 事务，
@@ -4362,17 +4369,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (!isNode && !hasTextSelection) return; // → 原生菜单
       e.preventDefault();
       const { clientX: x, clientY: y } = e;
-      // v0.13.0 需求1：读剪贴板判断「粘贴」是否可用（异步，菜单打开时刷新）
-      void readBlockClipboard().then((data) => {
-        setPmContextMenu((s) => (s.open ? { ...s, hasBlockClipboard: !!data } : s));
-      });
+      // v0.13.0 返修第三轮（问题2）：**不再为了算禁用态去读系统剪贴板**。
+      // 缺陷背景：旧实现在这里 `void readBlockClipboard()`，而它会调
+      // `navigator.clipboard.read()` → WebView2 弹出系统授权气泡
+      // 「http://tauri.localhost 想要查看复制到剪贴板的文本和图像」。
+      // 用户只是右键了一下，就被系统弹窗打断。
+      // 应用内兜底（本应用刚复制过的块）是同步可知的，用它给禁用态初值即可。
       setPmContextMenu({
         open: true,
         x,
         y,
         hasSelection: hasTextSelection,
         nodeKind: isNode ? sel!.node.type.name : null,
-        hasBlockClipboard: false,
+        hasBlockClipboard: hasInAppBlockClipboard(),
       });
     };
     container.addEventListener("contextmenu", onContextMenu);
@@ -4412,16 +4421,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const a = detail.anchor;
       const x = a ? a.left : 0;
       const y = a ? a.bottom + 4 : 0;
-      // 剪贴板禁用态：应用内兜底是同步可知的，先给准确初值再异步补系统剪贴板结果
+      // v0.13.0 返修第三轮（问题2）：剪贴板禁用态**只用应用内兜底**同步判定。
+      // 缺陷背景：旧实现紧接着 `void readBlockClipboard()` 去补系统剪贴板结果，
+      // 而 `navigator.clipboard.read()` 会让 WebView2 弹出系统授权气泡
+      // 「http://tauri.localhost 想要查看复制到剪贴板的文本和图像」——
+      // 用户只是点开三点菜单，并不想粘贴。现在完全不碰系统剪贴板：
+      // 本应用内复制过块就可用「粘贴」，否则置灰（点粘贴时才会真正去读）。
       setBlockKebabMenu({
         open: true,
         x,
         y,
         pos: detail.pos,
         hasClipboard: hasInAppBlockClipboard(),
-      });
-      void readBlockClipboard().then((data) => {
-        setBlockKebabMenu((s) => (s.open ? { ...s, hasClipboard: !!data } : s));
       });
     };
     container.addEventListener(BLOCK_ACTION_EVENT, onBlockAction);

@@ -9,17 +9,38 @@ import { buildTableGridFromTable, gridColumnCount, tableHasSpan, type TableGrid 
 /**
  * v0.13.0 需求1：把**单个块节点**序列化为 Markdown（块级复制/剪切用）。
  *
- * 不能直接喂给 `docToMarkdown`——它吃的是 doc（内部 `doc.forEach`），且其 B6
- * 快路径只在「顶层块行号连续覆盖」时生效。这里把该块包进一个临时 doc 再走
- * 逐块路径：命中 B6 的块输出原文切片，未命中的走规范序列化。
+ * v0.13.0 返修第三轮（问题4）：**不再包临时 doc 走 `docToMarkdown`**。
+ *
+ * 缺陷背景（用户报告「复制某个块再粘贴会把整个文档都粘贴了」）：
+ * 旧实现把该块包进一个临时 doc 再调 `docToMarkdown`，而后者的 **B6 快路径**
+ * 判定是 `typed[0].start === 0`（首个块从源码第 0 行开始且全部块都有原文记录）
+ * → 对「只含一个块的临时 doc」来说，只要该块在原文里从第 0 行开始（**文档首块**，
+ * 或任何被 `start === 0` 命中的块）就整篇命中快路径，直接返回
+ * `typed[0].source` —— 也就是**整份源文档**，而不是那一个块。
+ * 实测：对 `"AAA\n\nBBB\n"` 复制首段得到 `"AAA\n\nBBB\n"`（整篇）。
+ * 粘贴时 `replaceWith(insertPos, insertPos, doc.content)` 会把载荷里的**每个块**
+ * 都插入 → 用户看到「粘贴把整篇文档都粘进来了」。
+ *
+ * 现改为：命中 B6 原文记录时**只切该块自己的行区间**（不含块后空行）；
+ * 未命中（编辑过/程序化构造）时走单块规范序列化。
  *
  * @param node 顶层块节点（code_block / table / paragraph / …）
  * @returns 该块的 Markdown 源码（含尾部换行）
  */
 export function nodeToMarkdown(node: Node): string {
   if (!node) return "";
-  const doc = node.type.schema.nodes.doc.create(null, node);
-  return docToMarkdown(doc);
+  const info = getBlockSource(node);
+  if (info) {
+    // B6：该块在原文里的行区间 [start, end)。end 已被 parser 收缩到内容结束行
+    // （列表类会掉块后空行），故这里**不要**再补到文档尾——只要这一个块。
+    const lines = info.source.split("\n");
+    const start = Math.max(0, Math.min(info.start, lines.length));
+    const end = Math.max(start + 1, Math.min(info.end, lines.length));
+    return lines.slice(start, end).join("\n") + "\n";
+  }
+  const md = blockToMarkdown(node, true);
+  if (md === null) return "";
+  return md.endsWith("\n") ? md : md + "\n";
 }
 
 /**

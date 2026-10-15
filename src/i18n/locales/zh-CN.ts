@@ -693,6 +693,18 @@ export const zhCN: Record<string, string> = {
   "imageManager.cleanConfirm": "确定删除所选 {count} 个文件吗？文件将进入回收站。",
   "imageManager.cleaned": "已删除 {count} 个文件（回收站可还原）",
   "imageManager.cleanPartial": "{count} 个文件删除失败",
+  // ─── v0.13.0 第三轮返修 ⑩⑫⑬：引用形态 / 双向转换 / 只改主名 ──────
+  "imageManager.colKind": "类型",
+  "imageManager.kindBase64": "内联 base64",
+  "imageManager.kindFile": "本地文件",
+  "imageManager.kindRemote": "远程图片",
+  "imageManager.inline": "转 base64",
+  "imageManager.inlineTip": "读取该文件并内联为 data: URL，文档不再依赖这个磁盘文件",
+  "imageManager.inlined": "已内联为 base64（{name}）",
+  "imageManager.inlineFailed": "转为 base64 失败",
+  "imageManager.remoteUnsupported": "远程图片暂不支持转存到 assets/",
+  "imageManager.renameUnavailable": "远程图片没有本地文件，无法重命名",
+  "imageManager.renameBaseTip": "只改文件名，后缀 {ext} 保持不变",
   // ─── 编辑器右键菜单 ────────────────────────────────────
   "menu.undo": "撤销",
   "menu.redo": "恢复",

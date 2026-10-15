@@ -686,6 +686,18 @@ export const enUS: Record<string, string> = {
   "imageManager.cleanConfirm": "Delete the selected {count} file(s)? They will be moved to the recycle bin.",
   "imageManager.cleaned": "Deleted {count} file(s) (restorable from the recycle bin)",
   "imageManager.cleanPartial": "Failed to delete {count} file(s)",
+  // ─── v0.13.0 round-3 fixes ⑩⑫⑬: source kind / two-way conversion / base-name rename ──
+  "imageManager.colKind": "Kind",
+  "imageManager.kindBase64": "Inline base64",
+  "imageManager.kindFile": "Local file",
+  "imageManager.kindRemote": "Remote image",
+  "imageManager.inline": "To base64",
+  "imageManager.inlineTip": "Read the file and inline it as a data: URL; the document no longer depends on this file",
+  "imageManager.inlined": "Inlined as base64 ({name})",
+  "imageManager.inlineFailed": "Failed to convert to base64",
+  "imageManager.remoteUnsupported": "Remote images cannot be copied into assets/ yet",
+  "imageManager.renameUnavailable": "Remote images have no local file to rename",
+  "imageManager.renameBaseTip": "Edits the name only; the {ext} extension is preserved",
   // ─── Editor context menu ───────────────────────────────────
   "menu.undo": "Undo",
   "menu.redo": "Redo",

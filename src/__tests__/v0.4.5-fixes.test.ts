@@ -140,31 +140,42 @@ describe("问题3：表格列宽拖拽 cell 左边缘热区", () => {
     expect(onHoverSection![0]).toMatch(/zone\.col/);
   });
 
-  it("onMouseDown 在 cell 左边缘 8px 内也触发列宽拖拽", () => {
+  // v0.13.0 返修第三轮（问题5/7）：本组断言按**新结构**更新。
+  // 缺陷背景：`onMouseDown` 与 `onRangeMouseDown` 此前各自独立判定 cell 边缘热区，
+  // 而 `onMouseDown` 先注册先执行 → 落在边缘 8px（列宽）/ 6px（行高）内的按下都被
+  // 变成缩放拖拽，用户"选中两个单元格合并"的起手点一旦落在边缘就被吞掉。
+  // 现在按下时只**登记**待定手势（`pendingResize`），由首次 mousemove 按
+  // 「是否离开起始格 / 主导轴」定夺；具体的 colIdx 计算迁到 `beginResizeFromGesture`。
+  // 左/右边缘热区的行为不变，只是判定位置变了，故断言指向新位置。
+  it("onMouseDown 用 hitResizeZone 判定热区并登记待定手势（不再直接启动缩放）", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
     const onMouseDownSection = src.match(/private onMouseDown\(e: MouseEvent\)[\s\S]*?\n  \}/);
     expect(onMouseDownSection).not.toBeNull();
-    // 应同时计算左边缘和右边缘偏移
-    expect(onMouseDownSection![0]).toMatch(/offsetXLeft|rect\.left/);
-    expect(onMouseDownSection![0]).toMatch(/offsetXRight|rect\.right/);
+    // 统一走 hitResizeZone（其内部同时算 rect.left / rect.right）
+    expect(onMouseDownSection![0]).toMatch(/hitResizeZone/);
+    // 登记待定手势，而不是立即 startResize
+    expect(onMouseDownSection![0]).toMatch(/this\.pendingResize\s*=/);
+    expect(onMouseDownSection![0]).not.toMatch(/this\.startResize\(/);
   });
 
-  it("onMouseDown 中左边缘触发时 colIdx = cellIdx - 1（前一列的右边缘）", () => {
+  it("beginResizeFromGesture 中左边缘触发时 colIdx = cellIdx - 1（前一列的右边缘）", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
-    const onMouseDownSection = src.match(/private onMouseDown\(e: MouseEvent\)[\s\S]*?\n  \}/);
-    expect(onMouseDownSection).not.toBeNull();
-    // 验证存在 inLeftEdge 或左边缘判断分支
-    expect(onMouseDownSection![0]).toMatch(/inLeftEdge|offsetXLeft/);
-    // 验证存在 colIdx = cellIdx - 1 的逻辑
-    expect(onMouseDownSection![0]).toMatch(/cellIdx\s*-\s*1/);
+    const section = src.match(/private beginResizeFromGesture\([\s\S]*?\n  \}/);
+    expect(section).not.toBeNull();
+    // 同时计算左边缘和右边缘偏移
+    expect(section![0]).toMatch(/rect\.left/);
+    expect(section![0]).toMatch(/rect\.right/);
+    // 存在 inLeftEdge 判断分支与 colIdx = cellIdx - 1 的逻辑
+    expect(section![0]).toMatch(/inLeftEdge/);
+    expect(section![0]).toMatch(/cellIdx\s*-\s*1/);
   });
 
-  it("onMouseDown 第一列左边缘不触发列宽拖拽（避免误触表格左外侧框线）", () => {
+  it("beginResizeFromGesture 第一列左边缘不触发列宽拖拽（避免误触表格左外侧框线）", () => {
     const src = readSrc("../core/plugins/table-editor.ts");
-    const onMouseDownSection = src.match(/private onMouseDown\(e: MouseEvent\)[\s\S]*?\n  \}/);
-    expect(onMouseDownSection).not.toBeNull();
+    const section = src.match(/private beginResizeFromGesture\([\s\S]*?\n  \}/);
+    expect(section).not.toBeNull();
     // F1 修复：用 isFirstCellInRow 判定第一列，左边缘命中时 return 放行事件（避免死区）
-    expect(onMouseDownSection![0]).toMatch(/isFirstCellInRow/);
+    expect(section![0]).toMatch(/isFirstCellInRow/);
   });
 
   it("stopEvent 在 cell 左边缘 8px 内也返回 true", () => {

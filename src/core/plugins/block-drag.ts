@@ -37,6 +37,43 @@ export const DRAGGABLE_BLOCKS = new Set([
   "horizontal_rule",
 ]);
 
+/**
+ * v0.13.0 返修第三轮（问题1）：**真正显示 ⋮⋮ 手柄**的块类型白名单。
+ *
+ * 缺陷背景：上一轮为了让手柄"对所有块可见"，CSS 用 `.ProseMirror > *::after`
+ * 给**每个段落**都画了手柄，用户反馈「鼠标移动到一个段落每一个块前面都有小手柄，
+ * 这个有问题，只需要代码块、图表、公式、图片等这些才需要」。
+ * 现在 CSS 已收窄，拖拽热区必须同步收窄——否则"看不见手柄却能拖"，
+ * 用户会在普通段落左缘意外触发拖拽（比没有手柄更糟）。
+ *
+ * 图片不是独立块类型：它是段落里的行内节点，故图片块用 `paragraph` + 含 image
+ * 判定（见 [`isHandleBlock`]）。
+ */
+export const HANDLE_BLOCK_TYPES = new Set([
+  "code_block",
+  "mermaid_block",
+  "math_block",
+  "table",
+]);
+
+/**
+ * v0.13.0 返修第三轮（问题1）：该顶层块是否显示手柄（= 可从头柄拖拽）。
+ *
+ * 与 editor.css 的选择器**一一对应**：四类 wrapper 块 + 含图片的段落。
+ */
+export function isHandleBlock(doc: PMNode, pos: number): boolean {
+  const node = doc.nodeAt(pos);
+  if (!node) return false;
+  if (HANDLE_BLOCK_TYPES.has(node.type.name)) return true;
+  if (node.type.name !== "paragraph") return false;
+  // 图片块：段落内直接含 image 节点
+  let hasImage = false;
+  node.forEach((child) => {
+    if (child.type.name === "image") hasImage = true;
+  });
+  return hasImage;
+}
+
 /** 手柄热区宽度（块左缘外扩视觉 px，zoom 时按比例换算） */
 export const BLOCK_DRAG_HANDLE_WIDTH = 18;
 
@@ -341,6 +378,9 @@ export function blockDragPlugin(): Plugin {
       if (idx < 0 || idx >= starts.length) continue;
       const pos = starts[idx];
       if (!isDraggableBlock(view.state.doc, pos)) continue;
+      // v0.13.0 返修第三轮（问题1）：只有**显示手柄**的块才接受拖拽热区
+      // （普通段落/标题/列表/引用不再有手柄，也不应在此被拖走）
+      if (!isHandleBlock(view.state.doc, pos)) continue;
       if (inHandleZone(view, pos, clientX, clientY)) return pos;
     }
     return null;

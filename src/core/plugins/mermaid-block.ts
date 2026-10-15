@@ -247,10 +247,24 @@ export class MermaidBlockView implements NodeView {
   }
 
   ignoreMutation(mutation: ViewMutationRecord): boolean {
+    const target = mutation.target as globalThis.Node;
     // 忽略预览层的 DOM 突变
-    if (this.previewLayer.contains(mutation.target as globalThis.Node)) {
+    if (this.previewLayer.contains(target)) {
       return true;
     }
+    // v0.13.0 返修第三轮（问题3）：**自身编辑态的突变也必须忽略**。
+    //
+    // 缺陷背景（用户报告「mermaid 图表块单击没有立即进入编辑，点击整个块会闪动」）：
+    // enterEditMode() 改 contentDOM 的 style、previewLayer 的 style、以及 this.dom 的
+    // class（mermaid-editing）。这些是编辑器自己的 DOM 变化，但本方法此前只忽略
+    // previewLayer 内的突变 → PM 的 DOMObserver 把其余变化当成"文档被外部改动" →
+    // 节点标脏 → 下一帧重建整个节点 DOM（实测 80ms 后 wrapper 与 contentDOM 都换成
+    // 新对象、class 与 display 全部回到初始值）。
+    // 用户看到的就是编辑层一闪即没（"闪动"），等于没进编辑态。
+    // 注意：contentDOM 内的**文本编辑**（characterData / childList）必须放行，
+    // 否则在图表源码里打字不会进文档。
+    if (target === this.contentDOM && mutation.type === "attributes") return true;
+    if (target === this.dom && mutation.type === "attributes") return true;
     return false;
   }
 
