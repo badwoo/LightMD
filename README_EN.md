@@ -107,8 +107,15 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 ### 🖼 Images & Code Blocks
 
 - Image sizing `![alt|300](src)`, alt text, and drop-point insertion for dragged-in images
-- Code block language dropdown with instant re-highlighting; 34 built-in highlighting languages
+- **Image left/center/right alignment** (persisted as an `![alt|center](src)` suffix) and an **image manager panel** (list images / move to assets / rename / clean unreferenced, current document only)
+- Code block language dropdown with instant re-highlighting; 34 built-in highlighting languages; **one-click copy in the top-right corner**
 - In-paragraph line-break semantics selectable (GFM immediate break / CommonMark two spaces)
+
+### 📋 Tables
+
+- The insert dialog has a live Markdown preview and supports slash headers
+- Column-width / row-height dragging, whole-column alignment, row/column add and delete, and a header row that cannot be deleted (so data never impersonates a header)
+- **Cell merge / split** (drag across cells → 🔗/✂️; both colspan and rowspan; ordinary tables round-trip with zero diff)
 
 ### ⚡ Navigation & Performance
 
@@ -346,6 +353,19 @@ Two user reports drove this batch: "clicking a block always activates the block 
 | **Block-level source markers, completed** | Moving the caret into a **list / task list / horizontal rule / block formula / `[toc]` / Mermaid diagram** shows the matching source marker on the left (`- ` / `1. ` / `1) ` / `- [ ] ` / `- [x] ` / `---` / `$$` / `[toc]` / ` ```mermaid `). Ordered lists show the **real ordinal**; task lists follow the checkbox state. Markers are absolutely-positioned pseudo-elements, so **text geometry never shifts** when the caret enters or leaves (no regression of the v0.12.0 heading jitter). Tables and images are explicitly out of scope |
 | **Emoji shortcode completion** | Typing `:` plus letters in reading mode opens a candidate list (data from `markdown-it-emoji`'s full table, ~1900 entries, **lazy-loaded so it stays out of the main bundle**); ↑↓ to move, Enter inserts the `:name:` shortcode (immediately rendered as a glyph while **the file still stores the shortcode** — source stays reversible), Esc to close; more than 50 candidates are truncated with a hint. `::` does not trigger; code blocks do not trigger |
 | **Shortcut baseline** | 50 → **52**: new `Ctrl+/` (batch comment) and `Ctrl+P` (quick open file) |
+
+**High-risk (batch 4)**
+
+| Item | Detail |
+| --- | --- |
+| **Image manager panel** | Open it from the command palette ("Image Manager"); scope is the **current document only**. Two tabs: ① Document images — every image with its reference count (same src merged into one row); ② Unused files — files in `assets/` that are **not referenced by this document**. Three actions: **Move to assets** (external sources are copied into `assets/` next to the document and references rewritten to `assets/<name>`, **the original file is kept**), **Rename** (updates every reference in the document, one transaction = one undo), **Clean unused** (multi-select → confirmation → goes to the recycle bin). Every write registers a self-write fingerprint, so it is **never** misreported as an external change |
+| **Table cell merge / split** | **Drag across cells** to draw a rectangle (cells highlight), then click 🔗 in the toolbar or right-click "Merge Cells"; put the caret on a merged cell and click ✂️ or right-click "Split Cell". **Both horizontal (colspan) and vertical (rowspan)** are supported. The on-disk form embeds HTML inside the cell: `\| <td colspan="2">A</td> \| B \|`, and the merge survives reopening.<br>**Plain pipe tables (no merges) round-trip byte-for-byte** (`md → doc → md`) — this is the single most important regression lock for this feature, so merging cannot affect how ordinary tables are stored |
+| **Merge safety boundaries** | ① A selection that **partially overlaps** an existing merged cell is rejected with "split it first" (never cuts a span in half); ② merging keeps only the **top-left cell's content** (the covered cells' content is discarded, same as Typora/Word); ③ splitting restores the structure and re-adds placeholder cells (columns do not shift) but cannot restore discarded content; ④ header deletion, column alignment and column-width dragging all keep working on tables that contain merges |
+| **Export degradation** | DOCX / LaTeX **strip the `<td>` tags but keep the content** — no literal HTML in the output and not a single character of content lost; the visual merge itself is not carried into Word/LaTeX (a declared non-portable aspect) |
+
+**Quality verification**: frontend **271 files / 4507 tests all pass** (baseline 265/4376). New: `v0130-image-manager` 30 tests (counting truth table + name-collision resolution + difference set), `v0130-image-manager-dialog` 12 tests (real component + Tauri stubs), `v0130-table-grid` 33 tests (grid expansion + placeholder recognition), `v0130-table-merge` 21 tests (**plain-pipe zero-diff regression lock** + round-trips for three table shapes + schema toDOM), `v0130-table-merge-ops` 27 tests (real documents + merge/split/validation transactions), `v0130-table-merge-export` 8 tests (export degradation loses no content); `tsc --noEmit` clean.
+
+**Upgrade notes**: overwrite the install in place; no breaking changes. Two new entry points (the command palette's "Image Manager" and the table toolbar's 🔗/✂️) and **no new shortcuts**. Table serialization is **byte-identical to the previous version for tables without merged cells**; a table with merges is upgraded from plain text to the `<td colspan>` form on its first save, since that is the only carrier for merge information. The image manager is scoped to the **current document** — its "unused" list means "not referenced by this document", not "unused by every document".
 
 **Quality verification**: frontend **265 files / 4376 tests all pass** (baseline 262/4284). New: `v0130-block-clipboard` 24 tests, `v0130-block-interaction` 15 tests (**real `createEditor` mounts**), `v0130-autosave-conflict` 19 tests (driving the real `useAutoSave`), `v0130-external-refresh` 13 tests, `v0130-image-align` 31 tests (schema / serialization / round-trip / dialog), `v0130-code-copy` 7 tests, `v0130-outline-collapse` 19 tests (collapse-stack truth table + RTL component behaviour), `v0130-quick-open` 39 tests (fuzzy-match truth table + component + shortcut registration), `v0130-toggle-comment` 32 tests (including the real-editor `Ctrl+/` path), `v0130-block-markers` 34 tests (marker truth table for 10 block types + real mounts), `v0130-emoji-complete` 26 tests (trigger truth table + lazy filtering + adopt→render→save consistency); `tsc --noEmit` clean.
 
