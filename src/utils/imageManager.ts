@@ -238,15 +238,35 @@ export interface RenamePlan {
 /**
  * 计算重命名后的引用。
  *
+ * v0.13.0 返修：补上**目标名冲突**与**同名空操作**的拒绝。
+ * 缺陷背景：旧实现只校验「新名非空」，于是
+ *   · 批量把多张图改成同一个名字 → 第二张开始 Rust `rename_file` 报错，
+ *     批量操作**中途失败**、留下部分完成的状态；
+ *   · 改成与原名相同 → 产生一次无意义的 rename（部分文件系统上直接报错）。
+ *
  * @param src 原引用
  * @param newName 新文件名（不含目录；调用方已校验）
- * @returns 新引用；src 无文件名时返回 null
+ * @param existingNames 已存在的文件名集合（可选；传入时启用冲突检查）
+ * @returns 新引用；非法 / 同名 / 冲突时返回 null
  */
-export function planRename(src: string, newName: string): RenamePlan | null {
+export function planRename(
+  src: string,
+  newName: string,
+  existingNames?: Iterable<string>,
+): RenamePlan | null {
   const trimmed = newName.trim();
   if (!trimmed) return null;
   const oldName = imageFileNameOf(src);
   if (!oldName) return null;
+  // 同名 → 无操作（不产生事务，也不调 rename_file）
+  if (trimmed === oldName) return null;
+  if (existingNames) {
+    const lower = trimmed.toLowerCase();
+    for (const n of existingNames) {
+      // 忽略自身（大小写不敏感，与文件系统常见行为一致）
+      if (typeof n === "string" && n !== oldName && n.toLowerCase() === lower) return null;
+    }
+  }
   // 保留原引用的目录前缀（./ / ../ / 绝对目录 / assets/）
   const dir = src.slice(0, src.length - oldName.length);
   return { oldSrc: src, newSrc: `${dir}${trimmed}`, fileName: trimmed };

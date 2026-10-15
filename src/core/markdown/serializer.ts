@@ -541,8 +541,24 @@ function tableToMarkdownMerged(node: Node): string {
   const result: string[] = [];
 
   // 表头行（无 table_head 时补一行空表头——与纯管道管道的 B1-2 防线一致）
+  //
+  // v0.13.0 返修（问题12 BLOCKER）：表头行必须补足到与分隔行**相同的物理单元格数**。
+  //
+  // 缺陷背景：`serializeGridRow` 会跳过被 colspan/rowspan 占位的空洞，而分隔行按
+  // **逻辑列数** `colCount` 生成。markdown-it 的表格规则硬性要求
+  // `columnCount === aligns.length`（见 markdown-it/lib/rules_block/table.mjs），
+  // 于是「表头含合并格」时表头物理格数 < 逻辑列数 → **整张表不再是表格**，
+  // 回读变成一个段落，所有行与单元格内容一次性丢失。
+  // 实测旧输出：`| <th colspan="2">A</th> | C |` + 3 列分隔行 → 重新解析得到
+  // paragraph（childCount=1），内容整体变成字面 Markdown。
+  //
+  // 补位用空串（与纯管道空单元格一致）；行尾的空单元格会被
+  // `trimRowTrailingEmpties` 在网格构建时裁掉，故不会让列数逐次膨胀（往返稳定）。
+  // 无合并的普通表格本就行数相等 → 不触发补位，纯管道零 diff 回归锁不受影响。
   if (hasHead) {
-    result.push("| " + serializeGridRow(grid[0] ?? [], true).join(" | ") + " |");
+    const headCells = serializeGridRow(grid[0] ?? [], true);
+    while (headCells.length < colCount) headCells.push(" ");
+    result.push("| " + headCells.join(" | ") + " |");
   } else {
     result.push("| " + new Array(colCount).fill(" ").join(" | ") + " |");
   }
@@ -634,7 +650,14 @@ function inlineToMarkdown(node: Node, context?: "table" | "top"): string {
       // v0.9.0 C1：非 code 文本走转义层（code 内容是字面文本不转义；
       // 表格上下文的管道转义见 applyMark/code 与 escapeText 的 inTableCell）
       const hasCode = marks.some((m) => m.type.name === "code");
-      if (!hasCode) text = escapeText(text, context === "table", pairContext);
+      // v0.13.0 返修：注释体不得走 markdown 转义。
+      //
+      // 缺陷背景：注释体在 HTML 注释里，markdown-it **不会**解释其中的 markdown，
+      // 因此转义毫无意义；而读取端只是原样取注释内文（不做反转义），
+      // 于是 `<!--a\*\*b-->` 回读后文本变成 `a\*\*b`（反斜杠永久残留、内容被改写）。
+      // 实测受影响：`*`、`` ` ``、`$` 等一切会被 escapeText 转义的字符。
+      const hasComment = marks.some((m) => m.type.name === "comment");
+      if (!hasCode && !hasComment) text = escapeText(text, context === "table", pairContext);
 
       // 从外到内按优先级应用标记（B2/B3/B4 修复）
       const ordered = [...marks].sort(
@@ -657,8 +680,17 @@ function inlineToMarkdown(node: Node, context?: "table" | "top"): string {
       // `|` 后缀由 parser 同源解析，往返稳定；未设对齐时不追加，文档零 diff。
       const alignPart = align && align !== "left" ? `|${align}` : "";
       // v0.9.0 C3：目标地址含空格/括号/尖括号时用 <...> 包裹
+      //
+      // v0.13.0 返修：**alt 里的竖线必须转义**。
+      // 宽度/对齐沿用 `|` 后缀（`![alt|300|center](src)`），而 alt 自身也可能含 `|`
+      // （如「表格 | 图」）。不转义时回读会把 alt 里的段误当后缀：
+      //   alt="a|b" + width=300 → `![a|b|300](x)` → 回读 alt="a|b|300"、宽度丢失；
+      //   alt="a|1"（无宽度）   → `![a|1](x)`     → 回读 alt="a"、**凭空多出宽度 1**。
+      // 读端按「未转义的竖线」切分并把 `\|` 还原为 `|`（见 parser 的 image 分支），
+      // 故这是一次**无损**往返。
+      const altEscaped = escapeText(alt || "").replace(/\|/g, "\\|");
       parts.push(
-        `![${escapeText(alt || "")}${widthPart}${alignPart}](${escapeDest(src)}${titlePart})`,
+        `![${altEscaped}${widthPart}${alignPart}](${escapeDest(src)}${titlePart})`,
       );
     } else if (child.type.name === "hard_break") {
       // v0.12.3 需求12：回车 = 换行后，"段内换行"成为高频形态，补齐三类
@@ -807,10 +839,22 @@ function applyMark(text: string, mark: Mark, inTableCell = false): string {
     case "superscript":
       // 上标 ^sup^
       return `^${text}^`;
-    case "comment":
-      // v0.13.0 需求6：注释 <!--text-->。按 mark 序列化（与 underline 用
-      // <u> 同理——Markdown 无原生注释语法，且注释内容不应出现在任何渲染里）
-      return `<!--${text}-->`;
+    case "comment": {
+      // v0.13.0 返修：注释体必须让 markdown-it 的 html_inline 注释规则**整体**命中，
+      // 否则该段退化为普通文本（mark 丢失）且文本被改写。
+      //
+      // 规则（markdown-it/lib/common/html_re.mjs）：
+      //   `<!--(?:[^-]|-[^-]|--[^>])*-->`
+      // 由该表达式可推出两个会让整体失配的形态：
+      //   ① 体内出现 `-->`  → 注释被**提前闭合**，后半段变成普通文本；
+      //   ② 体以 `-` 结尾   → 与闭合符拼成 `--->`，整个注释不再匹配。
+      // 这两类在 `-` 之间插入零宽字符断开连写（不改变可见内容），
+      // 读取端（parser）会去掉零宽字符 → **无损往返**。
+      let body = text;
+      body = body.replace(/--(?=>)/g, "-\u200B-");
+      if (body.endsWith("-")) body += "\u200B";
+      return `<!--${body}-->`;
+    }
     case "link": {
       const { href, title } = mark.attrs;
       const titlePart = title ? ` "${escapeTitle(title)}"` : "";

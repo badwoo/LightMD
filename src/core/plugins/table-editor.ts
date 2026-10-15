@@ -32,7 +32,7 @@ import {
   splitCell,
   type CellRect,
 } from "../tableMerge";
-import { buildTableGridFromTable } from "../tableGrid";
+import { buildTableGridFromTable, cellPositionsOfGrid } from "../tableGrid";
 
 // ─── TableCellView —— td/th 的轻量 NodeView（F1 修复） ────────────────
 
@@ -1090,6 +1090,26 @@ export class TableView implements NodeView {
    * 做法：先由 posAtDOM 拿到 doc 位置 → 解析出 table → 用**裁剪后的网格**
    * 找到该 cell 的锚点坐标。失败返回 null（DOM 已不在文档中）。
    */
+  /**
+   * v0.13.0 返修（问题12）：cell DOM → 网格坐标。
+   *
+   * 缺陷背景（**需求12 的合并在 UI 上完全不可用**的根因）：
+   * 旧实现用 `view.posAtDOM(cellEl, 0)` 与「cell 节点起点」比较，但 PM 的
+   * `posAtDOM(dom, 0)` 返回的是 **cell 第一个子节点的位置**（= cell 起点 + 1）。
+   * 实测（真实 EditorView + jsdom）：
+   *   table_header "A"  nodeStart=3  posAtDOM=4
+   *   table_header "B"  nodeStart=6  posAtDOM=7
+   *   table_cell   "1"  nodeStart=13 posAtDOM=14
+   * 于是 9/9 个单元格全部匹配失败 → 返回 null →
+   *   `onRangeMouseDown` 提前 return，`rangeAnchor` 永不设置，
+   *   `cellRange` 永不赋值（唯一赋值点在 onRangeMouseMove）→
+   *   拖拽跨格选不出范围 → 合并按钮在 `refreshMergeSplitButtons` 里永久禁用。
+   * 纯函数单测是绿的，因为它们直接调 `mergeCells`，不经过坐标换算。
+   *
+   * 现改为复用 `cellPositionsOfGrid`（与合并/序列化同一套网格口径），
+   * 并顺带修掉旧实现的第二个缺陷：`section.forEach` 里的 `return` 只跳出
+   * 当前回调、不会终止遍历，导致命中后 `r` 继续自增（列坐标错乱）。
+   */
   private cellCoordOf(cellEl: HTMLElement): { r: number; c: number } | null {
     const tablePos = this.getPos();
     if (tablePos === undefined) return null;
@@ -1101,45 +1121,23 @@ export class TableView implements NodeView {
     }
     if (!tableNode || tableNode.type.name !== "table") return null;
 
-    // 目标 cell 在 doc 中的位置
-    let cellPos = -1;
+    // 目标 cell 在 doc 中的起始位置。
+    // posAtDOM(cellEl, 0) 是 cell 内第一个子节点的位置 → 减 1 得 cell 自身起点；
+    // 空单元格（无子节点）时它已经等于 cell 起点，故取两者中「能命中网格」的那个。
+    let viaDom = -1;
     try {
-      cellPos = this.view.posAtDOM(cellEl, 0);
+      viaDom = this.view.posAtDOM(cellEl, 0);
     } catch {
       return null;
     }
-    if (cellPos < 0) return null;
+    if (viaDom < 0) return null;
 
-    // 遍历行的真实 cell，累加 nodeSize 定位
-    let sectionPos = tablePos + 1;
-    let r = -1;
-    let c = -1;
-    tableNode.forEach((section) => {
-      if (section.type.name !== "table_head" && section.type.name !== "table_body") {
-        sectionPos += section.nodeSize;
-        return;
-      }
-      let rowPos = sectionPos + 1;
-      section.forEach((row) => {
-        r++;
-        let acc = rowPos + 1;
-        for (let i = 0; i < row.childCount; i++) {
-          const child = row.child(i);
-          if (acc === cellPos) {
-            // 用网格反查列坐标（裁剪后的网格与真实 cell 下标在前面段对齐）
-            const grid = buildTableGridFromTable(tableNode!, tablePos);
-            const gc = grid[r]?.[i];
-            c = gc && gc.rowIdx === r && gc.colIdx === i ? gc.colIdx : i;
-            return;
-          }
-          acc += child.nodeSize;
-        }
-        rowPos += row.nodeSize;
-      });
-      sectionPos += section.nodeSize;
-    });
-    if (r < 0 || c < 0) return null;
-    return { r, c };
+    const map = cellPositionsOfGrid(tableNode, tablePos);
+    for (const candidate of [viaDom - 1, viaDom]) {
+      const coord = map.get(candidate);
+      if (coord) return { r: coord.rowIdx, c: coord.colIdx };
+    }
+    return null;
   }
 
   /** 当前 table 的行数（含 thead） */
@@ -1291,46 +1289,25 @@ export class TableView implements NodeView {
   }
 
   /** 由网格坐标反查 cell 的 doc 位置 */
+  /**
+   * v0.13.0 返修（问题12）：网格坐标 → cell 的 doc 起始位置。
+   *
+   * 与 [`cellCoordOf`] 互为逆运算，统一以 `cellPositionsOfGrid` 为唯一口径。
+   *
+   * 缺陷背景：旧实现用手写累加 + `gc.colIdx === i`（物理下标 === 网格列）匹配，
+   * 只在「该行没有任何合并格」时成立；一旦前面的行有 rowspan / 前面的 cell 有
+   * colspan，物理下标就与网格列错位 → 返回 null → 拆分格反查失败。
+   * 另外 `section.forEach` 内的 `return` 不会终止遍历（只是跳出当前回调）。
+   */
   private cellPosOfCoord(r: number, c: number): number | null {
     const tablePos = this.getPos();
     if (tablePos === undefined) return null;
     const tableNode = this.view.state.doc.nodeAt(tablePos);
-    if (!tableNode) return null;
-    const grid = buildTableGridFromTable(tableNode, tablePos);
-    const cell = grid[r]?.[c];
-    if (!cell) return null;
-    // 网格坐标 → 真实 cell 下标 → doc 位置
-    let sectionPos = tablePos + 1;
-    let rr = -1;
-    let result: number | null = null;
-    tableNode.forEach((section) => {
-      if (section.type.name !== "table_head" && section.type.name !== "table_body") {
-        sectionPos += section.nodeSize;
-        return;
-      }
-      let rowPos = sectionPos + 1;
-      section.forEach((row) => {
-        rr++;
-        if (rr !== r) {
-          rowPos += row.nodeSize;
-          return;
-        }
-        // 该行内第几个 cell 对应网格列 c
-        let acc = rowPos + 1;
-        for (let i = 0; i < row.childCount; i++) {
-          const child = row.child(i);
-          const gc = grid[r]?.[i];
-          if (gc && gc.rowIdx === r && gc.colIdx === c && gc.colIdx === i) {
-            result = acc;
-            return;
-          }
-          acc += child.nodeSize;
-        }
-        rowPos += row.nodeSize;
-      });
-      sectionPos += section.nodeSize;
-    });
-    return result;
+    if (!tableNode || tableNode.type.name !== "table") return null;
+    for (const [pos, coord] of cellPositionsOfGrid(tableNode, tablePos)) {
+      if (coord.rowIdx === r && coord.colIdx === c) return pos;
+    }
+    return null;
   }
 
   private showToolbar() {

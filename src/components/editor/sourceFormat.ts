@@ -72,19 +72,34 @@ export function wrapSourceComment(selected: string): FormatResult {
     return { replacement, cursorOffset: COMMENT_OPEN.length, ghostText: "注释内容" };
   }
   const lines = selected.split("\n");
-  const allCommented = lines.every((l) => {
+  // v0.13.0 返修：注释判定与剥离必须按**标记的真实下标**切分。
+  //
+  // 缺陷背景：旧实现先用 `trim()` 得到 `t`，却按**定长**切分
+  // （`COMMENT_OPEN.length` = "<!-- " 5 字符、`COMMENT_CLOSE.length` = " -->" 4 字符）。
+  // 可注释的实际写法并不总带这两个空格，于是短注释被吃掉字符甚至清空：
+  //   `<!--ab-->`   → ""    （内容销毁）
+  //   `<!--abc-->`  → "b"
+  //   `<!--TODO-->` → "OD"
+  //   `<!--a-->`    → `<!-- <!--a--> -->`（长度守卫把它判成"未注释"，反复包裹）
+  // 现改为定位 `<!--` / `-->` 的真实下标，并只剥掉包裹时额外补的那一个空格。
+  const isCommented = (l: string): boolean => {
     const t = l.trim();
-    return t.startsWith(COMMENT_OPEN.trim()) && t.endsWith(COMMENT_CLOSE.trim()) && t.length > COMMENT_OPEN.length + COMMENT_CLOSE.length - 1;
-  });
+    if (!t.startsWith("<!--") || !t.endsWith("-->")) return false;
+    if (t.length < 7) return false; // 最短 "<!---->"
+    // 结尾的 "-->" 之前不得再出现 "-->"，否则是两段拼接、不能整体取消
+    return t.indexOf("-->") === t.length - 3;
+  };
+  const allCommented = lines.every(isCommented);
   let replacement: string;
   if (allCommented) {
-    // 取消：去掉每行的包裹符
+    // 取消：按真实下标剥离包裹符，保留原有缩进
     replacement = lines
       .map((l) => {
-        const t = l.trim();
-        const inner = t.slice(COMMENT_OPEN.length, t.length - COMMENT_CLOSE.length);
-        // 保留原有缩进
         const indent = l.slice(0, l.length - l.trimStart().length);
+        const t = l.trim();
+        let inner = t.slice(4, t.length - 3); // 去掉 "<!--" 与 "-->"
+        if (inner.startsWith(" ")) inner = inner.slice(1);
+        if (inner.endsWith(" ")) inner = inner.slice(0, -1);
         return indent + inner;
       })
       .join("\n");

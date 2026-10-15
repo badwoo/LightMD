@@ -81,12 +81,20 @@ export function listDelimiter(attrs: Record<string, unknown>): "." | ")" {
 /**
  * 有序列表项的 marker 文本：`1. ` / `12) `。
  *
- * @param ordinal 1-based 序号
- * @param attrs 列表节点或列表项的 attrs（取 `delim`）
+ * v0.13.0 返修：必须带上**列表自身的起始序号**。
+ * `ordinal` 只是「同级第几项」（1-based），而 Markdown 的有序列表可以从任意
+ * 序号开始（`3. c` / `4. d`）。旧实现忽略 `ordered_list.attrs.order`，于是源码
+ * 写 `3. c` 时编辑器左侧标记却显示 `1. `——与源码互相矛盾。
+ *
+ * @param ordinal 1-based 序号（同级第几项）
+ * @param attrs 列表节点或列表项的 attrs（取 `delim` 与 `order`）
  */
 export function orderedListMarker(ordinal: number, attrs: Record<string, unknown>): string {
   const n = Number.isFinite(ordinal) && ordinal > 0 ? Math.floor(ordinal) : 1;
-  return `${n}${listDelimiter(attrs)} `;
+  const start = Number(attrs.order);
+  // order 缺省 / 非法 / 1 → 不偏移（未从中间开始的列表零变化）
+  const offset = Number.isFinite(start) && start > 1 ? Math.floor(start) - 1 : 0;
+  return `${n + offset}${listDelimiter(attrs)} `;
 }
 
 /** 无序列表 marker：`- `（固定短横，与 LightMD 序列化口径一致） */

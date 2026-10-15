@@ -179,7 +179,13 @@ export function ImageManagerDialog({
   const handleRename = async (img: DocImage) => {
     if (!docDir || !isTauri()) return;
     const nextName = (renameDraft[img.src] ?? "").trim();
-    const plan = planRename(img.src, nextName);
+    // v0.13.0 返修：传入文档内已有的图片名，避免「批量改成同一个名字」时
+    // 第二章开始 rename_file 报错、批量操作中途失败留下部分完成状态。
+    const plan = planRename(
+      img.src,
+      nextName,
+      docImages.map((i) => imageFileNameOf(i.src)),
+    );
     if (!plan) {
       setMessage(t("imageManager.renameInvalid"));
       return;

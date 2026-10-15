@@ -23,6 +23,7 @@
  */
 import type MarkdownIt from "markdown-it";
 import { createMarkdownIt } from "./markdown/parser";
+import { imageAlignCss } from "./schema";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { highlightCodeBlocksInHtml } from "../utils/highlight";
 
@@ -49,39 +50,77 @@ import { highlightCodeBlocksInHtml } from "../utils/highlight";
  * 作用域：只挂在渲染实例（分屏 + HTML/PDF/PNG 导出）；DOCX/LaTeX 走 exportBlocks
  * 的 Block[] 中间结构，不经过此路径。
  */
+/**
+ * 找出字符串中**最后一个未被反斜杠转义**的 `|` 下标（没有则 -1）。
+ *
+ * 为什么需要：序列化会把 alt 里的字面竖线写成 `\|`（见 serializer 的 image 分支），
+ * 只有**未转义**的竖线才是宽度/对齐后缀的分隔符。若直接对内容做贪婪正则
+ * （如 `^(.*)\|(center|right)$`），alt 结尾正好是 `\|center` 时会被误判成对齐后缀。
+ */
+function lastUnescapedPipe(s: string): number {
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i] !== "|") continue;
+    let bs = 0;
+    for (let k = i - 1; k >= 0 && s[k] === "\\"; k--) bs++;
+    if (bs % 2 === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * v0.13.0 需求4 + 返修：拆出图片的 `|宽度` / `|对齐` 后缀。
+ *
+ * 后缀顺序与序列化一致：`![alt|300|center](src)` / `![alt|center](src)` /
+ * `![alt|300](src)`。从尾部依次剥离「对齐」再「宽度」，且只认**合法值**——
+ * 这样 alt 自身含竖线（`a|b`）不会被误当后缀。
+ */
+function splitImageSuffix(content: string): { alt: string; width?: string; align?: string } {
+  let rest = content;
+  let align: string | undefined;
+  let width: string | undefined;
+  let p = lastUnescapedPipe(rest);
+  if (p >= 0) {
+    const tail = rest.slice(p + 1).trim().toLowerCase();
+    if (tail === "center" || tail === "right") {
+      align = tail;
+      rest = rest.slice(0, p);
+    }
+  }
+  p = lastUnescapedPipe(rest);
+  if (p >= 0) {
+    const tail = rest.slice(p + 1).trim();
+    if (/^\d+$/.test(tail)) {
+      width = tail;
+      rest = rest.slice(0, p);
+    }
+  }
+  return { alt: rest, width, align };
+}
+
 export function imageSizePlugin(md: MarkdownIt): void {
-  // ① core rule：拆分 image token 的 content（alt 原文存放在 content，attrs.alt 初始为空）
-  //
-  // 实测结构（md.parse("![alt|300](a.png)"))：
-  //   inline > image token，content="alt|300"，attrs=[["src","a.png"],["alt",""]]
-  // 渲染时 markdown-it 用 content 覆盖 attrs.alt（见 renderer.mjs default_rules.image），
-  // 故必须改 content 本身，仅改 attrs 会被还原。
+  // ① core rule：拆掉 image token content 尾部的 `|宽度` / `|对齐` 后缀，
+  //    把结果暂存到 token 上供 renderer 使用（renderer 会用 content 覆盖 alt，
+  //    故必须改 content 本身，仅改 attrs 会被还原——见上方注释）。
   md.core.ruler.push("lightmd_image_size", (state) => {
+    const handle = (token: { type: string; content?: string }) => {
+      if (token.type !== "image") return;
+      const parsed = splitImageSuffix(token.content || "");
+      if (parsed.width === undefined && parsed.align === undefined) return;
+      token.content = parsed.alt;
+      (token as unknown as { __lightmdImage?: { width?: string; align?: string } }).__lightmdImage = {
+        width: parsed.width,
+        align: parsed.align,
+      };
+    };
     for (const token of state.tokens) {
       // image token 可能是 inline 的子 token，也可能在顶层（reference image）
-      if (token.type === "image") {
-        const m = /^(.*)\|(\d+)$/.exec(token.content || "");
-        if (m) {
-          token.content = m[1];
-          (token as unknown as { __lightmdWidth?: string }).__lightmdWidth = m[2];
-        }
-        continue;
-      }
-      if (token.type === "inline" && token.children) {
-        for (const child of token.children) {
-          if (child.type !== "image") continue;
-          const m = /^(.*)\|(\d+)$/.exec(child.content || "");
-          if (m) {
-            child.content = m[1];
-            (child as unknown as { __lightmdWidth?: string }).__lightmdWidth = m[2];
-          }
-        }
-      }
+      handle(token);
+      if (token.type === "inline" && token.children) token.children.forEach(handle);
     }
     return true;
   });
 
-  // ② renderer rule：把拆分后的 content 写回 alt，并追加 width 属性
+  // ② renderer rule：把拆分后的 content 写回 alt，并追加 width / 对齐样式
   //
   // 不能在包装函数里用 this 取默认 rule（strict mode 下 this 为 undefined）。
   // 故在**安装时**先把原 rule 取出来存进闭包。
@@ -99,19 +138,33 @@ export function imageSizePlugin(md: MarkdownIt): void {
 
   md.renderer.rules.image = (tokens, idx, options, env, slf) => {
     const token = tokens[idx];
-    const w = (token as unknown as { __lightmdWidth?: string }).__lightmdWidth;
-    if (!w) {
-      // 无尺寸后缀：完全走默认行为（零回归）
+    const meta = (token as unknown as { __lightmdImage?: { width?: string; align?: string } })
+      .__lightmdImage;
+    if (!meta) {
+      // 无后缀：完全走默认行为（零回归）
       return defaultImage(tokens, idx, options, env, slf);
     }
-    // 有尺寸后缀：content 已在 core rule 去掉 |W，此处写回 alt 并追加 width
+    // 有后缀：content 已在 core rule 去掉后缀，此处写回 alt（并还原被转义的竖线）
     const altIdx = token.attrIndex("alt");
     if (altIdx >= 0) {
-      token.attrs![altIdx][1] = escapeHtml(token.content || "");
+      token.attrs![altIdx][1] = escapeHtml((token.content || "").replace(/\\\|/g, "|"));
     }
-    const rendered = slf.renderToken(tokens, idx, options);
-    // 在自闭合 /> 前插入 width 属性
-    return rendered.replace(/\s*\/>$/, ` width="${w}" />`);
+    let rendered = slf.renderToken(tokens, idx, options);
+    const extra: string[] = [];
+    if (meta.width) extra.push(`width="${meta.width}"`);
+    // v0.13.0 返修（需求4）：对齐此前只在 PM 编辑器内生效，分屏预览与
+    // HTML/PDF/PNG 导出**全部丢失**（渲染管线只处理了 width 后缀）。
+    // 这里补上与 PM 侧 `imageAlignCss` **同源**的样式，并写 data-align
+    // 便于导出的 HTML 再被解析回编辑器时还原对齐。
+    const style = imageAlignCss(meta.align);
+    if (style) {
+      extra.push(`style="${style}"`);
+      extra.push(`data-align="${meta.align}"`);
+    }
+    if (extra.length > 0) {
+      rendered = rendered.replace(/\s*\/>$/, ` ${extra.join(" ")} />`);
+    }
+    return rendered;
   };
 }
 

@@ -26,9 +26,17 @@ export interface OutlineNode {
 /**
  * 计算每个标题应当显示还是隐藏。
  *
- * 规则：从第一个标题开始顺序扫描，维护一个「折叠栈」——遇到被折叠的标题 H 后，
- * 所有**级别 > H.level** 的后续标题都被隐藏，直到遇到**级别 <= H.level** 的
- * 标题（它与 H 同级或更高，属于 H 的祖先/兄弟，必须显示并清栈）。
+ * 规则：从第一个标题开始顺序扫描，维护一个「折叠栈」——遇到**可见**且被折叠的
+ * 标题 H 后压入 H.level；所有级别 > 栈顶的后续标题被隐藏，直到遇到级别 <= 栈顶
+ * 的标题（它与某个折叠祖先同级或更高），此时弹栈（可能连续弹多级）。
+ *
+ * v0.13.0 返修：旧实现用一个**标量** `hiddenBelow` 表示「当前生效的折叠级别」，
+ * 无法表达「多层折叠同时生效」。当被折叠的节点本身又落在外层折叠的隐藏区间内时，
+ * 标量会被这个隐藏节点**收窄**，导致外层折叠提前失效：
+ *   nodes = H1@0(L1), H3@10(L3), H2@20(L2), H1@30(L1)，collapsed = {0, 10}
+ *   旧结果：H2@20 被判为**可见**（H1@0 明明还折叠着，H2 必须隐藏）
+ *   新结果：H2@20 隐藏 ✓
+ * 另外，隐藏节点自身的折叠态不应生效（它根本不可见），否则会收窄外层区间。
  *
  * @param nodes 全部标题（按文档顺序）
  * @param collapsed 被折叠标题的 pos 集合
@@ -39,15 +47,15 @@ export function computeOutlineVisibility(
   collapsed: ReadonlySet<number>,
 ): Map<number, boolean> {
   const visible = new Map<number, boolean>();
-  /** 当前生效的折叠级别；0 = 无折叠生效 */
-  let hiddenBelow = 0;
+  /** 生效中的折叠级别栈（自浅至深） */
+  const stack: number[] = [];
   for (const node of nodes) {
-    // 级别 <= 折叠级别 → 该折叠不再管辖此节点（同级/更高），清栈
-    if (hiddenBelow > 0 && node.level <= hiddenBelow) hiddenBelow = 0;
-    const isHidden = hiddenBelow > 0 && node.level > hiddenBelow;
+    // 弹出不再管辖本节点的折叠级别（本节点不比它更深）
+    while (stack.length > 0 && node.level <= stack[stack.length - 1]) stack.pop();
+    const isHidden = stack.length > 0;
     visible.set(node.pos, !isHidden);
-    // 该节点自身被折叠 → 后续更深层级全部隐藏
-    if (collapsed.has(node.pos)) hiddenBelow = node.level;
+    // 只有可见的被折叠标题才生效
+    if (!isHidden && collapsed.has(node.pos)) stack.push(node.level);
   }
   return visible;
 }

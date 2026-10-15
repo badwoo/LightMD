@@ -257,6 +257,50 @@ export function trimRowTrailingEmpties(row: Node): Node[] {
 }
 
 /**
+ * v0.13.0 返修（问题12）：cell 的**文档位置** → 网格坐标 映射。
+ *
+ * 缺陷背景：`TableView.cellCoordOf` 原先用
+ * `view.posAtDOM(cellEl, 0)` 去和「cell 节点起点」比较，但 PM 的
+ * `posAtDOM(dom, 0)` 返回的是 **cell 第一个子节点的位置**（= cell 起点 + 1），
+ * 于是**每个单元格都匹配不上** → 返回 null → `rangeAnchor` 永不设置 →
+ * `cellRange` 永不赋值 → 拖拽跨格选不出范围 → 合并按钮永久禁用。
+ * 即：需求12 的合并在 UI 上完全没有可用路径（纯函数单测却是绿的，
+ * 因为它们直接调用 mergeCells，不经过坐标换算）。
+ *
+ * 本函数复用 [`buildTableGridFromTable`] 的同一套网格口径（含行尾幻影裁剪），
+ * 因此不会与合并/序列化产生第二套列宽解释。cell 位置用
+ * [`collectTableRows`] 的行位置逐格累加得到（与网格构建同源）。
+ *
+ * @returns Map<cell 节点在文档中的起始位置, 网格坐标>
+ */
+export function cellPositionsOfGrid(
+  table: Node,
+  tablePos = 0,
+): Map<number, { rowIdx: number; colIdx: number }> {
+  const out = new Map<number, { rowIdx: number; colIdx: number }>();
+  // ① 逐行累加，得到每个（裁剪后的）cell 节点的 doc 起始位置
+  const posOfNode = new Map<Node, number>();
+  for (const ref of collectTableRows(table, tablePos)) {
+    let acc = ref.pos + 1;
+    for (const cell of trimRowTrailingEmpties(ref.row)) {
+      posOfNode.set(cell, acc);
+      acc += cell.nodeSize;
+    }
+  }
+  // ② 用网格（唯一口径）反查每个主格的坐标
+  const grid = buildTableGridFromTable(table, tablePos);
+  for (const row of grid) {
+    if (!row) continue;
+    for (const gc of row) {
+      if (!gc) continue;
+      const pos = posOfNode.get(gc.node);
+      if (pos !== undefined) out.set(pos, { rowIdx: gc.rowIdx, colIdx: gc.colIdx });
+    }
+  }
+  return out;
+}
+
+/**
  * ③ 合并选区判定：给定若干 cell 的网格坐标，计算合并矩形。
  *
  * @param cells 网格坐标数组（至少 2 个）

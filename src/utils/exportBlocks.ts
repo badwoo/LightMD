@@ -226,11 +226,23 @@ export function parseInlineTokens(tokens: Token[]): InlineRun[] {
 
     // v0.13.0 需求12：表格合并格的 `<td colspan>` 包裹（html:false 下是字面文本）。
     // 剥掉标签保留内容，DOCX/LaTeX 导出不出现裸 HTML（不丢内容）。
-    if (t.type === "text" && /^<(?:td|th)\b/i.test(t.content.trim())) {
-      const inner = stripTdWrapperText(t.content);
-      if (inner !== t.content) {
-        if (inner) runs.push(makeRun(inner));
-        continue;
+    //
+    // v0.13.0 返修：单元格内含**行内格式**时，markdown-it 会把包裹拆成多个 token：
+    //   `<td colspan="2">**M**</td>`
+    //     → text `<td colspan="2">` / strong_open / text `M` / strong_close / text `</td>`
+    // 旧实现只在「token 以 `<td`/`<th` 开头」时调用 `stripTdWrapperText`，而该方法
+    // 需要成对标签才生效 → 单个开/闭标签片段判定"无变化" → **裸标签进入导出文档**。
+    // 实测 DOCX/LaTeX 正文里出现字面 `<td colspan="2">`——比"不保留合并外观"更严重。
+    // 现单独识别「整个 token 就是一个 td/th 包裹标签」的形态并丢弃。
+    if (t.type === "text") {
+      const trimmed = t.content.trim();
+      if (/^<\/?(?:td|th)\b[^>]*>$/i.test(trimmed)) continue;
+      if (/^<(?:td|th)\b/i.test(trimmed)) {
+        const inner = stripTdWrapperText(t.content);
+        if (inner !== t.content) {
+          if (inner) runs.push(makeRun(inner));
+          continue;
+        }
       }
     }
 

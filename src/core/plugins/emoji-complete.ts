@@ -27,6 +27,7 @@
  */
 import { Plugin, PluginKey } from "prosemirror-state";
 import type { EditorState } from "prosemirror-state";
+import type { Node as PMNode, ResolvedPos } from "prosemirror-model";
 import type { EditorView } from "prosemirror-view";
 
 /** Emoji 触发状态：from 为 `:` 位置，to 为光标位置（替换区间 [from, to]） */
@@ -41,6 +42,50 @@ export interface EmojiState {
 
 /** 光标前的块内文本中，最后一个未闭合 `:` 及其后的查询词 */
 const EMOJI_TAIL_RE = /:([a-zA-Z0-9_+-]*)$/;
+
+/**
+ * v0.13.0 返修：把「父节点内容坐标系里的**字符偏移**」换算成真实**文档位置**。
+ *
+ * 缺陷背景：旧实现直接 `$pos.start() + colonIdx`，把字符串下标当作文档位置。
+ * 但 `textBetween` 的字符流与文档位置并非一一对应——内联原子（如 `math_inline`）
+ * 的 `nodeSize` 远大于其 `textContent` 长度：
+ *   段落 `$x^2$ :sm`，math_inline nodeSize=5、textContent="x^2"（长度 3）
+ *   → 字符串下标 5 对应的真实位置是 7，旧实现算出的 from 偏小 2，
+ *     替换区间 `replaceWith(from, to, …)` 会**吃掉前一个原子节点的内容**
+ *     （实测 math_inline 内容被改写为 "x^2:smile:"）。
+ *
+ * 这里按子节点的 `nodeSize` 逐个累加，并复刻 `textBetween` 的实际语义：
+ *   · 文本节点 → 原文本；
+ *   · **叶子**行内节点（image / hard_break）→ 调用方传入的 leafText（"\0"，1 字符）；
+ *   · **非叶子**行内节点（`math_inline` 等）→ **其 textContent**
+ *     （`textBetween` 会递归下钻取其内部文本，实测 `$x^2$` 贡献 "x^2" 而非 "\0"）。
+ *
+ * 偏移若落在非文本内容里（例如光标前的 `:` 其实在公式源码内）→ 返回 null，
+ * 调用方据此**不触发**补全（避免把公式源码当成短码替换掉）。
+ */
+function parentCharOffsetToDocPos($pos: ResolvedPos, charOffset: number): number | null {
+  let chars = 0;
+  let pos = $pos.start();
+  let result: number | null = null;
+  let hitNonText = false;
+  $pos.parent.forEach((child: PMNode) => {
+    if (result !== null || hitNonText) return;
+    const piece = child.isText
+      ? (child.text ?? "")
+      : child.isLeaf
+        ? "\0"
+        : child.textContent;
+    if (charOffset < chars + piece.length) {
+      if (child.isText) result = pos + (charOffset - chars);
+      else hitNonText = true; // 命中非文本内容 → 不可用
+      return;
+    }
+    chars += piece.length;
+    pos += child.nodeSize;
+  });
+  if (hitNonText) return null;
+  return result ?? pos;
+}
 
 /**
  * 检测编辑器当前是否处于 Emoji 补全触发状态（纯函数）。
@@ -63,8 +108,18 @@ export function detectEmojiState(state: EditorState): EmojiState | null {
   // 说明：正则已保证「最后一个冒号到文本末尾」，此处只需排除前一个字符也是冒号
   const colonIdx = textBefore.length - (m[0].length);
   if (colonIdx > 0 && textBefore[colonIdx - 1] === ":") return null;
+  // v0.13.0 返修：排除「时间 / 比例」这类误触发。
+  //
+  // 旧判定只要求「冒号前不是冒号」，而查询词允许数字，于是正文里写时间或比例
+  // （`3:1`、`ratio 2:3`、`John 3:16`）都会弹出 emoji 菜单（甚至弹出无候选的空菜单）。
+  // 判据取「冒号紧邻的**前一个字符是数字**」——这覆盖了全部时间/比例写法，
+  // 同时保留行首/词首的真实短码（`:100` → 冒号前无字符，仍可触发）。
+  if (colonIdx > 0 && /\d/.test(textBefore[colonIdx - 1])) return null;
+  // v0.13.0 返修：按 nodeSize 换算，不能用「内容起点 + 字符下标」
+  const from = parentCharOffsetToDocPos($pos, colonIdx);
+  if (from === null) return null; // 偏移落在非文本内容（如公式源码）里 → 不触发
   return {
-    from: $pos.start() + colonIdx,
+    from,
     to: $pos.pos,
     query: m[1] ?? "",
   };

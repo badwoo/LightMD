@@ -1073,7 +1073,9 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
         // 不处理会被当成「未白名单行内标签」剥掉（注释内容丢失）。
         const commentOpen = /^<!--([\s\S]*?)-->$/.exec(trimmed);
         if (commentOpen) {
-          const inner = commentOpen[1];
+          // v0.13.0 返修：去掉序列化期为「不让注释被提前闭合 / 不形成 `--->`」
+          // 而插入的零宽字符（见 serializer 的 comment 分支）——保证内容无损往返。
+          const inner = commentOpen[1].replace(/\u200B/g, "");
           if (inner) {
             nodes.push(schema.text(inner, [schema.marks.comment.create()]));
           }
@@ -1217,7 +1219,28 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
       let alt = rawAlt;
       let width: number | null = null;
       let align: "left" | "center" | "right" = "left";
-      const segs = rawAlt.split("|");
+      // v0.13.0 返修：按**未转义的竖线**切分。
+      // 序列化会把 alt 里的 `|` 写成 `\|`（否则会被当成宽度/对齐后缀），
+      // 这里必须跳过 `\|`，否则含竖线的 alt 仍会被误切（宽度丢失 / 凭空多出宽度）。
+      const segs: string[] = [];
+      {
+        let cur = "";
+        for (let k = 0; k < rawAlt.length; k++) {
+          const ch = rawAlt[k];
+          if (ch === "\\" && rawAlt[k + 1] === "|") {
+            cur += "\\|";
+            k++;
+            continue;
+          }
+          if (ch === "|") {
+            segs.push(cur);
+            cur = "";
+            continue;
+          }
+          cur += ch;
+        }
+        segs.push(cur);
+      }
       if (segs.length >= 2) {
         // 后缀段从第二段（下标 1）开始；按「宽度 → 对齐」顺序消费。
         // alt 永远是**第一段**（下标 0），消费掉的后缀段不影响它。
@@ -1244,6 +1267,8 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
         // 只有真的消费掉至少一个后缀段才改写 alt（否则 alt 可能本身含竖线）
         if (consumedAny) alt = segs[0];
       }
+      // 还原 alt 里的 `\|`（序列化时转义的竖线）
+      alt = alt.replace(/\\\|/g, "|");
       nodes.push(schema.nodes.image.create({
         src: getAttr(t, "src") || "",
         alt,
