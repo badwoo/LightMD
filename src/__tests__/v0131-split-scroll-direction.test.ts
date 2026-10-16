@@ -52,8 +52,10 @@ describe("v0.13.1 需求13：分屏滚动方向契约", () => {
   });
 
   it("右屏内容更新后主动重同步（解决'要往下拉一拉才看到'）", () => {
-    // effect 依赖 previewHtml（每次内容更新都重跑）
-    expect(containerSrc).toContain("}, [viewMode, previewHtml]);");
+    // effect 依赖 previewHtml（每次内容更新都重跑）+ 源码文本
+    // （v0.13.1 需求13 按块对齐要按 markdown 源码算行号表；两者必须同源，
+    //   否则行号表会与实际渲染的 DOM 错位）
+    expect(containerSrc).toContain("}, [viewMode, previewHtml, previewSourceMarkdown]);");
     // 绑定后立刻同步一次，并在下一帧补一次（覆盖 mermaid/katex 异步撑高）
     expect(containerSrc).toContain("syncToPreview();");
     expect(containerSrc).toContain("requestAnimationFrame(() => {");

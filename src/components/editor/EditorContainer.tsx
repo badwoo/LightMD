@@ -109,7 +109,13 @@ import {
 } from "./sourceFormat";
 import { getPrismCss, renderCodeFilePreview } from "../../utils/highlight";
 // R1(v0.10.0)：分屏预览统一走渲染管线（与导出 HTML/PDF/PNG 同一配置源 + 同一 mermaid 包装/高亮步骤）
-import { renderMarkdownHtml } from "../../core/renderPipeline";
+import { renderMarkdownHtml, topLevelBlockStartLines } from "../../core/renderPipeline";
+import {
+  computeBlockAlignedScrollTop,
+  estimateTopSourceLine,
+  pickAnchorIndex,
+  shouldTagPreview,
+} from "../../utils/blockScrollAlign";
 import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc, setCurrentDocPath } from "../../utils/imagePath";
 import { resolveLinkAction, anchorMatchesHeading } from "../../utils/linkNav";
@@ -5710,6 +5716,22 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     [debouncedSourceContent, viewMode, isMdFile, filePath, currentLanguage]
   );
 
+  /**
+   * v0.13.1 需求13（按块定位对齐）：分屏预览所用的**源码文本**。
+   *
+   * 与 `previewHtml` 同源同表达式，保证"行号表"与"实际渲染出来的 DOM"严格对应。
+   * （若两者用了不同的字符串——例如一个 mask 过 base64、一个没有——行号就会整体偏移，
+   * 块对齐反而会跳到错误位置。故此处显式抽成一份 memo 复用。）
+   * 非 md 文件（代码预览）不参与块对齐：那种预览是整段高亮，没有"块"的概念。
+   */
+  const previewSourceMarkdown = useMemo(
+    () =>
+      viewMode === "split" && isMdFile
+        ? unmaskBase64Images(debouncedSourceContent, base64TokensRef.current)
+        : "",
+    [viewMode, isMdFile, debouncedSourceContent],
+  );
+
   // v0.4.0：阅读模式下非 Markdown 文件的语法高亮 HTML（用 useMemo 缓存避免重复计算）
   // 仅在阅读模式 + 非 md 文件时计算，依赖 sourceContent 和 currentLanguage
   const codePreviewHtml = useMemo(() => {
@@ -5757,6 +5779,43 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       docZoom: v("--doc-zoom", "1"),
     };
   }, []);
+
+  /**
+   * v0.13.1 需求13（按块定位对齐）：给预览文档的**顶层元素**贴上"源码起始行"标签。
+   *
+   * ## 为什么不改渲染 HTML
+   * `renderMarkdownHtml` 同时服务分屏预览、阅读模式与各类导出；往里注入属性会让
+   * 导出产物出现无意义的 `data-src-line`（也会破坏"纯管道零 diff"一类的逐字节断言）。
+   * 因此这里在 **iframe DOM 层**贴标：`renderMarkdownHtml` 的输出保持逐字节不变。
+   *
+   * ## 为什么必须数量自校验
+   * `topLevelBlockStartLines` 只统计"一个 token 恰好产出一个顶层元素"的块。
+   * 本渲染管线 `htmlBlockDisabled: true`（原始 HTML 被转义成段落），实测数量总是相等；
+   * 但这条不变量依赖实现细节 —— 一旦开启 html、插件新增无 `map` 的 token，或渲染规则
+   * 改成包裹/拆分元素，顺序就会**整体错位**。错位比"退回百分比映射"严重得多
+   * （右侧会跳到完全无关的位置），故用一次 O(1) 数量比较把它挡在门外。
+   */
+  const tagPreviewSourceLines = useCallback(
+    (body: HTMLElement, markdownSource: string) => {
+      try {
+        const children = Array.from(body.children) as HTMLElement[];
+        // 先清掉上一次的标签（增量更新复用同一个 body 时可能残留）
+        for (const el of children) {
+          if (el.dataset.srcLine !== undefined) delete el.dataset.srcLine;
+        }
+        const lines = topLevelBlockStartLines(markdownSource);
+        if (!shouldTagPreview(lines.length, children.length)) return false;
+        children.forEach((el, i) => {
+          el.dataset.srcLine = String(lines[i]);
+        });
+        return true;
+      } catch {
+        // 标签只是"锦上添花"：任何异常都必须静默退回百分比映射，不影响预览
+        return false;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (viewMode !== "split") return;
@@ -5919,6 +5978,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       </script>` : ''}
       </body></html>`);
       doc.close();
+      // v0.13.1 需求13：贴"源码起始行"标签，供左→右按块对齐滚动使用
+      tagPreviewSourceLines(doc.body, previewSourceMarkdown);
       // 记录已加载的脚本状态与主题（供下次增量更新比对是否需重写）
       previewIframeInitRef.current = { mermaid: hasMermaid, math: hasMath, theme };
     } else if (typoChanged && !htmlChanged) {
@@ -5948,6 +6009,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         if (styleEl) styleEl.textContent = sharedStyles + getPrismCss(isDarkTheme(theme));
       }
       doc.body.innerHTML = previewHtml;
+      // v0.13.1 需求13：增量更新同样要重贴标签（元素被整批替换）
+      tagPreviewSourceLines(doc.body, previewSourceMarkdown);
       // 重新触发 mermaid 渲染（脚本已加载，直接调用 run）
       if (hasMermaid && (doc as any).defaultView?.mermaid) {
         try {
@@ -6010,7 +6073,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         requestAnimationFrame(setScroll);
       }
     }
-  }, [previewHtml, viewMode, theme, collectCssVars, docZoom, typographyPreviewKey]);
+  }, [previewHtml, viewMode, theme, collectCssVars, docZoom, typographyPreviewKey, previewSourceMarkdown, tagPreviewSourceLines]);
 
   // v0.12.0 需求4：分屏 iframe 尺寸变化时保持预览焦点。
   // iframe 的 contentDocument 有独立滚动盒，不在主文档 ResizeObserver 的观察范围内：
@@ -6082,14 +6145,62 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const preview = previewDoc?.documentElement || previewDoc?.body;
     if (!preview || !previewDoc) return;
 
-    /** 左 → 右：把左屏滚动位置映射到右屏 */
+    /**
+     * 左 → 右：把左屏滚动位置映射到右屏。
+     *
+     * v0.13.1 需求13（按块定位对齐）：优先走**块锚点对齐** ——
+     * 找到左屏视口顶部对应的源码行 → 找到该行所属顶层块在右侧的元素
+     * （`data-src-line`，由 tagPreviewSourceLines 贴）→ 把该元素顶对齐到右屏视口顶。
+     *
+     * 为什么必须优先于百分比：左右两侧的"块高"差异可以极大（3 行 mermaid 源码在
+     * 右侧是几百像素的图），同一百分比对应的内容完全不同，于是出现用户报告的
+     * 「左侧编辑图表，右侧要把屏幕往下拉一拉才能看到」。
+     *
+     * 回退：非 md 文件、未贴标签（数量自校验失败）、或任何测量异常 → 一律走
+     * 既有的 `computeSyncScrollTop` 百分比映射。块对齐是**增强**，不是替代。
+     */
     const syncToPreview = () => {
       if (isSyncingScrollRef.current) return;
       isSyncingScrollRef.current = true;
-      preview.scrollTop = computeSyncScrollTop(
-        textarea.scrollTop, textarea.scrollHeight, textarea.clientHeight,
-        preview.scrollHeight, preview.clientHeight
-      );
+      let handled = false;
+      try {
+        const tagged = preview.querySelectorAll<HTMLElement>("[data-src-line]");
+        if (tagged.length > 0) {
+          const lines = Array.from(tagged, (el) => Number(el.dataset.srcLine));
+          const totalLines = previewSourceMarkdown === "" ? 0 : previewSourceMarkdown.split("\n").length;
+          const topLine = estimateTopSourceLine({
+            scrollTop: textarea.scrollTop,
+            scrollHeight: textarea.scrollHeight,
+            clientHeight: textarea.clientHeight,
+            totalSourceLines: totalLines,
+          });
+          const idx = pickAnchorIndex(lines, topLine);
+          if (idx >= 0) {
+            const anchor = tagged[idx];
+            const anchorTop = anchor.getBoundingClientRect().top;
+            const viewportTop = preview.getBoundingClientRect().top;
+            if (Number.isFinite(anchorTop) && Number.isFinite(viewportTop)) {
+              const next = computeBlockAlignedScrollTop({
+                previewScrollTop: preview.scrollTop,
+                anchorTopInViewport: anchorTop,
+                viewportTop,
+                maxScrollTop: preview.scrollHeight - preview.clientHeight,
+              });
+              preview.scrollTop = next;
+              handled = true;
+            }
+          }
+        }
+      } catch {
+        // 块对齐失败（iframe 未就绪 / 测量异常）→ 落到下面的百分比映射
+        handled = false;
+      }
+      if (!handled) {
+        preview.scrollTop = computeSyncScrollTop(
+          textarea.scrollTop, textarea.scrollHeight, textarea.clientHeight,
+          preview.scrollHeight, preview.clientHeight
+        );
+      }
       requestAnimationFrame(() => { isSyncingScrollRef.current = false; });
     };
 
@@ -6110,7 +6221,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       textarea.removeEventListener("scroll", syncToPreview);
       isSyncingScrollRef.current = false;
     };
-  }, [viewMode, previewHtml]); // 依赖 previewHtml，因为 iframe 内容更新后需要重新同步
+  }, [viewMode, previewHtml, previewSourceMarkdown]); // 依赖 previewHtml / 源码文本，因为 iframe 内容更新后需要重新同步
 
   // ─── 格式工具栏 ────────────────────────────────
   // link/image/table 打开对应对话框；mermaid 打开模板下拉；其余走 handleFormatAction

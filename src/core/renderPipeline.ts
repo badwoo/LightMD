@@ -252,3 +252,46 @@ export function renderMarkdownHtml(markdown: string, opts?: RenderMarkdownHtmlOp
   }
   return html;
 }
+
+/**
+ * v0.13.1 需求13（按块定位对齐）：**顶层块在源码中的起始行**（0-based，升序）。
+ *
+ * ## 用途
+ * 分屏模式下要"按块"而非"按百分比"联动滚动：需要知道右侧预览里第 i 个顶层元素
+ * 对应源码的第几行。markdown-it 的块级 token 自带 `.map = [startLine, endLine]`，
+ * 而 token 顺序与渲染出的**顶层元素顺序**一致，因此这份行号表就是"元素下标 → 源码行"
+ * 的映射。
+ *
+ * ## 与渲染元素的一一对应
+ * - `nesting === 1`：成对块的开始标记（paragraph / heading / blockquote / 列表 / 表格…）；
+ * - `nesting === 0`：自闭合块（fence / code_block / hr）。
+ * `level === 0` 保证只取顶层（段落里的 `inline` 是 level 1，表格单元格里的是 level 2）。
+ *
+ * 实测（v0131-block-scroll-align.test.ts，jsdom 真解析 HTML 计数）：本渲染管线使用
+ * `htmlBlockDisabled: true`，**原始 HTML 会被转义成段落**（`<div>` → `&lt;div&gt;`），
+ * 因此不产生 `html_block` token，"一个块多个元素"的情形在当前管线里不会出现，
+ * 本表长度与 `body.children.length` 一致。
+ *
+ * ⚠️ 尽管如此，使用方**仍必须**做数量自校验（见 `shouldTagPreview`）：这是应对
+ * "插件新增了无 map 的 token / 将来开启 html" 这类变化的廉价保险 ——
+ * 数量不符时整份放弃、退回百分比映射，绝不强行错位贴标。
+ *
+ * 本函数**不改变** `renderMarkdownHtml` 的输出（导出/预览的 HTML 逐字节不变），
+ * 只额外提供一份行号表，供 iframe DOM 层贴 `data-src-line` 用。
+ */
+export function topLevelBlockStartLines(markdown: string): number[] {
+  if (!markdown) return [];
+  const tokens = getRenderMarkdownIt().parse(markdown, {});
+  const lines: number[] = [];
+  for (const token of tokens) {
+    if (token.level !== 0) continue;
+    if (!token.map || token.map.length < 1) continue;
+    const isOpener = token.nesting === 1;
+    const isSelfClosingBlock = token.nesting === 0;
+    if (!isOpener && !isSelfClosingBlock) continue;
+    const start = token.map[0];
+    if (typeof start !== "number" || !Number.isFinite(start)) continue;
+    lines.push(start);
+  }
+  return lines;
+}
