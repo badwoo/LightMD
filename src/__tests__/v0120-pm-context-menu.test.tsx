@@ -23,10 +23,12 @@ afterEach(cleanup);
 const baseCtx = { hasSelection: false, nodeKind: null, isMdFile: true, translateEnabled: true };
 
 describe("v0.12.0 需求2：buildPmMenuItems 三态", () => {
-  it("有文本选区：行内格式 + 格式刷 + AI 翻译", () => {
+  it("有文本选区：剪贴板四件套置顶 + 行内格式 + 格式刷 + AI 翻译", () => {
     const items = buildPmMenuItems({ ...baseCtx, hasSelection: true });
     const actions = items.filter((i) => i.type === "item").map((i) => i.action);
+    // v0.13.1 需求16：「剪切 / 复制 / 粘贴 / 粘贴为纯文本」置于**最上面一栏**
     expect(actions).toEqual([
+      "cut", "copy", "paste", "pastePlain",
       "bold", "italic", "strikethrough", "code", "highlight", "underline",
       "formatPainter", "translate",
     ]);

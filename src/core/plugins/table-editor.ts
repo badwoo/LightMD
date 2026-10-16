@@ -30,6 +30,7 @@ import {
   checkSplittable,
   mergeCells,
   splitCell,
+  setRangeAlign,
   type CellRect,
 } from "../tableMerge";
 import { buildTableGridFromTable, cellPositionsOfGrid, normalizeSpan } from "../tableGrid";
@@ -984,6 +985,16 @@ export class TableView implements NodeView {
     // 统一使用 hitResizeZone 判定（与 onHover/stopEvent 同口径）
     const zone = hitResizeZone(cell, e.clientX, e.clientY);
     if (!zone.col && !zone.row) return;
+    // ─── v0.13.1 需求5：热区内**立刻**阻止浏览器默认行为 ────────────────
+    //
+    // 缺陷背景（用户报告「鼠标放在列框线上拖拽符出来了，但拖拽变成了选中单元格内容」）：
+    // 热区内 `stopEvent` 返回 true 只是让 **ProseMirror** 不处理这次 mousedown，
+    // 浏览器自己的默认行为仍然照跑 —— 于是 mousedown 当场开始**原生文本选择**，
+    // 用户拖拽时看到的是"整片文字被刷蓝/选中"，缩放根本没机会启动。
+    // mousedown 的 preventDefault 是唯一能从一开始就抑制原生选择的时机
+    // （等首次 mousemove 再 preventDefault 已经晚了，选择早已开始）。
+    // 对本项目自建的范围选区无影响：它靠 `.pm-cell-in-range` class，不依赖原生 selection。
+    e.preventDefault();
     // 登记待定手势；真正启动缩放推迟到首次 mousemove（见 resolvePendingResize）
     this.pendingResize = { cell, zone, x: e.clientX, y: e.clientY };
     // 定夺用的监听挂在 **document** 上：拖拽时指针可能移出表格（甚至移出窗口），
@@ -1282,9 +1293,24 @@ export class TableView implements NodeView {
     this.resolvePendingResize(e);
   };
 
-  /** 松开时若仍未定夺（只是点了一下边缘）→ 作废待定状态，不启动缩放 */
+  /**
+   * 松开时若仍未定夺（只是点了一下边缘）→ 作废待定状态，不启动缩放。
+   *
+   * v0.13.1 需求5：热区内的 mousedown 现在会 `preventDefault()`（为了抑制原生文本
+   * 选择），副作用是**焦点不会自动落到编辑器**。因此"只是点了一下边框"这条路径
+   * 需要显式把焦点还给编辑器，否则用户点完边框再敲键盘会没有反应。
+   * （不设置光标位置：点边框在 Word 里同样是"无操作"，只保留焦点最符合直觉。）
+   */
   private onPendingResolveUp = () => {
+    const wasPending = this.pendingResize !== null;
     this.clearPendingResize();
+    if (wasPending) {
+      try {
+        this.view.focus();
+      } catch {
+        /* 视图已销毁等极端情况：忽略 */
+      }
+    }
   };
 
   private clearPendingResize(): void {
@@ -1311,24 +1337,31 @@ export class TableView implements NodeView {
   private resolvePendingResize(e: MouseEvent): boolean {
     const p = this.pendingResize;
     if (!p) return false;
-    const dx = Math.abs(e.clientX - p.x);
-    const dy = Math.abs(e.clientY - p.y);
+    const adx = Math.abs(e.clientX - p.x);
+    const ady = Math.abs(e.clientY - p.y);
     // 位移还太小 → 暂不判定（保持两种可能）
-    if (dx < 3 && dy < 3) return true;
-    // ① 已离开起始格 → 范围选区（缩放作废）
-    const target = e.target as HTMLElement | null;
-    const nowCell = target?.closest?.("td, th") as HTMLElement | null;
-    if (nowCell && nowCell !== p.cell) {
-      this.clearPendingResize();
-      return false;
-    }
-    const zone = p.zone;
-    const cell = p.cell;
+    if (adx < 3 && ady < 3) return true;
+
+    const { zone, cell } = p;
     const startX = p.x;
     const startY = p.y;
+
+    // ─── v0.13.1 需求5：**按主导轴仲裁**，不再以"是否离开起始格"为第一判据 ────
+    //
+    // 缺陷背景（用户报告「拖拽调整列宽不起作用，变成了选中单元格内容」）：
+    // 旧实现第一判据是 `nowCell !== p.cell → 判为范围选区并放弃缩放`。但
+    // **拖拽列框线必然让指针进入相邻单元格**（框线本身就在两格交界处），
+    // 于是缩放永远无法启动，一律退化成"选单元格内容"。
+    //
+    // 正确判据是动作方向：
+    //   · 起手在**列**热区 且 横向主导 → 列宽缩放（越过相邻格是缩放的正常形态）；
+    //   · 起手在**行**热区 且 纵向主导 → 行高缩放；
+    //   · 其余（例如在列热区里**竖着**拖 = 想竖选一列单元格；
+    //     或在行热区里横着拖）→ 范围选区，交给 onRangeMouseMove 继续扩展。
+    // 这样既修好缩放，又保住了"从热区起手也能竖选/合并"的既有能力。
+    const colDrag = zone.col && adx >= ady;
+    const rowDrag = !colDrag && zone.row && ady > adx;
     this.clearPendingResize();
-    const colDrag = zone.col && dx >= dy;
-    const rowDrag = zone.row && dy > dx;
     if (colDrag) {
       // 提升为列宽拖拽（复用既有 startResize 路径）
       this.rangeAnchor = null;
@@ -1344,7 +1377,7 @@ export class TableView implements NodeView {
       this.beginRowResizeFromGesture(cell, startY, e);
       return true;
     }
-    // 明显离开边框 → 当作跨格范围选区
+    // 回落为范围选区：锚点已在 onRangeMouseDown 武装，后续由 onRangeMouseMove 扩展
     return false;
   }
 
@@ -1402,6 +1435,8 @@ export class TableView implements NodeView {
     };
     this.applyRangeHighlight();
     this.refreshMergeSplitButtons();
+    // v0.13.1 需求4：范围一变，对齐按钮的作用面就要跟着变
+    this.refreshAlignButtons();
   }
 
   /** 拖拽结束：清掉 anchor（范围本身保留，供工具栏/右键菜单消费） */
@@ -1538,6 +1573,13 @@ export class TableView implements NodeView {
       danger?: boolean;
       /** v0.13.0 需求12：合并/拆分（data-action 标记，禁用态实时刷新） */
       action?: string;
+      /**
+       * v0.13.1 需求4：对齐按钮的作用面标记（"align"）。
+       * 与 `op` 互斥——对齐需要读**范围选区**与 table 节点，签名与
+       * `op(tr, $pos)` 不同，单独挂 handler；title 由
+       * `refreshAlignButtons()` 按当前作用面实时刷新。
+       */
+      alignAction?: string;
     };
     const buttons: Btn[] = [
       { label: "⬆️", title: t("table.addRowAbove"), op: insertRowAbove },
@@ -1547,9 +1589,11 @@ export class TableView implements NodeView {
       { label: "↕", title: t("table.deleteRow"), op: deleteRow, danger: true },
       { label: "↔", title: t("table.deleteColumn"), op: deleteColumn, danger: true },
       { label: "🗑", title: t("table.deleteTable"), op: deleteTable, danger: true },
-      { label: "⟸", title: t("table.alignLeft"), align: "left" },
-      { label: "⟺", title: t("table.alignCenter"), align: "center" },
-      { label: "⟹", title: t("table.alignRight"), align: "right" },
+      // v0.13.1 需求4：三个对齐按钮的 title 是**动态**的（有范围选区 → "选中单元格…"，
+      // 否则 → "整列…"），初值取整列文案，随后由 refreshAlignButtons() 校正。
+      { label: "⟸", title: t("table.alignLeftColumn"), align: "left", alignAction: "align" },
+      { label: "⟺", title: t("table.alignCenterColumn"), align: "center", alignAction: "align" },
+      { label: "⟹", title: t("table.alignRightColumn"), align: "right", alignAction: "align" },
     ];
 
     // v0.13.0 需求12：合并 / 拆分（不用 op——它们需要**范围选区**或
@@ -1561,7 +1605,7 @@ export class TableView implements NodeView {
       { label: "✂️", title: t("table.splitCell"), action: "splitCell" } as unknown as Btn,
     );
 
-    buttons.forEach(({ label, title, op, align, danger, action }) => {
+    buttons.forEach(({ label, title, op, align, danger, action, alignAction }) => {
       const btn = document.createElement("button");
       btn.textContent = label;
       btn.type = "button";
@@ -1576,6 +1620,12 @@ export class TableView implements NodeView {
       if (op === deleteRow) btn.dataset.action = "deleteRow";
       // v0.13.0 需求12：合并/拆分同样需要实时禁用态
       if (action) btn.dataset.action = action;
+      // v0.13.1 需求4：对齐按钮的 title 需要按范围选区实时刷新，
+      // 故登记作用面标记 + 对齐值（refreshAlignButtons 据此重算文案）
+      if (alignAction && align) {
+        btn.dataset.action = alignAction;
+        btn.dataset.align = align;
+      }
 
       if (danger) btn.style.color = "#d32f2f";
       btn.addEventListener("mouseenter", () => (btn.style.background = "var(--bg-hover,#f0f0f0)"));
@@ -1599,7 +1649,8 @@ export class TableView implements NodeView {
         if (op) {
           newTr = op(tr, $pos);
         } else if (align) {
-          newTr = setColumnAlign(tr, $pos, align);
+          // v0.13.1 需求4：有范围选区 → 只改矩形内的格；无 → 保持整列语义
+          newTr = this.applyAlignScoped(tr, $pos, align);
         }
         if (newTr) this.view.dispatch(newTr);
       });
@@ -1611,6 +1662,8 @@ export class TableView implements NodeView {
     this.refreshDeleteRowButton();
     // v0.13.0 需求12：合并/拆分按钮初始禁用态
     this.refreshMergeSplitButtons();
+    // v0.13.1 需求4：对齐按钮 title 的初始作用面（无范围选区 → 整列）
+    this.refreshAlignButtons();
     this.positionToolbar();
 
     // v0.11.0 B1-2 返修：工具栏存活期间跟踪选区变化（含键盘方向键在表格内移动），
@@ -1651,7 +1704,64 @@ export class TableView implements NodeView {
     if (!this.toolbar) return;
     this.refreshDeleteRowButton();
     this.refreshMergeSplitButtons();
+    // v0.13.1 需求4：对齐按钮的 title 也跟随范围选区实时刷新
+    this.refreshAlignButtons();
   };
+
+  /**
+   * v0.13.1 需求4：**按作用面**应用对齐 —— 有范围选区时只改选中的单元格，
+   * 否则保持既有"整列"语义。
+   *
+   * 为什么不把这段判据放进按钮 click 里内联：同一判据还要供
+   * `refreshAlignButtons()` 复用（title 与实际行为必须同源，否则用户看到的
+   * 提示会与点击结果不一致 —— 这正是本条需求要修的缺陷形态）。
+   */
+  private applyAlignScoped(
+    tr: Transaction,
+    $pos: ResolvedPos,
+    align: "left" | "center" | "right",
+  ): Transaction | null {
+    const rect = this.cellRange;
+    if (rect) {
+      const tablePos = this.getPos();
+      if (tablePos !== undefined) {
+        const tableNode = this.view.state.doc.nodeAt(tablePos);
+        if (tableNode && tableNode.type.name === "table") {
+          const out = setRangeAlign(tr, tablePos, tableNode, rect, align);
+          // 范围选区仍然有效（对齐不销毁选区，用户可连点多个按钮）
+          if (out) return out;
+          // 矩形内所有格已经是目标对齐 → 无改动（返回 null，不产生空事务）
+          return null;
+        }
+      }
+      // table 节点读不到（极端时序）→ 退回整列，至少不静默变成死按钮
+    }
+    return setColumnAlign(tr, $pos, align);
+  }
+
+  /**
+   * v0.13.1 需求4：刷新三个对齐按钮的 title（"选中单元格…" ↔ "整列…"）。
+   *
+   * 复用 `refreshMergeSplitButtons` 的同一套实时刷新机制：范围选区是**拖拽**
+   * 产生的，拖拽过程中作用面在变；僵在工具栏创建那一刻会让用户看到
+   * "整列对齐"却只改了选中的两格（或反之）。故由 `onSelectionChange`
+   * 与 `applyRangeHighlight` 两处共同驱动。
+   */
+  private refreshAlignButtons() {
+    if (!this.toolbar) return;
+    const inRange = !!this.cellRange;
+    const scope = inRange ? "Range" : "Column";
+    const btns = this.toolbar.querySelectorAll<HTMLButtonElement>(
+      'button[data-action="align"]',
+    );
+    btns.forEach((btn) => {
+      const align = btn.dataset.align;
+      if (!align) return;
+      const capitalized = align.charAt(0).toUpperCase() + align.slice(1);
+      // i18n key 形如 table.alignLeftRange / table.alignLeftColumn
+      btn.title = t(`table.align${capitalized}${scope}`);
+    });
+  }
 
   /**
    * v0.13.0 需求12：刷新「合并 / 拆分」按钮的禁用态。

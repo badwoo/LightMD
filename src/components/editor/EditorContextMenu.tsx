@@ -93,14 +93,20 @@ export function buildMenuItems(
   translateEnabled = true,
 ): MenuItemConfig[] {
   const items: MenuItemConfig[] = [
-    // ─── 撤销/恢复（v0.9.0：键位动态读取生效表） ───
-    { type: "item", action: "undo", label: "撤销", shortcut: getShortcutLabel("edit.undo"), disabled: !canUndo },
-    { type: "item", action: "redo", label: "恢复", shortcut: getShortcutLabel("edit.redo"), disabled: !canRedo },
-    { type: "separator" },
-    // ─── 剪切/复制/粘贴（系统剪贴板，保留键不入自定义表） ───
+    // ─── v0.13.1 需求16：剪贴板四件套置于**最上面一栏** ───
+    // 用户明确要求"选中文本右键菜单增加剪切、复制、粘贴、粘贴为纯文本功能入口，
+    // 放在右键菜单最上面一栏"。因此本组从原来的「撤销/恢复之后」上移到菜单首位，
+    // 与阅读模式菜单（PmContextMenu）的顺序保持一致（两处必须同款）。
+    // 快捷键沿用系统保留键（不入自定义表，见 core/shortcuts.ts RESERVED_COMBOS）。
     { type: "item", action: "cut", label: "剪切", shortcut: "Ctrl+X", disabled: !hasSelection },
     { type: "item", action: "copy", label: "复制", shortcut: "Ctrl+C", disabled: !hasSelection },
     { type: "item", action: "paste", label: "粘贴", shortcut: "Ctrl+V", disabled: false },
+    // 纯文本粘贴没有系统级默认快捷键（浏览器另有 Ctrl+Shift+V），故不展示键位
+    { type: "item", action: "pastePlain", label: "粘贴为纯文本", disabled: false },
+    { type: "separator" },
+    // ─── 撤销/恢复（v0.9.0：键位动态读取生效表） ───
+    { type: "item", action: "undo", label: "撤销", shortcut: getShortcutLabel("edit.undo"), disabled: !canUndo },
+    { type: "item", action: "redo", label: "恢复", shortcut: getShortcutLabel("edit.redo"), disabled: !canRedo },
   ];
 
   // ─── 行内格式（仅在有选中文本时显示）───

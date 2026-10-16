@@ -40,6 +40,14 @@ export interface PmMenuContext {
   translateEnabled: boolean;
   /** v0.13.0 需求1：剪贴板里是否有可用的块数据（无则禁用「粘贴」） */
   hasBlockClipboard?: boolean;
+  /**
+   * v0.13.1 需求16：选区是否可剪切/复制。
+   *
+   * 与 `hasBlockClipboard` 同一用途（禁用态），且**同一条教训**：不得为算禁用态去
+   * `navigator.clipboard.read()`（WebView2 会弹系统授权气泡）。这里只反映编辑器自身
+   * 选区状态，调用方同步传值即可。省略时按 `hasSelection` 推断（保持既有语义）。
+   */
+  hasTextClipboard?: boolean;
 }
 
 /** 块类型 → 删除文案的 i18n key（未知类型回退通用「删除块」） */
@@ -67,6 +75,22 @@ export function buildPmMenuItems(ctx: PmMenuContext): PmMenuItemConfig[] {
   }
 
   const items: PmMenuItemConfig[] = [];
+
+  // ─── 有文本选区：剪贴板四件套（v0.13.1 需求16，置于菜单**最上面一栏**）───
+  //
+  // 「粘贴」与「粘贴为纯文本」的禁用态：**不读系统剪贴板**（会触发 WebView2 授权气泡），
+  // 统一交给点击时的实现去读并 toast 失败。因此这里恒可用，只把「剪切/复制」
+  // 与选区状态绑定。
+  if (ctx.hasSelection) {
+    const copyable = ctx.hasTextClipboard ?? true;
+    items.push(
+      { type: "item", action: "cut", label: t("menu.cut"), disabled: !copyable },
+      { type: "item", action: "copy", label: t("menu.copy"), disabled: !copyable },
+      { type: "item", action: "paste", label: t("menu.paste") },
+      { type: "item", action: "pastePlain", label: t("menu.pastePlain") },
+      { type: "separator" },
+    );
+  }
 
   // ─── 有文本选区：行内格式 + 格式刷 + AI 翻译 ───
   if (ctx.hasSelection) {
@@ -114,6 +138,8 @@ export interface PmContextMenuProps {
   translateEnabled: boolean;
   /** v0.13.0 需求1：剪贴板是否有块数据（控制「粘贴」禁用态） */
   hasBlockClipboard?: boolean;
+  /** v0.13.1 需求16：选区是否可剪切/复制（控制「剪切」「复制」禁用态） */
+  hasTextClipboard?: boolean;
   onAction: (action: string) => void;
   onClose: () => void;
 }
@@ -127,6 +153,7 @@ export function PmContextMenu({
   isMdFile,
   translateEnabled,
   hasBlockClipboard,
+  hasTextClipboard,
   onAction,
   onClose,
 }: PmContextMenuProps) {
@@ -166,11 +193,18 @@ export function PmContextMenu({
     isMdFile,
     translateEnabled,
     hasBlockClipboard,
+    hasTextClipboard,
   });
-  const pos = computeMenuPosition(x, y, { width: window.innerWidth, height: window.innerHeight }, {
-    width: 200,
-    height: 440,
-  });
+  // v0.13.1 需求16：高度估算按**实际菜单项数**算，不再写死 440。
+  // 新增剪贴板四件套（+5 行：4 项 + 1 分隔线）后，写死的估算会让菜单在窗口底部
+  // 被判成"放得下"而被裁掉。每项约 30px，加容器内边距 16px；分隔线略矮，
+  // 统一按项数计即足够保守（宁可上翻也不要被裁）。
+  const pos = computeMenuPosition(
+    x,
+    y,
+    { width: window.innerWidth, height: window.innerHeight },
+    { width: 200, height: 16 + items.length * 30 },
+  );
 
   return createPortal(
     <div

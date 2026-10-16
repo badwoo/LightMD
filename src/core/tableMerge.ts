@@ -25,6 +25,7 @@ import type { Node } from "prosemirror-model";
 import type { Transaction } from "prosemirror-state";
 import {
   buildTableGridFromTable,
+  cellPositionsOfGrid,
   collectTableRows,
   gridColumnCount,
   normalizeSpan,
@@ -242,6 +243,70 @@ export function splitCell(
     tr.replaceWith(rowRef.pos, rowRef.pos + rowRef.row.nodeSize, newRow);
   }
   return tr;
+}
+
+/**
+ * v0.13.1 需求4：把对齐**只应用到矩形范围内的单元格**（事务层）。
+ *
+ * ─── 为什么不能复用 setColumnAlign ───
+ * `table-editor.setColumnAlign` 按 `row.child(colIdx)` 的**物理下标**写整列：
+ *   · 语义上它改的是"整列"，用户拖拽选出 (0,0)-(0,1) 后点居中还应该只改这两格；
+ *   · 实现上物理下标在含合并格的表格里**与逻辑列错位**——`| <td colspan="2">X</td> | C |`
+ *     第 2 个物理格代表逻辑列 2，按物理下标就会改错列。
+ * 本函数走 [`buildTableGridFromTable`] 的同一套逻辑网格（与合并/拆分/序列化同口径），
+ * 因此跨度格不会错位。
+ *
+ * ─── 语义细节 ───
+ * - 只改**锚点格**（`cell.rowIdx === r && cell.colIdx === c`）：跨列/跨行的合并格
+ *   在网格里会在被占位的列上表现为 `null` 或重复引用，按锚点判定才能一格只改一次；
+ *   合并格的锚点若落在矩形内，它就整体算"选中格"（跨度超出矩形的部分一并改——
+ *   一个格子的 align 属性是整体的，无法只改它的一半）。
+ * - 只对 `align` 真的不同的格调用 `setNodeMarkup`：全部已一致时返回 **null**，
+ *   调用方据此不 dispatch（避免产生"空事务"污染撤销栈 / 触发幽灵的 docChange）。
+ *
+ * @param tr 事务（会被就地修改）
+ * @param tablePos table 节点在 doc 中的起始位置
+ * @param table table 节点
+ * @param rect 矩形范围（逻辑行列，含端点）
+ * @param align 'left' | 'center' | 'right'
+ * @returns 有实际改动时返回 tr；无格可改 / 全部已是目标对齐时返回 null
+ */
+export function setRangeAlign(
+  tr: Transaction,
+  tablePos: number,
+  table: Node,
+  rect: CellRect,
+  align: "left" | "center" | "right",
+): Transaction | null {
+  if (!table || table.type.name !== "table") return null;
+  if (rect.r1 < rect.r0 || rect.c1 < rect.c0) return null;
+  const grid = buildTableGridFromTable(table, tablePos);
+  // cellPositionsOfGrid 给出的是「doc 位置 → 网格坐标」；这里要的是反向查表
+  // （网格坐标 → doc 位置），故按坐标建索引。用 `pos` 而不是节点对象作 key：
+  // 网格里的跨格镜像项引用同一节点，坐标索引能天然区分它们。
+  const posByCoord = new Map<string, number>();
+  for (const [pos, coord] of cellPositionsOfGrid(table, tablePos)) {
+    posByCoord.set(`${coord.rowIdx},${coord.colIdx}`, pos);
+  }
+
+  let changed = false;
+  for (let r = rect.r0; r <= rect.r1; r++) {
+    const row = grid[r];
+    if (!row) continue;
+    for (let c = rect.c0; c <= rect.c1; c++) {
+      const cell = row[c];
+      // 只取锚点（跳过占位 null 与跨度的镜像项）
+      if (!cell || cell.rowIdx !== r || cell.colIdx !== c) continue;
+      if (cell.node.attrs.align === align) continue;
+      const pos = posByCoord.get(`${r},${c}`);
+      if (pos === undefined) continue; // 位置反查失败：跳过而不是写错位置
+      const live = tr.doc.nodeAt(pos);
+      const attrs = { ...(live ?? cell.node).attrs, align };
+      tr.setNodeMarkup(pos, undefined, attrs);
+      changed = true;
+    }
+  }
+  return changed ? tr : null;
 }
 
 /** 造一个与给定 cell 同类型的空格（保留 align） */

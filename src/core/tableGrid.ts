@@ -111,11 +111,15 @@ export function collectTableRows(table: Node, tablePos: number): TableRowRef[] {
  */
 export function buildTableGridFromTable(table: Node, tablePos = 0): TableGrid {
   const rows: Node[] = [];
+  // v0.13.1 需求2：裁剪必须带**逻辑列上界**——否则行尾的**真实空单元格**会被当成
+  // markdown-it 补齐的幻影格一起丢掉，它就拿不到网格坐标、拖拽永远选不中（见
+  // tableLogicalColumnCount 的说明）。
+  const logicalCols = tableLogicalColumnCount(table, tablePos);
   // 用裁剪后的行重建轻量 row 桩（forEach 语义与 PM Node 一致），
   // 避免为裁剪而真的改文档
   const trimmed = collectTableRows(table, tablePos).map((ref) => ({
     ref,
-    cells: trimRowTrailingEmpties(ref.row),
+    cells: trimRowTrailingEmpties(ref.row, logicalCols),
   }));
   for (const t of trimmed) {
     rows.push({
@@ -208,6 +212,72 @@ export function gridColumnCount(grid: TableGrid): number {
   return n;
 }
 
+/**
+ * v0.13.1 需求2：表格的**逻辑列数**——即 markdown-it 的 `columnCount`。
+ *
+ * ─── 为什么需要它 ───
+ * markdown-it 的表格规则（`lib/rules_block/table.mjs`）先由**表头行源文本**算出
+ * `columnCount`（第 129 行 `const columnCount = columns.length`），然后对**每一行**
+ * 恒定输出 `columnCount` 个 `<td>`（第 202-213 行）：
+ *
+ * ```js
+ * for (let i = 0; i < columnCount; i++) {
+ *   const token_tdo = state.push('td_open', 'td', 1)
+ *   const token_il = state.push('inline', '', 0)
+ *   token_il.content = columns[i] ? columns[i].trim() : ''   // ← 源文少写的列补空
+ * ```
+ *
+ * 结论：**源文件少写了几格，解析后一定被补齐**，而且补出来的空格与用户手写的
+ * 真实空单元格**在节点层面完全同形**（都是 `content.size === 0`、span 1/1）——
+ * 这正是 [`trimRowTrailingEmpties`] 无法只靠"空格"识别幻影格的根因。
+ *
+ * ─── 判据 ───
+ * 幻影格是"补齐到 columnCount"的产物，因此它**布点后的逻辑列必然 ≥ columnCount**；
+ * 真实空单元格一定落在 `[0, columnCount)` 内。
+ * ⚠️ 判据必须是**逻辑列**而不是物理下标：`| X(cs3) | | |` 里两个补齐格的物理下标
+ * 是 1、2（都 < 3），但被 cs3 挤到逻辑列 3、4 —— 按物理下标会把它们当真实格留下，
+ * 网格被撑成 5 列（实测），列错位、序列化漂移。
+ *
+ * ─── columnCount 怎么取 ───
+ * markdown-it 为表头行也恒定输出 `columnCount` 个 cell，所以**表头行的物理子节点数
+ * 就等于 columnCount**。（注意：**不能**用 colspan 展开后的贪婪宽度——markdown-it 的
+ * `columnCount` 数的是源文本的管道格数，`<td colspan="2">` 只算一格。）
+ *
+ * 表头缺失（schema 的 `table_head?`）时退化为所有行的最大物理宽度（防御取值）。
+ *
+ * @returns 逻辑列数；无行时 0
+ */
+export function tableLogicalColumnCount(table: Node, tablePos = 0): number {
+  const rows = collectTableRows(table, tablePos);
+  if (rows.length === 0) return 0;
+  const head = rows.find((r) => r.isHead);
+  if (head) return head.row.childCount;
+  // 防御：无 thead 时取所有行的最大物理宽度（与旧裁剪口径一致，不会把真实格裁掉）
+  let w = 0;
+  for (const r of rows) w = Math.max(w, r.row.childCount);
+  return w;
+}
+
+/**
+ * 一行的每个 cell 布点后的**逻辑列**（与 [`buildTableGrid`] 同一套"第一个空闲列"规则）。
+ *
+ * v0.13.1 需求2：用于判定"这个行尾空格是用户真实写的空单元格，还是 markdown-it
+ * 补齐出来的幻影格"。对**未裁剪**的全部 cell 计算，因此与裁剪结果无关（不递归）。
+ */
+function greedyRowColumns(row: Node): number[] {
+  const out: number[] = [];
+  const occupied: boolean[] = [];
+  let col = 0;
+  row.forEach((cell) => {
+    const { colspan } = spanOf(cell);
+    while (occupied[col]) col++;
+    out.push(col);
+    for (let c = col; c < col + colspan; c++) occupied[c] = true;
+    col += colspan;
+  });
+  return out;
+}
+
 /** 表格是否含任何合并（colspan>1 或 rowspan>1） */
 export function tableHasSpan(table: Node): boolean {
   let found = false;
@@ -241,9 +311,38 @@ export function tableHasSpan(table: Node): boolean {
  * 会改变 `| 1 |  |` 这类文档的往返结果。故只在本模块
  * （合并/拆分/合并序列化专用）做裁剪，纯管道管道一行不受影响。
  */
-export function trimRowTrailingEmpties(row: Node): Node[] {
+export function trimRowTrailingEmpties(row: Node, logicalCols?: number): Node[] {
   const cells: Node[] = [];
   row.forEach((c) => cells.push(c));
+  // v0.13.1 需求2：只有**逻辑列上界**能区分幻影格与真实空格（见 tableLogicalColumnCount）。
+  // 未传上界时退化为旧口径（裁剪所有行尾空格）——保持既有调用点的行为不变。
+  if (logicalCols === undefined) {
+    let end = cells.length;
+    while (end > 0) {
+      const c = cells[end - 1];
+      if (!c) break;
+      const { colspan, rowspan } = spanOf(c);
+      if (colspan > 1 || rowspan > 1) break;
+      if (c.content.size > 0) break;
+      end--;
+    }
+    return cells.slice(0, end);
+  }
+  // markdown-it 对每行恒定输出 `columnCount` 个 cell，且**只对缺失的列补空**
+  // （`table.mjs` 第 209 行 `columns[i] ? ... : ''`）。补出来的幻影格与用户真实写的
+  // 空单元格在节点层面完全同形，**唯一可靠的判据是布点后的逻辑列**：
+  //
+  //   · 幻影格是"补齐到 columnCount"的产物 → 它的**逻辑列必然 ≥ logicalCols**；
+  //   · 真实空单元格一定落在 [0, logicalCols) 内。
+  //
+  // 注意**不能**用物理下标判断：`| X(cs3) |  |  |` 里两个补齐格的物理下标是 1、2
+  // （都 < 3），但它们的逻辑列是 3、4（被 cs3 挤到列数之外）——用物理下标会把它们
+  // 当真实格留下，网格被撑成 5 列（实测），列错位、序列化漂移。
+  //
+  // 也不能只按"行尾空格"裁（旧口径）：那会把 `| 1 | 2 |  |` 里用户真实写的末尾空格
+  // 一起丢掉，它拿不到网格坐标 → cellCoordOf 返回 null → 拖拽永远选不中、无法合并
+  // （需求2 的根因）。
+  const logicalColsOf = greedyRowColumns(row);
   let end = cells.length;
   while (end > 0) {
     const c = cells[end - 1];
@@ -251,7 +350,8 @@ export function trimRowTrailingEmpties(row: Node): Node[] {
     const { colspan, rowspan } = spanOf(c);
     if (colspan > 1 || rowspan > 1) break;
     if (c.content.size > 0) break;
-    end--;
+    if (logicalColsOf[end - 1] < logicalCols) break; // 逻辑列内 → 真实空单元格，保留
+    end--; // 逻辑列外 → 补齐的幻影格，丢弃
   }
   return cells.slice(0, end);
 }
@@ -278,11 +378,14 @@ export function cellPositionsOfGrid(
   tablePos = 0,
 ): Map<number, { rowIdx: number; colIdx: number }> {
   const out = new Map<number, { rowIdx: number; colIdx: number }>();
+  // v0.13.1 需求2：位置累加必须与网格构建用**同一套裁剪口径**（带逻辑列上界的），
+  // 否则被裁剪的空格没有条目 → cellCoordOf 查不到 → 拖拽选不中空单元格。
+  const logicalCols = tableLogicalColumnCount(table, tablePos);
   // ① 逐行累加，得到每个（裁剪后的）cell 节点的 doc 起始位置
   const posOfNode = new Map<Node, number>();
   for (const ref of collectTableRows(table, tablePos)) {
     let acc = ref.pos + 1;
-    for (const cell of trimRowTrailingEmpties(ref.row)) {
+    for (const cell of trimRowTrailingEmpties(ref.row, logicalCols)) {
       posOfNode.set(cell, acc);
       acc += cell.nodeSize;
     }

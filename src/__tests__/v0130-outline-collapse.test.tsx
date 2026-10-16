@@ -30,6 +30,8 @@ import type { EditorView } from "prosemirror-view";
 // 这里仅替换 React 绑定，被测的折叠逻辑不受影响。
 vi.mock("@dnd-kit/core", () => ({
   DndContext: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  // v0.13.1 需求11：大纲新增 DragOverlay（跟随光标的拖拽幽灵），替身需一并提供
+  DragOverlay: ({ children }: { children?: ReactNode }) => <>{children}</>,
   PointerSensor: class {},
   useSensor: () => ({}),
   useSensors: () => [],

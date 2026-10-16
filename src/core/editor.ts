@@ -354,6 +354,37 @@ export function createEditor(options: EditorOptions): EditorView | null {
         scrollContainer.scrollTop = savedScrollTop;
       }
 
+      // ─── v0.13.1 需求8：换文档时**清空撤销历史**（撤销绝不跨文档）───────────
+      //
+      // 缺陷背景（用户报告「在 a 文档编辑，切到 b 文档按 Ctrl+Z，切回 a 后发现
+      // a 的内容变成了 b 的内容」）：
+      // 所有标签共用同一个 EditorView，而**撤销历史是 EditorState 内部的**
+      // （`prosemirror-history` 的 state 字段）。换文档此前只是 dispatch 一个
+      // `replaceWith(0, size, newDoc)` 事务 —— 这条事务同样被记进历史，
+      // 于是：
+      //   · Ctrl+Z 会把「切换文档」这一步撤销掉，编辑器当场回到**上一个文档**的内容，
+      //     而当前活动标签已经是新文档 → onDocChange 把旧文档内容写进新标签，
+      //     随后一次保存就会把 A 的内容写进 B 的文件（静默跨文件数据损坏）；
+      //   · 即使本次切换被排除，历史里仍留着**上一个文档**的编辑步骤，
+      //     撤销会拿那些步骤去改当前文档（位置完全不同）→ 内容错乱。
+      // 因此这里在换文档事务应用后**重建一次 state**（复用同一批插件实例），
+      // history 字段随之归零：新文档的撤销栈从空开始，撤销永远只作用于本文档。
+      // 代价（有意为之）：切走再切回不保留本文档的撤销历史 —— 与"撤销绝不跨文档"
+      // 的数据安全相比，这个代价是必须付的。
+      //
+      // 判据必须是 `resetHistory` 而**不是** `fileSwitch`：后者被三处共用
+      // （换文档 / 阅读↔源码的整篇重解析 / 翻译回写），后两者都发生在**同一个文件**
+      // 内，清掉历史会让"切个模式就丢掉全部撤销记录"，属明显的功能回归。
+      if (tr.getMeta("resetHistory")) {
+        view.updateState(
+          EditorState.create({
+            doc: newState.doc,
+            plugins: newState.plugins,
+            selection: newState.selection,
+          }),
+        );
+      }
+
       // 文件切换事务不触发 dirty 标记和序列化
       if (tr.docChanged && onDocChange && initialized && !isFileSwitch) {
         // 取消上一次待执行的序列化，确保只序列化最新状态

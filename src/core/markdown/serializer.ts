@@ -546,7 +546,12 @@ function tableToMarkdownMerged(node: Node): string {
 
   if (rowCount.length === 0) return "";
 
-  const grid = buildTableGridFromTable(node);
+  const grid = buildTableGridFromTable(node, 0);
+  // 列数取**网格宽度**（最长行）而不是表头物理格数：
+  // 表头被合并后它的物理格数会变少（`| <th colspan="2">A</th> | C |` 只有 2 格），
+  // 但 markdown-it 要求表头行的物理格数与分隔行**相等**（见下方补位注释），
+  // 且数据行仍各有 3 格 —— 若按表头格数输出，数据行的第 3 格会被 markdown-it
+  // 按 columnCount 截断而**丢内容**（实测 textContent 由 AC123 变 AC12）。
   const colCount = Math.max(gridColumnCount(grid), 1);
 
   // 表头行的每列对齐（按逻辑列索引；合并格的对齐取其起始列的值）

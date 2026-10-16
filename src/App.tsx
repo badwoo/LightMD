@@ -3604,6 +3604,15 @@ function App() {
           doc={imageManagerDoc}
           docPath={filePath}
           onRewriteRefs={handleImageRefsRewrite}
+          /* v0.13.1 需求9：点「本地文件」徽标 → 资源管理器打开所在目录并选中该图。
+             复用既有 fileService.revealInFolder（Rust reveal_in_folder → explorer /select,），
+             不新增 Rust 命令、不做应用内文件树展开。fileService 内部已 notifyError，
+             这里再补一条面板级提示，保证用户在任何位置都能看到失败原因。 */
+          onRevealInFolder={(absPath) => {
+            void fileService
+              .revealInFolder(absPath)
+              .catch(() => notifyError(t("imageManager.revealFailed")));
+          }}
           onClose={() => setShowImageManager(false)}
         />
       )}

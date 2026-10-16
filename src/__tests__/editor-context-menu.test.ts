@@ -99,20 +99,19 @@ describe("buildMenuItems - 菜单项配置构建", () => {
   it("无选中时菜单项顺序正确", () => {
     const items = buildMenuItems(false, true, true);
     const actions = getItemActions(items);
-    // 预期顺序：undo, redo, cut, copy, paste, aiContinue, aiPolish, aiSummary, link, image, table, codeblock, mermaid
-    // v0.7.0：剪贴组后新增 AI 助手组（续写/摘要无选区要求，润色无选区时禁用）
-    expect(actions).toEqual(["undo", "redo", "cut", "copy", "paste", "aiContinue", "aiPolish", "aiSummary", "link", "image", "table", "codeblock", "mermaid"]);
+    // v0.13.1 需求16：剪贴板四件套（含「粘贴为纯文本」）上移到菜单**最上面一栏**，
+    // 其后才是撤销/恢复；其余分组顺序不变。
+    expect(actions).toEqual(["cut", "copy", "paste", "pastePlain", "undo", "redo", "aiContinue", "aiPolish", "aiSummary", "link", "image", "table", "codeblock", "mermaid"]);
   });
 
   it("有选中时菜单项顺序正确", () => {
     const items = buildMenuItems(true, true, true);
     const actions = getItemActions(items);
-    // 预期顺序：undo, redo, cut, copy, paste, bold, italic, strikethrough, code, formatPainter, translate, aiContinue, aiPolish, aiSummary, link, image, table, codeblock, mermaid
-    // v0.6.0：md 文件且有选区时含 AI 翻译项
-    // v0.7.0：行内格式组后新增 AI 助手组
-    // v0.12.0 需求2：行内格式组末尾新增「格式刷」
+    // v0.13.1 需求16：剪贴板组置顶（cut/copy/paste/pastePlain）→ 撤销/恢复 →
+    // 行内格式（含格式刷、AI 翻译）→ AI 助手 → 插入
     expect(actions).toEqual([
-      "undo", "redo", "cut", "copy", "paste",
+      "cut", "copy", "paste", "pastePlain",
+      "undo", "redo",
       "bold", "italic", "strikethrough", "code", "formatPainter", "translate",
       "aiContinue", "aiPolish", "aiSummary",
       "link", "image", "table", "codeblock", "mermaid",

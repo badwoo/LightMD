@@ -443,11 +443,17 @@ describe("问题6：图片管理（命令路由 + 悬浮入口）", () => {
     expect(markdownHasImage("示例 `![x](./a.png)` 结束")).toBe(false);
   });
 
-  it("悬浮入口仅在文档有图片时渲染，且槽位跟随 AI 翻译是否显示", () => {
+  it("悬浮入口仅在文档有图片时渲染，且槽位固定为第 1 格（「译」上方）", () => {
     const src = SRC("components/editor/EditorContainer.tsx");
     expect(src).toContain("docHasImageFlag &&");
-    expect(src).toContain("slot={translateSlotShown ? 2 : 1}");
-    // 槽位计算必须与「译」入口的渲染条件一致
+    // v0.13.1 需求7：槽位从「跟随 AI 翻译是否显示」的 translateSlotShown ? 2 : 1
+    // 改为**常量 1**。旧写法在 AI 翻译开启时把图片管理放到第 2 格（90px），
+    // 正好压住「译」按钮 hover 弹出的设置齿轮；用户要求图片管理图标排到「译」上方，
+    // 而「译」自己下移到第 3 格（90px，见 FullTranslateButton.css），故此处固定 slot=1。
+    expect(src).toContain("slot={1}");
+    expect(src).not.toContain("slot={translateSlotShown ? 2 : 1}");
+    // translateSlotShown 仍保留（用于「译」入口自身的渲染条件与注释说明），
+    // 但**不得**再参与图片管理入口的槽位计算
     expect(src).toContain("const translateSlotShown =");
   });
 
@@ -474,8 +480,11 @@ describe("问题6：图片管理（命令路由 + 悬浮入口）", () => {
     expect(shared.slice(0, 700)).toContain("border-radius: 50%");
     // 「译」按钮收敛到同一高度与右缘
     expect(css).toContain("height: var(--float-icon-size)");
-    // 取消翻译气泡不得与第 3 格图标重叠
-    expect(css).toContain("var(--float-icon-top, 10px) + 3 *");
+    // v0.13.1 需求7：取消翻译气泡的让位从第 3 格改为第 4 格。
+    // 图标列新序为 模式切换(10) / 图片管理(50) / 「译」(90)，且「译」hover 的
+    // 设置齿轮从 124 伸到 150 —— 旧断言锁的 `+ 3 *`（=130px）正落在齿轮上。
+    expect(css).toContain("var(--float-icon-top, 10px) + 4 *");
+    expect(css).not.toContain("var(--float-icon-top, 10px) + 3 *");
   });
 });
 
@@ -567,7 +576,11 @@ describe("问题8：无外部修改时不得误报「已在其他窗口保存」
 
   it("useAutoSave 用 getKnownDiskContent（长 TTL 基线）而非短 TTL 的 getLastSelfWritten", () => {
     const src = SRC("hooks/useAutoSave.ts");
-    expect(src).toContain("getKnownDiskContent(filePath)");
+    // v0.13.1 需求14：入参由闭包变量 `filePath` 改为**入口捕获的快照** `path`
+    // （跨标签切换时闭包 filePath 会与实时内容分叉 → 误报 + 跨文件串写）。
+    // 因此这里断言"用了长 TTL 访问器"，并显式锁住新形态，避免有人改回闭包变量。
+    expect(src).toContain("getKnownDiskContent(path)");
+    expect(src).not.toContain("getKnownDiskContent(filePath)");
     // 短 TTL（10s）配 60s 自动保存间隔 = 必然误报，故不得再用
     expect(src).not.toContain("getLastSelfWritten(filePath)");
   });

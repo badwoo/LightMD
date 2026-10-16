@@ -35,6 +35,8 @@ import { Outline } from "../components/editor/Outline";
 // 显隐 / 手柄禁用逻辑不受影响；拖拽事务逻辑由 g13-outline-drag.test.ts 纯函数覆盖。
 vi.mock("@dnd-kit/core", () => ({
   DndContext: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  // v0.13.1 需求11：大纲新增 DragOverlay（跟随光标的拖拽幽灵），替身需一并提供
+  DragOverlay: ({ children }: { children?: ReactNode }) => <>{children}</>,
   PointerSensor: class {},
   useSensor: () => ({}),
   useSensors: () => [],

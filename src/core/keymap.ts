@@ -155,6 +155,73 @@ const inTopLevelParagraph = (state: EditorState): boolean => {
 };
 
 /**
+ * v0.13.1 需求3：光标是否位于某个表格单元格（table_cell / table_header）内。
+ *
+ * 只看**祖先链上的节点类型**，与 auto-pair.ts 的 inDisabledNode 同口径
+ * （不依赖 view —— Command 签名只有 state/dispatch）。
+ */
+const inTableCell = (state: EditorState): boolean => {
+  const { $from } = state.selection;
+  for (let d = $from.depth; d > 0; d--) {
+    const name = $from.node(d).type.name;
+    if (name === "table_cell" || name === "table_header") return true;
+  }
+  return false;
+};
+
+/**
+ * v0.13.1 需求3：光标是否**恰好贴在单元格内容的边界**上。
+ *
+ * @param atStart true = 左边界（Backspace）；false = 右边界（Delete）
+ */
+const atCellContentBoundary = (state: EditorState, atStart: boolean): boolean => {
+  const { selection } = state;
+  // 非空选区一律放行：选区删除（deleteSelection）本来就是"只影响本格"，
+  // 且 Shift+Backspace / 成对删除等语义都依赖它。
+  if (!selection.empty) return false;
+  if (!inTableCell(state)) return false;
+  const { $from } = selection;
+  const boundary = atStart ? 0 : $from.parent.content.size;
+  return $from.parentOffset === boundary;
+};
+
+/**
+ * v0.13.1 需求3：**Backspace / Delete 不得跨越表格单元格边界**。
+ *
+ * ─── 缺陷背景（用户实测）───
+ *
+ * `buildKeymap()` 此前只登记 Enter/Shift-Enter/Tab/ArrowRight/Alt-arrows，
+ * 没有 Backspace/Delete，于是表格单元格里的退格落到 `keymap(baseKeymap)`
+ * （editor.ts 中注册在本 keymap **之后**，故本 keymap 优先）：
+ * `backspace = chainCommands(deleteSelection, joinBackward, selectNodeBackward)`，
+ * 而 `joinBackward → deleteBarrier` 的 `isolated` 只看两个**相邻**节点的
+ * `spec.isolating`——table_cell/table_header 都没有 isolating，
+ * 于是光标在格首按退格会**把右邻格与本格合并**：
+ *
+ *   实测（真实 createEditor 挂载，`| A | B |` / `| 1 | 2 |`）：
+ *   光标置入 `1` 的格首按一次 Backspace →
+ *   doc 的 cell 数由 4 掉到 3、内容变成 `12`（右邻格的 `2` 被"吸"进本格），
+ *   光标同时左移。用户感知为"退格把右边的字吞进来了 / 表格塌了一格"。
+ *
+ * ─── 修复口径 ───
+ *
+ * 在**内容边界**上直接吞掉按键（返回 true = 阻止默认行为，但**不派发事务**）：
+ * 不合并单元格、不删除任何节点、不移动光标 —— 与浏览器原生 contenteditable
+ * 里"单元格首/尾退格什么都不发生"的直觉一致。
+ *
+ * 非边界位置（`$from.parentOffset > 0` / `< content.size`）返回 false，
+ * 交回 baseKeymap / 浏览器原生删除，**逐字符删除能力零损失**。
+ *
+ * 同一个守卫也登记给 `Mod-Backspace` / `Mod-Delete`（Ctrl/Cmd + 删除词），
+ * 否则"按词删除"仍会跨格合并。**不登记 Shift-Backspace**：它必须保持
+ * "删除选区 / 普通退格"的原生语义（见基线表第九节保留键位）。
+ *
+ * @param atStart true = Backspace（左边界）；false = Delete（右边界）
+ */
+const swallowAtCellBoundary = (atStart: boolean): Command => (state) =>
+  atCellContentBoundary(state, atStart);
+
+/**
  * 可自定义键 → ProseMirror 命令映射（id 对齐 core/shortcuts.ts SHORTCUT_DEFS）。
  * undo/redo 属 global-editor 作用域：PM 内由此表接管（用户改键后旧 Ctrl+Z 不再触发，
  * 因静态 keymap 不再登记 history 键）。
@@ -273,6 +340,14 @@ function blockClipboardPlugin(): Plugin {
 
 export function buildKeymap() {
   return keymap({
+    // v0.13.1 需求3：Backspace / Delete **在单元格内容边界上**被吞掉，
+    // 绝不跨越 cell 边界（否则 baseKeymap 的 joinBackward 会把相邻两格并成一格）。
+    // 非边界位置返回 false → 交回 baseKeymap / 浏览器原生，逐字符删除不受影响。
+    // 必须登记在 baseKeymap 之前（editor.ts 的插件顺序已保证）。
+    Backspace: swallowAtCellBoundary(true),
+    "Mod-Backspace": swallowAtCellBoundary(true),
+    Delete: swallowAtCellBoundary(false),
+    "Mod-Delete": swallowAtCellBoundary(false),
     // 列表项 / 任务项 Enter 分割（v0.8.0 修复 P11-6）
     // 说明：本 keymap 必须在 baseKeymap **之前**注册（见 editor.ts 插件顺序），
     // 否则 Enter 会命中 baseKeymap 的 splitBlock，在同一列表项内新建段落，

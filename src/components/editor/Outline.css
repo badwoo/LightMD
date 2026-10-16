@@ -114,6 +114,9 @@
   flex: 1;
   overflow-y: auto;
   padding: 4px 0;
+  /* v0.13.1 需求11：落点插入线（.outline-drop-indicator）以本容器为定位上下文，
+     用绝对定位就不受 .outline-row 的 max-height/overflow:hidden 裁剪。 */
+  position: relative;
 }
 
 /* ─── v0.13.0 需求9：标题折叠 ───────────────
@@ -178,6 +181,10 @@
 
 .outline-row.active {
   background: var(--bg-hover);
+  /* v0.13.1 需求12：跟随滚动的目标行。scrollIntoView({block:"nearest"}) 停下时
+     四周留出一点余量，滚动终点看起来"是有意停在这里的"，而不是贴边卡住。 */
+  scroll-margin-top: 8px;
+  scroll-margin-bottom: 8px;
 }
 
 .outline-collapse-toggle {
@@ -302,10 +309,79 @@
   cursor: grabbing;
 }
 
-/* 拖拽中的项：半透明预览 */
+/* 拖拽中的源项（v0.13.1 需求11）
+   ─── 为什么不再用 opacity ───
+   用户反馈「大纲拖拽移动过程中路径会变成灰色，我需要拖动过程中能看到我拖动的标题，
+   也能看到背景目录」。旧实现把源项压到 `opacity: .5`（外层 JSX 还叠加了一次），
+   整个列表在拖拽时"发灰"。现在：源项**保持完全可读**，只用虚线描边 + 强调色底纹
+   表示"这一项正在被移动"；跟随光标的是 DragOverlay 里的实心幽灵（见下方）。 */
 .outline-item.dragging {
-  opacity: 0.5;
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  outline: 1px dashed var(--accent-color);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
+/* 拖拽经过的行：给出"落点在这里"的即时反馈 */
+.outline-row--over {
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
+}
+
+/* v0.13.1 需求11：列表末尾落点条。
+   常驻显示（低调），被拖拽越过后高亮 —— 让"拖到最后"不再是无处可放的死路。 */
+.outline-end-drop {
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 2px 6px 6px;
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  opacity: 0.45;
+  transition: opacity var(--transition-fast), border-color var(--transition-fast),
+    background var(--transition-fast), color var(--transition-fast);
+}
+
+.outline-end-drop.over {
+  opacity: 1;
+  border-color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  color: var(--accent-color);
+}
+
+/* 落点插入线（v0.13.1 需求11）：2px 强调色横线，落在"将被插入的位置"上。
+   绝对定位于 .outline-list（该容器已 position:relative），因此不受行内
+   `max-height/overflow:hidden` 影响（那正是旧实现把拖拽 transform 裁掉的元凶）。 */
+.outline-drop-indicator {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--accent-color);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-color) 35%, transparent);
+}
+
+/* 跟随光标的拖拽幽灵（DragOverlay 内容）：实心卡片，不与背景混淆 */
+.outline-drag-ghost {
+  display: inline-flex;
+  align-items: center;
+  max-width: 240px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent-color);
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.18));
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: grabbing;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 拖拽提示文字 */

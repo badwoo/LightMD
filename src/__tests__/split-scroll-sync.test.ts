@@ -1,31 +1,28 @@
 /**
- * split 模式滚动联动 bug 修复测试
+ * split 模式滚动联动测试
  *
- * Bug 复现场景（通过 chrome-devtools 实时调试定位）：
- * - 用户在 split 模式下滚动 iframe 预览区
- * - iframe 的 scroll 事件触发在 contentDocument/contentWindow 上
- * - 但原代码 onPreviewScroll 监听的是 documentElement（iframe.contentDocument.documentElement）
- * - documentElement 上 scroll 事件不触发（实测 htmlCount=0, winCount=1, docCount=1）
- * - 导致 onPreviewScroll 永远不执行，textarea 不联动 iframe 滚动
- * - textareaScrollPercentRef 保持旧值，切换模式时滚动位置丢失
+ * ─── 本文件锁定的是**纯函数** `computeSyncScrollTop` 的百分比映射数学 ───
+ * 它是把"源容器的一个滚动位置"换算成"目标容器的滚动位置"，**本身与方向无关**
+ * （同一条式子既能算左→右也能算右→左），所以下面两组用例都仍然有效。
  *
- * 修复方案：
+ * ⚠️ v0.13.1 需求13 起，**方向契约已改变**：
+ *   · 旧契约：双向联动（右侧 iframe 滚动 → 回写左侧 textarea）；
+ *   · 新契约：**只保留左 → 右**，右侧可以独立滚动（用户要"看右边的渲染结果"时
+ *     不该被右屏的滚动把左屏一起拖走）。
+ * 因此"iframe 滚动应同步 textarea"这组用例**只验证换算公式**，不再描述产品行为；
+ * 方向本身由 `v0131-split-scroll-direction.test.ts` 锁定（断言右→左的回写代码已不存在）。
+ *
+ * 修复方案（历史）：
  * 1. 将 scroll 事件监听从 documentElement 改到 contentDocument
  * 2. 提取 computeSyncScrollTop 纯函数封装百分比映射逻辑
- *
- * 实测验证（修复后）：
- * - split 模式滚动 iframe 到中间（ifPercent=0.1465）→ textarea 同步（taPercent=0.1465）
- * - 切换到 preview → pmPercent=0.1466（保持一致）
- * - 切换到 edit → taPercent=0.1467（保持一致）
- * - 切换回 split → taPercent=0.1468, ifPercent=0.1468（一致）
  */
 import { describe, it, expect } from "vitest";
 import { computeSyncScrollTop } from "../utils/typewriter";
 
-describe("computeSyncScrollTop - split 模式滚动联动修复", () => {
-  // ─── Bug 复现：iframe 预览滚动应同步 textarea ──────────────
+describe("computeSyncScrollTop - 百分比映射数学（与方向无关）", () => {
+  // ─── 映射公式：源位置 → 目标位置 ──────────────
 
-  it("Bug 复现场景：iframe 滚动到中间，textarea 应同步到中间", () => {
+  it("源滚动到中间，目标应同步到中间", () => {
     // 真实调试数据：iframe scrollHeight=7445, clientHeight=619, scrollTop=1000
     // 期望 textarea scrollTop = percent * textareaMax = 0.1465 * 5601 = 820.5
     const result = computeSyncScrollTop(1000, 7445, 619, 6299, 698);
@@ -34,21 +31,21 @@ describe("computeSyncScrollTop - split 模式滚动联动修复", () => {
     expect(result).toBeCloseTo(expected, 1);
   });
 
-  it("iframe 滚动到底部，textarea 应同步到底部", () => {
+  it("iframe 滚动到底部，换算值应到底部（仅公式，非产品行为）", () => {
     // iframe 滚动到底部：scrollTop = scrollHeight - clientHeight = 6826
     const result = computeSyncScrollTop(6826, 7445, 619, 6299, 698);
     const expected = 6826 / (7445 - 619) * (6299 - 698);
     expect(result).toBeCloseTo(expected, 1);
   });
 
-  it("iframe 滚动到顶部，textarea 应同步到顶部", () => {
+  it("iframe 滚动到顶部，换算值应为 0", () => {
     const result = computeSyncScrollTop(0, 7445, 619, 6299, 698);
     expect(result).toBe(0);
   });
 
-  // ─── 反向同步：textarea 滚动应同步 iframe ─────────────────
+  // ─── 同一条公式的"另一个方向"取值 ─────────────────
 
-  it("textarea 滚动到中间，iframe 应同步到中间", () => {
+  it("源（textarea 侧）滚动到中间 → 换算到目标（iframe 侧）", () => {
     // 真实调试数据：textarea scrollHeight=6299, clientHeight=698, scrollTop=821
     // 期望 iframe scrollTop = percent * iframeMax = 0.1465 * 6826 = 1000.1
     const result = computeSyncScrollTop(821, 6299, 698, 7445, 619);
@@ -57,7 +54,7 @@ describe("computeSyncScrollTop - split 模式滚动联动修复", () => {
     expect(result).toBeCloseTo(expected, 1);
   });
 
-  it("textarea 滚动到底部，iframe 应同步到底部", () => {
+  it("源滚动到底部 → 换算到目标到底部", () => {
     const result = computeSyncScrollTop(5601, 6299, 698, 7445, 619);
     const expected = 5601 / (6299 - 698) * (7445 - 619);
     expect(result).toBeCloseTo(expected, 1);

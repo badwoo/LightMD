@@ -427,6 +427,8 @@ export const enUS: Record<string, string> = {
   // v0.13.0 req 9: outline panel heading collapse
   "outline.collapse": "Collapse sub-headings",
   "outline.expand": "Expand sub-headings",
+  // v0.13.1 req 11: always-visible drop target hint while dragging
+  "outline.dropHere": "Drop here",
   // ─── Recent files ───────────────────────────────────
   "recent.title": "Recent",
   "recent.justNow": "Just now",
@@ -593,6 +595,14 @@ export const enUS: Record<string, string> = {
   "table.alignLeft": "Align Left",
   "table.alignCenter": "Align Center",
   "table.alignRight": "Align Right",
+  // v0.13.1 req 4: two scopes for alignment — selected cells when a range is active,
+  // whole column otherwise (GFM separator alignment is inherently column-level)
+  "table.alignLeftRange": "Align selected cells left",
+  "table.alignCenterRange": "Align selected cells center",
+  "table.alignRightRange": "Align selected cells right",
+  "table.alignLeftColumn": "Align whole column left",
+  "table.alignCenterColumn": "Align whole column center",
+  "table.alignRightColumn": "Align whole column right",
   // v0.13.0 req 12: merge / split cells
   "table.mergeCells": "Merge Cells",
   "table.mergeCellsHint": "Merge cells (drag to select at least two cells first)",
@@ -698,12 +708,18 @@ export const enUS: Record<string, string> = {
   "imageManager.remoteUnsupported": "Remote images cannot be copied into assets/ yet",
   "imageManager.renameUnavailable": "Remote images have no local file to rename",
   "imageManager.renameBaseTip": "Edits the name only; the {ext} extension is preserved",
+  // v0.13.1 req 9: click the "Local file" kind badge to reveal the image in Explorer
+  "imageManager.revealTip": "Open the containing folder in Explorer and select this image",
+  "imageManager.revealFailed": "Could not reveal the file in Explorer",
+  "imageManager.revealNoPath": "This image has no local file path (remote images cannot be revealed)",
   // ─── Editor context menu ───────────────────────────────────
   "menu.undo": "Undo",
   "menu.redo": "Redo",
   "menu.cut": "Cut",
   "menu.copy": "Copy",
   "menu.paste": "Paste",
+  // v0.13.1 req 16: clipboard quartet on the first row of the text-selection context menu
+  "menu.pastePlain": "Paste as Plain Text",
   "menu.bold": "Bold",
   "menu.italic": "Italic",
   "menu.strikethrough": "Strikethrough",

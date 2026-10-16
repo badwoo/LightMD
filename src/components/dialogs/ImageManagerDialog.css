@@ -1,16 +1,49 @@
 /* ─── 图片管理面板（v0.13.0 需求11）──────────────────────────
    视觉与 QuickOpenDialog / CommandPalette 同族（overlay + 圆角浮层）。
-   独立文件：面板有自己的表格/页签结构，不与他人耦合。 */
+   独立文件：面板有自己的表格/页签结构，不与他人耦合。
+
+   ─── v0.13.1 需求10：进/出双向淡入淡出，动画自持 ──────────────
+   旧实现只挂了**入场**动画，而且 `fadeIn` / `slideUp` 两个 keyframes 根本不在
+   本文件里（借自 TabBar.css / SettingsDialog.css）——这种跨文件借动画一旦对方
+   改名/删除，这里只会静默失效（连报错都没有）。现在把**两个方向**的 keyframes
+   全部定义在本文件内，并补齐退场（组件侧 closing 态驱动）。
+   退场时长必须与 ImageManagerDialog.tsx 的 IMAGE_MGR_CLOSE_MS 等值：
+   动画跑完才真正 onClose() 卸载，改一处必须同时改另一处。 */
 .image-mgr-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
   z-index: 1100;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 10vh;
-  animation: fadeIn 0.15s ease;
+}
+
+/* 遮罩独立成 ::before 层：淡出时只动这一层的 opacity，
+   不会顺带把弹窗子树一起淡化（两者透明度不再叠加）。
+   注意 overlay 自身不再有 background / animation。 */
+.image-mgr-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  will-change: opacity;
+  animation: image-mgr-scrim-in 0.15s ease-out both;
+}
+
+.image-mgr-overlay.closing::before {
+  animation: image-mgr-scrim-out 0.15s ease-in both;
+}
+
+/* 遮罩 0.15s：短促、只动 opacity（淡淡的明暗变化） */
+@keyframes image-mgr-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes image-mgr-scrim-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
 }
 
 .image-mgr-dialog {
@@ -24,7 +57,39 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: slideUp 0.2s ease;
+  /* 保证弹窗绘制在遮罩伪元素（absolute 定位）之上 */
+  position: relative;
+  /* 全程只动 opacity/transform（合成层属性，不触发布局/重绘） */
+  will-change: opacity, transform;
+  animation: image-mgr-dialog-in 0.18s ease-out both;
+}
+
+.image-mgr-overlay.closing .image-mgr-dialog {
+  animation: image-mgr-dialog-out 0.16s ease-in both;
+}
+
+/* 入场 0.18s：淡淡的出现（轻微上浮 + 极轻缩放） */
+@keyframes image-mgr-dialog-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* 退场 0.16s：淡淡的消失（比入场更快、位移更小） */
+@keyframes image-mgr-dialog-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(4px) scale(0.99); }
+}
+
+/* 尊重系统「减少动态效果」：直接呈现/消失，不做动画
+   （遮罩动画挂在伪元素上，降级必须同样指向 ::before，
+   animation:none 后伪元素 opacity 回落默认值 1，遮罩直接呈现） */
+@media (prefers-reduced-motion: reduce) {
+  .image-mgr-overlay::before,
+  .image-mgr-overlay.closing::before,
+  .image-mgr-dialog,
+  .image-mgr-overlay.closing .image-mgr-dialog {
+    animation: none;
+  }
 }
 
 .image-mgr-header {
@@ -201,6 +266,34 @@
 .image-mgr-badge.remote {
   color: #b26a00;
   border-color: rgba(178, 106, 0, 0.35);
+}
+
+/* v0.13.1 需求9：「本地文件」徽标做成真按钮（点它 = 在资源管理器里定位该图）。
+   base64 / remote 两类仍是 <span>，所以这里只重置 <button> 的浏览器默认外观，
+   让它与 span 徽标**像素级同款**（同字号/同内边距/同边框），行布局不因形态抖动。 */
+button.image-mgr-badge {
+  font: inherit;
+  font-size: 11px;
+  line-height: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+button.image-mgr-badge:hover {
+  background: var(--bg-hover);
+}
+
+button.image-mgr-badge:focus-visible {
+  outline: 2px solid var(--accent-color, #1976d2);
+  outline-offset: 1px;
+}
+
+/* 不可定位（未保存文档 / 无本地路径）时保持徽标外观，只给禁用光标 */
+button.image-mgr-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 /* 操作列按钮变多，允许换行避免撑破弹窗 */

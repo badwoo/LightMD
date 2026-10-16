@@ -787,37 +787,71 @@ const REAL_DOC = "D:/10254/桌面/md测试.md";
 const realDocExists = existsSync(REAL_DOC);
 
 describe.skipIf(!realDocExists)("实机文档回归锁：D:/10254/桌面/md测试.md", () => {
-  it("解析出的 5 处引用在面板上就是 5 行，asset.localhost 判为本地文件", () => {
+  /**
+   * v0.13.1：这两条原本把**用户机器上那份活文档的内容**写死在断言里
+   * （"5 处引用 / 4 个可转 base64 / 1 个可转 assets"）。但 `md测试.md` 是用户的
+   * 普通文档，随时会被编辑 —— 实测该文件在 2026-10-16 15:12 已变成
+   * **3 处引用、0 个 asset.localhost**，于是这两条在**本轮任何代码改动之前就已经是红的**
+   * （属环境性失败，不是代码回归）。
+   *
+   * 修正原则：**保留回归价值，去掉写死的数字**。
+   * 第三轮的真实缺陷是"文档里 5 处引用，面板却只显示 3 行"，
+   * 因此核心锁是 —— **面板行数必须等于解析出的引用处数**，且每种 src 形态都要判对类型。
+   * 期望值全部由夹具推导，文档再怎么改都能跑，而锁依然有效。
+   */
+  it("解析出的每一处引用都判对类型（asset.localhost / 相对路径 → 本地文件）", () => {
     const raw = readFileSync(REAL_DOC, "utf8");
     const rows = collectDocImageOccurrences(markdownToDoc(raw));
-    expect(rows).toHaveLength(5);
-    // 第 1、2 行是同一个 asset.localhost 引用（实机里出现了两次）
-    expect(rows[0].src).toBe(rows[1].src);
-    expect(rows[0].src).toContain("asset.localhost");
-    expect(imageSourceKind(rows[0].src)).toBe("file");
-    expect(isExternalImageSrc(rows[0].src)).toBe(false);
-    expect(imageFileNameOf(rows[0].src)).toBe("image-3.png");
-    expect(resolveImageAbsPath(rows[0].src, "D:/10254/桌面")).toBe(ASSET_DECODED);
-    // 第 3、4 行是同一个相对引用
-    expect(rows[2].src).toBe("./assets/image-4.png");
-    expect(rows[3].src).toBe(rows[2].src);
-    // 第 5 行是内联 base64
-    expect(imageSourceKind(rows[4].src)).toBe("base64");
-    expect(rows[4].src.length).toBeGreaterThan(700000);
+    expect(rows.length).toBeGreaterThan(0);
+
+    for (const row of rows) {
+      const kind = imageSourceKind(row.src);
+      if (row.src.startsWith("data:")) {
+        expect(kind).toBe("base64");
+      } else if (/^https?:\/\//i.test(row.src) && !row.src.includes("asset.localhost")) {
+        expect(kind).toBe("remote");
+      } else {
+        // asset.localhost / 相对路径 / 绝对路径 —— 都是磁盘上的本地文件
+        expect(kind).toBe("file");
+        expect(isExternalImageSrc(row.src)).toBe(false);
+        expect(resolveImageAbsPath(row.src, "D:/10254/桌面")).toBeTruthy();
+      }
+    }
+
+    // 只要文档里存在 asset.localhost 形态，就必须能解码回真实绝对路径（第三轮 ⑩ 缺陷）
+    const assetRow = rows.find((r) => r.src.includes("asset.localhost"));
+    if (assetRow) {
+      const decoded = resolveImageAbsPath(assetRow.src, "D:/10254/桌面");
+      expect(decoded).toBeTruthy();
+      expect(decoded).toContain("/assets/");
+      expect(decoded).not.toContain("%3A");
+      expect(imageFileNameOf(assetRow.src)).toMatch(/\.png$/i);
+    }
   });
 
-  it("该文档的面板渲染：5 行 + 4 个可用「转 base64」+ 1 个可用「转 assets」", () => {
+  it("面板行数 == 解析出的引用处数（第三轮「5 处只显示 3 行」的回归锁）", () => {
     const raw = readFileSync(REAL_DOC, "utf8");
+    const rows = collectDocImageOccurrences(markdownToDoc(raw));
     renderPanel({ markdown: raw });
-    expect(screen.getByText("文档图片（5）")).toBeTruthy();
-    expect(bodyRows()).toHaveLength(5);
+
+    // ① 标签计数与表格行数都必须等于**真实处数**（同一 src 出现两次 = 两行）
+    expect(screen.getByText(`文档图片（${rows.length}）`)).toBeTruthy();
+    expect(bodyRows()).toHaveLength(rows.length);
+
+    // ② 按钮可用性由纯函数推导（与面板内 migrateApplicable / inlineApplicable 同源，
+    //    见 ImageManagerDialog.tsx：conversion = oppositeConversionOf(img.src)、
+    //    migrateApplicable = kind !== "remote" && !livesInAssetsDir(img.src)）
+    const expectedInline = rows.filter((r) => oppositeConversionOf(r.src) === "toBase64").length;
+    const expectedMigrate = rows.filter(
+      (r) => imageSourceKind(r.src) !== "remote" && !livesInAssetsDir(r.src),
+    ).length;
     const enabledInline = screen
       .getAllByTitle(/读取该文件/)
       .filter((b) => !(b as HTMLButtonElement).disabled);
     const enabledMigrate = screen
       .getAllByTitle(/复制到文档同级/)
       .filter((b) => !(b as HTMLButtonElement).disabled);
-    expect(enabledInline).toHaveLength(4);
-    expect(enabledMigrate).toHaveLength(1);
+    expect(enabledInline).toHaveLength(expectedInline);
+    expect(enabledMigrate).toHaveLength(expectedMigrate);
   });
 });

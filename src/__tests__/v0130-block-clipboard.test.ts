@@ -114,9 +114,18 @@ describe("looksLikeMarkdown 特征判定", () => {
     // 当成块结构去解析（那会改变用户粘贴纯文本的语义）
     expect(looksLikeMarkdown("**粗**")).toBe(false);
     expect(looksLikeMarkdown("- 单个列表项")).toBe(false);
-    expect(looksLikeMarkdown("```\n只有一段代码\n```")).toBe(false);
     expect(looksLikeMarkdown("| a | b |")).toBe(false);
     expect(looksLikeMarkdown("> 只有一句引用")).toBe(false);
+  });
+
+  // v0.13.1 需求1：**自包含块构造**单独出现即判定为 Markdown，
+  // 否则阅读模式复制一个代码块/表格/公式块再 Ctrl+V，只会粘出字面文本。
+  it("自包含块构造（围栏代码块 / $$ 公式块 / 带分隔行的表格）→ true", () => {
+    expect(looksLikeMarkdown("```\n只有一段代码\n```")).toBe(true);
+    expect(looksLikeMarkdown("```js\nconst a = 1;\n```")).toBe(true);
+    expect(looksLikeMarkdown("~~~\nx\n~~~")).toBe(true);
+    expect(looksLikeMarkdown("$$\nE = mc^2\n$$")).toBe(true);
+    expect(looksLikeMarkdown("| a | b |\n| --- | --- |")).toBe(true);
   });
 
   it("空串 → false", () => {

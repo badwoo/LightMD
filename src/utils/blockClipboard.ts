@@ -69,31 +69,116 @@ export function parseBlockClipboard(
   return null;
 }
 
+/** 围栏开行：0~3 空格缩进 + ``` 或 ~~~ + info string（info 串内容不限） */
+const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})[^\n]*$/;
+/** GFM 表格分隔行：每个单元格 ≥1 个 `-`（可带 `:` 对齐），两侧管道可省但至少一个 `|` */
+const TABLE_DELIMITER_RE = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
+
 /**
- * 纯文本是否「像 Markdown」（≥2 项特征）。
+ * 围栏代码块：行首开围栏 + 其后的同字符等长收围栏。
  *
- * 与 `clipboard-paste.ts` 保持同一组特征口径，避免两处判定漂移。
+ * v0.13.1 需求1：单独一个代码块（如 ```` ```js\ncode\n``` ````）只有 1 项特征，
+ * 但它是一个**完整块构造**，必须按 Markdown 解析，否则粘贴到别的文档里就是
+ * 一段字面反引号。
+ */
+function hasFencedCodeBlock(text: string): boolean {
+  let open: { ch: string; len: number } | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!open) {
+      const m = FENCE_OPEN_RE.exec(line);
+      if (m) open = { ch: m[1][0], len: m[1].length };
+      continue;
+    }
+    // 收围栏：整行只有同一种围栏字符，且不短于开围栏
+    const t = line.trim();
+    if (t.length >= open.len && open.ch.repeat(t.length) === t) return true;
+  }
+  return false;
+}
+
+/**
+ * `$$` 定界块级公式：行首 `$$` + 同行或后续某行的 `$$` 收尾。
  *
- * 例外：**管道表格**（≥2 行管道行）单独出现即判定为 Markdown——它几乎不可能
- * 是普通文本（普通文本不会出现成排的 `|`），且表格块复制后粘贴回阅读模式
- * 必须走 Markdown 解析，不能按纯文本插入。
+ * 与 `katex-plugin.ts` 的 `mathBlock` 规则同口径（未闭合不算块）。
+ */
+function hasMathBlock(text: string): boolean {
+  let open = false;
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!open) {
+      if (t.startsWith("$$")) {
+        if (t.indexOf("$$", 2) !== -1) return true; // 同行闭合：$$x^2$$
+        open = true;
+      }
+      continue;
+    }
+    if (t.endsWith("$$")) return true; // `$$` / `x^2$$` 收尾
+  }
+  return false;
+}
+
+/**
+ * GFM 管道表格：分隔行（`| --- | --- |`）**且**其上一行是含管道的表头行。
+ *
+ * v0.13.1 需求1：表格成立与否取决于分隔行，而不是"管道行数 ≥2"——
+ * `| a | b |` 单行（无分隔行）仍必须判 false（否则用户粘一行竖线文本会被强行解析成表格）。
+ *
+ * `clipboard-paste.ts` 复用本判定来甄别 turndown 是否把 HTML 表格拍平了。
+ */
+export function hasPipeTableMarkdown(text: string): boolean {
+  const lines = text.split(/\r?\n/);
+  for (let i = 1; i < lines.length; i++) {
+    const row = lines[i];
+    if (!row.includes("|") || !TABLE_DELIMITER_RE.test(row)) continue;
+    const header = lines[i - 1];
+    if (header.includes("|") && !TABLE_DELIMITER_RE.test(header)) return true;
+  }
+  return false;
+}
+
+/**
+ * 纯文本是否**自身就是一个完整的 Markdown 块构造**（v0.13.1 需求1）。
+ *
+ * 三种块构造只要单独出现即成立（不需要凑够 2 项特征）：
+ * 围栏代码块 / `$$` 公式块 / GFM 管道表格。
+ *
+ * 保守边界：单个成对标记的行内构造（`**bold**`、`*i*`）、单个列表项、单句引用
+ * 都**不**在此判定内——它们与普通文本的边界模糊，必须走「≥2 项特征」那条线。
+ */
+export function isSelfContainedMarkdownBlock(text: string): boolean {
+  if (!text) return false;
+  return hasFencedCodeBlock(text) || hasMathBlock(text) || hasPipeTableMarkdown(text);
+}
+
+/**
+ * 纯文本是否「像 Markdown」（本文件是**唯一**实现，`clipboard-paste.ts` 直接复用）。
+ *
+ * 两条判定线（v0.13.1 需求1 统一口径，取代原先两份各自维护的特征表）：
+ *
+ * 1. **自包含块结构**（`isSelfContainedMarkdownBlock`）：单个完整块构造即成立——
+ *    阅读模式里复制一个代码块 / 表格 / 公式块再 Ctrl+V 粘贴，必须渲染出结构，
+ *    不能因为"只命中 1 项特征"被当成字面文本。
+ * 2. **特征累计 ≥2**：其余情况沿用保守口径，普通散文不会被误解析
+ *    （`**粗体**`、`- 单个列表项`、`> 一句引用` 仍判 false）。
+ *
+ * 旧的「≥2 管道行 +2 分」口径已删除（表格由分隔行判定，管道行数不再加分）。
  */
 export function looksLikeMarkdown(text: string): boolean {
   if (!text) return false;
+  if (isSelfContainedMarkdownBlock(text)) return true;
   let score = 0;
   if (/^#{1,6}\s+\S/m.test(text)) score++;
-  if (/```/.test(text)) score++;
   if (/^\s*[-*+]\s+\S/m.test(text)) score++;
   if (/^\s*\d{1,9}[.)]\s+\S/m.test(text)) score++;
-  if (/^\s*>\s/m.test(text)) score++;
+  if (/^\s*>\s+\S/m.test(text)) score++;
   if (/!\[[^\]]*\]\([^)]+\)/.test(text)) score++;
   if (/\[[^\]]+\]\([^)]+\)/.test(text)) score++;
-  if (/\*\*[^*]+\*\*/.test(text)) score++;
-  if (/^\s*---\s*$/m.test(text)) score++;
-  // 管道表格：≥2 行管道行 → 单独算 2 项（普通文本不会长这样）
-  const pipeLines = text.split("\n").filter((l) => /\|/.test(l)).length;
-  if (pipeLines >= 2) score += 2;
-  else if (pipeLines === 1) score++;
+  if (/\*\*[^*\n]+\*\*/.test(text)) score++;
+  // 斜体：两侧不能与 * 相邻，避免把 **粗体** 误判成斜体（否则单个粗体即凑满 2 项）
+  if (/(?:^|[^*])\*[^*\s][^*\n]*\*(?:[^*]|$)/m.test(text)) score++;
+  if (/~~[^~\n]+~~/.test(text)) score++;
+  if (/`[^`\n]+`/.test(text)) score++;
+  if (/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/m.test(text)) score++;
   return score >= 2;
 }
 

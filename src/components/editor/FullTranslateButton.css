@@ -70,11 +70,16 @@
 /* TranslateUndoToast —— "取消翻译"浮动气泡（v0.6.1 问题2）
    悬浮于右上角图标列的正下方。
    v0.13.0 返修（问题6）：图标列最多占 3 格（模式切换 / AI 翻译 / 图片管理），
-   原 top:90px 会与第 3 格的图片管理入口重叠 → 下移到图标列之后。 */
+   原 top:90px 会与第 3 格的图片管理入口重叠 → 下移到图标列之后。
+   v0.13.1 需求7：图标列改为「模式切换(10) / 图片管理(50) / 译文(90)」，
+   而「译」按钮 hover 时的设置齿轮（.ftb-settings-trigger）从译文按钮底部
+   继续向下伸出到 124..150，**比图标列本体还低一格**。
+   因此气泡必须再让开一格 → 挂到第 4 格之后（10 + 4×40 = 170），
+   才能同时避开译文按钮与其 hover 齿轮。 */
 .translate-undo-toast {
   position: absolute;
   top: calc(
-    var(--float-icon-top, 10px) + 3 *
+    var(--float-icon-top, 10px) + 4 *
       (var(--float-icon-size, 34px) + var(--float-icon-gap, 6px))
   );
   right: 14px;
@@ -139,9 +144,10 @@
 }
 
 /* ─── v0.7.0：「译」入口外层容器（含子设置图标与快捷面板） ─────────── */
+/* v0.13.1 需求7：top 不再写死 50px（那是第 1 格，会与图片管理入口撞位），
+   改由文件末尾统一用 --float-icon-* 变量计算槽位（第 3 格 = 90px）。 */
 .ftb-wrap {
   position: absolute;
-  top: 50px;
   right: 14px;
   z-index: 30;
 }
@@ -338,7 +344,8 @@
   top: var(--float-icon-top);
 }
 
-/* 图片管理入口：接在第 slot 个槽位之后（slot=2 → AI 翻译下方；slot=1 → 模式切换下方） */
+/* 图片管理入口：接在第 slot 个槽位之后（v0.13.1 需求7 起固定 slot=1 → 50px，
+   即模式切换(10..44) 与「译」(90..124) 之间，三个按钮等距、不重叠）。 */
 .image-manager-btn {
   top: calc(
     var(--float-icon-top) + var(--imb-slot, 1) *
@@ -366,10 +373,15 @@
   border-radius: calc(var(--float-icon-size) / 2);
 }
 
-/* 「译」按钮所在槽位：模式切换下方（第 1 槽之后） */
+/* 「译」按钮所在槽位（v0.13.1 需求7：下移到第 3 格）。
+   旧值 1 格（=50px）与图片管理入口（slot 1）**完全重合**，两者 z-index:30，
+   而图片管理按钮在 DOM 中渲染更晚 → 压住「译」按钮 hover 才出现的设置齿轮
+   （齿轮从译文按钮底部伸出，占 y 84..110）。用户要求图片管理图标排到「译」上方，
+   故「译」让位到第 3 格：10 + 2×40 = 90px，齿轮随之落到 124..150，
+   与图片管理（50..84）不再相交。 */
 .ftb-wrap {
   top: calc(
-    var(--float-icon-top) + 1 * (var(--float-icon-size) + var(--float-icon-gap))
+    var(--float-icon-top) + 2 * (var(--float-icon-size) + var(--float-icon-gap))
   );
 }
 

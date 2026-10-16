@@ -155,6 +155,12 @@
      设置 style.width 时仅设 content 宽度，总宽度 > table width，
      table-layout: fixed 会按比例压缩所有列，导致拖拽一列时其他列同比例变化 */
   box-sizing: border-box;
+  /* v0.13.1 需求2：空单元格此前只剩 padding+border（约 15px 高），鼠标几乎点不到，
+     更别说"从它起手拖拽选中并合并"。给一个最低高度作为**命中面积**下限：
+     table-layout: fixed 下列宽由 columnWidths 决定，min-height 只影响空行的行高，
+     已有内容的行（行高更大）与列宽拖拽的 startWidths 都不受影响。
+     用 em 跟随字号/缩放设置，随 --doc-zoom 一起等比变化。 */
+  min-height: 1.6em;
 }
 
 .ProseMirror th {
@@ -195,6 +201,15 @@
   user-select: none;
   font-weight: normal;
   font-style: normal;
+  /* v0.13.1 需求15：**必须 nowrap**。
+     缺陷背景（用户报告「有序列表序号超过两位数后，例如 12，灰色语法小字变成纵向排列」）：
+     本伪元素是绝对定位且 `right:100%`（`left:auto`），按 CSS 2.1 §10.3.7 的
+     shrink-to-fit，可用宽度 = 包含块宽度 − right(=包含块宽度) = **0** →
+     width 退化为 **min-content**；而 `.ProseMirror` 上的 `word-break: break-word`
+     会被继承下来，允许在任意字符间断行 → "12. " 被逐字竖排。
+     nowrap 让盒子按 max-content 计算、整体**向左伸展**（right:100% 的定位方向），
+     与既有 `pm-heading-badge` / emoji 短码同一套修法（本文件多处先例）。 */
+  white-space: nowrap;
 }
 
 /* ─── v0.12.1 需求1：标题级别徽标（替代 # 语法井号）─────────────
@@ -1356,6 +1371,29 @@
 .math-block-wrapper.math-editing {
   display: flex;
   flex-direction: column;
+}
+
+/* ─── v0.13.1 需求6：就地编辑层进入动画 ───────────────────────────
+   公式块 / Mermaid 块单击进入编辑态时，编辑层由 display:none 变为可见。
+   高度突变会让人眼感到"跳"（用户反馈「进入/恢复要平滑、不抖动」），
+   因此进入只做 **opacity 淡入**（不动 height/width，避免文字重排抖动）。
+   内联 style 不能写 @keyframes/@media（会被整条丢弃），故定义在此处。 */
+@keyframes inline-editor-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 尊重系统「减少动态效果」：直接显示，不做任何进入动画 */
+@media (prefers-reduced-motion: reduce) {
+  .math-block-content,
+  .mermaid-block-wrapper .language-mermaid {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 .math-block-wrapper.math-editing > .math-block-content {

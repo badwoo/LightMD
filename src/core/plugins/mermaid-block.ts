@@ -18,6 +18,12 @@ import mermaid from "mermaid";
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent, placeCaretInsideBlock } from "./blockSelection";
 // v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
 import { createBlockKebabButton } from "./blockKebab";
+// v0.13.1 需求6：就地编辑层的公共行为（尺寸自适应 / 点块外退出 / 过渡）
+import {
+  inlineEditorHiddenCss,
+  inlineEditorVisibleCss,
+  watchOutsidePointerDown,
+} from "./inlineBlockEditor";
 // v0.12.2 P7：内联提示文案走 i18n（此前硬编码中文，英文界面穿帮）
 import { t } from "../../i18n/state";
 
@@ -82,6 +88,8 @@ export class MermaidBlockView implements NodeView {
   private handleDblClick: (e: MouseEvent) => void;
   /** v0.13.0 返修（问题2）：最近一次进入编辑态的时刻（区分"单击进编辑"引发的 dblclick） */
   private lastEnterEditAt = 0;
+  /** v0.13.1 需求6：编辑态期间"点块外退出"的取消订阅句柄 */
+  private outsideWatchCleanup: (() => void) | null = null;
   /** v0.13.0 需求1：右上角三点菜单按钮（常驻显示由 CSS 控制） */
   private kebabButton: HTMLButtonElement | null = null;
 
@@ -105,9 +113,7 @@ export class MermaidBlockView implements NodeView {
     this.contentDOM = document.createElement("code");
     this.contentDOM.className = "language-mermaid";
     this.contentDOM.setAttribute("contenteditable", "true");
-    this.contentDOM.style.cssText =
-      "display:none !important;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
-      "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;";
+    this.contentDOM.style.cssText = inlineEditorHiddenCss(true);
     this.dom.appendChild(this.contentDOM);
 
     // 点击切换编辑/预览态（双击预览层可切回预览）
@@ -166,25 +172,46 @@ export class MermaidBlockView implements NodeView {
   private enterEditMode() {
     this.isEditing = true;
     this.lastEnterEditAt = Date.now();
-    this.previewLayer.style.display = "none";
-    this.contentDOM.style.cssText =
-      "display:block !important;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
-      "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;" +
-      "color:var(--text-primary);caret-color:var(--text-primary);background:transparent;";
+    // v0.13.1 需求6：编辑区**按内容高度**（旧实现 padding:1em + 无高度约束，
+    // 短图源码也撑出一个大方框）；超高时内部滚动，而不是把整页顶走。
+    // 预览层**保留可见**（下方实时预览），进入只改尺寸/底色并淡入，故不抖动。
+    this.contentDOM.style.cssText = inlineEditorVisibleCss(true);
+    this.previewLayer.style.display = "block";
     this.dom.classList.add("mermaid-editing");
+    this.stopOutsideWatch();
+    this.outsideWatchCleanup = watchOutsidePointerDown(this.dom, () => this.exitEditMode());
   }
 
-  /** 切换编辑/预览态 */
+  /**
+   * v0.13.1 需求6：退出编辑态 = **恢复渲染**（三条路径共用：双击 / 点块外 / destroy）。
+   */
+  private exitEditMode() {
+    if (!this.isEditing) return;
+    this.isEditing = false;
+    this.stopOutsideWatch();
+    this.contentDOM.style.cssText = inlineEditorHiddenCss(true);
+    this.previewLayer.style.display = "block";
+    this.dom.classList.remove("mermaid-editing");
+    this.renderMermaid();
+  }
+
+  private stopOutsideWatch() {
+    this.outsideWatchCleanup?.();
+    this.outsideWatchCleanup = null;
+  }
+
+  /**
+   * 切换编辑/预览态。
+   *
+   * v0.13.1 需求6 修复：**不要**先 `isEditing = !isEditing` —— `exitEditMode()` 开头
+   * 有 `if (!this.isEditing) return;` 幂等守卫，外面若已翻成 false 就会把退出挡掉，
+   * 双击永远退不出编辑态。状态由 enter/exit 各自拥有。
+   */
   private toggleEditMode() {
-    this.isEditing = !this.isEditing;
     if (this.isEditing) {
-      this.enterEditMode();
+      this.exitEditMode();
     } else {
-      // 切换到预览态
-      this.contentDOM.style.display = "none";
-      this.previewLayer.style.display = "block";
-      this.dom.classList.remove("mermaid-editing");
-      this.renderMermaid();
+      this.enterEditMode();
     }
   }
 
@@ -280,6 +307,8 @@ export class MermaidBlockView implements NodeView {
     this.observer = null;
     this.dom.removeEventListener("dblclick", this.handleDblClick);
     this.dom.removeEventListener("mousedown", this.handleMouseDown);
+    // v0.13.1 需求6：摘掉 document 级的"点块外"监听，避免泄漏
+    this.stopOutsideWatch();
     // v0.13.0 需求1：移除三点按钮
     this.kebabButton?.remove();
     this.kebabButton = null;

@@ -434,6 +434,8 @@ export const zhCN: Record<string, string> = {
   // v0.13.0 需求9：大纲面板标题折叠
   "outline.collapse": "折叠子标题",
   "outline.expand": "展开子标题",
+  // v0.13.1 需求11：拖拽时全程可见的落点提示
+  "outline.dropHere": "放到此处",
   // ─── 最近文件 ────────────────────────────────────
   "recent.title": "最近打开",
   "recent.justNow": "刚刚",
@@ -600,6 +602,14 @@ export const zhCN: Record<string, string> = {
   "table.alignLeft": "左对齐",
   "table.alignCenter": "居中对齐",
   "table.alignRight": "右对齐",
+  // v0.13.1 需求4：对齐的两种作用面——有范围选区时只改选中的单元格，
+  // 否则整列（GFM 分隔行的对齐本身是列级语义，两种文案必须区分开）
+  "table.alignLeftRange": "选中单元格左对齐",
+  "table.alignCenterRange": "选中单元格居中对齐",
+  "table.alignRightRange": "选中单元格右对齐",
+  "table.alignLeftColumn": "整列左对齐",
+  "table.alignCenterColumn": "整列居中对齐",
+  "table.alignRightColumn": "整列右对齐",
   // v0.13.0 需求12：单元格合并/拆分
   "table.mergeCells": "合并单元格",
   "table.mergeCellsHint": "合并单元格（先拖拽选中至少两个单元格）",
@@ -705,12 +715,18 @@ export const zhCN: Record<string, string> = {
   "imageManager.remoteUnsupported": "远程图片暂不支持转存到 assets/",
   "imageManager.renameUnavailable": "远程图片没有本地文件，无法重命名",
   "imageManager.renameBaseTip": "只改文件名，后缀 {ext} 保持不变",
+  // v0.13.1 需求9：点「本地文件」类型徽标 → 在系统资源管理器中定位该图片文件
+  "imageManager.revealTip": "在资源管理器中打开该图片所在的文件夹并选中它",
+  "imageManager.revealFailed": "无法在资源管理器中定位该文件",
+  "imageManager.revealNoPath": "该图片没有本地文件路径（远程图片无法定位）",
   // ─── 编辑器右键菜单 ────────────────────────────────────
   "menu.undo": "撤销",
   "menu.redo": "恢复",
   "menu.cut": "剪切",
   "menu.copy": "复制",
   "menu.paste": "粘贴",
+  // v0.13.1 需求16：选中文本右键菜单首栏的剪贴板四件套
+  "menu.pastePlain": "粘贴为纯文本",
   "menu.bold": "加粗",
   "menu.italic": "斜体",
   "menu.strikethrough": "删除线",

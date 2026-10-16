@@ -67,6 +67,13 @@ import {
   pasteBlockAtSelection,
   selectBlockAt,
 } from "../../utils/blockClipboardOps";
+// v0.13.1 需求16：选区级文本剪贴板（阅读模式右键菜单的剪切/复制/粘贴/粘贴为纯文本）
+import {
+  copySelection,
+  cutSelection,
+  pasteIntoView,
+  pastePlainIntoView,
+} from "../../utils/textClipboardOps";
 // v0.13.0 需求1：块三点菜单（NodeView 派发的事件名 + 菜单项构建）
 import { BLOCK_ACTION_EVENT, type BlockActionDetail } from "../../core/plugins/blockKebab";
 import { buildBlockMenuItems } from "../../utils/blockActionMenu";
@@ -1226,7 +1233,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
       tr.setSelection(TextSelection.atStart(tr.doc));
       tr.setMeta("fileSwitch", true);
+      // v0.13.1 需求8：换文档 = 撤销历史的**边界**。
+      // `addToHistory:false` 让"切换文档"这一步本身不可撤销；
+      // `resetHistory:true` 让 editor.ts 重建 state 从而清空历史栈 ——
+      // 否则在 B 里按 Ctrl+Z 会撤销/重放 A 的编辑步骤，把 A 的内容带进 B
+      // （随后保存就会写错文件）。详见 core/editor.ts 的 dispatchTransaction 注释。
+      tr.setMeta("addToHistory", false);
+      tr.setMeta("resetHistory", true);
       view.dispatch(tr);
+      // v0.13.1 需求8：源码模式（编辑/分屏）的撤销栈是**模块级 ref**，不随文档切换重置，
+      // 同样会造成"在 B 里撤销 A 的编辑"（applyDiff 用 A 的偏移去改 B 的文本 → 内容错乱）。
+      // 换文档即清空两条栈，与 PM 历史的处理口径一致。
+      undoStackRef.current = [];
+      redoStackRef.current = [];
     } catch (e) {
       console.error("更新编辑器内容失败:", e);
     }
@@ -1440,6 +1459,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           const safePos = Math.min(targetPos, tr.doc.content.size - 1);
           tr.setSelection(TextSelection.near(tr.doc.resolve(Math.max(1, safePos))));
           tr.setMeta("fileSwitch", true);
+          // v0.13.1 需求8：这是**同一个文件内**的模式切换整篇重解析，不是换文档。
+          // 因此只排除本事务自身进历史（"切模式"不该是一个可撤销的内容编辑步骤），
+          // 但**不清空**历史栈（清了会让"切个模式就丢掉全部撤销记录"）。
+          tr.setMeta("addToHistory", false);
           view.dispatch(tr);
 
           // v0.12.0 返修（问题4）：锚点 = 切换瞬间 textarea 光标所在行（行号），
@@ -1742,7 +1765,23 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     nodeKind: string | null;
     /** v0.13.0 需求1：剪贴板是否有块数据（控制「粘贴」禁用态） */
     hasBlockClipboard: boolean;
-  }>({ open: false, x: 0, y: 0, hasSelection: false, nodeKind: null, hasBlockClipboard: false });
+    /**
+     * v0.13.1 需求16：选区是否可剪切/复制（控制「剪切」「复制」禁用态）。
+     *
+     * 只读编辑器自身选区，**不读系统剪贴板**——v0.13.0 第三轮的教训是
+     * `navigator.clipboard.read()` 会让 WebView2 弹出系统授权气泡，
+     * 用户只是右键一下就被打断。
+     */
+    hasTextClipboard: boolean;
+  }>({
+    open: false,
+    x: 0,
+    y: 0,
+    hasSelection: false,
+    nodeKind: null,
+    hasBlockClipboard: false,
+    hasTextClipboard: false,
+  });
   // ─── v0.13.0 需求1：块右上角三点菜单（blockKebab 派发 lightmd:blockAction） ───
   const [blockKebabMenu, setBlockKebabMenu] = useState<{
     open: boolean;
@@ -3579,6 +3618,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
         tr.setSelection(TextSelection.atStart(tr.doc));
         tr.setMeta("fileSwitch", true); // 整篇替换后滚动交由联动逻辑处理
+        // v0.13.1 需求8：翻译回写是**同一个文件**的整篇重写（应用内有专门的
+        // 「取消翻译」快照机制），不应作为一个可撤销的内容编辑步骤留在 PM 历史里；
+        // 同样**不清空**历史栈。
+        tr.setMeta("addToHistory", false);
         // v0.6.1 问题3：标记翻译回写中，onDocChange 据此抑制自动保存
         applyingTranslationRef.current = true;
         try {
@@ -4173,6 +4216,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           }).catch(() => { /* ignore clipboard permission */ });
         } catch { /* ignore */ }
         return;
+      // v0.13.1 需求16：粘贴为纯文本。
+      // 源码模式的 textarea 本来就是「字面插入」（不做任何 Markdown 解析），
+      // 因此与上面的 "paste" 行为一致；这里仍显式保留独立分支，让两条菜单语义对齐，
+      // 且将来若给源码粘贴加入转换逻辑时，纯文本分支不会被顺带改变。
+      case "pastePlain":
+        try {
+          navigator.clipboard?.readText().then((text) => {
+            if (text) insertTextAtCursor(text);
+          }).catch(() => { /* ignore clipboard permission */ });
+        } catch { /* ignore */ }
+        return;
     }
   }, [handleUndo, handleRedo, openLinkDialog, insertTextAtCursor]);
 
@@ -4382,6 +4436,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         hasSelection: hasTextSelection,
         nodeKind: isNode ? sel!.node.type.name : null,
         hasBlockClipboard: hasInAppBlockClipboard(),
+        // v0.13.1 需求16：有非空文本选区即可剪切/复制（零 IO，不碰系统剪贴板）
+        hasTextClipboard: hasTextSelection,
       });
     };
     container.addEventListener("contextmenu", onContextMenu);
@@ -4521,6 +4577,38 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         if (view) {
           view.dispatch(view.state.tr.deleteSelection());
           view.focus();
+        }
+        return;
+      // ─── v0.13.1 需求16：选区级剪贴板（剪切 / 复制 / 粘贴 / 粘贴为纯文本）───
+      // 与上面的块级 `blockCut/blockCopy/blockPaste` 区分开：这四个作用于**文本选区**。
+      // 均不依赖原生复制事件（菜单点击没有 clipboardData），走 textClipboardOps 的
+      // 显式剪贴板读写；失败一律 toast，不静默。
+      case "cut":
+        if (view) {
+          void cutSelection(view).then((ok) => {
+            if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+          });
+        }
+        return;
+      case "copy":
+        if (view) {
+          void copySelection(view).then((ok) => {
+            if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+          });
+        }
+        return;
+      case "paste":
+        if (view) {
+          void pasteIntoView(view).then((ok) => {
+            if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+          });
+        }
+        return;
+      case "pastePlain":
+        if (view) {
+          void pastePlainIntoView(view).then((ok) => {
+            if (!ok) notifyWarning(t("blockMenu.clipboardFailed"));
+          });
         }
         return;
       // ─── v0.13.0 需求1：块级复制/剪切/粘贴 ───
@@ -5970,7 +6058,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
   }, [viewMode]);
 
-  // ─── 分屏模式：左右滚动联动 ──────────────────
+  // ─── 分屏模式：滚动联动（**仅左 → 右**，右屏可独立滚动）──────────
+  //
+  // v0.13.1 需求13（用户报告）：「分屏模式下左右两屏滚动是联动的，但左屏编辑、
+  // 右屏渲染因为篇幅问题会出现阅读位置偏差……所以这个滚动进度不能强绑定，
+  // 右侧屏应该可以单独滚动，但滚动左屏时可以联动右屏进行滚动。」
+  //
+  // 旧实现是**双向**百分比联动：左滚带右，右滚也**回写左屏**。带来的问题：
+  //   · 用户想看右屏下方的渲染结果（例如左屏刚编辑的图表）而向下滚右屏时，
+  //     右屏的滚动会**把左屏也拖走**，光标所在行被滚出视野 —— 编辑被打断；
+  //   · 左屏文本与右屏渲染的"行高/块高比例"并不一致（图表、公式、图片在右侧
+  //     高得多），百分比互推必然错位，形成来回拉扯。
+  // 现在：**只保留左 → 右**。右屏由用户自由滚动；左屏滚动时右屏按内容比例跟随。
+  // （块级对齐由 renderPipeline 的 data-src-line 提供，见 utils/blockScrollAlign.ts；
+  //   未注入该属性时本处自动退化为既有的百分比映射。）
   useEffect(() => {
     if (viewMode !== "split") return;
     const textarea = sourceTextareaRef.current;
@@ -5981,7 +6082,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const preview = previewDoc?.documentElement || previewDoc?.body;
     if (!preview || !previewDoc) return;
 
-    const onTextareaScroll = () => {
+    /** 左 → 右：把左屏滚动位置映射到右屏 */
+    const syncToPreview = () => {
       if (isSyncingScrollRef.current) return;
       isSyncingScrollRef.current = true;
       preview.scrollTop = computeSyncScrollTop(
@@ -5991,30 +6093,24 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       requestAnimationFrame(() => { isSyncingScrollRef.current = false; });
     };
 
-    const onPreviewScroll = () => {
-      if (isSyncingScrollRef.current) return;
-      isSyncingScrollRef.current = true;
-      textarea.scrollTop = computeSyncScrollTop(
-        preview.scrollTop, preview.scrollHeight, preview.clientHeight,
-        textarea.scrollHeight, textarea.clientHeight
-      );
-      requestAnimationFrame(() => { isSyncingScrollRef.current = false; });
-    };
-
-    textarea.addEventListener("scroll", onTextareaScroll);
-    // ─── 修复：iframe scroll 事件监听错位 ──────────
-    // 根因：iframe 的 scroll 事件触发在 contentDocument/contentWindow 上，
-    // 而不是 documentElement 上（实测：documentElement 上 scroll 事件不触发）。
-    // 原代码 preview.addEventListener("scroll", onPreviewScroll) 监听的是
-    // documentElement，导致 onPreviewScroll 永远不触发，textarea 不联动
-    // iframe 滚动。切换模式时 textareaScrollPercentRef 仍是旧值，滚动位置丢失。
-    // 修复：在 contentDocument 上监听 scroll 事件。
-    previewDoc.addEventListener("scroll", onPreviewScroll);
+    textarea.addEventListener("scroll", syncToPreview);
+    // ─── 内容重渲染后**主动重同步一次** ──────────────
+    // 缺陷背景：右屏正文在防抖后被整段替换（`doc.body.innerHTML = previewHtml`），
+    // 而 mermaid/katex 还会**异步**撑高内容；替换后 iframe 只保留**像素** scrollTop，
+    // 文档高度一变，同一个像素就对应到别的内容了 —— 用户看到"要把屏幕往下拉一拉
+    // 才能看到左屏正在编辑的图表"。本 effect 的依赖含 `previewHtml`，每次内容更新
+    // 都会重跑，因此在绑定监听后立刻按左屏位置重算一次；再补一帧覆盖异步渲染。
+    syncToPreview();
+    const raf = requestAnimationFrame(() => {
+      isSyncingScrollRef.current = false;
+      syncToPreview();
+    });
     return () => {
-      textarea.removeEventListener("scroll", onTextareaScroll);
-      previewDoc.removeEventListener("scroll", onPreviewScroll);
+      cancelAnimationFrame(raf);
+      textarea.removeEventListener("scroll", syncToPreview);
+      isSyncingScrollRef.current = false;
     };
-  }, [viewMode, previewHtml]); // 依赖 previewHtml，因为 iframe 内容更新后需要重新绑定
+  }, [viewMode, previewHtml]); // 依赖 previewHtml，因为 iframe 内容更新后需要重新同步
 
   // ─── 格式工具栏 ────────────────────────────────
   // link/image/table 打开对应对话框；mermaid 打开模板下拉；其余走 handleFormatAction
@@ -6192,11 +6288,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         )}
 
         {/* v0.13.0 返修（问题6）：图片管理悬浮入口。
-          位置：AI 翻译图标下面；AI 翻译未开启时接在切换模式图标下面。
+          v0.13.1 需求7：槽位固定为第 1 格（=50px），即**始终排在「译」按钮上方**；
+          「译」按钮自身下移到第 3 格（90px，见 FullTranslateButton.css）。
+          AI 翻译未开启时「译」不渲染，图片管理仍在 50px、模式切换在 10px，互不重叠。
           仅当文档中确实有图片时显示。 */}
       {isMdFile && docHasImageFlag && (
         <ImageManagerButton
-          slot={translateSlotShown ? 2 : 1}
+          slot={1}
           onOpen={() => window.dispatchEvent(
             new CustomEvent("lightmd:command", { detail: { id: "view.imageManager" } }),
           )}
@@ -6490,6 +6588,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         isMdFile={isMdFile}
         translateEnabled={translateEnabled}
         hasBlockClipboard={pmContextMenu.hasBlockClipboard}
+        hasTextClipboard={pmContextMenu.hasTextClipboard}
         onAction={handlePmMenuAction}
         onClose={() => setPmContextMenu((s) => ({ ...s, open: false }))}
       />

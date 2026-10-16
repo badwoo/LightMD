@@ -32,7 +32,7 @@
  *   `onRewriteRefs` → fileService.writeFile 自动完成（v0.9.0 问题3 教训），
  *   本组件不做写盘，因此不存在未登记的写入路径。
  */
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import type { Node } from "prosemirror-model";
 import { useT } from "../../i18n";
 import { notifyError } from "../../services/notificationService";
@@ -54,6 +54,7 @@ import {
   planConvertToBase64,
   planRenameBaseName,
   resolveImageAbsPath,
+  revealTargetOf,
   countRefsOf,
   base64ToBytes,
   type DocImage,
@@ -71,10 +72,29 @@ export interface ImageManagerDialogProps {
   onRewriteRefs: (ops: Array<{ oldSrc: string; newSrc: string }>) => void;
   /** 关闭 */
   onClose: () => void;
+  /**
+   * ─── v0.13.1 需求9（可选）────────────────────────────────
+   * 点「本地文件」徽标 → 在系统资源管理器中打开该图片所在目录并选中它。
+   *
+   * 可选而非必填：面板的其它能力（转 assets / 转 base64 / 重命名 / 清理未引用）
+   * 都与它无关，缺失时只是**没有定位入口**，不必让所有调用点都被迫传参。
+   * 失败提示由 App 侧负责（fileService.revealInFolder 内部已 notifyError），
+   * 本组件只在没有本地路径时给出 revealNoPath 文案。
+   */
+  onRevealInFolder?: (absPath: string) => void;
 }
 
 /** assets 目录名（与 ImageInsertDialog/ImagePasteDialog 一致） */
 const ASSETS_DIR_NAME = "assets";
+
+/**
+ * v0.13.1 需求10：关闭动画时长（毫秒）。
+ *
+ * **必须与 ImageManagerDialog.css 的 image-mgr-dialog-out 时长保持一致**
+ * （当前 CSS: 0.16s = 160ms）。改一处必须同时改另一处，否则会出现
+ * "动画还没播完就卸载" 或 "弹窗已经不可见却还挂在 DOM 上"。
+ */
+const IMAGE_MGR_CLOSE_MS = 160;
 
 /** 面板两个页签：文档图片 / 未引用清理 */
 type PanelTab = "doc" | "unref";
@@ -92,6 +112,7 @@ export function ImageManagerDialog({
   docPath,
   onRewriteRefs,
   onClose,
+  onRevealInFolder,
 }: ImageManagerDialogProps) {
   const t = useT();
   const [tab, setTab] = useState<PanelTab>("doc");
@@ -110,6 +131,36 @@ export function ImageManagerDialog({
   const [assetsFiles, setAssetsFiles] = useState<string[]>([]);
   /** 未引用清理：勾选集合 */
   const [checkedUnref, setCheckedUnref] = useState<Set<string>>(new Set());
+
+  // ─── v0.13.1 需求10：退场动画（关闭走延迟卸载） ──────────────────────
+  /** 关闭动画播放中：overlay 切换为 closing 类，动画结束后才真正 onClose() */
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * 统一的关闭入口：所有关闭路径（✕ / 点击遮罩 / Esc）都必须走这里，
+   * 否则会因为直接 onClose() 卸载而看不到淡出动画。
+   * 重复调用只生效一次（closingRef 守卫，避免连点 ✕ 排队多个定时器）。
+   */
+  const requestClose = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    closeTimerRef.current = setTimeout(() => {
+      closeTimerRef.current = null;
+      onClose();
+    }, IMAGE_MGR_CLOSE_MS);
+  }, [onClose]);
+
+  // 卸载时清掉在途定时器（父组件也可能直接卸载本弹窗）：
+  // 既避免定时器泄漏，也保证不会在卸载后再 setState / 调 onClose。
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    },
+    [],
+  );
 
   // ⑪⑫：一次出现一行，按文档顺序（不再是按 src 合并的列表）
   const docImages = useMemo<DocImage[]>(
@@ -146,24 +197,28 @@ export function ImageManagerDialog({
     setMessage("");
     setRenameDraft({});
     setCheckedUnref(new Set());
+    // v0.13.1 需求10：open 翻 true 时清掉退场态，否则"关掉又立刻打开"
+    // 会带着 closing 类渲染（弹窗一出现就播退场动画然后自己消失）。
+    setClosing(false);
+    closingRef.current = false;
   }, [open]);
 
   useEffect(() => {
     if (open && tab === "unref") void loadAssetsFiles();
   }, [open, tab, loadAssetsFiles]);
 
-  // Esc 关闭
+  // Esc 关闭（v0.13.1 需求10：走统一入口，保留退场动画）
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        requestClose();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [open, onClose]);
+  }, [open, requestClose]);
 
   if (!open) return null;
 
@@ -295,6 +350,24 @@ export function ImageManagerDialog({
     }
   };
 
+  /**
+   * ─── v0.13.1 需求9：点「本地文件」徽标 → 资源管理器定位并选中该图 ───────
+   *
+   * 只做一次「解析绝对路径 → 交给上层」的转发：真正的 `explorer /select,<path>`
+   * 由 App 侧走既有 fileService.revealInFolder（Rust reveal_in_folder），
+   * 本组件不新增任何 Rust 命令，也不做应用内文件树展开。
+   *
+   * 没有本地落点（远程图 / data URL）或文档未保存 → 只提示，不调用回调。
+   */
+  const handleReveal = (img: DocImage) => {
+    const abs = revealTargetOf(img.src, docDir);
+    if (!abs || !onRevealInFolder) {
+      setMessage(t("imageManager.revealNoPath"));
+      return;
+    }
+    onRevealInFolder(abs);
+  };
+
   /** 清理未引用：多选 → 二次确认 → 回收站 */
   const handleClean = async () => {
     if (!docDir || !isTauri() || checkedUnref.size === 0) return;
@@ -328,7 +401,11 @@ export function ImageManagerDialog({
   );
 
   return (
-    <div className="image-mgr-overlay" onClick={onClose}>
+    // v0.13.1 需求10：closing 类驱动退场动画；两条关闭路径都走 requestClose
+    <div
+      className={`image-mgr-overlay ${closing ? "closing" : ""}`}
+      onClick={requestClose}
+    >
       <div
         className="image-mgr-dialog"
         onClick={(e) => e.stopPropagation()}
@@ -339,7 +416,7 @@ export function ImageManagerDialog({
           <button
             type="button"
             className="image-mgr-close"
-            onClick={onClose}
+            onClick={requestClose}
             aria-label={t("common.close")}
           >
             ×
@@ -409,9 +486,34 @@ export function ImageManagerDialog({
                           <span className="image-mgr-src">{img.src}</span>
                         </td>
                         <td className="image-mgr-kind">
-                          <span className={`image-mgr-badge ${kind}`}>
-                            {t(KIND_LABEL_KEY[kind])}
-                          </span>
+                          {/* ─── v0.13.1 需求9：本地文件徽标可点 ───────────────
+                              只有 kind === "file"（磁盘上真有这个文件）才做成按钮：
+                              点了在资源管理器里定位并选中它。
+                              base64 / remote **保持 <span>**——它们没有本地落点，
+                              做成按钮只会是"看起来能点、点了没用"的死控件；
+                              两者共用 .image-mgr-badge 与 .image-mgr-kind 的
+                              固定宽度/同款内边距，故行布局不因形态变化而抖动。
+                              未保存文档（docDir === null）时按钮禁用，
+                              与其它 IO 按钮（转 assets / 重命名…）的禁用口径一致。 */}
+                          {kind === "file" ? (
+                            <button
+                              type="button"
+                              className={`image-mgr-badge ${kind}`}
+                              onClick={() => handleReveal(img)}
+                              disabled={!docDir}
+                              title={
+                                docDir
+                                  ? t("imageManager.revealTip")
+                                  : t("imageManager.needSave")
+                              }
+                            >
+                              {t(KIND_LABEL_KEY[kind])}
+                            </button>
+                          ) : (
+                            <span className={`image-mgr-badge ${kind}`}>
+                              {t(KIND_LABEL_KEY[kind])}
+                            </span>
+                          )}
                         </td>
                         <td className="image-mgr-count">{refCount}</td>
                         <td className="image-mgr-ops">

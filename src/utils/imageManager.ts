@@ -679,6 +679,33 @@ function joinPosix(base: string, rel: string): string {
   return parts.join("/");
 }
 
+/**
+ * ─── v0.13.1 需求9：「本地文件」徽标点击 → 资源管理器定位 ──────────────
+ *
+ * 「本地文件」徽标要能一键在系统资源管理器中打开该图片所在目录并选中它
+ * （既有链路：fileService.revealInFolder → Rust `reveal_in_folder` →
+ * `explorer /select,<path>`）。该命令要的是**绝对路径**，而文档里的引用可能是
+ * 相对路径（`./assets/a.png`）、Tauri 的 asset.localhost URL（解码后才是真实
+ * 路径），也可能形态上像文件但其实**没有本地落点**。
+ *
+ * 本函数把「某一行引用的 src」解析成可交给 reveal_in_folder 的绝对路径：
+ * - `file` 形态（相对 / 绝对 / 解码后的 asset.localhost）→ 绝对路径；
+ * - `base64`（data: URL）与 `remote`（http(s) / blob: / tauri:）→ null：
+ *   它们没有本地文件，调用方据此禁用按钮并说明原因（不联网抓远程图）；
+ * - 文档未保存（docDir === null）时的相对路径 → null，与面板其它 IO 操作
+ *   （转 assets / 转 base64 / 重命名）的禁用条件保持一致。
+ *
+ * 纯函数：复用 resolveImageAbsPath，形态判定复用 imageSourceKind，
+ * 面板与单测共用同一份真值，避免组件里再写一套前缀判断。
+ */
+export function revealTargetOf(src: string, docDir: string | null): string | null {
+  // 只有磁盘上的真实文件才谈得上「在资源管理器中定位」。
+  // 必须先走 imageSourceKind 而不是朴素前缀判断：data URL 的逗号载荷、
+  // asset.localhost 的百分号编码路径都能骗过 startsWith 式的检查。
+  if (imageSourceKind(src) !== "file") return null;
+  return resolveImageAbsPath(src, docDir);
+}
+
 /** data URL 的解析结果 */
 export interface DataUrlParts {
   /** 声明的 mime（缺省 image/png） */

@@ -17,6 +17,7 @@ import {
   findUnreferenced,
   planRename,
   countRefsOf,
+  revealTargetOf,
 } from "../utils/imageManager";
 import { markdownToDoc } from "../core/markdown/parser";
 
@@ -218,5 +219,63 @@ describe("v0.13.0 需求11 countRefsOf", () => {
   it("未命中返回 0", () => {
     const imgs = collectDocImages(markdownToDoc("![a](./assets/a.png)\n"));
     expect(countRefsOf(imgs, "./assets/zzz.png")).toBe(0);
+  });
+});
+
+// ═════════ v0.13.1 需求9：资源管理器定位目标解析 ═════════
+// 本组断言随 v0.13.1 返修新增到此文件：revealTargetOf 与既有
+// resolveImageAbsPath/imageSourceKind 同属"引用 → 磁盘路径"的真值表，
+// 放在一起便于对照两者边界（远程/内联都必须为 null）。
+
+describe("v0.13.1 需求9 revealTargetOf（「本地文件」徽标定位目标）", () => {
+  const DOC_DIR = "D:/docs";
+
+  it("相对路径 → 基于文档目录拼出绝对路径", () => {
+    expect(revealTargetOf("./assets/a.png", DOC_DIR)).toBe("D:/docs/assets/a.png");
+    expect(revealTargetOf("assets/a.png", DOC_DIR)).toBe("D:/docs/assets/a.png");
+  });
+
+  it("相对路径的 `..` / `.` 被正确消解（不产出字面量 ..）", () => {
+    expect(revealTargetOf("../pic/a.png", "D:/docs/sub")).toBe("D:/docs/pic/a.png");
+    expect(revealTargetOf("././assets/a.png", DOC_DIR)).toBe("D:/docs/assets/a.png");
+  });
+
+  it("解码后的 asset.localhost URL → 本地绝对路径（本地文件，不是远程）", () => {
+    const src =
+      "http://asset.localhost/D%3A%2F10254%2F%E6%A1%8C%E9%9D%A2%2Fassets%2Fimage-3.png";
+    expect(revealTargetOf(src, DOC_DIR)).toBe("D:/10254/桌面/assets/image-3.png");
+  });
+
+  it("Windows / POSIX 绝对路径原样可用（不依赖 docDir）", () => {
+    expect(revealTargetOf("D:/pic/a.png", null)).toBe("D:/pic/a.png");
+    expect(revealTargetOf("D:\\pic\\a.png", null)).toBe("D:/pic/a.png");
+    expect(revealTargetOf("/tmp/a.png", null)).toBe("/tmp/a.png");
+  });
+
+  it("query / hash 被剥掉（reveal_in_folder 要的是纯路径）", () => {
+    expect(revealTargetOf("./assets/a.png?v=1#x", DOC_DIR)).toBe("D:/docs/assets/a.png");
+  });
+
+  it("远程图（http(s) / blob / tauri）→ null（没有本地文件可定位）", () => {
+    expect(revealTargetOf("https://a.com/x.png", DOC_DIR)).toBeNull();
+    expect(revealTargetOf("http://a.com/x.png", DOC_DIR)).toBeNull();
+    expect(revealTargetOf("blob:http://localhost/abc", DOC_DIR)).toBeNull();
+    expect(revealTargetOf("tauri://localhost/a.png", DOC_DIR)).toBeNull();
+    // asset.localhost 之外的 asset: 主机同样不是本地文件
+    expect(revealTargetOf("asset://other/x.png", DOC_DIR)).toBeNull();
+  });
+
+  it("data URL → null（内联图没有磁盘落点，不能拿 base64 载荷当路径）", () => {
+    expect(revealTargetOf("data:image/png;base64,iVBORw0KGgo=", DOC_DIR)).toBeNull();
+    expect(revealTargetOf("data:image/svg+xml,%3Csvg/%3E", DOC_DIR)).toBeNull();
+  });
+
+  it("文档未保存（docDir === null）→ 相对引用不可定位，绝对引用仍可", () => {
+    expect(revealTargetOf("./assets/a.png", null)).toBeNull();
+    expect(revealTargetOf("D:/pic/a.png", null)).toBe("D:/pic/a.png");
+  });
+
+  it("空 src → null（面板不会拿空串去 explorer /select,）", () => {
+    expect(revealTargetOf("", DOC_DIR)).toBeNull();
   });
 });

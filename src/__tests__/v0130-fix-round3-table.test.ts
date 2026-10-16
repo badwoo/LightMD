@@ -116,12 +116,37 @@ beforeEach(() => {
 // ═════════ ⑤ 横向选区 + 合并 ═════════
 
 describe("⑤ 横向选中两格并合并", () => {
-  it("起手点落在**列宽热区**内也能选出范围（旧实现被缩放吞掉）", () => {
+  /**
+   * v0.13.1 需求5：**起手点落在列框线热区内、且横向拖拽 = 缩放列宽**。
+   *
+   * 这里替换掉的旧用例断言的是"热区内横向拖拽也能选出范围"——那是 v0.13.0 第三轮
+   * 为修"合并选不中"而立的模型，却把用户真正需要的**列宽拖拽**一起吞掉了
+   * （用户实测反馈：「鼠标放在列框线上拖拽符出来了，但拖拽变成了选中单元格内容」）。
+   * 现在按动作方向仲裁：横向 → 缩放；纵向 → 范围选区（见下一条）。
+   *
+   * 注意起手点选在 cells[0] 的**右缘**（x=100）而不是左缘：第一列的左缘本来
+   * 就不是可拖拽的框线（`beginResizeFromGesture` 对 `firstCell + 左缘` 明确放行）。
+   */
+  it("需求5：从列框线横向拖拽 → 真的调整列宽，且不产生范围高亮", () => {
+    const { view, cells } = mountTable();
+    const before = view.state.doc.child(0).attrs.columnWidths;
+    drag(cells[0], cells[1], [100, 15], [180, 15]);
+    // ① 缩放真的发生了：列宽写入 table.attrs.columnWidths（互补调整，第 1 列变宽）
+    const after = view.state.doc.child(0).attrs.columnWidths as number[] | null;
+    expect(Array.isArray(after)).toBe(true);
+    expect(after).not.toEqual(before);
+    expect(after![0]).toBeGreaterThan(after![1]);
+    // ② 旧 bug 的可见症状就是"变成选中单元格内容" → 必须**没有**范围高亮
+    expect(highlighted(cells)).toBe("000000000");
+    // ③ 拖拽结束不得残留缩放指示线
+    expect(document.querySelector(".table-resize-indicator")).toBeNull();
+  });
+
+  it("需求5：热区内**纵向**拖拽仍然选出范围（不能把竖选/合并一起吞掉）", () => {
     const { cells } = mountTable();
-    // x=8 距 cell 左缘 8px —— 正是 COL_RESIZE_HOTZONE 边界内
-    // 旧实现 onMouseDown 会在此启动列宽缩放，rangeAnchor 永不设置
-    drag(cells[0], cells[1], [8, 15], [150, 15]);
-    expect(highlighted(cells)).toBe("110000000");
+    // 起手 x=8（列热区内），但纵向移动 → 主导轴是纵向 → 判为范围选区
+    drag(cells[0], cells[3], [8, 15], [10, 60]);
+    expect(highlighted(cells)).toBe("100100000");
   });
 
   it("起手点落在格中央（普通路径）同样能选出范围", () => {
@@ -247,11 +272,40 @@ describe("⑤ 横向选中两格并合并", () => {
 // ═════════ ⑦ 纵向选区 + 合并 ═════════
 
 describe("⑦ 纵向选中两格并合并", () => {
-  it("起手点落在**行高热区**内也能纵向选出范围", () => {
-    const { cells } = mountTable();
+  /**
+   * v0.13.1 需求5：**起手点落在行框线热区内、且纵向拖拽 = 缩放行高**。
+   *
+   * 这条替换掉了旧用例「起手点落在行高热区内也能纵向选出范围」——那属于 v0.13.0
+   * 第三轮为"合并选不中"立的模型，代价是**行高拖拽再也无法启动**（用户本轮实测
+   * 反馈就是"鼠标放在列框线上拖拽调整行高列宽不起作用了"）。
+   *
+   * 现行仲裁按动作方向：
+   *   · 行热区 + 纵向主导 → 行高缩放（本条）；
+   *   · 行热区 + 横向主导 → 范围选区；
+   *   · 单元格**主体内**纵向拖拽 → 范围选区（下一条，需求2 要的"纵向拖拽选中"）。
+   * 行热区只有 6px（单元格高 30px），主体还有 24px 可供起手，两者不冲突。
+   */
+  it("需求5：起手点落在行框线热区内纵向拖拽 → 真的调整行高（不再被当成选范围）", () => {
+    const { view, cells } = mountTable();
+    // `startRowResize` 读的是 **<tr> 的 rect**（不是 cell 的），而 mountTable 只桩了
+    // cell 的几何 → jsdom 下 tr 的 height 恒为 0，缩放会被 `Math.max(20, …)` 兜到底。
+    // 这里补桩行矩形，让行高基准与真实布局一致（30px），断言才有意义。
+    const row = cells[0].parentElement as HTMLElement;
+    row.getBoundingClientRect = () =>
+      ({ left: 0, right: 300, top: 0, bottom: 30, width: 300, height: 30, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    const before = view.state.doc.child(0).attrs.rowHeights;
+
     // y=28 距首行 cell 底缘 30 只有 2px —— 在 ROW_RESIZE_HOTZONE(6) 内
     drag(cells[0], cells[3], [50, 28], [50, 45]);
-    expect(highlighted(cells)).toBe("100100000");
+
+    const after = view.state.doc.child(0).attrs.rowHeights as number[] | null;
+    expect(Array.isArray(after)).toBe(true);
+    expect(after).not.toEqual(before);
+    // 起手高度 30 + 位移 17 = 47（互补逻辑只作用于列宽，行高按绝对值）
+    expect(after![0]).toBe(47);
+    // 缩放不得产生范围高亮
+    expect(highlighted(cells)).toBe("000000000");
+    expect(document.querySelector(".table-resize-indicator-h")).toBeNull();
   });
 
   it("格中央纵向拖拽同样能选出范围", () => {

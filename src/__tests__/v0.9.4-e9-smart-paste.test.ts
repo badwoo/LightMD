@@ -75,6 +75,18 @@ describe("E9：Markdown 特征启发式", () => {
   it("单个粗体（仅 1 项特征）→ 不判定", () => {
     expect(looksLikeMarkdown("这是 **粗体**")).toBe(false);
   });
+
+  // v0.13.1 需求1：判定改为「自包含块构造优先」——单个代码块/公式块/表格
+  // 即使只命中 1 项特征也必须按 Markdown 解析（阅读模式复制块 → 粘贴要渲染）
+  it("单个完整块构造（代码块 / 公式块）→ 判定为 Markdown", () => {
+    expect(looksLikeMarkdown("```\ncode\n```")).toBe(true);
+    expect(looksLikeMarkdown("$$\nE = mc^2\n$$")).toBe(true);
+  });
+
+  it("单个列表项仍不判定（保守边界未被放开）", () => {
+    expect(looksLikeMarkdown("- 单个列表项")).toBe(false);
+    expect(looksLikeMarkdown("> 只有一句引用")).toBe(false);
+  });
 });
 
 describe("E9：HTML→Markdown 与 Slice 构造", () => {

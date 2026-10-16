@@ -694,6 +694,28 @@ const nodeSpecs: Record<string, NodeSpec> = {
 
   table_row: {
     content: "(table_cell | table_header)*",
+    /**
+     * v0.13.1 需求3：**行级隔离**，作为"退格不得跨格"的**第二道**防线。
+     *
+     * 主防线是 `core/keymap.ts` 的显式守卫（Backspace / Mod-Backspace /
+     * Delete / Mod-Delete 在单元格**内容边界**上直接吞键）。本标记只是补充。
+     *
+     * ⚠️ 实测（`v0131-table-cell-editing.test.ts`）：`isolating` 有**位置覆盖盲区**——
+     * 它挡得住"有内容的格首退格"（`| 1 | 2 |` 里在 "2" 格首按退格 → 结构不动），
+     * 却挡不住"前邻是空格"的格首（`|  | 2 |` 里把光标放到 "2" 格首按退格，
+     * 未加固 schema 上 4 格变 3 格、右格内容左移；加本标记后该路径**仍会合并**）。
+     * 因此**不要**把它当成完整保证 —— 完整保证来自 keymap 守卫，那条守卫只看
+     * "光标是否贴在格的內容边界"，与前后邻格是什么无关，故没有盲区。
+     *
+     * 为什么不给 table_cell / table_header 加：`isolating` 也会让
+     * `liftTarget` / `canSplit` / `deleteRange` 在**格内**放弃跨格能力，
+     * 而单元格内容模型是 `inline*`（本身已是文本块层级），加在格上会连
+     * "格内正常编辑回流"一起限制；落在行上语义更贴切 —— 行之间本就不该连通。
+     *
+     * table 节点原本已有 `isolating: true`，但 `deleteBarrier` 只看**直接相邻**
+     * 的两个节点，不会回溯到更外层的 table，故在这一层补上仍有价值。
+     */
+    isolating: true,
     parseDOM: [{ tag: "tr" }],
     toDOM(): DOMOutputSpec {
       return ["tr", 0];

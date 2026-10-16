@@ -22,6 +22,12 @@ import katex from "katex";
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent, placeCaretInsideBlock } from "./blockSelection";
 // v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
 import { createBlockKebabButton } from "./blockKebab";
+// v0.13.1 需求6：就地编辑层的公共行为（尺寸自适应 / 点块外退出 / 过渡）
+import {
+  inlineEditorHiddenCss,
+  inlineEditorVisibleCss,
+  watchOutsidePointerDown,
+} from "./inlineBlockEditor";
 
 /** 行内公式 NodeView */
 export class MathInlineView implements NodeView {
@@ -166,6 +172,8 @@ export class MathBlockView implements NodeView {
   private handleDblClick: (e: MouseEvent) => void;
   /** v0.13.0 返修（问题2）：最近一次进入编辑态的时刻（区分"单击进编辑"引发的 dblclick） */
   private lastEnterEditAt = 0;
+  /** v0.13.1 需求6：编辑态期间"点块外退出"的取消订阅句柄 */
+  private outsideWatchCleanup: (() => void) | null = null;
   // v0.12.0 需求6：块级选中需要 view/getPos（原实现未保存，无法建 NodeSelection）
   private view: EditorView;
   private getPos: () => number | undefined;
@@ -223,9 +231,7 @@ export class MathBlockView implements NodeView {
     this.contentDOM = document.createElement("code");
     this.contentDOM.className = "math-block-content";
     this.contentDOM.setAttribute("contenteditable", "true");
-    this.contentDOM.style.cssText =
-      "display:none;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
-      "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;";
+    this.contentDOM.style.cssText = inlineEditorHiddenCss(false);
     this.dom.appendChild(this.contentDOM);
 
     // 双击切换编辑/预览态（保留：双击预览层可切回预览）
@@ -281,15 +287,41 @@ export class MathBlockView implements NodeView {
     this.toggleEditMode();
   }
 
+  /**
+   * 切换编辑/预览态。
+   *
+   * v0.13.1 需求6 修复：**不要**在这里先 `isEditing = !isEditing`。
+   * `exitEditMode()` 开头有 `if (!this.isEditing) return;`（幂等保护），
+   * 若外面已经把它翻成 false，退出路径会被自己的守卫挡掉 → 双击永远退不出编辑态
+   * （实测：类名 math-editing 一直挂着）。状态改由 enter/exit 各自拥有。
+   */
   private toggleEditMode() {
-    this.isEditing = !this.isEditing;
     if (this.isEditing) {
-      this.enterEditMode();
+      this.exitEditMode();
     } else {
-      this.contentDOM.style.display = "none";
-      this.dom.classList.remove("math-editing");
-      this.renderKatex();
+      this.enterEditMode();
     }
+  }
+
+  /**
+   * v0.13.1 需求6：退出编辑态 = **恢复渲染**。
+   *
+   * 从 enterEditMode / toggleEditMode /「点击块外」三处共用，保证状态一致
+   * （旧实现把退出逻辑内联在 toggleEditMode 里，导致新增的"点块外退出"无法复用）。
+   */
+  private exitEditMode() {
+    if (!this.isEditing) return;
+    this.isEditing = false;
+    // 先撤掉"点块外"监听，避免退出过程里重复触发
+    this.stopOutsideWatch();
+    this.contentDOM.style.cssText = inlineEditorHiddenCss(false) + "white-space:pre-wrap;";
+    this.dom.classList.remove("math-editing");
+    this.renderKatex();
+  }
+
+  private stopOutsideWatch() {
+    this.outsideWatchCleanup?.();
+    this.outsideWatchCleanup = null;
   }
 
   /** v0.13.0 返修（问题2）：进入编辑态（单击 / 双击共用同一入口，保证状态一致） */
@@ -297,14 +329,17 @@ export class MathBlockView implements NodeView {
     this.isEditing = true;
     this.lastEnterEditAt = Date.now();
     // N3：编辑态实时预览 —— 编辑区在上、预览层在下并列显示（不再隐藏预览）
-    this.contentDOM.style.cssText =
-      "display:block !important;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;" +
-      "padding:1em;font-family:var(--font-mono);font-size:0.9em;line-height:1.5;" +
-      "color:var(--text-primary);caret-color:var(--text-primary);background:transparent;";
+    //
+    // v0.13.1 需求6：尺寸改为**按内容**（单行 LaTeX → width:fit-content，
+    // 短公式不再撑满整行的大方框）；并声明过渡 + 淡入动画，进入过程平滑不抖动。
+    this.contentDOM.style.cssText = inlineEditorVisibleCss(false);
     this.previewLayer.style.display = "block";
     this.dom.classList.add("math-editing");
     this.lastRenderedLatex = "";
     this.renderKatex();
+    // v0.13.1 需求6：点击**块外**任何地方立即恢复渲染
+    this.stopOutsideWatch();
+    this.outsideWatchCleanup = watchOutsidePointerDown(this.dom, () => this.exitEditMode());
   }
 
   private renderKatex() {
@@ -366,6 +401,8 @@ export class MathBlockView implements NodeView {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.dom.removeEventListener("dblclick", this.handleDblClick);
     this.dom.removeEventListener("mousedown", this.handleMouseDown);
+    // v0.13.1 需求6：销毁时必须摘掉 document 级的"点块外"监听，避免泄漏
+    this.stopOutsideWatch();
     // v0.13.0 需求1：移除三点按钮
     this.kebabButton?.remove();
     this.kebabButton = null;

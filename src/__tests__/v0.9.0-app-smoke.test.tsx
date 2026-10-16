@@ -60,6 +60,8 @@ vi.mock("@tauri-apps/api/window", () => ({
  */
 vi.mock("@dnd-kit/core", () => ({
   DndContext: ({ children }: { children?: unknown }) => children ?? null,
+  // v0.13.1 需求11：大纲新增 DragOverlay（跟随光标的拖拽幽灵），替身需一并提供
+  DragOverlay: ({ children }: { children?: unknown }) => children ?? null,
   PointerSensor: class {},
   useSensor: () => ({}),
   useSensors: () => [],

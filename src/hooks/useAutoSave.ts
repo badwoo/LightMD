@@ -87,6 +87,32 @@ function shouldKeepSaving(): boolean {
   return s.isDirty && !!s.filePath && !s.suppressAutoSave;
 }
 
+/**
+ * v0.13.1 需求14：捕获时记录的路径是否**仍然是当前活动路径**。
+ *
+ * 自动保存的每一轮都要跨多个 `await`（读盘、写盘），期间用户完全可能切换标签。
+ * 任何"路径已变"的时刻都必须整轮放弃——否则会把 A 的磁盘与 B 的内容放在一起判定。
+ */
+function isStillActivePath(path: string): boolean {
+  return useEditorStore.getState().filePath === path;
+}
+
+/**
+ * v0.13.1 需求14：按**路径**取标签下标。
+ *
+ * 不能用 `activeTabIdx`：它是在 await 之前读的，跨 await 后可能已经指向别的标签，
+ * 于是"给这个文件标外部变更"会标到用户刚切过去的另一个文件上（误报的直接来源）。
+ *
+ * @returns 标签下标；标签已关闭 / 不存在时 -1
+ */
+function tabIndexOf(path: string): number {
+  try {
+    return useEditorStore.getState().getTabByPath(path);
+  } catch {
+    return -1;
+  }
+}
+
 export function useAutoSave(
   viewRef: React.MutableRefObject<EditorView | null>,
   // 源码模式下的最新内容（编辑/分屏模式使用），通过 ref 传入避免闭包陈旧
@@ -153,18 +179,25 @@ export function useAutoSave(
    * 抽成独立函数是为了让「暂停态自愈复核」与 `save()` 使用**同一份**目标内容，
    * 避免两处各算一遍导致判定基准漂移。
    *
-   * v0.13.0 返修（问题⑭）：`sourceContentRef` 通过稳定 ref 间接读取，
-   * 使本函数（进而 `save`）的身份**不随父组件击键重渲染而变化**（见上方 ref 说明）。
+   * v0.13.1 需求14：**路径改为显式入参**（不再从闭包读 `filePath`）。
+   *
+   * 缺陷背景：`filePath` 是闭包变量（创建本回调那次渲染的值），而函数体实时读取
+   * `viewRef.current` / `sourceContentRef`（当前显示的文件）。一次跨标签切换的
+   * 自动保存轮次里两者会分叉 → 拿 A 的路径配 B 的内容。改成显式入参后，
+   * "取内容"与"判定/写盘"用的是**同一个路径**，调用方还必须在每个 await 之后校验
+   * 它仍是活动路径（见 `isStillActivePath`）。
+   *
    * `viewRef` 本身是稳定 ref（父组件用 useRef 创建），沿用既有做法直接读取。
    *
+   * @param path 本轮操作针对的文件路径（必须是捕获到的快照值，不是实时值）
    * @returns 目标内容；无视图或无路径时返回 null（此时不该发生任何写盘）
    */
-  const currentMarkdown = useCallback((): string | null => {
+  const currentMarkdown = useCallback((path: string | null): string | null => {
     const view = viewRef.current;
     const sourceRef = sourceContentRefRef.current;
-    if (!view || !filePath) return null;
+    if (!view || !path) return null;
     const isSourceMode = viewModeRef.current === "edit" || viewModeRef.current === "split";
-    const isMdFile = isMarkdownFile(filePath);
+    const isMdFile = isMarkdownFile(path);
     if ((isSourceMode || !isMdFile) && sourceRef?.current !== undefined) {
       return sourceRef.current;
     }
@@ -178,7 +211,7 @@ export function useAutoSave(
     return markdown;
     // viewRef / viewModeRef / sourceContentRefRef 是稳定 ref，不应出现在依赖里
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath]);
+  }, []);
 
   /**
    * v0.13.0 返修（问题⑭）：暂停态自愈复核。
@@ -203,7 +236,10 @@ export function useAutoSave(
         // 读盘失败（被删/被锁/权限）→ 无从证明磁盘未被改过，保守保持暂停
         return false;
       }
-      const target = currentMarkdown();
+      // v0.13.1 需求14：读盘期间可能已切换标签 → 本轮的"暂停复核"不再属于当前文件，
+      // 必须放弃（否则会把另一个文件的暂停标记按本文件的磁盘状态解除）。
+      if (!isStillActivePath(path)) return false;
+      const target = currentMarkdown(path);
       if (target === null) return false;
       const decision = judgeAutoSaveWrite({
         diskContent: disk,
@@ -213,19 +249,40 @@ export function useAutoSave(
       if (decision === "conflict") return false;
       // 读盘结果顺手入缓存：本轮随后的 save() 直接复用，避免同一 tick 打两次磁盘
       putCachedDiskRead(path, disk, Date.now());
-      const { activeTabIdx } = useEditorStore.getState();
-      useEditorStore.getState().setTabExternallyChanged(activeTabIdx, false);
+      // 按**路径**定位标签（不能用可能过期的 activeTabIdx）
+      const idx = tabIndexOf(path);
+      if (idx < 0) return false;
+      useEditorStore.getState().setTabExternallyChanged(idx, false);
       return true;
     },
     [currentMarkdown],
   );
 
   const save = useCallback(async () => {
-    const markdown = currentMarkdown();
+    // ─── v0.13.1 需求14：把本轮操作**绑定到一个 (路径, 内容) 快照**上 ───────────
+    //
+    // 缺陷背景（用户报告「打开多个文件在编辑，切换不同文件时还是会提示某某文件
+    // 已在其他窗口保存，自动保存暂停」）：
+    // 旧实现同时使用三个**不同时刻**的状态——
+    //   · `filePath` 来自本 useCallback 的闭包（= 创建它那次渲染时的文件）；
+    //   · `currentMarkdown()` 实时读取 `viewRef.current` / `sourceContentRef`
+    //     （= **当前显示**的文件）；
+    //   · `activeTabIdx` 在本函数开头从 store 实时读取（= **当前活动**标签）。
+    // 一轮 tick 如果在 `await fileService.readFile(...)` 期间发生标签切换，
+    // 三者的指向就分叉，造成两种后果：
+    //   ① 用「A 的磁盘」比「B 的内容」→ 既不等于磁盘也不等于基线 → 判 conflict →
+    //      把用户**刚切过去的 B** 标成「外部变更」→ 弹
+    //      「「B」已在其他窗口保存，自动保存已暂停」——而 B 从未被任何外部程序改过；
+    //   ② 更危险：「A 的磁盘 == A 的基线」时判定为 write，随后
+    //      `writeFile(A, markdown)` 会把 **B 的内容写进 A**（静默跨文件覆盖）。
+    //
+    // 修复：入口一次性捕获 `path`，全程只用这个值；每个 `await` 之后重新校验
+    // 它仍是当前活动路径，一旦不是就**整轮放弃**（不判定、不写盘、不改任何状态）。
+    const path = filePath;
+    if (!path) return;
+    if (!isStillActivePath(path)) return;
+    const markdown = currentMarkdown(path);
     if (markdown === null) return;
-    // 显式收窄：上面的 null 检查已排除无路径，这里再挡一次以保证 TS 收窄
-    if (!filePath) return;
-    const { activeTabIdx } = useEditorStore.getState();
 
     try {
       if (isTauri()) {
@@ -237,11 +294,13 @@ export function useAutoSave(
         // 而事件可能因「目录未挂载 / mtime 去重命中 / Rust 回调调度晚于定时器」
         // 迟到或缺失。所以这里不依赖事件，直接自己读盘判断。
         const now = Date.now();
-        let disk = getCachedDiskRead(filePath, now);
+        let disk = getCachedDiskRead(path, now);
         if (disk === undefined) {
-          disk = await fileService.readFile(filePath, { silent: true });
-          putCachedDiskRead(filePath, disk, now);
+          disk = await fileService.readFile(path, { silent: true });
+          putCachedDiskRead(path, disk, now);
         }
+        // 读盘期间可能已切换标签 → 本轮作废（否则会用别的文件的内容做判定）
+        if (!isStillActivePath(path)) return;
         const decision = judgeAutoSaveWrite({
           diskContent: disk,
           targetContent: markdown,
@@ -253,51 +312,73 @@ export function useAutoSave(
           // 时，该函数返回 null → 三路判定无法证明磁盘未被第三方改过 → 判为 conflict
           // → 放弃自动保存并弹「已在其他窗口保存，自动保存已暂停」。
           // 实际**没有任何外部程序改过文档**，这就是用户报告的误报。
-          lastSelfWritten: getKnownDiskContent(filePath),
+          lastSelfWritten: getKnownDiskContent(path),
         });
         if (decision === "conflict") {
           // 第三方已改过磁盘 → 放弃本次自动保存，绝不写盘。
           // 标记「外部变更未处理」并提示：用户手动 Ctrl+S 时会走
           // 「覆盖 / 另存为 / 取消」确认（知情后才会覆盖）。
+          // v0.13.1 需求14：**按路径定位标签**，不按可能已过期的 activeTabIdx
+          // （否则会把暂停标记打到用户刚切过去的另一个文件上，就是那条误报）。
+          const idx = tabIndexOf(path);
+          if (idx < 0) return; // 标签已关闭 → 无处可标，安静结束
           const alreadyMarked =
-            useEditorStore.getState().openTabs[activeTabIdx]?.isExternallyChanged === true;
-          useEditorStore.getState().setTabExternallyChanged(activeTabIdx, true);
+            useEditorStore.getState().openTabs[idx]?.isExternallyChanged === true;
+          useEditorStore.getState().setTabExternallyChanged(idx, true);
           // v0.13.0 返修（问题⑭）：只在**首次**判定冲突时提示。
           // 暂停期间定时循环每轮都会复核磁盘，若每轮都弹同一条会刷屏；
           // 「自动保存已暂停」那条由下面的提示 effect 负责（每轮暂停只弹一次）。
           if (!alreadyMarked) {
             void import("../services/notificationService").then(({ notify }) =>
-              notify(t("multiwindow.autoSaveSkipped", { name: fileNameOf(filePath) }), "warning"),
+              notify(t("multiwindow.autoSaveSkipped", { name: fileNameOf(path) }), "warning"),
             );
           }
           return;
         }
         if (decision === "skip") {
           // 磁盘已是目标内容：无需写盘，直接清脏标记（省一次 IO + 一次快照）
+          //
+          // v0.13.1 需求14：`setDirty(false)` 是**全局活动标签**的脏标记，
+          // 只要本轮的 path 仍等于活动路径（前面已校验）就应当清掉；
+          // 只有"逐标签"的更新需要有效的下标，故下标缺失时不得连全局标记一起跳过
+          // （那会让自动保存"保存了但小蓝点不消失"）。
           setDirty(false);
-          updateTabDirty(activeTabIdx, false);
-          // v0.13.0 返修（问题⑭）：磁盘已等于目标内容 ⇒ 不存在「未处理的外部变更」，
-          // 顺手清掉暂停标记（自愈），否则标签会一直挂着「已被外部修改」徽标。
-          useEditorStore.getState().setTabExternallyChanged(activeTabIdx, false);
+          const idx = tabIndexOf(path);
+          if (idx >= 0) {
+            updateTabDirty(idx, false);
+            // 磁盘已等于目标内容 ⇒ 不存在「未处理的外部变更」，顺手清掉暂停标记（自愈）
+            useEditorStore.getState().setTabExternallyChanged(idx, false);
+          }
           return;
         }
-        await fileService.writeFile(filePath, markdown);
+        // ─── 写盘前的**最后一次**校验：路径没变才允许落盘 ───
+        // 这是防「把 B 的内容写进 A」的最后一关（判定与写盘之间还有一次 await 的机会窗）。
+        if (!isStillActivePath(path)) return;
+        await fileService.writeFile(path, markdown);
+        // 写盘期间又切走了：内容已经写进 path（正确），但**不要再动状态标记**——
+        // 那些标记是给"当前活动标签"用的，此时活动标签已经是别人了。
+        if (!isStillActivePath(path)) return;
         // v0.4.0 功能4：自动保存成功后记录版本快照（内容去重由服务内部处理）
-        versionSnapshotService.recordSnapshot(filePath, markdown).catch(() => {});
+        versionSnapshotService.recordSnapshot(path, markdown).catch(() => {});
       } else {
         safeSetItem("lightmd-content", markdown);
       }
+      // 同上：全局脏标记必清；逐标签更新按需。
       setDirty(false);
-      // 清除当前标签页的脏标记（修复：自动保存后小蓝点未消失）
-      updateTabDirty(activeTabIdx, false);
-      // v0.13.0 返修（问题⑭）：写盘成功后磁盘就是本应用的内容 ⇒ 解除暂停标记。
-      // 这也是自愈的一环：暂停期间若磁盘恢复到可写状态，下一次写盘即恢复正常。
-      useEditorStore.getState().setTabExternallyChanged(activeTabIdx, false);
+      const savedIdx = tabIndexOf(path);
+      if (savedIdx >= 0) {
+        updateTabDirty(savedIdx, false);
+        // v0.13.0 返修（问题⑭）：写盘成功后磁盘就是本应用的内容 ⇒ 解除暂停标记。
+        // 这也是自愈的一环：暂停期间若磁盘恢复到可写状态，下一次写盘即恢复正常。
+        useEditorStore.getState().setTabExternallyChanged(savedIdx, false);
+      }
     } catch (err) {
       console.error("[AutoSave] 保存失败:", err);
       // v0.13.0 返修（问题⑭）：写盘失败不再等于「自动保存结束」——
       // 脏标记保留，定时循环会在下一个间隔自动重试（见下方自续期循环）。
     }
+    // v0.13.1 需求14：不再依赖 `filePath` —— 路径已改为入口快照，
+    // 故 `save` 的身份不再随切换标签而变（定时循环只在 filePath 变化时重建）。
   }, [currentMarkdown, filePath, setDirty, updateTabDirty, t]);
 
   /**
@@ -323,13 +404,16 @@ export function useAutoSave(
     /** 单轮：暂停态先复核磁盘自愈；仍暂停则不写盘，但**不终止循环** */
     const tick = async (): Promise<void> => {
       if (!shouldKeepSaving()) return;
-      const s = useEditorStore.getState();
-      if (!s.filePath) return;
+      // v0.13.1 需求14：本轮同样以**入口快照**的路径为準，并在每个 await 之后复核。
+      const path = useEditorStore.getState().filePath;
+      if (!path) return;
       // 本轮开始时标签是否处于「外部变更未处理」暂停态
       let externallyChanged = isActiveTabPaused();
       if (externallyChanged) {
         // 暂停态：先复核磁盘（自愈路径）——证明磁盘未被第三方改过就解除暂停并继续保存
-        externallyChanged = !(await healPausedIfDiskUnchanged(s.filePath));
+        externallyChanged = !(await healPausedIfDiskUnchanged(path));
+        // 复核期间切换了标签 → 本轮不再属于当前文件，直接结束（下一轮会重排）
+        if (!isStillActivePath(path)) return;
       }
       // 复核后仍是「外部变更未处理」→ 放弃**本轮**写盘（绝不覆盖外部编辑）。
       // 与 v0.9.0 的语义一致：外部变更未处理时自动保存必须让路。
