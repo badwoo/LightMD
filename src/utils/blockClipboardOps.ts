@@ -91,11 +91,14 @@ export async function writeBlockClipboard(data: BlockClipboardData): Promise<boo
   // v0.13.0 返修（问题5）：无论系统剪贴板是否成功，都先记下应用内兜底，
   // 保证「复制 → 粘贴」在本应用内可用。
   inAppBlockClipboard = data;
+  // v0.13.2 需求1：`text/plain` 可能是**纯代码**（代码块复制按钮）而不是 markdown，
+  // 两者必须分开写：应用内粘贴用 markdown 还原结构，外部粘贴拿到的是干净纯文本。
+  const plainText = data.plain ?? data.markdown;
   const payload = serializeBlockClipboard(data);
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.write) {
       const item = new ClipboardItem({
-        "text/plain": new Blob([data.markdown], { type: "text/plain" }),
+        "text/plain": new Blob([plainText], { type: "text/plain" }),
         [BLOCK_CLIPBOARD_MIME]: new Blob([payload], { type: BLOCK_CLIPBOARD_MIME }),
       });
       await navigator.clipboard.write([item]);
@@ -106,7 +109,7 @@ export async function writeBlockClipboard(data: BlockClipboardData): Promise<boo
   }
   try {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(data.markdown);
+      await navigator.clipboard.writeText(plainText);
       return true;
     }
   } catch {
@@ -114,6 +117,79 @@ export async function writeBlockClipboard(data: BlockClipboardData): Promise<boo
   }
   // 系统剪贴板完全不可用：应用内兜底仍然有效，故对「本应用内粘贴」算成功
   return true;
+}
+
+/**
+ * v0.13.2 需求1：**代码块右上角复制按钮**的剪贴板写入。
+ *
+ * ─── 缺陷背景（用户报告）───
+ * 「点击代码块右上角快捷复制按钮，复制代码块到其他文档没有立即渲染。」
+ *
+ * 复制按钮此前只做 `navigator.clipboard.writeText(code)` —— 写进去的是**裸代码**，
+ * 没有任何 Markdown 结构。粘贴时 `clipboard-paste` 的 `looksLikeMarkdown` 判它
+ * 不像 Markdown（没有围栏、没有标题/列表/表格…），于是**退回 ProseMirror 默认
+ * 的字面粘贴** → 目标文档里出现一段普通文字，而不是代码块。
+ *
+ * 现在：除了写纯代码（外部编辑器仍然拿到干净代码），还
+ *   ① 在应用内登记一份「围栏代码块」形态的块载荷（本应用内粘贴可无损还原结构）；
+ *   ② 系统剪贴板同时写专用 MIME（跨窗口/跨标签也能还原）。
+ *
+ * @param code   代码正文（不含围栏、不含行号）
+ * @param lang   语言标识（可为空串 → 不写 info string）
+ * @returns **系统剪贴板**是否写入成功。
+ *          应用内兜底无论如何都已登记（所以返回 false 时"本应用内粘贴"仍可用），
+ *          但调用方应据 false 提示用户"没有复制到系统剪贴板"——这正是
+ *          既有 `codeblock.copyFailed` 提示的语义。
+ */
+export async function writeCodeBlockClipboard(
+  code: string,
+  lang: string,
+): Promise<boolean> {
+  // 围栏字符长度必须大于代码内最长的连续反引号，否则会提前闭合
+  const longestRun = (code.match(/`+/g) ?? []).reduce((m, r) => Math.max(m, r.length), 0);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  const markdown = `${fence}${lang}\n${code}\n${fence}\n`;
+  return writeBlockClipboardDetailed({
+    markdown,
+    plain: code,
+    from: 0,
+    to: 0,
+    at: Date.now(),
+  });
+}
+
+/**
+ * 与 `writeBlockClipboard` 相同，但**区分系统剪贴板是否成功**。
+ *
+ * 为什么需要区分：`writeBlockClipboard` 的返回值语义是「本应用内可用」
+ * （应用内兜底成功即算成功，见 v0.13.0 返修问题5 的测试契约）。
+ * 而复制按钮还需要知道"要不要提示用户系统剪贴板不可用"——两件事不能混为一谈。
+ */
+export async function writeBlockClipboardDetailed(data: BlockClipboardData): Promise<boolean> {
+  inAppBlockClipboard = data;
+  const plainText = data.plain ?? data.markdown;
+  const payload = serializeBlockClipboard(data);
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.write) {
+      const item = new ClipboardItem({
+        "text/plain": new Blob([plainText], { type: "text/plain" }),
+        [BLOCK_CLIPBOARD_MIME]: new Blob([payload], { type: BLOCK_CLIPBOARD_MIME }),
+      });
+      await navigator.clipboard.write([item]);
+      return true;
+    }
+  } catch {
+    // 落到 writeText 保底
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(plainText);
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
 }
 
 /**

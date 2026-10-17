@@ -23,22 +23,35 @@ interface ImageManagerButtonProps {
    * 图片管理接在最后一个已占用槽位之后。
    */
   slot: number;
+  /**
+   * v0.13.2 需求4：是否可见。
+   *
+   * 组件**常驻挂载**（不再用 `{cond && <Btn/>}` 条件渲染），只切 `.is-hidden`
+   * —— 条件渲染是瞬间从 DOM 摘除，CSS 过渡根本没机会播放，
+   * 用户要求"文档里删掉所有图片时图片管理图标淡出消失"就做不到。
+   * 不可见时同时 `pointer-events:none`（在 CSS 里）+ `aria-hidden` + `tabIndex=-1`，
+   * 保证它既看不见、也点不到、也进不了 Tab 序列。
+   */
+  visible?: boolean;
   /** 点击打开图片管理面板 */
   onOpen: () => void;
 }
 
-export function ImageManagerButton({ slot, onOpen }: ImageManagerButtonProps) {
+export function ImageManagerButton({ slot, visible = true, onOpen }: ImageManagerButtonProps) {
   const t = useT();
 
   return (
     <button
       type="button"
-      className="image-manager-btn"
+      className={`image-manager-btn${visible ? "" : " is-hidden"}`}
       // 槽位 → 纵向偏移由 CSS 变量驱动，保证与上方图标等距、居中对齐
       style={{ ["--imb-slot" as string]: String(slot) }}
       title={t("imageManager.title")}
       aria-label={t("imageManager.title")}
+      aria-hidden={visible ? undefined : true}
+      tabIndex={visible ? undefined : -1}
       data-testid="image-manager-btn"
+      data-visible={visible ? "true" : "false"}
       onClick={onOpen}
     >
       {/* 图片图标：山峦 + 太阳，与「译」气泡同为 20×20 视觉重量 */}

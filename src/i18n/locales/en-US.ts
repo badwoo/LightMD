@@ -712,6 +712,9 @@ export const enUS: Record<string, string> = {
   "imageManager.revealTip": "Open the containing folder in Explorer and select this image",
   "imageManager.revealFailed": "Could not reveal the file in Explorer",
   "imageManager.revealNoPath": "This image has no local file path (remote images cannot be revealed)",
+  // v0.13.2 需求10：image edit handle (click to open the image editor)
+  "image.editHandle": "Edit image (size / alt / align)",
+  "image.resizeTip": "Drag the image edges to resize",
   // ─── Editor context menu ───────────────────────────────────
   "menu.undo": "Undo",
   "menu.redo": "Redo",

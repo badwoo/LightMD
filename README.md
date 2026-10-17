@@ -2,7 +2,7 @@
 
 > 一款**轻量级**、**高性能**、**所见即所得**的 Windows Markdown 编辑器，基于 Tauri v2 + React + ProseMirror 构建。
 
-**当前版本：v0.12.3**
+**当前版本：v0.13.2**
 
 中文 | [English](./README_EN.md) | [用户指南](./USER_GUIDE.md)
 
@@ -373,6 +373,50 @@ npm run tauri build
 欢迎提交 Issue 和 Pull Request！
 
 ## 📋 更新历史
+
+### v0.13.2（2026-10-17）
+
+**用户对 v0.13.1 的第二批复测反馈 10 项 —— 全部修复。**
+
+这一批的共同特征是「单点已可用、组合起来不成立」：复制单个代码块没问题，但粘到别的文档不渲染；渲染区能看但不能改；两个文档各自撤销都对，但顺序不对。因此本轮把测试全部下沉到**真实交互链**（真实 ProseMirror 事务、真实鼠标事件序列、真实定时器推进、真实 localStorage），不再只断言纯函数。
+
+| # | 用户反馈 | 根因 | 实现 |
+| --- | --- | --- | --- |
+| 1 | 点代码块右上角「复制」，粘到其他文档不立即渲染 | 复制写进 `text/plain` 的是**裸代码**（没有围栏），粘贴端看不到任何「这是一个完整代码块」的证据，只能按普通文本插入；另外 `writeBlockClipboard` 在系统剪贴板不可用时返回的仍是「内存兜底成功」，调用方无法区分，`copied` 状态与真实剪贴板脱钩 | 新增 `writeCodeBlockClipboard(code, lang)` 专线：围栏长度取 `max(3, 最长反引号串长度 + 1)`，代码本身含 ` ``` ` 也不会破格；`BlockClipboardData` 增加可选 `plain` 字段，`text/plain` 写 `plain ?? markdown`，于是应用内「复制代码块 → 粘贴」能被 `clipboard-paste` 的 `inAppBlockMarkdown` 命中并还原成围栏块；新增 `writeBlockClipboardDetailed` 回报**系统剪贴板**的真实结果，`handleCopyClick` 据此决定是否显示「已复制」 |
+| 2 | 阅读模式在无序/有序列表里按 `Ctrl+T`，任务列表没加到列表前，而是回车换行了 | `insert.taskList` 只会在光标处插入一个**空**任务列表；光标在 `list_item` 内部时命令被列表的 `splitListItem` 抢走，于是表现成「回车换行」 | 采纳用户选定方案「把当前行提升为任务项」：`pmCommands` 新增 `liftListItemToTaskList(view)`，把当前 list item 从原列表摘出、以 `task_list` 插到原列表**之前**（整个列表只有这一项时整体替换）；`insert.taskList` 先试这条路径，失败才退回原有插入。源码模式由 `sourceFormat.liftListLineToTask(text, cursorPos)` 做同一件事：按行扫描定位连续列表块的起点，当前行改成 `- [ ] body` 插到块前、光标落到任务行末尾；非列表行或已是任务项返回 `null`，交回原逻辑 |
+| 3 | Mermaid 只有下半部分能编辑，上半部分渲染结果点不动、也不联动 | 预览层只是「不拦事件」，pointerdown 从未接到「进入编辑态」；且编辑时 `getCode()` 读的是 `node.attrs.code`（上一次提交的值），预览始终慢一拍 —— 渲染区看起来「只读」 | 采纳「渲染区也是编辑入口 + 实时联动」：`previewLayer` 挂 `handlePreviewPointerDown`，点渲染结果即在落点进入编辑并放置光标；`getCode()` 在 `isEditing` 时优先读**活的** `contentDOM.textContent`；`debouncedRender` 编辑中 120ms / 静止 500ms；新增 `renderSeq` 异步竞态守卫，早到的渲染结果被丢弃，不会再被旧图覆盖；编辑中语法暂时写错时 `keepLastOnError` 保留上一次成功的 SVG，不闪错误块；`enterEditMode` 清 `lastRenderedCode` 强制重渲染；`destroy` bump `renderSeq` 并摘掉预览监听。撤销/重做走 PM history 的节点属性更新，两条路径都会重新触发渲染 |
+| 4 | 无图文档时「译」图标应上移补位，且要有顺滑平移动画 | 图片管理按钮靠条件渲染整块消失，导致下方位移是**跳变**；「译」的 `top` 是写死的 | `ImageManagerButton` 改为**始终挂载**，无图时只加 `is-hidden`（`opacity:0` / `pointer-events:none` / `transform:scale(.86)`）并置 `aria-hidden` + `tabIndex=-1`；`FullTranslateButton` 新增 `slot` 属性，经 `.ftb-wrap` 内联的 `--ftb-slot` 计算 `top`，无图 slot=0（紧贴模式切换图标下方）、有图 slot=1；`.ftb-wrap` 与 `.image-manager-btn` 都加 `top/opacity/transform` 过渡（0.22s），并补 `prefers-reduced-motion` |
+| 5 | A 文档编辑 3 处、B 文档编辑 2 处，在 B 里连续撤销应顺序回溯到 A（与 Word 一致） | 撤销历史在 `EditorState` 内。v0.13.1 为满足「撤销不跨文档」在换文档时**直接清空**历史 —— A 的 3 步在切到 B 后永久丢失，而用户要的是「B 撤完继续撤 A」 | 新增 `services/docUndoOrder.ts`（纯账本，按编辑顺序记录文档，`routeUndo` 返回 `local` / `switched` / `none`）与 `services/docHistoryStore.ts`（按 docKey 存 `content + PM 历史 + 源码模式 undo/redo 栈`，LRU 40，content 不匹配即丢弃快照）；`core/editor.ts` 新增 `getPmHistoryState` / `withPmHistoryState` / `pmHistoryDepth`，`resetHistory` 支持 `tr.getMeta("restoreHistory")` 携带快照重建；`core/keymap.ts` 用 `undoWithDocRouting` / `redoWithDocRouting` 替换原生 `undo`/`redo` —— 本地仍有深度就地执行，深度为 0 时派发可取消的 `lightmd:undo-switch-doc` 让 `App` 切到目标文档，切换完成后 `flushPendingUndoRequest()` 立即补执行那一次撤销。`noteEdit` 只把自己从 redo 栈移除，因此各文档的重做相互独立 |
+| 6 | 图片管理弹窗特效改为「从按钮跑出来、关闭再跑回去」 | 原动画是居中缩放淡入，弹窗与触发按钮之间没有空间关联 | 新增 `components/dialogs/GenieDialogShell.tsx`：打开时量取 `[data-genie-anchor="image-manager"]` 里的按钮与 `.image-mgr-dialog` 的矩形，算出位移与缩放原点注入 `--genie-from-x/y`、`--genie-origin-x/y`，双 rAF 后才切到 `in` 态；关闭时用 `useLayoutEffect` **重新量取**（弹窗可能已被拖动或换位），先播 300ms 退场再卸载。`ImageManagerDialog.css` 动画段重写为遮罩 `0.15s / 0.22s` + 精灵 `in 0.32s cubic-bezier(0.33,1,0.68,1)` / `out 0.26s cubic-bezier(0.32,0,0.67,0)`；`IMAGE_MGR_CLOSE_MS` 由 160 提到 260 与退场时长对齐；补 reduced-motion |
+| 7 | 大纲不跟随（标题进屏幕下半部分就看不到）、大纲栏也没有滚动位置记忆 | `IntersectionObserver` 的 `rootMargin` 是 `-10% 0px -70% 0px`，把可视带压成了屏幕顶端 20% —— 标题进入下半屏时永远判不到「可见」，跟随逻辑自然不触发 | `rootMargin` 改为 `-10% 0px 0px 0px`；新增 `services/outlineScrollMemory.ts`（Map + `localStorage["lightmd-outline-scroll"]`，LRU 60，400ms 防抖落盘）；`Outline` 订阅 store 的 `docKey`（只读 `openTabs` / `activeTabIdx`，**不引用 `viewMode`**），滚动即写、按 `[docKey, headings.length]` 恢复（双 rAF + 600ms 宽限期，宽限期内跟随逻辑不抢滚动位置）；`App` 在两个快照加载点都调用 `loadOutlineScrollSnapshot()` |
+| 8 | 分屏联动要继续，但左右不是共用滚动条，而是映射关系，且看到的内容要能对齐 | v0.13.1 的块对齐只有「左 → 右」，映射回退仍是单一百分比；右屏滚动完全不反馈左屏，用户从右屏找不到对应源码 | 采纳「双向映射」：`utils/blockScrollAlign.ts` 新增 `PreviewAnchorSet { lines, tops, heights, totalHeight }` 与 `locateSourceLine` / `mapSourceLineToPreviewScroll` / `mapPreviewScrollToSourceLine` / `mapSourceLineToScrollTop`，以顶层块的源码行做锚点双向插值。`EditorContainer` 的 effect 重写为双向：`collectAnchors()` 用 `getBoundingClientRect().top - previewRectTop + preview.scrollTop` 量出每块的预览坐标，`syncToPreview` / `syncToSource` 分别处理两个方向，同时监听 `textarea`、`iframe.contentWindow`、`preview`，共用 `isSyncingScrollRef` 做重入保护（一方写入引起的 scroll 事件不会反弹给另一方） |
+| 9 | 从 A 复制表格到新文档 B 后，光标移不到表格下面；点文档空白处也没有插入符 | 表格 / 代码块 / 公式 / Mermaid 都是 ProseMirror 的**隔离型**块，文档以它们结尾时光标无处可落 —— 这是「粘一个表格进来就再也写不了字」的真正原因，并非点击逻辑缺陷 | `paragraph` 增加结构性属性 `attrs.pad`；新增 `core/plugins/trailing-paragraph.ts`：`appendTransaction` 在文档结束于 `table / code_block / mermaid_block / math_block` 时补一个 pad 段落，段落一旦有内容就自动清掉 `pad` 标记，事务带 `addToHistory:false`（补位本身不该进撤销栈）；`withTrailingParagraph` 同时用于初始文档包装；序列化器收集块时**跳过 `pad === true` 的段落**，因此补位段落永不写进 `.md`，而用户自己打的尾随空段落（非 pad）仍照常序列化 —— v0.7.0 起的既有契约由负向测试守着 |
+| 10 | 图片功能调整：右上角小手柄进入编辑、点图片改为激活、拖边缘调大小 | 点图片直接开弹窗，导致无法选中/拖动图片，也没有任何尺寸调节入口 | 采纳「只记宽度、保持宽高比」：新增 `core/plugins/image-node.ts` 的 `ImageView` NodeView —— 右上角 `.image-node-handle` 悬停显现，点击派发 `lightmd:image-edit`（带 `{pos}`）由 `EditorContainer` 打开编辑弹窗；点图片本身改为 `NodeSelection` 激活（`view.editable === false` 时跳过，保留阅读模式点击放大的既有行为）；六向 `.image-resize-zone[data-dir]` 拖拽调大小，**只写宽度**、高度由图片自身比例决定，最小 24px，西侧方向做符号反转；拖拽过程中不写事务，`mouseup` 时一次性 `setNodeMarkup`，一次拖拽 = 一次撤销 |
+
+**测试与验证**：新增 8 个行为级测试文件（跨文档顺序撤销 / Mermaid 预览区编辑联动 / 表格后尾随段落 / 图片 NodeView 缩放 / `Ctrl+T` 列表提升 / 图片管理槽位与精灵弹窗 / 大纲跟随与滚动记忆 / 分屏双向映射），共 174 个用例；全量回归 **297 文件 / 5111 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例）；`tsc --noEmit` 零错误；`npx tauri build` 产出 MSI + NSIS，版本元数据 0.13.2（详见 `release/v0.13.2/RELEASE_NOTES_v0.13.2.md`）。
+
+### v0.13.1（2026-10-16）
+
+**用户实机反馈 16 项 —— 全部修复。**
+
+| # | 问题 | 修复要点 |
+| --- | --- | --- |
+| 1 | 块粘贴后不自动渲染 | `utils/blockClipboard.ts` 成为 `looksLikeMarkdown` 唯一实现；判定改两层：**自包含块构造**（围栏代码块 / `$$` 公式 / 带分隔行的管道表格）单命中即按 Markdown 解析，其余仍走「特征 ≥2」的保守口径。顺带修掉 turndown 无 GFM 表格规则（表格 HTML 被拍平成纯文本）与「HTML 优先级高于无损 Markdown」导致 `language:"js"` 丢失 |
+| 2 | 空单元格无法拖拽选中 → 无法合并 | `trimRowTrailingEmpties` 只按「是不是空格」裁行尾，把用户**真实写的**行尾空格当成 markdown-it 补齐幻影格丢掉。判据改为「布点后的**逻辑列**是否越界」（物理下标不是有效判据），真实空格保留、幻影格才裁；表格单元格补 `min-height` 保证空格的命中面积 |
+| 3 | 退格跨格吞内容 | `core/keymap.ts` 增加守卫：`Backspace` / `Mod-Backspace` / `Delete` / `Mod-Delete` 在单元格**内容边界**上直接吞键（不派发事务、不动光标），非边界一律放行；`table_row` 加 `isolating` 作第二道防线，并在注释中如实记录其位置覆盖盲区 |
+| 4 | 对齐只作用于选中单元格 | 新增 `tableMerge.setRangeAlign`，按**逻辑网格**写矩形内的锚点格（含合并格时按逻辑列定位）；有范围选区只改选中格，无选区维持整列语义，按钮 title 如实说明作用面 |
+| 5 | 拖列框线变成选中内容 | 热区内 `mousedown` 漏了 `preventDefault`（浏览器当场开始原生选词），且仲裁以「是否离开起始格」为首判据而拖框线必然进入相邻格。改为按**主导轴**判定：列热区+横向 → 列宽缩放；行热区+纵向 → 行高缩放；其余 → 范围选区 |
+| 6 | 公式 / Mermaid 编辑窗过大、点别处不恢复、抖动 | 新增 `core/plugins/inlineBlockEditor.ts` 统一两处就地编辑层：单行型（LaTeX）宽度收窄到内容、多行型（Mermaid）限高 45vh 内部滚动，内边距 1em → 0.4em/0.6em，两态样式一致消除跳变；新增「点击块外立即退出并恢复渲染」；修正 `toggleEditMode` 先取反 `isEditing` 导致双击永远退不出编辑态 |
+| 7 | 图片管理图标挡住「译」的设置按钮 | 悬浮按钮槽位重排：模式切换 10 / 图片管理 50 /「译」90 / 齿轮 124 / 气泡 170，互不重叠；图片管理固定 slot=1，不再随「译」显隐漂移 |
+| 8 | 撤销跨文档污染 | 换文档事务加 `addToHistory:false` + `resetHistory:true`，`core/editor.ts` 据此重建 state 清空撤销栈；同文件内的模式切换/翻译回写只排除自身入历史、**不清空**历史。源码模式的 `undoStackRef` / `redoStackRef` 一并按文档重置（**v0.13.2 在此基础上补回「顺序跨文档撤销」**） |
+| 9 | 图片管理「本地文件」徽标 → 打开所在文件夹 | 徽标改为可点击按钮，`imageManager.revealTargetOf` 复用既有纯函数解析绝对路径，经 `fileService.revealInFolder` 调系统资源管理器选中文件；远程/base64 保持不可点 |
+| 10 | 图片管理弹窗动画 | 自建 `image-mgr-scrim/dialog-in/out` keyframes，遮罩移到 `::before`；「关闭」经 `closing` 状态 + 160ms 计时器平滑退场；补 `prefers-reduced-motion`（**v0.13.2 已改为精灵弹出**） |
+| 11 | 大纲拖拽发灰、看不见标题与落点 | 去掉源项双重 `opacity: .5` 淡化，改为虚线描边 + 强调底纹；新增 `DragOverlay` 实心幽灵（portal 到 body，绕开 `overflow:hidden`）；新增落点插入线与目标行高亮；`SortableContext.items` 排除折叠隐藏行；末尾落点可拖 |
+| 12 | 大纲不跟随文档滚动 | 活动标题滚出可视带时平滑滚入（`smooth` + `block:"nearest"`）；守卫：用户刚操作大纲 ~1.2s 内不打扰、折叠隐藏行不滚、已可见不滚、尊重 `prefers-reduced-motion`；监听改用 **callback ref** 挂载（标题初始为空时组件提前 return，`useEffect([])` 永远绑不上监听） |
+| 13 | 分屏滚动强绑定 | 去掉「右屏滚动回写左屏」，只保留左 → 右；右屏可自由滚动。内容重渲染后主动重同步一次（含异步渲染后补一帧）。补：新增 `topLevelBlockStartLines(markdown)` 与按块锚点对齐，不再按百分比硬绑（**双向映射见 v0.13.2**） |
+| 14 | 切换标签误报「已在其他窗口保存」 | `save()` 混用三个不同时刻的状态（闭包旧 `filePath` + 实时新内容 + 实时新标签下标），实测在切换竞态下会把 **B 的内容写进 A 文件**。入口一次性捕获 `path`，每个 `await` 后复核它仍是活动路径，写盘前后各复核一次；标签标记一律按路径定位；全局脏标记与逐标签更新解耦 |
+| 15 | 两位数有序列表序号竖排 | `.pm-block-marker::before` 绝对定位 `right:100%` 致可用宽度为 0，宽度退化为 min-content，叠加继承的 `word-break: break-word` 把「12.」拆成两行；补 `white-space: nowrap` |
+| 16 | 右键菜单缺剪贴板四件套 | 阅读模式与源码模式菜单顶部新增 剪切/复制/粘贴/粘贴为纯文本（+ 分隔线）；新增 `utils/textClipboardOps.ts`：两格式写入、先复制后删除的剪切（内容永不净丢失）、纯文本粘贴走 `pasteText` 不解析 Markdown。菜单高度估算改为按实际项数计算 |
 
 ### v0.13.0 返修第三轮（2026-10-15）
 

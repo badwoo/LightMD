@@ -13,6 +13,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createEditor } from "../core/editor";
 import type { EditorView } from "prosemirror-view";
+import {
+  getInAppBlockClipboard,
+  __resetInAppBlockClipboardForTest,
+} from "../utils/blockClipboardOps";
 
 const CODE = "const a = 1;\nconst b = 2;";
 
@@ -70,6 +74,52 @@ describe("v0.13.0 需求5：代码块复制按钮", () => {
     expect(calls[0]).toBe(CODE);
   });
 
+  /**
+   * v0.13.2 需求1：复制按钮同时写入「块载荷」。
+   *
+   * 缺陷背景（用户报告）：「点击代码块右上角快捷复制按钮，复制代码块到其他文档
+   * 没有立即渲染。」旧实现只 `writeText(裸代码)` —— 裸代码没有任何 Markdown 结构，
+   * 粘贴时被判为"不像 Markdown" → 退回字面粘贴，目标文档里只是一段普通文字。
+   * 现在系统剪贴板仍写纯代码（外部编辑器拿到干净代码），同时登记一份围栏形态的
+   * 块载荷，本应用内粘贴即可还原成代码块。
+   */
+  it("复制同时登记块载荷（围栏形态），应用内粘贴可还原结构", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn(async () => {}) },
+      configurable: true,
+    });
+    __resetInAppBlockClipboardForTest();
+    const view = mount();
+    const btn = view.dom.querySelector(".code-copy-btn") as HTMLButtonElement;
+    await btn.click();
+    const data = getInAppBlockClipboard();
+    expect(data).not.toBeNull();
+    // markdown 是围栏代码块（带语言标识）
+    expect(data!.markdown).toContain("```js");
+    expect(data!.markdown).toContain(CODE);
+    expect(data!.markdown.trimEnd().endsWith("```")).toBe(true);
+    // text/plain 仍是纯代码（外部粘贴不带围栏）
+    expect(data!.plain).toBe(CODE);
+  });
+
+  it("代码内含三反引号时围栏自动加长（不会提前闭合）", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn(async () => {}) },
+      configurable: true,
+    });
+    __resetInAppBlockClipboardForTest();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const md = "````md\n```js\nconst a = 1;\n```\n````\n";
+    const view = createEditor({ parent: host, initialContent: md }) as EditorView;
+    const btn = view.dom.querySelector(".code-copy-btn") as HTMLButtonElement;
+    await btn.click();
+    const data = getInAppBlockClipboard();
+    expect(data).not.toBeNull();
+    // 外层围栏必须长于内层最长的连续反引号（3 → 至少 4）
+    expect(data!.markdown.startsWith("````")).toBe(true);
+  });
+
   it("复制成功后加 .copied class，1.5s 后还原", async () => {
     vi.useFakeTimers();
     Object.defineProperty(navigator, "clipboard", {
@@ -79,7 +129,11 @@ describe("v0.13.0 需求5：代码块复制按钮", () => {
     const view = mount();
     const btn = view.dom.querySelector(".code-copy-btn") as HTMLButtonElement;
     btn.click();
-    // click → handleCopyClick（async）：先让 microtask 结算（.copied 在 await 之后添加）
+    // click → handleCopyClick（async）：先让 microtask 结算（.copied 在 await 之后添加）。
+    // v0.13.2 需求1 起复制改走块剪贴板（handleCopyClick → writeCodeBlockClipboard
+    // → writeBlockClipboardDetailed），await 链深了一层，需要多结算两轮。
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
     expect(btn.classList.contains("copied")).toBe(true);
     expect(btn.title.length).toBeGreaterThan(0);

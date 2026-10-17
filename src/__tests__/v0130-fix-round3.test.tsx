@@ -341,6 +341,16 @@ describe("问题9：图片管理悬浮入口随文档自动出现/消失", () =>
   const DOC_IMG = "# 图片文档\n\n![image.png](./assets/image-3.png)\n";
   const DOC_NOIMG = "# 纯文本\n\n这里没有图片。\n";
 
+  /**
+   * v0.13.2 需求4：入口组件改为**常驻挂载 + is-hidden 淡出**。
+   *
+   * 用户要求「文档中删除了所有图片，图片管理图标淡出消失，「译」图标顺滑上移补上」——
+   * 条件渲染（`{flag && <Btn/>}`）是瞬间摘除 DOM，CSS 过渡根本没机会播放。
+   * 因此判定从"元素是否存在"改为"元素是否可见"（`data-visible` + is-hidden）。
+   */
+  const btnVisible = () =>
+    document.querySelector('[data-testid="image-manager-btn"][data-visible="true"]');
+
   it("从无图文档切到有图文档 → 图标出现（旧实现不出现）", async () => {
     const { rerender } = render(
       <EditorContainer content={DOC_NOIMG} filePath="D:/x/a.md" forceUpdateKey={1} />,
@@ -348,41 +358,45 @@ describe("问题9：图片管理悬浮入口随文档自动出现/消失", () =>
     await waitFor(() => {
       expect(document.querySelector(".ProseMirror")!.textContent).toContain("这里没有图片");
     });
-    expect(document.querySelector('[data-testid="image-manager-btn"]')).toBeNull();
+    expect(btnVisible()).toBeNull();
 
     rerender(<EditorContainer content={DOC_IMG} filePath="D:/x/b.md" forceUpdateKey={2} />);
     await waitFor(() => {
       expect(document.querySelector(".ProseMirror img")).toBeTruthy();
     });
     await waitFor(() => {
-      expect(document.querySelector('[data-testid="image-manager-btn"]')).toBeTruthy();
+      expect(btnVisible()).toBeTruthy();
     });
   });
 
-  it("从有图文档切到无图文档 → 图标消失（旧实现不消失）", async () => {
+  it("从有图文档切到无图文档 → 图标淡出（旧实现不消失）", async () => {
     const { rerender } = render(
       <EditorContainer content={DOC_IMG} filePath="D:/x/b.md" forceUpdateKey={1} />,
     );
     await waitFor(() => {
-      expect(document.querySelector('[data-testid="image-manager-btn"]')).toBeTruthy();
+      expect(btnVisible()).toBeTruthy();
     });
 
     rerender(<EditorContainer content={DOC_NOIMG} filePath="D:/x/a.md" forceUpdateKey={2} />);
     await waitFor(() => {
-      expect(document.querySelector('[data-testid="image-manager-btn"]')).toBeNull();
+      expect(btnVisible()).toBeNull();
     });
+    // 常驻：元素仍在 DOM，只是切了 is-hidden（这正是"淡出"能播放的前提）
+    const btn = document.querySelector('[data-testid="image-manager-btn"]') as HTMLElement;
+    expect(btn).not.toBeNull();
+    expect(btn.classList.contains("is-hidden")).toBe(true);
   });
 
-  it("编辑时新增图片 → 图标出现；删掉 → 消失", async () => {
+  it("编辑时新增图片 → 图标出现；删掉 → 淡出", async () => {
     const { rerender } = render(
       <EditorContainer content={DOC_NOIMG} filePath="D:/x/a.md" forceUpdateKey={1} />,
     );
     await waitFor(() => {
-      expect(document.querySelector('[data-testid="image-manager-btn"]')).toBeNull();
+      expect(btnVisible()).toBeNull();
     });
     rerender(<EditorContainer content={DOC_NOIMG + "\n![n](./b.png)\n"} filePath="D:/x/a.md" forceUpdateKey={1} />);
     await waitFor(() => {
-      expect(document.querySelector('[data-testid="image-manager-btn"]')).toBeTruthy();
+      expect(btnVisible()).toBeTruthy();
     });
   });
 
@@ -395,6 +409,6 @@ describe("问题9：图片管理悬浮入口随文档自动出现/消失", () =>
       />,
     );
     await tick(200);
-    expect(document.querySelector('[data-testid="image-manager-btn"]')).toBeNull();
+    expect(btnVisible()).toBeNull();
   });
 });

@@ -172,12 +172,14 @@ describe("需求7：图片管理图标排在「译」按钮上方（槽位 + 气
     expect(body).not.toMatch(/top:\s*\d+px/);
   });
 
-  it("`.ftb-wrap`（「译」容器）用 `2 *` 公式 → 让到第 3 格（90px），不再占第 1 格", () => {
+  it("`.ftb-wrap`（「译」容器）用**动态槽位** `--ftb-slot`（需求4 起不再写死 `2 *`）", () => {
     const norm = css().replace(/\r\n/g, "\n");
-    const at = norm.indexOf("top: calc(\n    var(--float-icon-top) + 2 *");
-    expect(at, "「译」容器必须使用 `2 *` 槽位公式").toBeGreaterThanOrEqual(0);
-    // 旧写法 `+ 1 *` 必须消失（它正是与图片管理撞位的根因）
+    // v0.13.2 需求4：图片管理图标缺席时「译」要补位，故槽位由 JSX 注入的
+    // `--ftb-slot` 决定（有图片 = 1，无图片 = 0），不再是写死的 `2 *`。
+    expect(norm).toContain("var(--ftb-slot, 1)");
+    // 旧写法 `+ 1 *` / `+ 2 *` 必须消失（写死就无法补位）
     expect(norm).not.toContain("var(--float-icon-top) + 1 *");
+    expect(norm).not.toContain("var(--float-icon-top) + 2 *");
   });
 
   it("`.ftb-wrap` 不再写死 `top: 50px`（写死会与 slot=1 的图片管理入口完全重合）", () => {
@@ -195,9 +197,11 @@ describe("需求7：图片管理图标排在「译」按钮上方（槽位 + 气
     expect(body).not.toContain("+ 3 *");
   });
 
-  it("把公式代入变量后的真实几何：三图标等距、齿轮与气泡各不相交", () => {
+  it("把公式代入变量后的真实几何：两图标等距、齿轮与气泡各不相交", () => {
     // jsdom 不解析 calc()，这里按 CSS 里声明的变量值手工代入，
     // 断言"槽位序"而非像素渲染（像素只能靠实机，已在交付说明里注明）。
+    // v0.13.2 需求4：图片管理可见时「译」在 slot=1（与图片管理等距），
+    // 图片管理不可见时「译」补位到 slot=0（紧跟模式切换）。
     const TOP = 10;
     const SIZE = 34;
     const GAP = 6;
@@ -206,25 +210,31 @@ describe("需求7：图片管理图标排在「译」按钮上方（槽位 + 气
 
     const modeSwitch = { top: slotTop(0), bottom: slotTop(0) + SIZE };
     const imageMgr = { top: slotTop(1), bottom: slotTop(1) + SIZE };
-    const translate = { top: slotTop(2), bottom: slotTop(2) + SIZE };
-    // 齿轮挂在「译」容器内、紧贴按钮底部（top:34px，高 26px）
-    const gear = { top: translate.top + 34, bottom: translate.top + 34 + 26 };
+    // 有图片：图片管理占第 1 格 → 「译」在第 2 格
+    const translateWithImg = { top: slotTop(2), bottom: slotTop(2) + SIZE };
+    // 无图片：图片管理淡出，「译」补上第 1 格（用户要求"紧跟在模式切换下面"）
+    const translateNoImg = { top: slotTop(1), bottom: slotTop(1) + SIZE };
+    const gear = { top: translateWithImg.top + 34, bottom: translateWithImg.top + 34 + 26 };
     const toast = { top: slotTop(4) };
 
     expect(modeSwitch).toEqual({ top: 10, bottom: 44 });
     expect(imageMgr).toEqual({ top: 50, bottom: 84 });
-    expect(translate).toEqual({ top: 90, bottom: 124 });
+    expect(translateWithImg).toEqual({ top: 90, bottom: 124 });
+    expect(translateNoImg).toEqual({ top: 50, bottom: 84 });
     expect(gear).toEqual({ top: 124, bottom: 150 });
 
-    // 图片管理在「译」上方（用户诉求）
-    expect(imageMgr.top).toBeLessThan(translate.top);
+    // 有图片时：图片管理在「译」上方（用户诉求）
+    expect(imageMgr.top).toBeLessThan(translateWithImg.top);
+    // 无图片时：「译」恰好落在图片管理原本的位置（补位，不留空缺）
+    expect(translateNoImg.top).toBe(imageMgr.top);
     // 齿轮与图片管理不再相交（旧几何 90..124 vs 84..110 是相交的）
     expect(gear.top).toBeGreaterThanOrEqual(imageMgr.bottom);
     // 气泡避开齿轮
     expect(toast.top).toBeGreaterThanOrEqual(gear.bottom);
-    // 三个图标等距（同尺寸同间距）
+    // 槽位等距（同尺寸同间距）
     expect(imageMgr.top - modeSwitch.top).toBe(step);
-    expect(translate.top - imageMgr.top).toBe(step);
+    expect(translateWithImg.top - imageMgr.top).toBe(step);
+    expect(translateNoImg.top - modeSwitch.top).toBe(step);
   });
 
   it("JSX 传下来的 --imb-slot 是常量 1（不再跟随 translateSlotShown）", () => {
@@ -374,24 +384,33 @@ describe("需求9：点击「本地文件」徽标 → 在资源管理器中定�
   });
 });
 
-// ═════════════ 需求10：淡入淡出动画 ═════════════
+// ═════════════ 需求6（v0.13.2）：从按钮跑出来 / 跑回去 ═════════════
 
-describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
+describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画", () => {
   const css = () => SRC("components/dialogs/ImageManagerDialog.css");
 
-  it("CSS 自带**两个方向**的 keyframes（不再借 TabBar / SettingsDialog 的）", () => {
+  it("CSS 自带**两个方向**的 keyframes（scrim + genie，不再借 TabBar / SettingsDialog 的）", () => {
     const src = css();
     for (const name of [
       "image-mgr-scrim-in",
       "image-mgr-scrim-out",
-      "image-mgr-dialog-in",
-      "image-mgr-dialog-out",
+      "image-mgr-genie-in",
+      "image-mgr-genie-out",
     ]) {
       expect(src, `缺 @keyframes ${name}`).toContain(`@keyframes ${name} {`);
     }
     // 借来的旧 keyframes 必须消失，否则下次对方改名这里会静默失效
     expect(src).not.toMatch(/animation:\s*fadeIn\b/);
     expect(src).not.toMatch(/animation:\s*slideUp\b/);
+  });
+
+  it("位移由 --genie-from-x/y 驱动，transform-origin 指向按钮（--genie-origin-x/y）", () => {
+    const src = css();
+    // 起点 = 按钮中心相对面板中心的位移（面板从按钮位置出发）
+    expect(src).toContain("var(--genie-from-x, 0px)");
+    expect(src).toContain("var(--genie-from-y, -40px)");
+    // transform-origin = 按钮中心相对面板左上角
+    expect(src).toContain("transform-origin: var(--genie-origin-x, 50%) var(--genie-origin-y, 0%)");
   });
 
   it("遮罩移到独立层 ::before，overlay 本体不再有 background/animation", () => {
@@ -403,8 +422,9 @@ describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
     expect(scrim).toContain("content:");
     expect(scrim).toContain("background: rgba(0, 0, 0, 0.4)");
     expect(scrim).toContain("image-mgr-scrim-in");
-    expect(src).toContain(".image-mgr-overlay.closing::before {");
-    expect(src).toContain(".image-mgr-overlay.closing .image-mgr-dialog {");
+    // 退场走壳的 image-mgr-genie-out 类
+    expect(src).toContain(".image-mgr-genie-out .image-mgr-overlay::before {");
+    expect(src).toContain(".image-mgr-genie-out .image-mgr-dialog {");
   });
 
   it("只动 opacity / transform（不得出现 width/height/display 过渡）", () => {
@@ -412,21 +432,24 @@ describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
     const dialog = ruleBody(src, ".image-mgr-dialog");
     expect(dialog).toContain("will-change: opacity, transform");
     expect(src).not.toMatch(/transition:[^;]*\b(?:width|height|display)\b/);
-    const dialogIn = src.slice(src.indexOf("@keyframes image-mgr-dialog-in {"));
-    const inBody = dialogIn.slice(0, dialogIn.indexOf("}"));
+    const dialogIn = src.slice(src.indexOf("@keyframes image-mgr-genie-in {"));
+    const inBody = dialogIn.slice(0, dialogIn.indexOf("\n}"));
     expect(inBody).toContain("opacity");
     expect(inBody).toContain("transform");
   });
 
-  it("时长：短促的淡淡变化（遮罩 0.15s / 弹窗入 0.18s / 出 0.16s）", () => {
+  it("时长：遮罩 0.15s / 入场 0.32s / 退场 0.26s；组件常量与之一致", () => {
     const src = css();
     expect(src).toContain("image-mgr-scrim-in 0.15s");
-    expect(src).toContain("image-mgr-scrim-out 0.15s");
-    expect(src).toContain("image-mgr-dialog-in 0.18s");
-    expect(src).toContain("image-mgr-dialog-out 0.16s");
-    // 组件里的常量必须与退出动画等值（改一处要同时改另一处）
+    expect(src).toContain("image-mgr-scrim-out 0.22s");
+    expect(src).toContain("image-mgr-genie-in 0.32s");
+    expect(src).toContain("image-mgr-genie-out 0.26s");
+    // 组件里的常量必须与退场动画等值（改一处要同时改另一处）
     const tsx = SRC("components/dialogs/ImageManagerDialog.tsx");
-    expect(tsx).toContain("const IMAGE_MGR_CLOSE_MS = 160;");
+    expect(tsx).toContain("const IMAGE_MGR_CLOSE_MS = 260;");
+    // 壳的延迟卸载常量也要覆盖退场时长
+    const shell = SRC("components/dialogs/GenieDialogShell.tsx");
+    expect(shell).toContain("IMAGE_MGR_GENIE_OUT_MS = 300");
   });
 
   it("存在 prefers-reduced-motion 降级块，且同时覆盖伪元素与弹窗", () => {
@@ -439,7 +462,7 @@ describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
     expect(block).toContain("animation: none");
   });
 
-  it("点 ✕ → 弹窗**仍在 DOM** 且带 closing 类，推进 160ms 后才 onClose", () => {
+  it("点 ✕ → 弹窗**仍在 DOM** 且带 closing 类，推进 260ms 后才 onClose", () => {
     vi.useFakeTimers();
     const onClose = vi.fn();
     renderDialog({ onClose });
@@ -457,18 +480,18 @@ describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
 
     // ③ 推进常量时长 → onClose 触发（真实卸载由父组件把 open 置 false 完成）
     act(() => {
-      vi.advanceTimersByTime(160);
+      vi.advanceTimersByTime(260);
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("推进到 159ms 时仍未关闭（时长常量不能被偷偷缩短）", () => {
+  it("推进到 259ms 时仍未关闭（时长常量不能被偷偷缩短）", () => {
     vi.useFakeTimers();
     const onClose = vi.fn();
     renderDialog({ onClose });
     fireEvent.click(screen.getByLabelText("关闭"));
     act(() => {
-      vi.advanceTimersByTime(159);
+      vi.advanceTimersByTime(259);
     });
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByTestId("image-manager")).toBeTruthy();
@@ -485,7 +508,7 @@ describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
     expect(overlay.className).toContain("closing");
 
     act(() => {
-      vi.advanceTimersByTime(160);
+      vi.advanceTimersByTime(260);
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -503,7 +526,7 @@ describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
     fireEvent.click(overlay);
     expect(onClose).not.toHaveBeenCalled();
     act(() => {
-      vi.advanceTimersByTime(160);
+      vi.advanceTimersByTime(260);
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -517,7 +540,7 @@ describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
     fireEvent.click(close);
     fireEvent.click(close);
     act(() => {
-      vi.advanceTimersByTime(160);
+      vi.advanceTimersByTime(260);
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -544,5 +567,54 @@ describe("需求10：图片管理弹窗的顺滑淡入/淡出", () => {
     const body = effect.slice(0, effect.indexOf("}, [open]);"));
     expect(body).toContain("setClosing(false)");
     expect(body).toContain("closingRef.current = false");
+  });
+});
+
+// ═════════════ 需求6：延迟卸载壳 ═════════════
+
+describe("需求6：GenieDialogShell（延迟卸载 + 几何测量）", () => {
+  const shell = () => SRC("components/dialogs/GenieDialogShell.tsx");
+
+  it("关闭走延迟卸载（动画播完才卸载），不是条件渲染即刻摘除", () => {
+    const src = shell();
+    expect(src).toContain("setTimeout(");
+    expect(src).toContain("setMounted(false)");
+    expect(src).toContain("IMAGE_MGR_GENIE_OUT_MS");
+  });
+
+  it("开合各测量一次注入四个几何变量（无监听、无持续开销）", () => {
+    const src = shell();
+    for (const v of [
+      "--genie-from-x",
+      "--genie-from-y",
+      "--genie-origin-x",
+      "--genie-origin-y",
+    ]) {
+      expect(src, `缺 ${v}`).toContain(`setProperty("${v}"`);
+    }
+    // 打开时双 rAF 测量后再放行动画；关闭时 layout effect 重测
+    expect(src).toContain("requestAnimationFrame(");
+    expect(src).toContain("useLayoutEffect(");
+  });
+
+  it("三个状态类齐全：pending / in / out（pending 期间面板藏起来防首帧跳动）", () => {
+    const src = shell();
+    expect(src).toContain("image-mgr-genie-pending");
+    expect(src).toContain("image-mgr-genie-in");
+    expect(src).toContain("image-mgr-genie-out");
+    const css = SRC("components/dialogs/ImageManagerDialog.css");
+    expect(css).toMatch(/\.image-mgr-genie-pending \.image-mgr-dialog \{[\s\S]{0,80}?opacity:\s*0/);
+  });
+
+  it("锚点是图片管理按钮（测到按钮矩形才能『从按钮里跑出来』）", () => {
+    expect(shell()).toContain('[data-genie-anchor="image-manager"]');
+    // EditorContainer 给按钮包了锚点容器
+    expect(SRC("components/editor/EditorContainer.tsx")).toContain('data-genie-anchor="image-manager"');
+  });
+
+  it("App.tsx 用壳包住弹窗（不是条件渲染）", () => {
+    const app = SRC("App.tsx");
+    expect(app).toContain("<GenieDialogShell active={showImageManager}>");
+    expect(app).not.toContain("{showImageManager && (");
   });
 });

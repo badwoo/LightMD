@@ -13,6 +13,8 @@
  * 注意:本模块仅处理 PM 视图,源码模式仍走 COMMAND_SYNTAX(sourceInsertHandler)。
  */
 import type { EditorView } from "prosemirror-view";
+import type { Node as PMNode } from "prosemirror-model";
+import { TextSelection } from "prosemirror-state";
 import { lightMDSchema as schema } from "./schema";
 import { getPMCommand } from "./keymap";
 
@@ -71,6 +73,99 @@ export function nextFootnoteLabelFromText(text: string): string {
   return "1";
 }
 
+/** 列表类节点名（v0.13.2 需求2：Ctrl+T 在这些容器里要"提升当前项"） */
+const LIST_TYPES = new Set(["ordered_list", "bullet_list", "task_list"]);
+/** 列表项节点名 */
+const LIST_ITEM_TYPES = new Set(["list_item", "task_item"]);
+
+/** 取节点里第一个段落（列表项内容模型是 `paragraph block*`，首块通常是段落） */
+function firstParagraphOf(node: PMNode): PMNode | null {
+  let found: PMNode | null = null;
+  node.forEach((child) => {
+    if (found) return;
+    if (child.type.name === "paragraph") found = child;
+  });
+  return found;
+}
+
+/**
+ * v0.13.2 需求2：把光标所在的**列表项**提升为任务项，并放到该列表**之前**。
+ *
+ * ─── 缺陷背景（用户报告）───
+ * 「在阅读模式下，我在有序列表使用快捷键 Ctrl+T，想给这行加任务列表，
+ *  结果任务列表没有自动加到有序列表前，而是回车换行了。」
+ *
+ * 旧实现（`insert.taskList` 分支）只认「当前块是顶层段落/标题」：
+ * 列表项里的光标其 `parent` 仍是 paragraph，于是走 `replaceBlock` 把**列表项内的
+ * 段落**替换成 task_list —— 任务列表被塞进有序列表项内部（视觉上就是"在原来那行
+ * 下面多了一行"），而不是在有序列表之前新建一个任务列表。
+ *
+ * ─── 现在的口径（用户确认）───
+ * 「把当前行『提升』为任务项」：
+ * · 该行从有序列表里**摘出来**，作为任务项放进一个新任务列表；
+ * · 新任务列表插在**原列表之前**（用户原话"自动加到有序列表前"）；
+ * · 列表其余项原样保留（若原列表只有这一项，整表被任务列表替换）。
+ *
+ * @returns true = 已处理；false = 光标不在列表项内，交回调用方的原有分支
+ */
+function liftListItemToTaskList(view: EditorView): boolean {
+  const { state } = view;
+  const { $from } = state.selection;
+  // 从内向外找最近的列表容器（嵌套列表时取最内层，语义最直观）
+  let listDepth = -1;
+  for (let d = $from.depth; d >= 1; d--) {
+    if (LIST_TYPES.has($from.node(d).type.name)) {
+      listDepth = d;
+      break;
+    }
+  }
+  if (listDepth < 0) return false;
+  const itemDepth = listDepth + 1;
+  if (itemDepth > $from.depth) return false;
+  if (!LIST_ITEM_TYPES.has($from.node(itemDepth).type.name)) return false;
+
+  const listNode = $from.node(listDepth);
+  const listPos = $from.before(listDepth);
+  const itemPos = $from.before(itemDepth);
+  const itemNode = state.doc.nodeAt(itemPos);
+  if (!itemNode) return false;
+
+  // 任务项内容模型与 list_item 相同（`paragraph block*`），因此把**整项内容**原样搬入。
+  //
+  // ⚠️ 只搬首段会**静默丢失**该项里的第二段与嵌套子列表（v0.13.2 复审发现的
+  // 数据丢失缺陷：源码 `1. bb1\n\n   bb2\n\n2. cc` 解析出「同一 list_item 里两个
+  // 段落」，光标在 bb1 上按 Ctrl+T，旧实现只剩 `- [ ] bb1`，bb2 凭空消失）。
+  // 内容模型不兼容时（理论上不该发生）退回首段，保证命令本身不会整个失败。
+  let taskItem: PMNode;
+  try {
+    taskItem = schema.nodes.task_item.create({ checked: false }, itemNode.content);
+  } catch {
+    const para = firstParagraphOf(itemNode) ?? schema.nodes.paragraph.create();
+    taskItem = schema.nodes.task_item.create({ checked: false }, para);
+  }
+  const taskList = schema.nodes.task_list.create(null, taskItem);
+
+  const tr = state.tr;
+  try {
+    if (listNode.childCount <= 1) {
+      // 只有这一项：整表被任务列表替换（等价于"提升这一行"）
+      tr.replaceWith(listPos, listPos + listNode.nodeSize, taskList);
+    } else {
+      // 摘出该项，再把任务列表插到原列表之前
+      tr.delete(itemPos, itemPos + itemNode.nodeSize);
+      tr.insert(listPos, taskList);
+    }
+    // 光标落进新任务项的段落里（task_list +1 → task_item +1 → paragraph +1 → 文本 +1）
+    const caret = Math.min(listPos + 3, tr.doc.content.size - 1);
+    tr.setSelection(TextSelection.near(tr.doc.resolve(Math.max(1, caret))));
+  } catch {
+    return false;
+  }
+  view.dispatch(tr.scrollIntoView());
+  view.focus();
+  return true;
+}
+
 /**
  * 在阅读模式 PM 视图上执行格式/插入命令。
  * 返回是否已处理;false 时调用方可回退到对话框/其他通道。
@@ -120,6 +215,9 @@ export function runPreviewCommand(id: string, view: EditorView): boolean {
       return replaceBlock([makeTable(), para]);
     }
     case "insert.taskList": {
+      // v0.13.2 需求2：光标在列表项里 → **把当前行提升为任务项**，
+      // 新任务列表插到原列表之前（用户确认的语义）。
+      if (liftListItemToTaskList(view)) return true;
       if (parent.type.name !== "paragraph" && parent.type.name !== "heading") return false;
       // 任务项内容只能是 paragraph block*,heading 降级为空段落(与 Slash 菜单一致)
       const listContent = parent.type.name === "paragraph" ? parent : schema.nodes.paragraph.create();

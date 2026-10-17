@@ -46,6 +46,14 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useT } from "../../i18n";
 import { calculateDragTransaction } from "../../utils/outlineDrag";
+// v0.13.2 需求7b：大纲滚动位置按文档记忆
+import {
+  getOutlineScroll,
+  setOutlineScroll,
+  loadOutlineScrollSnapshot,
+} from "../../services/outlineScrollMemory";
+import { UNTITLED_PROGRESS_PREFIX } from "../../utils/tabKey";
+import { useEditorStore } from "../../stores/useEditorStore";
 // v0.13.0 需求9：大纲面板标题折叠（纯逻辑层）
 import {
   computeOutlineVisibility,
@@ -255,6 +263,25 @@ export function Outline({ editorView }: OutlineProps) {
   const listRef = useRef<HTMLElement | null>(null);
   // v0.13.1 需求12：用户最近一次主动操作大纲列表的时刻（抑制自动跟随，避免抢滚动）
   const userTouchedListAtRef = useRef(0);
+  /**
+   * v0.13.2 需求7b：当前文档键（与 fileScrollProgress 同源）。
+   * 真实文件 = 路径，临时标签 = `untitled:<id>`。
+   */
+  const docKey = useEditorStore((s) => {
+    const tab = s.openTabs[s.activeTabIdx];
+    if (!tab) return null;
+    return tab.isUntitled
+      ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? s.activeTabIdx}`
+      : tab.path || null;
+  });
+  /**
+   * v0.13.2 需求7b：恢复记忆位置的窗口期。
+   *
+   * 切回一个"读到末尾"的文档时，如果立刻让跟随逻辑生效，它会马上把大纲滚到
+   * 活动标题处 —— 用户看到的就是"每次切回来大纲都要自己滚一下"。
+   * 因此恢复后 `OUTLINE_RESTORE_GRACE_MS` 内抑制跟随，让记忆位置先稳定下来。
+   */
+  const restoreGraceUntilRef = useRef(0);
   const t = useT();
 
   // 所有模式启用拖拽（v0.3.0 修复：阅读模式下也支持大纲拖拽排序）
@@ -345,7 +372,19 @@ export function Outline({ editorView }: OutlineProps) {
             }
           }
         },
-        { rootMargin: "-10% 0px -70% 0px", threshold: 0 }
+        /**
+         * v0.13.2 需求7a：**标题进入屏幕下半部分就要跟上**。
+         *
+         * 用户报告：「当前滚动屏幕，文档中的标题要滚动到屏幕上半部分，右侧大纲栏
+         * 才能跟随滚动看到；我需要只要标题在屏幕下半部分能看到，那么右侧大纲栏
+         * 也能跟随滚动看到。」
+         *
+         * 旧 rootMargin `-10% 0px -70% 0px` 把视口裁成「上 10% ~ 下 30%」的窄带
+         * （即 y ∈ [10%, 30%] 才算"可见"）—— 标题必须爬到屏幕上方 1/3 才被认领。
+         * 现在改为「上 10% ~ 下 0%」：标题只要出现在视口里（含最底部）就认领。
+         * 上边仍留 10%，避免顶部被标题栏/工具栏遮住的那一小条被误判成"已进入"。
+         */
+        { rootMargin: "-10% 0px 0px 0px", threshold: 0 }
       );
 
       // 为每个标题元素设置 observer（不修改 DOM 属性）
@@ -599,12 +638,15 @@ export function Outline({ editorView }: OutlineProps) {
    * 2. 目标行已被折叠隐藏（`aria-hidden`）或被搜索过滤掉 → 不滚；
    * 3. 目标行**已经在大纲可视带内** → 不滚（避免每次微小变化都动）；
    * 4. 尊重 `prefers-reduced-motion`（改用 `behavior:"auto"`，大纲折叠动画已有同款先例）；
-   * 5. jsdom 没有实现 `scrollIntoView` → 先探测函数存在，避免测试环境抛错。
+   * 5. jsdom 没有实现 `scrollIntoView` → 先探测函数存在，避免测试环境抛错；
+   * 6. v0.13.2 需求7b：**刚恢复记忆位置后的宽限期内不跟随**（否则切回文档时
+   *    大纲会自己滚一下，正是用户抱怨的现象）。
    */
   useEffect(() => {
     if (!activeId) return;
     const list = listRef.current;
     if (!list) return;
+    if (Date.now() < restoreGraceUntilRef.current) return;
     if (Date.now() - userTouchedListAtRef.current < 1200) return;
     const row = list.querySelector<HTMLElement>(".outline-row.active");
     if (!row) return;
@@ -634,8 +676,14 @@ export function Outline({ editorView }: OutlineProps) {
    * （那时候根本还没有 `<nav className="outline-list">`），所以 `useEffect([])` 首次
    * 拿到的 `listRef.current` 是 null；等标题解析完、nav 真正挂载时该 effect 不会重跑
    * → 监听永远绑不上，"用户操作时不抢滚动"形同虚设（这是实测发现的问题）。
-   * callback ref 在节点挂载/卸载时都会被调用，天然与"nav 何时出现"对齐。 */
+   * callback ref 在节点挂载/卸载时都会被调用，天然与"nav 何时出现"对齐。
+   *
+   * v0.13.2 需求7b：同一处再挂**滚动位置记忆**（写入 + 切文档时恢复）。
+   * 记忆键用 ref 保存，避免 callback ref 因 docKey 变化而重新挂载节点。
+   */
   const listCleanupRef = useRef<(() => void) | null>(null);
+  const docKeyRef = useRef<string | null>(null);
+  docKeyRef.current = docKey;
   const setListRef = useCallback((el: HTMLElement | null) => {
     listRef.current = el;
     listCleanupRef.current?.();
@@ -644,16 +692,53 @@ export function Outline({ editorView }: OutlineProps) {
     const mark = () => {
       userTouchedListAtRef.current = Date.now();
     };
-    el.addEventListener("scroll", mark, { passive: true });
+    const onScroll = () => {
+      // 用户主动滚动：记时间（抑制跟随）+ 记位置（下次切回来恢复）
+      mark();
+      setOutlineScroll(docKeyRef.current, el.scrollTop);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
     el.addEventListener("wheel", mark, { passive: true });
     el.addEventListener("pointerdown", mark);
     listCleanupRef.current = () => {
-      el.removeEventListener("scroll", mark);
+      el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", mark);
       el.removeEventListener("pointerdown", mark);
     };
   }, []);
   useEffect(() => () => listCleanupRef.current?.(), []);
+
+  /**
+   * v0.13.2 需求7b：**文档切换后恢复大纲滚动位置**。
+   *
+   * 时机：`docKey` 变化 + 标题列表就绪后，双 rAF 等列表高度稳定再写 scrollTop
+   * （标题渲染前 scrollHeight 不足，直接写会被浏览器钳到 0）。
+   * 同时把 `restoreGraceUntilRef` 推到未来 —— 见该字段的注释。
+   */
+  const OUTLINE_RESTORE_GRACE_MS = 600;
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || !docKey) return;
+    const saved = getOutlineScroll(docKey);
+    if (saved === null) return;
+    restoreGraceUntilRef.current = Date.now() + OUTLINE_RESTORE_GRACE_MS;
+    // 标记"恢复中"，避免跟随逻辑在恢复的同一帧里又把它滚走
+    userTouchedListAtRef.current = Date.now();
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const el = listRef.current;
+        if (!el) return;
+        const max = Math.max(0, el.scrollHeight - el.clientHeight);
+        el.scrollTop = Math.min(saved, max);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+    // headings.length 参与依赖：标题解析完成（列表高度稳定）后才恢复
+  }, [docKey, headings.length]);
 
   // sortable items id 数组（用 pos 作为 id）
   //

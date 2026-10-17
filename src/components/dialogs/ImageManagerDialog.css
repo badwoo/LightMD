@@ -2,13 +2,15 @@
    视觉与 QuickOpenDialog / CommandPalette 同族（overlay + 圆角浮层）。
    独立文件：面板有自己的表格/页签结构，不与他人耦合。
 
-   ─── v0.13.1 需求10：进/出双向淡入淡出，动画自持 ──────────────
-   旧实现只挂了**入场**动画，而且 `fadeIn` / `slideUp` 两个 keyframes 根本不在
-   本文件里（借自 TabBar.css / SettingsDialog.css）——这种跨文件借动画一旦对方
-   改名/删除，这里只会静默失效（连报错都没有）。现在把**两个方向**的 keyframes
-   全部定义在本文件内，并补齐退场（组件侧 closing 态驱动）。
-   退场时长必须与 ImageManagerDialog.tsx 的 IMAGE_MGR_CLOSE_MS 等值：
-   动画跑完才真正 onClose() 卸载，改一处必须同时改另一处。 */
+   ─── v0.13.2 需求6：改为**底部栏搜索框同款**「从按钮跑出来 / 跑回去」──────
+   用户原话：「需求10 的图片管理弹窗特效请改为类似底部栏搜索框的特效，
+   点击图片管理图标，弹窗顺滑的从该按钮跑出来，关闭再顺滑跑回去。」
+   机制与 `SearchReplace.css` 的 search-genie-* 完全同族（延迟卸载壳在
+   `GenieDialogShell.tsx`）：
+   · `--genie-from-x/y`：面板中心相对按钮中心的位移（起点/终点）；
+   · `--genie-origin-x/y`：按钮中心相对面板左上角（transform-origin）。
+   入场：位移 + 放大松开 → 面板从按钮位置长出来；
+   退场：原路缩回按钮（先慢后快，像被吸回去），只动 transform/opacity。 */
 .image-mgr-overlay {
   position: fixed;
   inset: 0;
@@ -31,8 +33,8 @@
   animation: image-mgr-scrim-in 0.15s ease-out both;
 }
 
-.image-mgr-overlay.closing::before {
-  animation: image-mgr-scrim-out 0.15s ease-in both;
+.image-mgr-genie-out .image-mgr-overlay::before {
+  animation: image-mgr-scrim-out 0.22s ease-in both;
 }
 
 /* 遮罩 0.15s：短促、只动 opacity（淡淡的明暗变化） */
@@ -61,23 +63,56 @@
   position: relative;
   /* 全程只动 opacity/transform（合成层属性，不触发布局/重绘） */
   will-change: opacity, transform;
-  animation: image-mgr-dialog-in 0.18s ease-out both;
 }
 
-.image-mgr-overlay.closing .image-mgr-dialog {
-  animation: image-mgr-dialog-out 0.16s ease-in both;
+/* 待命态：几何变量尚未注入（挂载后 2 帧内），面板先藏起来，
+   避免 CSS 动画的首帧读到未注入的 --genie-from-* 而跳一下 */
+.image-mgr-genie-pending .image-mgr-dialog {
+  opacity: 0;
 }
 
-/* 入场 0.18s：淡淡的出现（轻微上浮 + 极轻缩放） */
-@keyframes image-mgr-dialog-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.985); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
+/* 【打开】从按钮位置长出来：起点在按钮中心、缩到 0.3 且极扁 */
+@keyframes image-mgr-genie-in {
+  from {
+    transform: translate(var(--genie-from-x, 0px), var(--genie-from-y, -40px))
+      scale(0.3, 0.18);
+    opacity: 0;
+  }
+  60% {
+    opacity: 1;
+  }
+  to {
+    transform: translate(0, 0) scale(1, 1);
+    opacity: 1;
+  }
 }
 
-/* 退场 0.16s：淡淡的消失（比入场更快、位移更小） */
-@keyframes image-mgr-dialog-out {
-  from { opacity: 1; transform: translateY(0) scale(1); }
-  to   { opacity: 0; transform: translateY(4px) scale(0.99); }
+/* 【关闭】原路缩回按钮：先慢后快（被吸回去） */
+@keyframes image-mgr-genie-out {
+  from {
+    transform: translate(0, 0) scale(1, 1);
+    opacity: 1;
+  }
+  40% {
+    opacity: 0.85;
+  }
+  to {
+    transform: translate(var(--genie-from-x, 0px), var(--genie-from-y, -40px))
+      scale(0.3, 0.12);
+    opacity: 0;
+  }
+}
+
+.image-mgr-genie-in .image-mgr-dialog {
+  transform-origin: var(--genie-origin-x, 50%) var(--genie-origin-y, 0%);
+  animation: image-mgr-genie-in 0.32s cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+.image-mgr-genie-out .image-mgr-dialog {
+  transform-origin: var(--genie-origin-x, 50%) var(--genie-origin-y, 0%);
+  animation: image-mgr-genie-out 0.26s cubic-bezier(0.32, 0, 0.67, 0) both;
+  /* 收回期间禁交互，防误点 */
+  pointer-events: none;
 }
 
 /* 尊重系统「减少动态效果」：直接呈现/消失，不做动画
@@ -85,10 +120,15 @@
    animation:none 后伪元素 opacity 回落默认值 1，遮罩直接呈现） */
 @media (prefers-reduced-motion: reduce) {
   .image-mgr-overlay::before,
-  .image-mgr-overlay.closing::before,
-  .image-mgr-dialog,
-  .image-mgr-overlay.closing .image-mgr-dialog {
+  .image-mgr-genie-out .image-mgr-overlay::before,
+  .image-mgr-genie-in .image-mgr-dialog,
+  .image-mgr-genie-out .image-mgr-dialog {
     animation: none;
+  }
+
+  .image-mgr-genie-pending .image-mgr-dialog,
+  .image-mgr-genie-out .image-mgr-dialog {
+    opacity: 0;
   }
 }
 

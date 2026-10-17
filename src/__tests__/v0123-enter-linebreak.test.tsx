@@ -238,7 +238,26 @@ describe("回车语义的作用域与守卫（零回归）", () => {
       view.state.tr.setSelection(TextSelection.create(view.state.doc, 12)),
     );
     press(view, "Enter");
-    expect(shape(view)).toBe("code_block");
+    // v0.13.2 需求9：文档**以代码块结尾**时会自动垫一个空段落（让用户能点空白
+    // 继续编辑）。这是结构补位，不是"回车拆块"——判据改为：
+    // ① 代码块仍是**一个**完整的块（没被 Enter 劈成两块）；
+    // ② 尾随的只有那个补位的空段落；
+    // ③ 序列化后 Markdown 不因它多出空行（空段落在 trailing 里被排除）。
+    expect(shape(view)).toBe("code_block,paragraph");
+    const first = view.state.doc.firstChild!;
+    expect(first.type.name).toBe("code_block");
+    // 回车在代码块内就是换行：文本末尾多一个 \n（与原生 contenteditable 一致）
+    expect(first.textContent).toBe("const a = 1\n");
+    expect(view.state.doc.child(1).content.size).toBe(0);
+    // 补位段落**不落盘**：把它摘掉后序列化结果必须完全相同
+    const withTrailing = source(view);
+    const withoutTrailing = docToMarkdown(
+      lightMDSchema.topNodeType.create(
+        view.state.doc.attrs,
+        view.state.doc.content.cut(0, view.state.doc.content.size - 2),
+      ),
+    );
+    expect(withTrailing).toBe(withoutTrailing);
   });
 });
 

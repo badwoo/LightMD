@@ -80,11 +80,15 @@ describe("v0.12.1 需求2：改标题级别后大纲层级要跟随", () => {
 
 describe("v0.12.1 需求3：文档切换时图片路径按当前文档解析", () => {
   it("EditorContainer 在解析文档前同步全局文档路径（内容与路径同源）", () => {
-    // 解析入口（markdownToDoc）之前必须有 setCurrentDocPath(filePath)
-    const idxParse = containerSrc.indexOf("const newDoc = markdownToDoc(content);");
+    // 解析入口必须是 `const newDoc = markdownToDoc(content)`。
+    // v0.13.2 需求9 起外面包了一层 `withTrailingParagraph(...)`（尾部垫段落），
+    // 因此这里只锁「newDoc 由 markdownToDoc(content) 得到」这个**意图**，
+    // 不再锁死字面量（否则实现加一层包装就误报，而行为意图其实没变）。
+    const idxParse = containerSrc.indexOf("const newDoc = ");
     const idxSync = containerSrc.indexOf('setCurrentDocPath(filePath || "")');
     expect(idxSync).toBeGreaterThan(-1);
     expect(idxParse).toBeGreaterThan(-1);
+    expect(containerSrc.slice(idxParse, idxParse + 160)).toContain("markdownToDoc(content)");
     expect(idxSync).toBeLessThan(idxParse);
   });
 

@@ -269,10 +269,13 @@ describe("需求13 · 分屏接线：先试块对齐、失败退回百分比", (
   const src = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
 
   it("左→右同步里先尝试块对齐（data-src-line 锚点）", () => {
+    // v0.13.2 需求8：块对齐改为「采集锚点集合 → 纯函数映射」两步，
+    // 属性查询与源码行估算仍在这一层（DOM 测量留在组件里）。
     expect(src).toContain('querySelectorAll<HTMLElement>("[data-src-line]")');
-    expect(src).toContain("computeBlockAlignedScrollTop({");
+    expect(src).toContain("mapSourceLineToPreviewScroll(");
     expect(src).toContain("estimateTopSourceLine({");
-    expect(src).toContain("pickAnchorIndex(lines, topLine)");
+    // 采集函数仍按 data-src-line 贴的标签建锚点集合
+    expect(src).toContain("const collectAnchors = (): PreviewAnchorSet | null =>");
   });
 
   it("块对齐不可用时**必须**退回百分比映射（增强而非替代）", () => {

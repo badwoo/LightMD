@@ -216,6 +216,22 @@ const nodeSpecs: Record<string, NodeSpec> = {
   paragraph: {
     content: "inline*",
     group: "block",
+    attrs: {
+      /**
+       * v0.13.2 需求9：**结构补位标记**（不写进 Markdown）。
+       *
+       * `trailingParagraphPlugin` 在文档以表格/代码块/图表/公式结尾时补一个空段落，
+       * 让"块之后的空白处"有可放光标的位置（否则用户点空白处没有插入符）。
+       * 该段落是编辑器为了让块后可达而加的结构，不是用户内容：
+       * - `docToMarkdown` 见到 `pad: true` 的段落直接跳过（不写进文件）；
+       * - 用户一旦在里面打字，`appendTransaction` 会把标记清掉
+       *   （见插件的 `stripPadFlagPlugin` 逻辑），此后它就是普通段落。
+       *
+       * 为什么不用"丢弃末尾空段落"：末尾空段落也可能是用户显式输入的
+       * （`v0.7.0-fix2-trailing-newline` 锁定了该往返行为），不能一刀切。
+       */
+      pad: { default: false },
+    },
     parseDOM: [{ tag: "p" }],
     toDOM(): DOMOutputSpec {
       return ["p", 0];

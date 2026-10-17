@@ -19,9 +19,21 @@ import "./FullTranslateButton.css";
 interface FullTranslateButtonProps {
   /** 触发全文翻译（运行中调用表示取消） */
   onStart: () => void;
+  /**
+   * v0.13.2 需求4：纵向槽位（0-based）。
+   *
+   * 用户要求「打开不带图片文档时『译』图标要自动补上那个空缺位置，紧跟在切换分屏
+   * 编辑图标下面，并且要有顺滑的平移动画；文档里删掉所有图片时图片管理图标淡出、
+   * 『译』顺滑上移补位」。
+   *
+   * 槽位由 EditorContainer 按「图片管理入口是否显示」实时计算：
+   * 有图片 → 1（让开图片管理）；无图片 → 0（紧跟模式切换按钮）。
+   * 默认 1 保持旧几何（AI 翻译关闭时也不会与模式切换重叠）。
+   */
+  slot?: number;
 }
 
-export function FullTranslateButton({ onStart }: FullTranslateButtonProps) {
+export function FullTranslateButton({ onStart, slot = 1 }: FullTranslateButtonProps) {
   const t = useT();
   const status = useFullTranslateStore((s) => s.status);
   const doneCount = useFullTranslateStore((s) => s.doneCount);
@@ -52,6 +64,7 @@ export function FullTranslateButton({ onStart }: FullTranslateButtonProps) {
     <div
       className="ftb-wrap"
       ref={wrapRef}
+      style={{ ["--ftb-slot" as string]: String(slot) }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >

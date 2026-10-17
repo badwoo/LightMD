@@ -88,13 +88,14 @@ export interface ImageManagerDialogProps {
 const ASSETS_DIR_NAME = "assets";
 
 /**
- * v0.13.1 需求10：关闭动画时长（毫秒）。
+ * v0.13.2 需求6：关闭动画时长（毫秒）。
  *
- * **必须与 ImageManagerDialog.css 的 image-mgr-dialog-out 时长保持一致**
- * （当前 CSS: 0.16s = 160ms）。改一处必须同时改另一处，否则会出现
- * "动画还没播完就卸载" 或 "弹窗已经不可见却还挂在 DOM 上"。
+ * 面板本体的退场动画由外层 `GenieDialogShell` 的延迟卸载驱动
+ * （`IMAGE_MGR_GENIE_OUT_MS`）。本常量保留为"面板自身需要等待多久才
+ * 让父组件把 open 置 false"的兜底口径 —— 与 CSS 的 image-mgr-genie-out
+ * （0.26s）一致。改一处必须同时改另一处。
  */
-const IMAGE_MGR_CLOSE_MS = 160;
+const IMAGE_MGR_CLOSE_MS = 260;
 
 /** 面板两个页签：文档图片 / 未引用清理 */
 type PanelTab = "doc" | "unref";
@@ -132,16 +133,20 @@ export function ImageManagerDialog({
   /** 未引用清理：勾选集合 */
   const [checkedUnref, setCheckedUnref] = useState<Set<string>>(new Set());
 
-  // ─── v0.13.1 需求10：退场动画（关闭走延迟卸载） ──────────────────────
-  /** 关闭动画播放中：overlay 切换为 closing 类，动画结束后才真正 onClose() */
+  // ─── v0.13.2 需求6：退场动画（关闭走延迟卸载） ──────────────────────
+  /** 关闭动画播放中：`onClose` 延后到动画播完再回调 */
   const [closing, setClosing] = useState(false);
   const closingRef = useRef(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
    * 统一的关闭入口：所有关闭路径（✕ / 点击遮罩 / Esc）都必须走这里，
-   * 否则会因为直接 onClose() 卸载而看不到淡出动画。
+   * 否则会因为直接 onClose() 卸载而看不到退场动画。
    * 重复调用只生效一次（closingRef 守卫，避免连点 ✕ 排队多个定时器）。
+   *
+   * v0.13.2 需求6：动画壳（`GenieDialogShell`）自己也有延迟卸载逻辑，
+   * 但本组件**仍要**延迟回调 onClose —— 两层都要"等动画播完"，
+   * 否则父组件先置 open=false 会让壳立刻进入退场而面板已被卸载。
    */
   const requestClose = useCallback(() => {
     if (closingRef.current) return;

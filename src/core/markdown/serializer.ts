@@ -62,7 +62,20 @@ export function nodeToMarkdown(node: Node): string {
  */
 export function docToMarkdown(doc: Node): string {
   const blocks: Node[] = [];
-  doc.forEach((node) => blocks.push(node));
+  doc.forEach((node) => {
+    // v0.13.2 需求9：**跳过自动补位的垫底段落**。
+    //
+    // `trailingParagraphPlugin` 会在文档以表格/代码块/图表/公式结尾时补一个空段落
+    // （否则"表格后面"没有可放光标的位置，用户点空白处没有插入符）。
+    // 它是**结构补位**、不是用户内容，因此不得写进 Markdown —— 否则每保存一次
+    // 就在文件末尾多一个空行。
+    //
+    // 为什么用标记而不是"丢弃末尾空段落"：末尾空段落也可能是**用户显式输入**的
+    // （`v0.7.0-fix2-trailing-newline` 锁定了该往返行为），不能一刀切。
+    // 只有带 `pad` 标记的才是自动补的。
+    if (node.type.name === "paragraph" && node.attrs.pad === true) return;
+    blocks.push(node);
+  });
 
   // ── B6 快路径：全部块命中且行号连续覆盖 → 原文逐字节返回 ──
   if (blocks.length > 0) {

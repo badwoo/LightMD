@@ -29,6 +29,15 @@ export interface BlockClipboardData {
   markdown: string;
   /** 该块的渲染 HTML（可选，跨应用粘贴用） */
   html?: string;
+  /**
+   * v0.13.2 需求1：写入系统剪贴板 `text/plain` 的那份文本。
+   *
+   * 大多数块的 `text/plain` 就是 markdown 本身（省略即可），但**代码块复制按钮**
+   * 需要一份「纯代码」给外部编辑器（粘进 IDE/终端不该带围栏），而应用内粘贴
+   * 又要还原成代码块。两者不同源时用本字段记录实际写入的纯文本，
+   * `inAppBlockMarkdown` 据此仍能判定"这次粘贴的就是刚才复制的那一块"。
+   */
+  plain?: string;
   /** 块在文档中的起止位置（专用格式还原用） */
   from: number;
   to: number;
@@ -53,6 +62,7 @@ export function parseBlockClipboard(
         return {
           markdown: parsed.markdown,
           html: typeof parsed.html === "string" ? parsed.html : undefined,
+          plain: typeof parsed.plain === "string" ? parsed.plain : undefined,
           from: typeof parsed.from === "number" ? parsed.from : 0,
           to: typeof parsed.to === "number" ? parsed.to : 0,
           at: typeof parsed.at === "number" ? parsed.at : 0,
@@ -187,6 +197,7 @@ export function serializeBlockClipboard(data: BlockClipboardData): string {
   return JSON.stringify({
     markdown: data.markdown,
     html: data.html,
+    plain: data.plain,
     from: data.from,
     to: data.to,
     at: data.at,

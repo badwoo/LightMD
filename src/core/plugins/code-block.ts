@@ -24,6 +24,8 @@ import { t } from "../../i18n/state";
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent } from "./blockSelection";
 // v0.13.0 需求1：右上角三点菜单（块级复制/剪切/删除/格式刷/移动）
 import { createBlockKebabButton } from "./blockKebab";
+// v0.13.2 需求1：复制按钮改走块剪贴板（纯代码给外部 + 围栏形态给应用内粘贴）
+import { writeCodeBlockClipboard } from "../../utils/blockClipboardOps";
 
 /** 行号层固定宽度（em） */
 const LINE_NUMBERS_WIDTH_EM = 3;
@@ -197,6 +199,15 @@ export class CodeBlockView implements NodeView {
    * 复制 `node.textContent`（ProseMirror 权威数据源），**不含行号**
    * （行号层是 `user-select:none` 的独立层，本就不在 textContent 中）。
    * 成功后图标短暂变 ✓（1.5s 还原）；剪贴板不可用时 toast 提示，不静默失败。
+   *
+   * ─── v0.13.2 需求1（用户报告）───
+   * 「点击代码块右上角快捷复制按钮，复制代码块到其他文档没有立即渲染。」
+   *
+   * 根因：旧实现只 `writeText(裸代码)`。裸代码没有任何 Markdown 结构，
+   * 粘贴时 `looksLikeMarkdown` 判它不像 Markdown → 退回 ProseMirror 字面粘贴，
+   * 目标文档里只是一段普通文字。现在改走 `writeCodeBlockClipboard`：
+   * 系统剪贴板仍写**纯代码**（外部编辑器/IDE 拿到的仍是干净代码），
+   * 同时写入应用内块载荷与专用 MIME（本应用内粘贴还原成代码块）。
    */
   private async handleCopyClick(): Promise<void> {
     // contentDOM 优先（实时编辑场景），否则退回 node 文本
@@ -205,15 +216,8 @@ export class CodeBlockView implements NodeView {
     const code = (contentDOMText && contentDOMText !== "\u200B")
       ? contentDOMText
       : (nodeText && nodeText !== "\u200B" ? nodeText : "");
-    let ok = false;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(code);
-        ok = true;
-      }
-    } catch {
-      ok = false;
-    }
+    const lang = this.node.attrs.language || "";
+    const ok = await writeCodeBlockClipboard(code, lang);
     if (!ok) {
       void import("../../services/notificationService").then(({ notifyWarning }) =>
         notifyWarning(t("codeblock.copyFailed")),

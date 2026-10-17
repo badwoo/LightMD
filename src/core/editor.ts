@@ -35,6 +35,8 @@ import { headingIdSyncPlugin } from "./plugins/heading-id-sync";
 import { imageLightboxPlugin } from "./plugins/image-lightbox";
 import { CodeBlockView } from "./plugins/code-block";
 import { MermaidBlockView } from "./plugins/mermaid-block";
+// v0.13.2 需求10：图片激活 + 边缘拖拽缩放 + 右上角编辑手柄
+import { ImageView } from "./plugins/image-node";
 import { MathInlineView, MathBlockView } from "./plugins/math-block";
 import { TaskItemView } from "./plugins/task-list";
 import { TableView, TableCellView } from "./plugins/table-editor";
@@ -46,6 +48,8 @@ import { createTranslateTooltipPlugin, type AiAssistTask } from "./plugins/trans
 import { createSlashCommandPlugin } from "./plugins/slash-command";
 // v0.13.0 需求10：Emoji 短码补全
 import { createEmojiCompletePlugin } from "./plugins/emoji-complete";
+// v0.13.2 需求9：文档末尾垫一个可放光标的段落（表格/代码块结尾时才能继续编辑）
+import { trailingParagraphPlugin, withTrailingParagraph } from "./plugins/trailing-paragraph";
 // v0.7.0：AI 续写幽灵文本装饰（meta 驱动，无回调依赖）
 import { aiGhostPlugin } from "./plugins/ai-ghost";
 
@@ -101,6 +105,92 @@ export function getMarkdownFromDoc(doc: PMNode): string {
 /** 清除序列化缓存（文件切换时调用） */
 export function clearSerializationCache() {
   serializationCache = null;
+}
+
+// ─── v0.13.2 需求5：跨文档保留撤销历史的存取 ─────────────────
+/**
+ * 定位 `prosemirror-history` 的插件实例。
+ *
+ * 该库**没有导出** `historyKey`（`dist/index.d.ts` 只导出命令与深度函数），
+ * 而插件 state 存放在 `state[plugin.key]`。因此按 key 前缀定位：
+ * `PluginKey` 的 key 形如 `"history$"` / `"history$1"`（重名时后缀递增），
+ * 全仓只注册一个 history 插件，故取第一个匹配即可。
+ *
+ * 注：`Plugin` 的 .d.ts 未声明 `key` 字段（运行时存在），故这里走宽松读取。
+ */
+function findHistoryPlugin(state: EditorState): { key: string } | null {
+  for (const p of state.plugins) {
+    const key = (p as unknown as { key?: unknown }).key;
+    if (typeof key === "string" && /^history\$/.test(key)) return { key };
+  }
+  return null;
+}
+
+/** 读取插件 state 字段（`state[plugin.key]`，.d.ts 未声明，故走宽松索引） */
+function readPluginField(state: EditorState, key: string): unknown {
+  return (state as unknown as Record<string, unknown>)[key];
+}
+
+/**
+ * 取出当前视图的 ProseMirror 撤销历史状态（供换文档时保存）。
+ *
+ * 返回值是 prosemirror-history 内部的 `HistoryState`（含 done / undone
+ * 两条分支），本层不解析其结构，原样交给 `services/docHistoryStore` 保管。
+ */
+export function getPmHistoryState(state: EditorState): unknown {
+  const plugin = findHistoryPlugin(state);
+  if (!plugin) return null;
+  return readPluginField(state, plugin.key) ?? null;
+}
+
+/**
+ * 把保存下来的撤销历史装回一个**新建**的 state。
+ *
+ * ⚠️ 位置敏感：只有当新文档与保存时的文档内容**逐字节一致**时才能装回，
+ * 否则历史里的 step 会作用到错误的偏移上（比丢历史严重得多）。
+ * 这条前置条件由调用方（`EditorContainer`）用内容比较保证。
+ *
+ * 实现：`EditorState.create` 之后直接覆盖 history 插件对应的 state 字段
+ * （`state[plugin.key]`）——该字段正是插件 state 的存储位置，
+ * 与 `EditorState.fromJSON` 的还原路径同一机制。
+ *
+ * @returns 装回后的 state；插件缺失 / 结构不符时原样返回（安全降级为"无历史"）
+ */
+export function withPmHistoryState(
+  base: EditorState,
+  pmHistory: unknown,
+): EditorState {
+  if (!pmHistory) return base;
+  const plugin = findHistoryPlugin(base);
+  if (!plugin) return base;
+  // 结构校验：只有真的 HistoryState（含 done / undone）才装回
+  const h = pmHistory as { done?: unknown; undone?: unknown };
+  if (!h.done || !h.undone) return base;
+  try {
+    const next = EditorState.create({
+      doc: base.doc,
+      plugins: base.plugins,
+      selection: base.selection,
+    });
+    (next as unknown as Record<string, unknown>)[plugin.key] = pmHistory;
+    return next;
+  } catch {
+    return base;
+  }
+}
+
+/** 该 state 的撤销 / 恢复深度（供跨文档顺序撤销判断"撤完了没有"） */
+export function pmHistoryDepth(state: EditorState): { undo: number; redo: number } {
+  const plugin = findHistoryPlugin(state);
+  const h = plugin
+    ? (readPluginField(state, plugin.key) as
+        | { done?: { eventCount?: number }; undone?: { eventCount?: number } }
+        | undefined)
+    : undefined;
+  return {
+    undo: Math.max(0, h?.done?.eventCount ?? 0),
+    redo: Math.max(0, h?.undone?.eventCount ?? 0),
+  };
 }
 
 export interface EditorOptions {
@@ -227,6 +317,11 @@ export function createEditor(options: EditorOptions): EditorView | null {
       ]),
     ]);
   }
+  // v0.13.2 需求9：初始文档同样要保证"末尾有可放光标的段落"。
+  // 插件（appendTransaction）只在**文档被改动**时运行，而刚打开一份
+  // "以表格结尾"的文档时还没有任何事务 —— 用户当场点表格下方空白会没有插入符。
+  // 这里在创建 state 之前就补上（pad 段落不进序列化，见 serializer）。
+  doc = withTrailingParagraph(doc);
 
   const state = EditorState.create({
     doc,
@@ -281,6 +376,9 @@ export function createEditor(options: EditorOptions): EditorView | null {
       aiGhostPlugin(aiGhostHint),
       // v0.12.0 需求11：块级鼠标拖拽移动（选中块后从左侧手柄热区拖动）
       blockDragPlugin(),
+      // v0.13.2 需求9：文档末尾永远垫一个可放光标的段落
+      // （表格/代码块/图表/公式结尾时，用户点空白处才能继续编辑）
+      trailingParagraphPlugin(),
     ],
   });
 
@@ -313,6 +411,8 @@ export function createEditor(options: EditorOptions): EditorView | null {
             math_inline: (node, view, getPos) => new MathInlineView(node, view, getPos),
             math_block: (node, view, getPos) => new MathBlockView(node, view, getPos),
             task_item: (node, view, getPos) => new TaskItemView(node, view, getPos),
+            // v0.13.2 需求10：图片（激活 / 边缘缩放 / 右上角编辑手柄）
+            image: (node, view, getPos) => new ImageView(node, view, getPos),
             table: (node, view, getPos) => new TableView(node, view, getPos),
             // F1 修复：td/th 挂轻量 NodeView，忽略拖拽时直接写 style 的 attributes
             // mutation，阻止 ProseMirror 重建单元格导致列宽丢失
@@ -375,14 +475,22 @@ export function createEditor(options: EditorOptions): EditorView | null {
       // 判据必须是 `resetHistory` 而**不是** `fileSwitch`：后者被三处共用
       // （换文档 / 阅读↔源码的整篇重解析 / 翻译回写），后两者都发生在**同一个文件**
       // 内，清掉历史会让"切个模式就丢掉全部撤销记录"，属明显的功能回归。
+      //
+      // ─── v0.13.2 需求5：resetHistory 由「清空」升级为「换栈」 ───────────
+      // 用户反馈「切回 a 文档后 a 的编辑撤不回来了」，并进一步要求跨文档**顺序**撤销。
+      // 现在：换文档事务可携带 `restoreHistory`（该文档上次离开时保存的
+      // history 插件状态），在重建 state 时**装回**它 → 切回来仍可撤销。
+      // 装回前必须由调用方保证「内容与保存时逐字节一致」（位置敏感，见
+      // `withPmHistoryState` 的注释）；不带该 meta 时行为与 v0.13.1 完全一致
+      // （历史归零），因此"撤销绝不跨文档"的数据安全边界不变。
       if (tr.getMeta("resetHistory")) {
-        view.updateState(
-          EditorState.create({
-            doc: newState.doc,
-            plugins: newState.plugins,
-            selection: newState.selection,
-          }),
-        );
+        const base = EditorState.create({
+          doc: newState.doc,
+          plugins: newState.plugins,
+          selection: newState.selection,
+        });
+        const restore = tr.getMeta("restoreHistory");
+        view.updateState(restore ? withPmHistoryState(base, restore) : base);
       }
 
       // 文件切换事务不触发 dirty 标记和序列化

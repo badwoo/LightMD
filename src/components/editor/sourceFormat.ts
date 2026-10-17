@@ -220,6 +220,64 @@ export function removeLinePrefix(text: string, cursorPos: number): FormatResult 
 export const HEADING_GHOST_TEXTS = ["标题一", "标题二", "标题三", "标题四", "标题五", "标题六"] as const;
 
 /**
+ * v0.13.2 需求2：源码模式「把当前行提升为任务项」。
+ *
+ * ─── 缺陷背景（与阅读模式同源，用户报告的是阅读模式）───
+ * 「在有序列表使用快捷键 Ctrl+T，想给这行加任务列表，结果任务列表没有自动加到
+ *  有序列表前，而是回车换行了。」
+ *
+ * 阅读模式根因在 `pmCommands.insert.taskList`（只认顶层段落）；源码模式的
+ * `COMMAND_SYNTAX["insert.taskList"]` 是 `"\n- [ ] "` —— 它只是**在光标处插入**
+ * 一个换行 + 空任务项，于是有序列表项被劈成两半、任务项落在列表内部。
+ *
+ * 现在两模式统一口径（用户确认）：当前行从原列表**摘出来**成为任务项，
+ * 新任务列表放在原列表**之前**，列表其余项保留。
+ *
+ * 只在「当前行是一个列表项的首行」时生效；其余情况返回 null，
+ * 调用方仍走原来的语法插入（在普通段落里 Ctrl+T 依旧是"新建任务项"）。
+ *
+ * @param text      整篇源码
+ * @param cursorPos 光标偏移
+ * @returns 替换整篇文本的结果；不适用时 null
+ */
+export function liftListLineToTask(text: string, cursorPos: number): FormatResult | null {
+  const lines = text.split("\n");
+  // 定位光标所在行（光标恰在行尾时仍算这一行）
+  let idx = 0;
+  let lineStart = 0;
+  while (idx < lines.length - 1 && lineStart + lines[idx].length < cursorPos) {
+    lineStart += lines[idx].length + 1;
+    idx++;
+  }
+  const line = lines[idx];
+  // 有序/无序列表项：`1. ` / `1) ` / `- ` / `* ` / `+ `，允许 0~3 空格缩进
+  const m = /^(\s{0,3})(?:\d{1,9}[.)]|[-*+])(\s+)(.*)$/.exec(line);
+  if (!m) return null;
+  // 已经是任务项 → 不接管（避免把 `- [ ]` 又提升一层）
+  if (/^\[[ xX]\](\s|$)/.test(m[3])) return null;
+  const body = m[3];
+
+  // 向上找到该列表块的起始行（连续的列表项行）
+  const isListLine = (s: string) => /^\s{0,3}(?:\d{1,9}[.)]|[-*+])\s+\S/.test(s);
+  let blockStart = idx;
+  while (blockStart > 0 && isListLine(lines[blockStart - 1])) blockStart--;
+
+  // 摘出当前行，把任务项插到列表块之前
+  const rest = [...lines.slice(0, idx), ...lines.slice(idx + 1)];
+  // 删除当前行后，块起点若在当前行之后则要左移一位
+  const insertAt = blockStart > idx ? blockStart - 1 : blockStart;
+  const taskLine = `- [ ] ${body}`;
+  const next = [...rest.slice(0, insertAt), taskLine, ...rest.slice(insertAt)];
+  const newText = next.join("\n");
+
+  // 光标落到任务项文本末尾（与"插入后继续输入"的直觉一致）
+  let caret = 0;
+  for (let i = 0; i < insertAt; i++) caret += next[i].length + 1;
+  caret += taskLine.length;
+  return { replacement: newText, cursorOffset: caret - cursorPos };
+}
+
+/**
  * 构造指定 action 的格式化结果（按钮点击路径）
  *
  * 统一入口：handleFormatAction 与右键菜单都通过此函数生成 replacement + cursorOffset。

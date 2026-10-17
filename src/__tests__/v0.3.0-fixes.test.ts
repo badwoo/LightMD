@@ -298,11 +298,24 @@ describe("问题8：阅读模式下大纲拖拽（dragEnabled = true）", () => 
     expect(src).not.toMatch(/viewMode === "edit" \|\| viewMode === "split"/);
   });
 
-  it("Outline.tsx 移除了 useEditorStore 的引用（不再订阅 viewMode）", () => {
+  it("Outline.tsx 不再订阅 viewMode（不因模式变化重渲染）", () => {
     const tsxPath = path.resolve(__dirname, "../components/editor/Outline.tsx");
     const src = fs.readFileSync(tsxPath, "utf-8");
-    // 不应再 import useEditorStore
-    expect(src).not.toMatch(/import.*useEditorStore.*from.*stores\/useEditorStore/);
+    // 原始诉求：大纲拖拽在三种模式都启用，不需要读 viewMode 来开关。
+    // v0.13.2 需求7b：为**按文档记住大纲滚动位置**而引入了 useEditorStore，
+    // 但只读「当前标签的稳定键」（path / untitled id），**不读 viewMode**，
+    // 因此不会因模式切换而重渲染 —— 原始约束仍然成立（见下一条断言）。
+    expect(src).not.toMatch(/useEditorStore\(\(s\)\s*=>\s*s\.viewMode/);
+    // 不依赖 viewMode 变量本身（整个文件不应出现该标识符）
+    expect(src).not.toMatch(/viewMode/);
+  });
+
+  it("Outline.tsx 引入 useEditorStore 仅用于取文档键（需求7b 滚动位置记忆）", () => {
+    const tsxPath = path.resolve(__dirname, "../components/editor/Outline.tsx");
+    const src = fs.readFileSync(tsxPath, "utf-8");
+    expect(src).toMatch(/import \{ useEditorStore \}/);
+    // 取的是当前标签（openTabs/activeTabIdx），不涉及 viewMode
+    expect(src).toContain("s.openTabs[s.activeTabIdx]");
   });
 });
 

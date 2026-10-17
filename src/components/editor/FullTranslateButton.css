@@ -345,12 +345,34 @@
 }
 
 /* 图片管理入口：接在第 slot 个槽位之后（v0.13.1 需求7 起固定 slot=1 → 50px，
-   即模式切换(10..44) 与「译」(90..124) 之间，三个按钮等距、不重叠）。 */
+   即模式切换(10..44) 与「译」(90..124) 之间，三个按钮等距、不重叠）。
+   v0.13.2 需求4：显隐改为**淡入淡出**（`--imb-hidden` 驱动），不再瞬间消失 ——
+   用户要求「文档中删除了所有图片，图片管理图标淡出消失，「译」图标顺滑上移补上」。
+   `top` 也要过渡：从 slot=1 淡出时同时微微上移，视觉上像"被「译」顶掉"。 */
 .image-manager-btn {
   top: calc(
     var(--float-icon-top) + var(--imb-slot, 1) *
       (var(--float-icon-size) + var(--float-icon-gap))
   );
+  transition: opacity 0.18s ease, top 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.15s ease, color 0.15s ease, transform 0.18s ease;
+}
+
+/* 淡出态：不可见、不可点、轻微缩小（配合 `pointer-events:none` 防止穿透误点） */
+.image-manager-btn.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.86);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .image-manager-btn {
+    transition: opacity 0.12s ease;
+  }
+
+  .image-manager-btn.is-hidden {
+    transform: none;
+  }
 }
 
 .mode-switch-btn:hover,
@@ -373,16 +395,26 @@
   border-radius: calc(var(--float-icon-size) / 2);
 }
 
-/* 「译」按钮所在槽位（v0.13.1 需求7：下移到第 3 格）。
-   旧值 1 格（=50px）与图片管理入口（slot 1）**完全重合**，两者 z-index:30，
-   而图片管理按钮在 DOM 中渲染更晚 → 压住「译」按钮 hover 才出现的设置齿轮
-   （齿轮从译文按钮底部伸出，占 y 84..110）。用户要求图片管理图标排到「译」上方，
-   故「译」让位到第 3 格：10 + 2×40 = 90px，齿轮随之落到 124..150，
-   与图片管理（50..84）不再相交。 */
+/* 「译」按钮所在槽位。
+   v0.13.1 需求7：下移到第 3 格（90px），让图片管理入口排在它上方。
+   v0.13.2 需求4：改为**动态槽位** `--ftb-slot`（由 JSX 按"图片管理是否显示"注入）：
+   - 有图片 → slot=1（50px，紧跟在图片管理下方）；
+   - 无图片 → slot=0（10px，紧跟模式切换按钮，补上图片管理留下的空缺）。
+   并补一条 `top` 过渡 —— 用户要求"顺滑的平移动画"，图片管理淡出时
+   「译」要**平移**上去，而不是瞬移。 */
 .ftb-wrap {
   top: calc(
-    var(--float-icon-top) + 2 * (var(--float-icon-size) + var(--float-icon-gap))
+    var(--float-icon-top) + var(--ftb-slot, 1) *
+      (var(--float-icon-size) + var(--float-icon-gap))
   );
+  transition: top 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 尊重系统「减少动态效果」：不做平移动画（直接到位） */
+@media (prefers-reduced-motion: reduce) {
+  .ftb-wrap {
+    transition: none;
+  }
 }
 
 .ftb-color-row input[type="color"] {

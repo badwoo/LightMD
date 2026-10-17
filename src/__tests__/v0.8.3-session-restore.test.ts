@@ -236,7 +236,13 @@ describe("v0.8.3 WP4：App / EditorContainer 源码接线", () => {
 
   it("需求6：关闭临时标签 / 另存为晋升 分别清理与迁移进度键", () => {
     expect(appSrc).toContain("fileScrollProgress.clear(untitledProgressKey(tab.id))");
-    expect(appSrc).toContain("fileScrollProgress.clear(closedTab.path || untitledProgressKey(closedTab.id))");
+    // 关闭标签的清理：v0.13.2 把键提成具名变量 `closedKey`（同处还要按同一键清理
+    // 大纲滚动记忆与撤销历史快照），行为不变。这里锁**意图**：用
+    // `path || untitledProgressKey(id)` 这个复合键去 clear，而不是锁单行写法。
+    expect(appSrc).toContain(
+      "const closedKey = closedTab.path || untitledProgressKey(closedTab.id)",
+    );
+    expect(appSrc).toContain("fileScrollProgress.clear(closedKey)");
     expect(appSrc).toContain("fileScrollProgress.move(untitledProgressKey(oldTab?.id), selected)");
   });
 

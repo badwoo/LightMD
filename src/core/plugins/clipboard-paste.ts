@@ -155,14 +155,20 @@ function lightmdBlockMarkdown(data: DataTransfer, text: string): string | null {
 /**
  * v0.13.1 需求1：应用内块兜底（WebView2 读不到自定义 MIME 时的同应用回退）。
  *
- * 只在 `event.clipboardData` 的 `text/plain` 与兜底载荷的 markdown **同源**时采用，
+ * 只在 `event.clipboardData` 的 `text/plain` 与兜底载荷**同源**时采用，
  * 否则宁可走普通粘贴分支——避免把上次复制、这次并未粘贴的块塞进文档。
+ *
+ * v0.13.2 需求1：同源判定要同时接受 `plain`（代码块复制按钮写进 text/plain 的
+ * 是**纯代码**，而载荷里的 `markdown` 是围栏形态）——只比对 markdown 会让
+ * 「复制代码块 → 粘贴」在同应用内失效，退回字面粘贴（正是用户报的现象）。
  */
 function inAppBlockMarkdown(text: string): string | null {
   const data = getInAppBlockClipboard();
   if (!data?.markdown) return null;
-  if (text.trim() !== data.markdown.trim()) return null;
-  return data.markdown;
+  const trimmed = text.trim();
+  if (trimmed === data.markdown.trim()) return data.markdown;
+  if (data.plain !== undefined && trimmed === data.plain.trim()) return data.markdown;
+  return null;
 }
 
 /**

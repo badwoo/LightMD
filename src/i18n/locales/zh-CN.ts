@@ -719,6 +719,9 @@ export const zhCN: Record<string, string> = {
   "imageManager.revealTip": "在资源管理器中打开该图片所在的文件夹并选中它",
   "imageManager.revealFailed": "无法在资源管理器中定位该文件",
   "imageManager.revealNoPath": "该图片没有本地文件路径（远程图片无法定位）",
+  // v0.13.2 需求10：图片右上角「编辑」手柄（点击才进入图片编辑弹窗）
+  "image.editHandle": "编辑图片（尺寸 / 说明 / 对齐）",
+  "image.resizeTip": "拖拽图片边缘可调整大小",
   // ─── 编辑器右键菜单 ────────────────────────────────────
   "menu.undo": "撤销",
   "menu.redo": "恢复",

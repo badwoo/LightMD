@@ -443,18 +443,45 @@ describe("问题6：图片管理（命令路由 + 悬浮入口）", () => {
     expect(markdownHasImage("示例 `![x](./a.png)` 结束")).toBe(false);
   });
 
-  it("悬浮入口仅在文档有图片时渲染，且槽位固定为第 1 格（「译」上方）", () => {
+  it("悬浮入口仅在文档有图片时**可见**，且槽位固定为第 1 格（「译」上方）", () => {
     const src = SRC("components/editor/EditorContainer.tsx");
-    expect(src).toContain("docHasImageFlag &&");
+    // v0.13.2 需求4：入口改为**常驻挂载 + visible 驱动淡出**（条件渲染无法播过渡动画），
+    // 因此判据从"是否渲染"改为"visible 传的是否为 docHasImageFlag"。
+    expect(src).toContain("visible={docHasImageFlag}");
     // v0.13.1 需求7：槽位从「跟随 AI 翻译是否显示」的 translateSlotShown ? 2 : 1
-    // 改为**常量 1**。旧写法在 AI 翻译开启时把图片管理放到第 2 格（90px），
-    // 正好压住「译」按钮 hover 弹出的设置齿轮；用户要求图片管理图标排到「译」上方，
-    // 而「译」自己下移到第 3 格（90px，见 FullTranslateButton.css），故此处固定 slot=1。
+    // 改为**常量 1**（图片管理始终排在第 1 格）。旧写法在 AI 翻译开启时把图片管理
+    // 放到第 2 格（90px），正好压住「译」按钮 hover 弹出的设置齿轮。
     expect(src).toContain("slot={1}");
     expect(src).not.toContain("slot={translateSlotShown ? 2 : 1}");
     // translateSlotShown 仍保留（用于「译」入口自身的渲染条件与注释说明），
     // 但**不得**再参与图片管理入口的槽位计算
     expect(src).toContain("const translateSlotShown =");
+  });
+
+  /**
+   * v0.13.2 需求4：图片管理图标缺席时，「译」图标要**补上这个空缺**。
+   *
+   * 用户要求：「打开不带图片文档时『译』图标要自动补上这个空缺位置，紧跟在切换
+   * 分屏编辑图标下面。这个向上填补要有顺滑的平移动画，这样当文档中删除了所有图片，
+   * 那么就图片管理图标淡出消失，「译」图标顺滑上移补上。」
+   */
+  it("「译」图标槽位随图片管理是否可见动态切换（0 ↔ 1）", () => {
+    const src = SRC("components/editor/EditorContainer.tsx");
+    expect(src).toContain("slot={docHasImageFlag ? 1 : 0}");
+    const css = SRC("components/editor/FullTranslateButton.css");
+    // 槽位由 --ftb-slot 驱动（不再是写死的 2*）
+    expect(css).toContain("var(--ftb-slot, 1)");
+    // 平移动画：top 有 transition
+    expect(css).toMatch(/\.ftb-wrap \{[\s\S]{0,400}?transition:\s*top/);
+  });
+
+  it("图片管理图标用 is-hidden 淡出（不是条件渲染）", () => {
+    const btn = SRC("components/editor/ImageManagerButton.tsx");
+    expect(btn).toContain("is-hidden");
+    expect(btn).toContain("visible = true");
+    const css = SRC("components/editor/FullTranslateButton.css");
+    expect(css).toMatch(/\.image-manager-btn\.is-hidden \{[\s\S]{0,200}?opacity:\s*0/);
+    expect(css).toMatch(/\.image-manager-btn\.is-hidden \{[\s\S]{0,200}?pointer-events:\s*none/);
   });
 
   it("图片管理面板的数据源按模式取（源码模式下 PM doc 是过期的）", () => {

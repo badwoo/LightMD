@@ -106,3 +106,120 @@ export function computeBlockAlignedScrollTop(args: {
   if (!Number.isFinite(next)) return previewScrollTop;
   return Math.min(Math.max(0, next), max);
 }
+
+// ─── v0.13.2 需求8：**双向映射**滚动（左右屏不共用滚动条） ─────────────────
+
+/**
+ * 右侧渲染区的"行号表 ↔ 元素"锚点结构。
+ *
+ * 由 `EditorContainer` 在贴完 `data-src-line` 后构造，纯函数层只做算术。
+ */
+export interface PreviewAnchorSet {
+  /** 升序的顶层块源码起始行（0-based） */
+  lines: number[];
+  /** 各锚点元素相对预览内容顶部的偏移（px，已扣除滚动） */
+  tops: number[];
+  /** 各锚点元素的高度（px） */
+  heights: number[];
+  /** 预览内容总高（px） */
+  totalHeight: number;
+}
+
+/**
+ * 在 `PreviewAnchorSet` 里定位"某个源码行"落在哪个块、块内比例多少。
+ *
+ * @returns `{ index, ratio }`；表为空时 null
+ */
+export function locateSourceLine(
+  set: PreviewAnchorSet,
+  line: number,
+): { index: number; ratio: number } | null {
+  const { lines } = set;
+  if (!Array.isArray(lines) || lines.length === 0) return null;
+  const idx = pickAnchorIndex(lines, line);
+  if (idx < 0) return null;
+  // 块内比例：本块起始行 → 下一块起始行
+  const startLine = lines[idx];
+  const endLine = idx + 1 < lines.length ? lines[idx + 1] : startLine + 1;
+  const span = Math.max(1, endLine - startLine);
+  const ratio = Math.min(1, Math.max(0, (line - startLine) / span));
+  return { index: idx, ratio };
+}
+
+/**
+ * v0.13.2 需求8：**左 → 右**（源码行 → 预览 scrollTop）。
+ *
+ * 用户要求：「左右两屏不是共用滚动条，而是映射关系。因为左屏的文档长度会比右屏
+ * 渲染的文档长度小，如果共用滚动条就导致左右看到的内容不一致或有偏差，
+ * 所以要实现左右两屏能联动滚动，但左右两屏看到的内容尽量能对齐。」
+ *
+ * 映射口径：源码行 → 它所属的**顶层块** → 该块在右侧的**块内比例位置**。
+ * 与百分比映射的本质差别：块内比例只在**同一个块**里线性，跨块时按块的真实高度
+ * 跳转，因此 3 行 mermaid 源码 ↔ 400px 的图也能对齐到同一个块。
+ *
+ * @returns 目标 scrollTop（已钳到 [0, maxScrollTop]）；数据不可用时 null（调用方退回百分比）
+ */
+export function mapSourceLineToPreviewScroll(
+  set: PreviewAnchorSet,
+  line: number,
+  viewportHeight: number,
+): number | null {
+  const loc = locateSourceLine(set, line);
+  if (!loc) return null;
+  const top = set.tops[loc.index];
+  const height = set.heights[loc.index];
+  if (!Number.isFinite(top) || !Number.isFinite(height)) return null;
+  // 块内比例位置对齐到视口顶部；减去一点余量让读者能看到该行的上文
+  const target = top + height * loc.ratio;
+  const max = Math.max(0, set.totalHeight - viewportHeight);
+  if (!Number.isFinite(target)) return null;
+  return Math.min(Math.max(0, target), max);
+}
+
+/**
+ * v0.13.2 需求8：**右 → 左**（预览 scrollTop → 源码行）。
+ *
+ * 找到预览视口顶部落在哪个块内、块内比例多少，反算源码行。
+ *
+ * @returns 源码行（0-based，浮点）；数据不可用时 null
+ */
+export function mapPreviewScrollToSourceLine(
+  set: PreviewAnchorSet,
+  scrollTop: number,
+): number | null {
+  const { lines, tops, heights } = set;
+  if (!Array.isArray(lines) || lines.length === 0) return null;
+  if (!Number.isFinite(scrollTop)) return null;
+  // 找"内容偏移 ≤ scrollTop 的最后一个块"（含块底边界的归属）
+  let idx = 0;
+  for (let i = 0; i < tops.length; i++) {
+    if (Number.isFinite(tops[i]) && tops[i] <= scrollTop) idx = i;
+    else break;
+  }
+  const top = tops[idx];
+  const height = heights[idx];
+  if (!Number.isFinite(top) || !Number.isFinite(height)) return null;
+  const ratio = height > 0 ? Math.min(1, Math.max(0, (scrollTop - top) / height)) : 0;
+  const startLine = lines[idx];
+  const endLine = idx + 1 < lines.length ? lines[idx + 1] : startLine + 1;
+  const span = Math.max(1, endLine - startLine);
+  return startLine + span * ratio;
+}
+
+/**
+ * v0.13.2 需求8：源码行 → 左屏 textarea 的 scrollTop（右 → 左联动的落点）。
+ *
+ * textarea 行等高等宽，行号与滚动位置在可滚动区间内线性
+ * （与 `estimateTopSourceLine` 互为逆运算）。
+ *
+ * @returns 目标 scrollTop（已钳到 [0, maxScrollTop]）；行数不可用时 null
+ */
+export function mapSourceLineToScrollTop(m: SourceViewportMetrics, line: number): number | null {
+  const total = Math.max(0, Math.floor(m.totalSourceLines));
+  if (total <= 1) return 0;
+  const max = m.scrollHeight - m.clientHeight;
+  if (!Number.isFinite(max) || max <= 0) return 0;
+  const ratio = Math.min(1, Math.max(0, line / (total - 1)));
+  if (!Number.isFinite(ratio)) return null;
+  return ratio * max;
+}

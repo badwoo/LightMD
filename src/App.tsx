@@ -42,6 +42,8 @@ import { CommandPalette } from "./components/dialogs/CommandPalette";
 import { QuickOpenDialog } from "./components/dialogs/QuickOpenDialog";
 // v0.13.0 需求11：图片管理面板（只管当前文档）
 import { ImageManagerDialog } from "./components/dialogs/ImageManagerDialog";
+// v0.13.2 需求6：图片管理弹窗「从按钮跑出来 / 跑回去」的延迟卸载壳
+import { GenieDialogShell } from "./components/dialogs/GenieDialogShell";
 // v0.13.0 返修（问题6）：源码模式下图片管理需要现场反解析当前文本
 import { markdownToDoc } from "./core/markdown/parser";
 import { flattenFileTree } from "./utils/quickOpen";
@@ -63,7 +65,17 @@ import { loadUntitledTabs, saveUntitledTabs, clearUntitledTabs, isUntitledRestor
 // v0.8.3 WP4 需求5：上次会话活跃标签的持久化（临时文件也能被正确定位）
 import { saveLastActiveTab, loadLastActiveTab, resolveLastActiveIndex, clearLastActiveTab } from "./utils/lastActiveTab";
 // v0.8.3 WP4 需求6：浏览进度的标签键（真实文件 = path，临时标签 = untitled:<id>）
-import { tabsProgressKeys, untitledProgressKey } from "./utils/tabKey";
+import { tabsProgressKeys, untitledProgressKey, UNTITLED_PROGRESS_PREFIX } from "./utils/tabKey";
+// v0.13.2 需求7b：右侧大纲滚动位置记忆（按文档键）
+import {
+  loadOutlineScrollSnapshot,
+  clearOutlineScroll,
+  clearAllOutlineScroll,
+  flushOutlineScroll,
+  hasUnsavedOutlineScroll,
+} from "./services/outlineScrollMemory";
+// v0.13.2 需求5：关闭/删除标签时丢弃它的撤销历史快照（避免无主条目累积）
+import { forgetDocHistory } from "./services/docHistoryStore";
 // v0.8.0 WP2 修复2：删除文件后按路径关闭匹配标签
 import { collectTabsToClose } from "./utils/tabCleanup";
 import { preserveEol } from "./utils/eolPreserve";
@@ -586,7 +598,13 @@ function App() {
           // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
           // v0.8.3 WP4 需求6：未落盘标签按 untitled:<id> 键清理（path 为空串，
           // 走 path 分支的 clear 会因空串被 fileScrollProgress 直接忽略）
-          fileScrollProgress.clear(closedTab.path || untitledProgressKey(closedTab.id));
+          const closedKey = closedTab.path || untitledProgressKey(closedTab.id);
+          fileScrollProgress.clear(closedKey);
+          // v0.13.2 需求7b / 需求5：关闭的标签不再需要「大纲滚动位置」与
+          // 「撤销历史快照」——一并丢弃，行为与浏览进度保持一致（重开 = 重新打开），
+          // 同时避免长时间使用后累积无主记忆。
+          clearOutlineScroll(closedKey);
+          forgetDocHistory(closedKey);
         }
       }
       const remainingTabs = useEditorStore.getState().openTabs;
@@ -809,6 +827,31 @@ function App() {
     };
   }, []);
 
+  // ─── v0.13.2 需求7b：大纲滚动位置记忆的落盘策略（与浏览进度同款） ──────
+  // 内存 Map.set 是零开销的，写 localStorage 走 400ms 防抖；这里再补两道兜底：
+  // - 5s 心跳（异常退出 / 崩溃也能保住大部分位置）；
+  // - `beforeunload` + `pagehide` 立即冲刷（正常关闭零丢失）。
+  // 没有这两道兜底时，关窗前 ≤400ms 内的最后一次大纲滚动会丢（复审发现的缺口）。
+  useEffect(() => {
+    const flush = () => {
+      if (!isUntitledRestoreEnabled()) {
+        clearAllOutlineScroll();
+        return;
+      }
+      if (!hasUnsavedOutlineScroll()) return;
+      flushOutlineScroll();
+    };
+    const timer = setInterval(flush, 5000);
+    window.addEventListener("beforeunload", flush);
+    // pagehide 覆盖 WebView2 在某些关闭路径上不派发 beforeunload 的情况
+    window.addEventListener("pagehide", flush);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("beforeunload", flush);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, []);
+
   // ─── v0.8.0 WP1：启动恢复临时标签 ──────────────────────────
   // 与 restoreRecentFiles 同一开关（loadLastFileOnStartup）；直接读 localStorage
   // 判定开关，避免 zustand persist hydration 时机问题。恢复的标签排在正式文件之前。
@@ -827,6 +870,8 @@ function App() {
     // v0.8.3 WP4 需求6：先把跨会话的浏览进度注入内存 Map，
     // 供随后的恢复流程（EditorContainer 的 forceUpdateKey 恢复 effect）消费。
     fileScrollProgress.loadSnapshot();
+    // v0.13.2 需求7b：大纲滚动位置记忆同样跨会话恢复
+    loadOutlineScrollSnapshot();
     const stored = loadUntitledTabs();
     if (stored.length === 0) return;
     const { addTab } = useEditorStore.getState();
@@ -1228,6 +1273,8 @@ function App() {
       if (mode === "session") {
         // ① 按 session.json 精确恢复本窗口的标签/打开文件夹
         fileScrollProgress.loadSnapshot();
+        // v0.13.2 需求7b：大纲滚动位置记忆同样跨会话恢复
+        loadOutlineScrollSnapshot();
         const session = await windowService.getWindowSession(boot.label);
         if (session && !cancelled) {
           await restoreFromSession(session);
@@ -2854,6 +2901,11 @@ function App() {
         // 交由 EditorContainer 的 lightmd:command 监听复用既有行首前缀移除
         // （与 Ctrl+0 同一条路径），这里直接返回避免重复处理。
         if (id === "format.paragraph") return;
+        // v0.13.2 需求2：Ctrl+T 任务列表在源码模式也要「把当前行提升为任务项」。
+        // COMMAND_SYNTAX 里它只是 `"\n- [ ] "`（在光标处插一行），落在有序列表项里
+        // 会把列表劈成两半。改由 EditorContainer 用纯函数判定并整体重写文本，
+        // 这里直接返回避免重复处理。
+        if (id === "insert.taskList") return;
         if (syntaxEntry) {
         if (sourceInsertHandler) {
           if (id === "insert.footnote") {
@@ -3396,6 +3448,36 @@ function App() {
     handleTabSwitchRef.current = handleTabSwitch;
   }, [handleTabSwitch]);
 
+  /**
+   * v0.13.2 需求5：跨文档顺序撤销 —— 切到目标文档。
+   *
+   * `EditorContainer` 的撤销路由在目标文档不是当前文档时派发本事件；
+   * 这里只做「按文档键找到标签并切过去」，撤销本身由 EditorContainer 在
+   * 新文档装载完成后执行（它持有待执行请求）。
+   *
+   * 找不到该标签（已被关闭）时 `preventDefault()`，让路由层把该文档
+   * 从账本里剔除并重新挑选目标。
+   */
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const key = (e as CustomEvent).detail?.key as string | undefined;
+      if (!key) return;
+      const st = useEditorStore.getState();
+      const idx = key.startsWith(UNTITLED_PROGRESS_PREFIX)
+        ? st.getTabById(key.slice(UNTITLED_PROGRESS_PREFIX.length))
+        : st.getTabByPath(key);
+      const tab = idx === -1 ? undefined : st.openTabs[idx];
+      if (!tab) {
+        e.preventDefault();
+        return;
+      }
+      // 走与点击标签完全相同的路径（保存当前内容 → 装载目标 → 历史装回）
+      handleTabSwitchRef.current(tab);
+    };
+    window.addEventListener("lightmd:undo-switch-doc", handler);
+    return () => window.removeEventListener("lightmd:undo-switch-doc", handler);
+  }, []);
+
   // ─── v0.8.0 WP2 修复2：文件被删除后联动关闭对应标签 ──────────
   // 旧逻辑：侧栏删除文件只 refreshTree，已打开的标签仍停留在编辑器里（幽灵标签）。
   // 此处按路径（含被删文件夹下的所有文件）关闭匹配标签，不做脏确认——文件已不存在，
@@ -3413,6 +3495,10 @@ function App() {
         // v0.8.5 需求6：最近打开为纯历史记录，文件删除后不再从 recentFiles 中移除条目；
         // 条目的失效提示由 FileTree watcher 的删除事件（markRecentStale）标记 ⚠
         fileScrollProgress.clear(p);
+        // v0.13.2 需求7b / 需求5：文件已删除 → 它的「大纲滚动位置」与「撤销历史快照」
+        // 一并丢弃（与浏览进度同一处清理，避免残留无主条目）。
+        clearOutlineScroll(p);
+        forgetDocHistory(p);
         const { tempFiles } = useFileStore.getState();
         if (tempFiles.some((f) => f.path === p)) useFileStore.getState().removeTempFile(p);
       }
@@ -3597,8 +3683,10 @@ function App() {
       )}
       {/* v0.13.0 需求11：图片管理面板（只管当前文档）。
           数据源取当前 PM doc（阅读模式）或当前源码文本反解析（源码模式由
-          handleImageRefsRewrite 内部处理，此处统一传 doc 供列表面板展示）。 */}
-      {showImageManager && (
+          handleImageRefsRewrite 内部处理，此处统一传 doc 供列表面板展示）。
+          v0.13.2 需求6：外包一层 GenieDialogShell —— 弹窗从图片管理按钮
+          「顺滑跑出来 / 顺滑跑回去」（与底部栏搜索框同一套延迟卸载机制）。 */}
+      <GenieDialogShell active={showImageManager}>
         <ImageManagerDialog
           open={showImageManager}
           doc={imageManagerDoc}
@@ -3615,7 +3703,7 @@ function App() {
           }}
           onClose={() => setShowImageManager(false)}
         />
-      )}
+      </GenieDialogShell>
       {/* v0.4.0 功能4：版本快照窗口（v0.8.0 起快捷键为 Ctrl+Alt+V） */}
       {showSnapshotDialog && snapshotFilePath && (
         <VersionSnapshotDialog
