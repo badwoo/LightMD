@@ -1,2 +1,2 @@
-0e529e749475da9a85e41277d6e4f7e30d5808f541c8ae8410e8782e34161671  LightMD_0.13.2_x64-setup.exe
-d4768e2d7435b2ac4d9c13b56683b2f0c93e47bd0c5d0cea2bb3fb2e1ea9b4cb  LightMD_0.13.2_x64_en-US.msi
+fe018774abb657afdc1cf3a109ff6a44bbfecd31c3381fa0efb7c0b443b3ee6a  LightMD_0.13.2_x64-setup.exe
+f84a6da4d9cfa5783b04c6db31f5383579fdfe7fe7f4ef817a78c4b95025b344  LightMD_0.13.2_x64_en-US.msi
