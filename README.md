@@ -393,7 +393,7 @@ npm run tauri build
 | 9 | 从 A 复制表格到新文档 B 后，光标移不到表格下面；点文档空白处也没有插入符 | 表格 / 代码块 / 公式 / Mermaid 都是 ProseMirror 的**隔离型**块，文档以它们结尾时光标无处可落 —— 这是「粘一个表格进来就再也写不了字」的真正原因，并非点击逻辑缺陷 | `paragraph` 增加结构性属性 `attrs.pad`；新增 `core/plugins/trailing-paragraph.ts`：`appendTransaction` 在文档结束于 `table / code_block / mermaid_block / math_block` 时补一个 pad 段落，段落一旦有内容就自动清掉 `pad` 标记，事务带 `addToHistory:false`（补位本身不该进撤销栈）；`withTrailingParagraph` 同时用于初始文档包装；序列化器收集块时**跳过 `pad === true` 的段落**，因此补位段落永不写进 `.md`，而用户自己打的尾随空段落（非 pad）仍照常序列化 —— v0.7.0 起的既有契约由负向测试守着 |
 | 10 | 图片功能调整：右上角小手柄进入编辑、点图片改为激活、拖边缘调大小 | 点图片直接开弹窗，导致无法选中/拖动图片，也没有任何尺寸调节入口 | 采纳「只记宽度、保持宽高比」：新增 `core/plugins/image-node.ts` 的 `ImageView` NodeView —— 右上角 `.image-node-handle` 悬停显现，点击派发 `lightmd:image-edit`（带 `{pos}`）由 `EditorContainer` 打开编辑弹窗；点图片本身改为 `NodeSelection` 激活（`view.editable === false` 时跳过，保留阅读模式点击放大的既有行为）；六向 `.image-resize-zone[data-dir]` 拖拽调大小，**只写宽度**、高度由图片自身比例决定，最小 24px，西侧方向做符号反转；拖拽过程中不写事务，`mouseup` 时一次性 `setNodeMarkup`，一次拖拽 = 一次撤销 |
 
-**实机复测返修（版本仍为 0.13.2）**：用户安装 0.13.2 后复测，7 项未达预期，逐条修复：
+**实机复测返修（版本仍为 0.13.2）**：用户安装 0.13.2 后复测，9 项未达预期，逐条修复：
 
 | # | 复测问题 | 根因 | 修复 |
 | --- | --- | --- | --- |
@@ -404,8 +404,10 @@ npm run tauri build
 | 5 | 撤销/恢复应严格按文档独立，不再跨文档 | 上一轮实现了「跨文档顺序撤销」账本，会在当前文档撤完后自动切标签去撤另一个文档 | 移除 `services/docUndoOrder.ts` 与 `lightmd:undo-switch-doc` 路由；`Ctrl+Z`/`Ctrl+Y` 回到原生 `undo`/`redo`，只作用于当前文档。保留 `docHistoryStore`：切走时保存、切回时按内容严格配对装回，各文档历史互不干扰 |
 | 6 | 点图片管理弹窗的关闭按钮报 React error #300 | `if (!open) return null;` 之后还有一个 `useMemo`。关闭时壳要挂 300ms 播退场，期间仍渲染组件 → 早退跳过 Hook → 本次 Hook 数量少于上次 | 所有 Hook 上移到早退之前，并加真实 React 渲染的「打开→关闭→再打开」回归测试 |
 | 7 | 分屏左右滚动完全不联动 | ① 浏览器对 `scrollTop=` 派发的 scroll 事件是异步的，同步执行期的 `isSyncingScrollRef` 到那时已释放 → 两屏互推（实测把左屏写成 0）；② `documentElement.getBoundingClientRect().top` 恒等于 `-scrollTop`，锚点坐标被算成 `rect.top + 2*scrollTop`，越滚越虚高，右屏直接顶到底；③ 完整重写预览会换掉 `documentElement`，缓存的旧引用写 scrollTop 无效 | 新增 `utils/splitScrollSync.ts` 的**时间窗方向锁**（发起侧 250ms 内拥有同步权，另一侧的 scroll 视为回声忽略；同侧连续滚动续期）；锚点坐标改为 `rect.top + scrollTop`；每次同步现取 `scrollingElement`；右屏同时在 `contentWindow` 与 `contentDocument` 捕获阶段监听。已在真实 Chrome 中验证双向联动，且左屏顶部标题与右屏顶部标题一致 |
+| 8 | 打开新文档编辑内容，切到其他文档再切回来，`Ctrl+Z` 不生效（撤销被清空） | 换文档 effect 在保存**离开文档**的历史之前，就把 `lastContentRef` 覆盖成了**新文档内容**；快照于是变成「新文档内容 + 旧文档 history」。切回时 `loadDocHistory` 发现内容不匹配，按安全策略丢弃快照 → 历史归零 | 把内容基线更新移到 `saveDocHistory` **之后**（保存瞬间 `lastContentRef` 仍是离开文档的内容）；新增挂载**真实 EditorContainer** 的「A 编辑 → 切 B → 切回 A → undo」集成测试，锁住该时序 |
+| 9 | 图片管理窗口不能拖拽；关闭时没有「顺滑退回图标」的动效 | ① 面板保留 `if (!open) return null;`：父组件把 open 置 false 后子组件先返回 null，`GenieDialogShell` 虽有 300ms 退场，但已没有 DOM 可动画；② 窗口本身没有拖拽实现 | 关闭立即上抛、面板在 `open=false` 期间**保持渲染**，由壳播完 `image-mgr-genie-out` 300ms 后统一卸载（真实 Chrome 验证中途 `transform` 持续缩向按钮）；标题栏支持拖拽（位移走 `left/top`，避开 genie 动画占用的 `transform`），限制在视口内，重开复位 |
 
-**测试与验证**：新增 8 个行为级测试文件（按文档独立撤销历史 / Mermaid 预览区编辑联动 / 表格后尾随段落 / 图片 NodeView 缩放 / `Ctrl+T` 列表提升 / 图片管理槽位与精灵弹窗 / 大纲跟随与滚动记忆 / 分屏双向映射）；返修后全量回归 **297 文件 / 5097 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例）；`tsc --noEmit` 零错误；`npx tauri build` 产出 MSI + NSIS，版本元数据 0.13.2（详见 `release/v0.13.2/RELEASE_NOTES_v0.13.2.md`）。分屏双向联动、Mermaid 上半区编辑与代码块 CRLF 跨文档粘贴另在**真实 Chrome** 中做了实机验证。
+**测试与验证**：新增 8 个行为级测试文件（按文档独立撤销历史 / Mermaid 预览区编辑联动 / 表格后尾随段落 / 图片 NodeView 缩放 / `Ctrl+T` 列表提升 / 图片管理槽位与精灵弹窗 / 大纲跟随与滚动记忆 / 分屏双向映射）；返修后全量回归 **297 文件 / 5099 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例）；`tsc --noEmit` 零错误；`npx tauri build` 产出 MSI + NSIS，版本元数据 0.13.2（详见 `release/v0.13.2/RELEASE_NOTES_v0.13.2.md`）。分屏双向联动、Mermaid 上半区编辑、代码块 CRLF 跨文档粘贴、图片管理拖拽与退回图标动效另在**真实 Chrome** 中做了实机验证。
 
 ### v0.13.1（2026-10-16）
 

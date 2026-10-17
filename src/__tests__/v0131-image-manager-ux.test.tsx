@@ -23,10 +23,13 @@
  * base64 / remote 保持 <span>（没有本地落点，不做成死按钮），且共用同一套
  * class 与固定宽度，行布局不因形态抖动。
  *
- * ─── 需求10：进/出双向淡入淡出 ──────────────────────────────────────
- * 旧实现 `if (!open) return null;` 让退场动画**不可能存在**。现在关闭走
- * closing 态 + IMAGE_MGR_CLOSE_MS 延迟卸载，本文件用假定时器证明：
- * 点 ✕ 之后弹窗仍在 DOM 且带 closing 类，推进 160ms 后 onClose 才被调用。
+ * ─── 需求10 / v0.13.2 返修：关闭动效 + 窗口拖拽 ─────────────────────
+ * v0.13.2 返修前：面板自己延迟 260ms 再 onClose，同时保留 `if (!open) return null;`
+ * → 父组件把 open 置 false 后子组件先返回 null，壳的退场动画没有 DOM 可播，
+ * 视觉上"窗口瞬间消失"。现在关闭**立即**上抛，面板在 open=false 期间保持渲染，
+ * 由 GenieDialogShell 播完 300ms `image-mgr-genie-out` 再统一卸载。
+ * 同时标题栏支持拖拽（left/top 位移，避开 transform 的动画占用），
+ * 并把位移限制在视口内。
  */
 import { createElement } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -438,16 +441,16 @@ describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画
     expect(inBody).toContain("transform");
   });
 
-  it("时长：遮罩 0.15s / 入场 0.32s / 退场 0.26s；组件常量与之一致", () => {
+  it("时长：遮罩 0.15s / 入场 0.32s / 退场 0.26s；壳的延迟卸载覆盖退场", () => {
     const src = css();
     expect(src).toContain("image-mgr-scrim-in 0.15s");
     expect(src).toContain("image-mgr-scrim-out 0.22s");
     expect(src).toContain("image-mgr-genie-in 0.32s");
     expect(src).toContain("image-mgr-genie-out 0.26s");
-    // 组件里的常量必须与退场动画等值（改一处要同时改另一处）
+    // v0.13.2 返修：面板不再自己延迟关闭（否则 open=false 后子组件先返回 null，
+    // 壳的退场动画没有 DOM 可播）。延迟卸载只由壳负责，且常量必须覆盖 260ms 动画。
     const tsx = SRC("components/dialogs/ImageManagerDialog.tsx");
-    expect(tsx).toContain("const IMAGE_MGR_CLOSE_MS = 260;");
-    // 壳的延迟卸载常量也要覆盖退场时长
+    expect(tsx).not.toContain("IMAGE_MGR_CLOSE_MS");
     const shell = SRC("components/dialogs/GenieDialogShell.tsx");
     expect(shell).toContain("IMAGE_MGR_GENIE_OUT_MS = 300");
   });
@@ -462,111 +465,96 @@ describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画
     expect(block).toContain("animation: none");
   });
 
-  it("点 ✕ → 弹窗**仍在 DOM** 且带 closing 类，推进 260ms 后才 onClose", () => {
-    vi.useFakeTimers();
+  it("点 ✕ → 立即把关闭意图交给父组件（退场动画由 GenieDialogShell 统一播放）", () => {
     const onClose = vi.fn();
     renderDialog({ onClose });
 
     expect(screen.getByTestId("image-manager")).toBeTruthy();
-
     fireEvent.click(screen.getByLabelText("关闭"));
 
-    // ① 立即：节点还在，overlay 已切 closing（退场动画正在播）
-    expect(screen.getByTestId("image-manager")).toBeTruthy();
-    const overlay = screen.getByTestId("image-manager").parentElement as HTMLElement;
-    expect(overlay.className).toContain("closing");
-    // ② onClose 还没被调用（动画未播完，不能提前卸载）
-    expect(onClose).not.toHaveBeenCalled();
-
-    // ③ 推进常量时长 → onClose 触发（真实卸载由父组件把 open 置 false 完成）
-    act(() => {
-      vi.advanceTimersByTime(260);
-    });
+    // v0.13.2 返修：不再自己等 260ms（那段时间画面静止，随后 open=false 让子组件
+    // 直接返回 null，壳的退场动画根本没有 DOM 可播）。现在关闭意图立即上抛，
+    // 面板保持渲染，壳负责 300ms 退场动画结束后再卸载。
     expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("推进到 259ms 时仍未关闭（时长常量不能被偷偷缩短）", () => {
-    vi.useFakeTimers();
-    const onClose = vi.fn();
-    renderDialog({ onClose });
-    fireEvent.click(screen.getByLabelText("关闭"));
-    act(() => {
-      vi.advanceTimersByTime(259);
-    });
-    expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByTestId("image-manager")).toBeTruthy();
   });
 
-  it("Esc 走同一条退场路径（不再直接 onClose 导致瞬间消失）", () => {
-    vi.useFakeTimers();
+  it("Esc 同样立即触发关闭意图（退场由壳负责）", () => {
     const onClose = vi.fn();
     renderDialog({ onClose });
 
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(onClose).not.toHaveBeenCalled();
-    const overlay = screen.getByTestId("image-manager").parentElement as HTMLElement;
-    expect(overlay.className).toContain("closing");
-
-    act(() => {
-      vi.advanceTimersByTime(260);
-    });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("点遮罩走同一条退场路径（弹窗内部点击不关闭）", () => {
-    vi.useFakeTimers();
+  it("点遮罩触发关闭；弹窗内部点击不关闭", () => {
     const onClose = vi.fn();
     renderDialog({ onClose });
     const overlay = screen.getByTestId("image-manager").parentElement as HTMLElement;
 
-    // 先点弹窗内部：不该关闭
     fireEvent.click(screen.getByTestId("image-manager"));
     expect(onClose).not.toHaveBeenCalled();
 
     fireEvent.click(overlay);
-    expect(onClose).not.toHaveBeenCalled();
-    act(() => {
-      vi.advanceTimersByTime(260);
-    });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("连点 ✕ 只排一个定时器（onClose 不得被调用两次）", () => {
-    vi.useFakeTimers();
+  it("连点 ✕ 只回调一次（closeRequestedRef 去重；重开时复位）", () => {
     const onClose = vi.fn();
     renderDialog({ onClose });
     const close = screen.getByLabelText("关闭");
     fireEvent.click(close);
     fireEvent.click(close);
     fireEvent.click(close);
-    act(() => {
-      vi.advanceTimersByTime(260);
-    });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("退场途中卸载 → 定时器被清掉，不再有卸载后的回调/状态更新", () => {
-    vi.useFakeTimers();
-    const onClose = vi.fn();
-    const { unmount } = renderDialog({ onClose });
-    fireEvent.click(screen.getByLabelText("关闭"));
-    expect(onClose).not.toHaveBeenCalled();
-
-    // 父组件直接卸载（例如切换文档）→ 必须清掉在途定时器
-    unmount();
-    act(() => {
-      vi.advanceTimersByTime(500);
-    });
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it("open 重新翻 true 时清掉退场态（否则一打开就播退场动画）", () => {
-    // 组件不自己清 closing 的话，父组件"关掉再打开"会带着 closing 类渲染
+  it("open 重新翻 true 时复位拖拽位移与关闭去重标记", () => {
     const src = SRC("components/dialogs/ImageManagerDialog.tsx");
     const effect = src.slice(src.indexOf("if (!open) return;"));
     const body = effect.slice(0, effect.indexOf("}, [open]);"));
-    expect(body).toContain("setClosing(false)");
-    expect(body).toContain("closingRef.current = false");
+    expect(body).toContain("setDragOffset({ x: 0, y: 0 })");
+    expect(body).toContain("closeRequestedRef.current = false");
+  });
+
+  /**
+   * v0.13.2 返修（用户复测）：窗口支持拖拽。
+   * jsdom 没有真实布局（rect 全 0），但拖拽逻辑只依赖 clientX/clientY 与
+   * window.innerWidth/Height，因此可以断言 inline left/top 的真实变化。
+   */
+  it("拖拽标题栏 → 面板 left/top 跟随鼠标位移", () => {
+    renderDialog();
+    const dialog = screen.getByTestId("image-manager") as HTMLElement;
+    const header = screen.getByTestId("image-manager-drag-handle");
+
+    fireEvent.mouseDown(header, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(window, { clientX: 160, clientY: 140 });
+    fireEvent.mouseUp(window);
+
+    expect(dialog.style.left).toBe("60px");
+    expect(dialog.style.top).toBe("40px");
+  });
+
+  it("点标题栏里的关闭按钮不会启动拖拽", () => {
+    renderDialog();
+    const dialog = screen.getByTestId("image-manager") as HTMLElement;
+    fireEvent.mouseDown(screen.getByLabelText("关闭"), { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(window, { clientX: 200, clientY: 200 });
+    fireEvent.mouseUp(window);
+    expect(dialog.style.left).toBe("0px");
+    expect(dialog.style.top).toBe("0px");
+  });
+
+  it("拖拽位移被限制在视口内（标题栏不会被拖出屏幕）", () => {
+    renderDialog();
+    const dialog = screen.getByTestId("image-manager") as HTMLElement;
+    const header = screen.getByTestId("image-manager-drag-handle");
+    // jsdom rect 全 0、视口 1024x768 → 最远可到 8 / 760 附近，不应出现负得离谱的值
+    fireEvent.mouseDown(header, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(window, { clientX: -100000, clientY: -100000 });
+    fireEvent.mouseUp(window);
+    expect(parseFloat(dialog.style.left)).toBeGreaterThanOrEqual(8);
+    expect(parseFloat(dialog.style.top)).toBeGreaterThanOrEqual(8);
   });
 
   /**
@@ -595,7 +583,9 @@ describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画
     expect(() =>
       rerender(createElement(ImageManagerDialog, { ...baseProps, open: false })),
     ).not.toThrow();
-    expect(container.querySelector(".image-mgr-dialog")).toBeNull();
+    // v0.13.2 返修：open=false 时**保持渲染**，让壳的 image-mgr-genie-out 有 DOM 可播；
+    // 卸载由壳在 300ms 退场结束后统一完成。
+    expect(container.querySelector(".image-mgr-dialog")).not.toBeNull();
 
     // 不卸载直接重开也要正常
     expect(() =>

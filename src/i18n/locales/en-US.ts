@@ -674,6 +674,7 @@ export const enUS: Record<string, string> = {
   "image.dropFallback": "The drop position is no longer valid; inserted at the cursor instead",
   // ─── v0.13.0 req 11: image manager (current document only) ──────────
   "imageManager.title": "Image Manager",
+  "imageManager.dragTip": "Drag the title bar to move the window",
   "imageManager.tabDoc": "Document images ({count})",
   "imageManager.tabUnref": "Unused files",
   "imageManager.colName": "Image",

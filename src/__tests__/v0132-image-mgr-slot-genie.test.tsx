@@ -433,9 +433,14 @@ describe("需求6 · 时序与 keyframes 常量对齐", () => {
     expect(IMAGE_MGR_GENIE_OUT_MS).toBeGreaterThan(260);
   });
 
-  it("弹窗自身的 IMAGE_MGR_CLOSE_MS = 260（与退场 keyframes 一致）", () => {
+  it("弹窗不再自持关闭延迟（退场由壳统一负责，避免 open=false 后无 DOM 可动画）", () => {
     const src = SRC("components/dialogs/ImageManagerDialog.tsx");
-    expect(src).toContain("const IMAGE_MGR_CLOSE_MS = 260;");
+    expect(src).not.toContain("IMAGE_MGR_CLOSE_MS");
+    // 关闭意图立即上抛
+    expect(src).toContain("onClose();");
+    // open=false 时不得再早退（否则壳的退场动画没有可动画的节点）。
+    // 只匹配**可执行行**，注释里提到旧实现不算。
+    expect(src).not.toMatch(/^\s*if \(!open\) return null;/m);
   });
 
   it("reduced-motion：genie 入场/退场与遮罩动画全部关闭", () => {

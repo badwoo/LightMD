@@ -26,11 +26,28 @@
  * 挂载**真实** `createEditor`（真实插件流水线，含 history 与新的 reset 逻辑），
  * 用真实的撤销命令驱动，断言 doc 的**文本内容**而不是源码字符串。
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { undo, redo, undoDepth } from "prosemirror-history";
 import { TextSelection } from "prosemirror-state";
+import type { EditorView } from "prosemirror-view";
+import { createElement } from "react";
+import { render, cleanup, waitFor } from "@testing-library/react";
 import { createEditor } from "../core/editor";
 import { markdownToDoc } from "../core/markdown/parser";
+import { EditorContainer } from "../components/editor/EditorContainer";
+import { useEditorStore } from "../stores/useEditorStore";
+
+/** 完整 Tauri 运行时桩（EditorContainer 挂载时会注册窗口/事件服务） */
+function installTauriStub() {
+  (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: "main" } },
+    transformCallback: () => 0,
+    invoke: async () => 0,
+    unregisterListener: async () => {},
+    convertFileSrc: (p: string) => `asset://localhost/${p}`,
+    plugins: {},
+  };
+}
 
 /** 挂载真实编辑器 */
 function mount(content: string) {
@@ -71,7 +88,15 @@ function typeAtEnd(view: import("prosemirror-view").EditorView, text: string) {
 const A_DOC = "AAA_original\n";
 const B_DOC = "BBB_original\n";
 
+beforeEach(() => {
+  installTauriStub();
+  localStorage.clear();
+  useEditorStore.setState({ openTabs: [], activeTabIdx: 0, viewMode: "preview" });
+});
+
 afterEach(() => {
+  cleanup();
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   document.body.innerHTML = "";
 });
 
@@ -178,5 +203,86 @@ describe("v0.13.1 需求8：换文档后撤销不得回到上一个文档", () =
 
     host.remove();
     view.destroy();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// v0.13.2 返修（用户复测）：新文档切走再切回，Ctrl+Z 必须仍可用
+// ══════════════════════════════════════════════════════════════════════
+//
+// 旧实现缺陷（真实组件链路，纯 store 测试测不到）：
+// 文件切换 effect 先执行 `lastContentRef.current = content`（**新文档**内容），
+// 再用 `lastContentRef.current` 作为快照 content 保存离开文档的 history ——
+// 快照变成「新文档内容 + 旧文档历史」。切回旧文档时 content 与快照不一致，
+// `loadDocHistory` 按安全策略丢弃快照 → 撤销历史归零（Ctrl+Z 没反应）。
+// 这里挂**真实 EditorContainer**，走「编辑 → 切标签 → 切回 → undo」全链路。
+describe("v0.13.2 返修：EditorContainer 真实换文档链路下撤销历史不丢", () => {
+  const A_PATH = "D:/docs/per-doc-a.md";
+  const B_PATH = "D:/docs/per-doc-b.md";
+
+  function setTabs(active: 0 | 1) {
+    useEditorStore.setState({
+      openTabs: [
+        { path: A_PATH, name: "per-doc-a.md" },
+        { path: B_PATH, name: "per-doc-b.md" },
+      ],
+      activeTabIdx: active,
+      viewMode: "preview",
+    });
+  }
+
+  it("A 编辑 → 切到 B → 切回 A：撤销仍能撤掉 A 的编辑", async () => {
+    setTabs(0);
+    let view: EditorView | null = null;
+    let emitted = "";
+    const onReady = (v: EditorView) => { view = v; };
+    const onContentChange = (md: string) => { emitted = md; };
+
+    const { rerender } = render(
+      createElement(EditorContainer, {
+        content: "# A\n\n原始内容\n",
+        filePath: A_PATH,
+        forceUpdateKey: 1,
+        onEditorReady: onReady,
+        onContentChange,
+      }),
+    );
+    await waitFor(() => expect(view).not.toBeNull());
+
+    // 在 A 里做一次真实编辑（PM 事务 → onDocChange → onContentChange）
+    view!.dispatch(view!.state.tr.insertText("EDIT", view!.state.doc.content.size - 1));
+    await waitFor(() => expect(emitted).toContain("EDIT"));
+    const aEdited = emitted;
+
+    // 切到 B（forceUpdateKey 必须递增：App 的每条切换路径都会 +1）
+    setTabs(1);
+    rerender(
+      createElement(EditorContainer, {
+        content: "# B\n\n另一个文档\n",
+        filePath: B_PATH,
+        forceUpdateKey: 2,
+        onEditorReady: onReady,
+        onContentChange,
+      }),
+    );
+    await waitFor(() => expect(view!.state.doc.textContent).toContain("另一个文档"));
+
+    // 切回 A：使用 App 实际会存下的 A 编辑后内容
+    setTabs(0);
+    rerender(
+      createElement(EditorContainer, {
+        content: aEdited,
+        filePath: A_PATH,
+        forceUpdateKey: 3,
+        onEditorReady: onReady,
+        onContentChange,
+      }),
+    );
+    await waitFor(() => expect(view!.state.doc.textContent).toContain("EDIT"));
+
+    // 核心断言：历史必须被装回，Ctrl+Z 能真正撤销
+    expect(undoDepth(view!.state)).toBeGreaterThan(0);
+    undo(view!.state, view!.dispatch);
+    expect(view!.state.doc.textContent).not.toContain("EDIT");
   });
 });

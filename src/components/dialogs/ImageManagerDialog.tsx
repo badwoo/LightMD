@@ -33,6 +33,7 @@
  *   本组件不做写盘，因此不存在未登记的写入路径。
  */
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Node } from "prosemirror-model";
 import { useT } from "../../i18n";
 import { notifyError } from "../../services/notificationService";
@@ -88,14 +89,10 @@ export interface ImageManagerDialogProps {
 const ASSETS_DIR_NAME = "assets";
 
 /**
- * v0.13.2 需求6：关闭动画时长（毫秒）。
- *
- * 面板本体的退场动画由外层 `GenieDialogShell` 的延迟卸载驱动
- * （`IMAGE_MGR_GENIE_OUT_MS`）。本常量保留为"面板自身需要等待多久才
- * 让父组件把 open 置 false"的兜底口径 —— 与 CSS 的 image-mgr-genie-out
- * （0.26s）一致。改一处必须同时改另一处。
+ * v0.13.2 返修（用户复测）：拖拽窗口时保留的最小视口边距（px）。
+ * 避免把标题栏拖出屏幕后无法再拖动/关闭。
  */
-const IMAGE_MGR_CLOSE_MS = 260;
+const DRAG_VIEWPORT_MARGIN = 8;
 
 /** 面板两个页签：文档图片 / 未引用清理 */
 type PanelTab = "doc" | "unref";
@@ -133,39 +130,74 @@ export function ImageManagerDialog({
   /** 未引用清理：勾选集合 */
   const [checkedUnref, setCheckedUnref] = useState<Set<string>>(new Set());
 
-  // ─── v0.13.2 需求6：退场动画（关闭走延迟卸载） ──────────────────────
-  /** 关闭动画播放中：`onClose` 延后到动画播完再回调 */
-  const [closing, setClosing] = useState(false);
-  const closingRef = useRef(false);
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ─── v0.13.2 返修：窗口拖拽 + 关闭交给动画壳 ─────────────────────
+  /**
+   * 拖拽产生的位移（px）。通过 dialog 的 `left/top` 应用（**不用 transform**：
+   * transform 已被 genie 入场/退场动画占用，`animation-fill-mode: both` 会在动画
+   * 结束后覆盖普通 transform，拖拽就会失效）。
+   */
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const dialogRef = useRef<HTMLDivElement>(null);
+  /** 关闭请求去重（连点 ✕ / 遮罩+Esc 同时到达时只回调一次） */
+  const closeRequestedRef = useRef(false);
 
   /**
-   * 统一的关闭入口：所有关闭路径（✕ / 点击遮罩 / Esc）都必须走这里，
-   * 否则会因为直接 onClose() 卸载而看不到退场动画。
-   * 重复调用只生效一次（closingRef 守卫，避免连点 ✕ 排队多个定时器）。
+   * v0.13.2 返修（用户复测）：「关闭窗口要顺滑回到图标位置」。
    *
-   * v0.13.2 需求6：动画壳（`GenieDialogShell`）自己也有延迟卸载逻辑，
-   * 但本组件**仍要**延迟回调 onClose —— 两层都要"等动画播完"，
-   * 否则父组件先置 open=false 会让壳立刻进入退场而面板已被卸载。
+   * 旧实现让本组件自己等 260ms 再调 `onClose`，同时又保留 `if (!open) return null;`
+   * ——父组件把 open 置 false 后，`GenieDialogShell` 虽然还挂 300ms 播退场，
+   * 但**子组件已经返回 null**，画面上没有任何东西可动画，看起来就是"瞬间消失"。
+   *
+   * 现在：关闭立即回调父组件；面板在 `open=false` 时仍渲染（壳负责在 300ms 退场
+   * 动画结束后连同子组件一起卸载），`image-mgr-genie-out` 才有真实的 DOM 可缩回按钮。
    */
   const requestClose = useCallback(() => {
-    if (closingRef.current) return;
-    closingRef.current = true;
-    setClosing(true);
-    closeTimerRef.current = setTimeout(() => {
-      closeTimerRef.current = null;
-      onClose();
-    }, IMAGE_MGR_CLOSE_MS);
+    if (closeRequestedRef.current) return;
+    closeRequestedRef.current = true;
+    onClose();
   }, [onClose]);
 
-  // 卸载时清掉在途定时器（父组件也可能直接卸载本弹窗）：
-  // 既避免定时器泄漏，也保证不会在卸载后再 setState / 调 onClose。
-  useEffect(
-    () => () => {
-      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-    },
-    [],
-  );
+  /**
+   * 从标题栏拖动窗口。
+   *
+   * 边界：以**未拖拽时**的面板矩形为基准，把允许的位移限制在视口内
+   * （四周留 `DRAG_VIEWPORT_MARGIN`），避免标题栏被拖出屏幕后再也抓不到。
+   */
+  const handleHeaderMouseDown = useCallback((e: ReactMouseEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    // 标题栏里的关闭按钮等交互控件不触发拖拽
+    if (target?.closest("button, input, a, select, textarea")) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    e.preventDefault();
+    const rect = dialog.getBoundingClientRect();
+    // 基准矩形 = 当前矩形减去已有位移
+    const baseLeft = rect.left - dragOffset.x;
+    const baseTop = rect.top - dragOffset.y;
+    const minX = DRAG_VIEWPORT_MARGIN - baseLeft;
+    const maxX = window.innerWidth - DRAG_VIEWPORT_MARGIN - (baseLeft + rect.width);
+    const minY = DRAG_VIEWPORT_MARGIN - baseTop;
+    const maxY = window.innerHeight - DRAG_VIEWPORT_MARGIN - (baseTop + rect.height);
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startOffset = { ...dragOffset };
+    const clamp = (v: number, min: number, max: number) =>
+      Math.min(Math.max(v, min), Math.max(min, max));
+
+    const onMove = (ev: MouseEvent) => {
+      setDragOffset({
+        x: clamp(startOffset.x + (ev.clientX - startX), minX, maxX),
+        y: clamp(startOffset.y + (ev.clientY - startY), minY, maxY),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [dragOffset]);
 
   // ⑪⑫：一次出现一行，按文档顺序（不再是按 src 合并的列表）
   const docImages = useMemo<DocImage[]>(
@@ -202,10 +234,9 @@ export function ImageManagerDialog({
     setMessage("");
     setRenameDraft({});
     setCheckedUnref(new Set());
-    // v0.13.1 需求10：open 翻 true 时清掉退场态，否则"关掉又立刻打开"
-    // 会带着 closing 类渲染（弹窗一出现就播退场动画然后自己消失）。
-    setClosing(false);
-    closingRef.current = false;
+    // 每次打开回到居中位置（不带上次拖拽的偏移），并重置关闭去重标记
+    setDragOffset({ x: 0, y: 0 });
+    closeRequestedRef.current = false;
   }, [open]);
 
   useEffect(() => {
@@ -226,24 +257,21 @@ export function ImageManagerDialog({
   }, [open, requestClose]);
 
   /**
-   * v0.13.2 返修（需求6）：**所有 Hook 必须在早退之前**。
+   * v0.13.2 返修：**本组件不再用 `if (!open) return null;` 自行卸载**。
    *
-   * 缺陷背景（用户报告）：点击图片管理弹窗的关闭按钮报 React error #300
-   * （Rendered fewer hooks than expected）。
+   * 历史缺陷一：早退放在一个 `useMemo` 之前 → 关闭时 Hook 数量变化，React #300。
+   * 历史缺陷二（用户复测）：即便 Hook 顺序修好，早退也让关闭瞬间**整棵面板消失**；
+   * `GenieDialogShell` 虽然还挂 300ms 播 `image-mgr-genie-out`，但没有 DOM 可动画
+   * → 看起来"没有关闭动效、窗口瞬间没了"。
    *
-   * 根因：`if (!open) return null;` 之后还有一个 `useMemo(findUnreferenced)`。
-   * 关闭时 App 把 `open` 置 false，但 `GenieDialogShell` 还要挂 300ms 播退场动画，
-   * 期间仍会渲染本组件 → 走到早退、跳过 useMemo → 本次渲染的 Hook 数量比上次少，
-   * React 直接抛 #300，界面被错误边界接管。
-   *
-   * 修法：把用到的 useMemo 全部上移到早退之前（早退只决定"渲染什么"，不决定"Hook 数量"）。
+   * 现在的挂载由壳统一管理：`active=false` 时壳仍渲染 children 300ms 播放退场，
+   * 结束后才卸载；因此本组件在 `open=false` 期间**继续渲染**（内部副作用由 `open` 控制）。
+   * `open` 只负责"重置状态 / 注册 Esc / 加载页签数据"，不决定是否渲染。
    */
   const unreferenced = useMemo(
     () => findUnreferenced(assetsFiles, docImages),
     [assetsFiles, docImages],
   );
-
-  if (!open) return null;
 
   /** 当前 assets 目录中的文件名（迁移/重命名冲突消解用） */
   const listAssetsNames = async (assetsDir: string): Promise<string[]> =>
@@ -419,17 +447,22 @@ export function ImageManagerDialog({
   };
 
   return (
-    // v0.13.1 需求10：closing 类驱动退场动画；两条关闭路径都走 requestClose
-    <div
-      className={`image-mgr-overlay ${closing ? "closing" : ""}`}
-      onClick={requestClose}
-    >
+    // 退场动画由 GenieDialogShell 的 image-mgr-genie-out 驱动（本组件保持渲染）
+    <div className="image-mgr-overlay" onClick={requestClose}>
       <div
+        ref={dialogRef}
         className="image-mgr-dialog"
+        // 拖拽位移用 left/top（transform 留给 genie 动画，避免被 fill-mode 覆盖）
+        style={{ left: `${dragOffset.x}px`, top: `${dragOffset.y}px` }}
         onClick={(e) => e.stopPropagation()}
         data-testid="image-manager"
       >
-        <div className="image-mgr-header">
+        <div
+          className="image-mgr-header"
+          title={t("imageManager.dragTip")}
+          onMouseDown={handleHeaderMouseDown}
+          data-testid="image-manager-drag-handle"
+        >
           <h3>{t("imageManager.title")}</h3>
           <button
             type="button"

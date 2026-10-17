@@ -1286,7 +1286,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const forceUpdate = forceUpdateKey !== lastForceUpdateKeyRef.current;
     if (!view || content === undefined) return;
     if (!forceUpdate && content === lastContentRef.current) return;
-    lastContentRef.current = content;
+    // ⚠️ v0.13.2 返修（用户复测：新文档切走再切回 Ctrl+Z 失效）：
+    // `lastContentRef` 是**离开文档**的历史基线，必须在保存历史之后再改成新文档内容。
+    // 旧实现先执行 `lastContentRef.current = content`（新文档内容），再到下面用
+    // `lastContentRef.current` 作为快照 content 保存 —— 结果快照里存的是
+    // 「新文档的内容 + 旧文档的 history」。切回旧文档时 content 与快照 content
+    // 必然不一致 → `loadDocHistory` 按安全策略丢弃快照 → 撤销历史归零（Ctrl+Z 无效）。
+    // 新建的空文档尤其明显（它的编辑历史刚建立就丢），因此这里只更新"上一次的
+    // forceUpdateKey"，基线留到 saveDocHistory 之后再更新。
     lastForceUpdateKeyRef.current = forceUpdateKey;
     if (forceUpdate) lastSyncDiskRef.current = content;
     // 文件切换时清除序列化缓存，因为 doc 对象会变化
@@ -1316,12 +1323,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const leavingKey = docKeyRef.current;
       if (leavingKey) {
         saveDocHistory(leavingKey, {
+          // 此时 lastContentRef 仍是**离开文档**的内容（基线更新已移到本块之后）
           content: lastContentRef.current,
           pmHistory: getPmHistoryState(view.state),
           sourceUndo: [...undoStackRef.current],
           sourceRedo: [...redoStackRef.current],
         });
       }
+      // 保存完离开文档的历史，才能把内容基线切到新文档
+      lastContentRef.current = content;
       // v0.13.2 需求9：换过来的文档若是"以表格/代码块结尾"，也要补一个可放光标的
       // 空段落（pad 段落不进序列化，见 core/plugins/trailing-paragraph.ts）。
       // 插件的 appendTransaction 只在文档被改动时跑，而"整篇替换"这一条事务本身

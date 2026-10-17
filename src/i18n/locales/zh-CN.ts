@@ -681,6 +681,7 @@ export const zhCN: Record<string, string> = {
   "image.dropFallback": "图片原位置已失效，已插入到光标处",
   // ─── v0.13.0 需求11：图片管理面板（只管当前文档）──────────
   "imageManager.title": "图片管理",
+  "imageManager.dragTip": "拖动标题栏移动窗口",
   "imageManager.tabDoc": "文档图片（{count}）",
   "imageManager.tabUnref": "未引用清理",
   "imageManager.colName": "图片",
