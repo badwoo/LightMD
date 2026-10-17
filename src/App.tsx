@@ -3448,35 +3448,8 @@ function App() {
     handleTabSwitchRef.current = handleTabSwitch;
   }, [handleTabSwitch]);
 
-  /**
-   * v0.13.2 需求5：跨文档顺序撤销 —— 切到目标文档。
-   *
-   * `EditorContainer` 的撤销路由在目标文档不是当前文档时派发本事件；
-   * 这里只做「按文档键找到标签并切过去」，撤销本身由 EditorContainer 在
-   * 新文档装载完成后执行（它持有待执行请求）。
-   *
-   * 找不到该标签（已被关闭）时 `preventDefault()`，让路由层把该文档
-   * 从账本里剔除并重新挑选目标。
-   */
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const key = (e as CustomEvent).detail?.key as string | undefined;
-      if (!key) return;
-      const st = useEditorStore.getState();
-      const idx = key.startsWith(UNTITLED_PROGRESS_PREFIX)
-        ? st.getTabById(key.slice(UNTITLED_PROGRESS_PREFIX.length))
-        : st.getTabByPath(key);
-      const tab = idx === -1 ? undefined : st.openTabs[idx];
-      if (!tab) {
-        e.preventDefault();
-        return;
-      }
-      // 走与点击标签完全相同的路径（保存当前内容 → 装载目标 → 历史装回）
-      handleTabSwitchRef.current(tab);
-    };
-    window.addEventListener("lightmd:undo-switch-doc", handler);
-    return () => window.removeEventListener("lightmd:undo-switch-doc", handler);
-  }, []);
+  // v0.13.2 需求5（返修后口径）：撤销/恢复不再跨文档，因此这里**没有**切文档路由。
+  // 每个文档的撤销历史由 EditorContainer 按 docKey 保存/装回，Ctrl+Z 只作用于当前文档。
 
   // ─── v0.8.0 WP2 修复2：文件被删除后联动关闭对应标签 ──────────
   // 旧逻辑：侧栏删除文件只 refreshTree，已打开的标签仍停留在编辑器里（幽灵标签）。

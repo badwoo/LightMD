@@ -27,6 +27,7 @@ import { clipboardPastePlugin } from "../core/plugins/clipboard-paste";
 import { BLOCK_CLIPBOARD_MIME, looksLikeMarkdown } from "../utils/blockClipboard";
 import {
   writeBlockClipboard,
+  writeCodeBlockClipboard,
   __resetInAppBlockClipboardForTest,
 } from "../utils/blockClipboardOps";
 
@@ -271,6 +272,34 @@ describe("v0.13.1 需求1：Ctrl+V 粘贴块即渲染（结构断言）", () => 
     const { handled, doc } = pasteIntoFreshDoc({ "text/plain": md });
     expect(handled).toBe(true);
     expect(firstOf(doc, "code_block")).not.toBeNull();
+  });
+
+  /**
+   * v0.13.2 返修（需求1）：代码块复制按钮 → 跨文档 Ctrl+V 必须还原成代码块。
+   *
+   * 用户复测反馈：三点菜单的复制/粘贴正常，但代码块右上角复制按钮复制后，
+   * 到别的文档粘贴仍是普通文本。根因是系统剪贴板把多行代码的 `\n` 规范化成
+   * `\r\n`，而应用内兜底的同源判定按逐字节比较 → 判不出这是同一次复制。
+   */
+  it("代码块复制按钮 + Windows CRLF 剪贴板 → 仍还原为 code_block（需求1 返修）", async () => {
+    const code = "const a = 1;\nconst b = 2;";
+    // 模拟 WebView2 写入系统剪贴板失败 / 只走应用内兜底的场景
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        write: vi.fn().mockRejectedValue(new Error("denied")),
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    await writeCodeBlockClipboard(code, "js");
+
+    // Windows 剪贴板读回来是 CRLF（这不是同一个字符串，但确实是同一次复制）
+    const { handled, doc } = pasteIntoFreshDoc({ "text/plain": code.replace(/\n/g, "\r\n") });
+    expect(handled).toBe(true);
+    const block = firstOf(doc, "code_block");
+    expect(block).not.toBeNull();
+    expect(block!.textContent).toBe(code);
+    expect(block!.attrs.language).toBe("js");
   });
 
   it("应用内块兜底不得误用：text/plain 与兜底不同源 → 走普通粘贴（返回 false）", async () => {

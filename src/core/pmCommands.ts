@@ -13,7 +13,7 @@
  * 注意:本模块仅处理 PM 视图,源码模式仍走 COMMAND_SYNTAX(sourceInsertHandler)。
  */
 import type { EditorView } from "prosemirror-view";
-import type { Node as PMNode } from "prosemirror-model";
+import { Fragment, type Node as PMNode } from "prosemirror-model";
 import { TextSelection } from "prosemirror-state";
 import { lightMDSchema as schema } from "./schema";
 import { getPMCommand } from "./keymap";
@@ -89,6 +89,21 @@ function firstParagraphOf(node: PMNode): PMNode | null {
 }
 
 /**
+ * 列表项在列表里的下标（0-based）。
+ *
+ * @param list 列表节点（ordered_list / bullet_list / task_list）
+ * @param offsetInList 列表项相对列表节点起点的偏移（= `itemPos - listPos`）
+ */
+function itemIndexInList(list: PMNode, offsetInList: number): number {
+  let pos = 1; // 列表内容从「开始 token 之后」算起
+  for (let i = 0; i < list.childCount; i++) {
+    if (pos === offsetInList) return i;
+    pos += list.child(i).nodeSize;
+  }
+  return Math.max(0, list.childCount - 1);
+}
+
+/**
  * v0.13.2 需求2：把光标所在的**列表项**提升为任务项，并放到该列表**之前**。
  *
  * ─── 缺陷背景（用户报告）───
@@ -130,6 +145,19 @@ function liftListItemToTaskList(view: EditorView): boolean {
   const itemNode = state.doc.nodeAt(itemPos);
   if (!itemNode) return false;
 
+  // v0.13.2 返修（需求2）：**有序列表的序号必须保留**。
+  //
+  // 用户复测反馈：「给有序列表加任务列表，一加有序列表就消失了；我要的效果是
+  // `- [ ] 1. xxx`。」任务列表本身只有 bullet 标记，被提升的项若丢掉 `1.`，
+  // 用户看到的就是"编号没了"。因此把原序号（含 `)` 分隔符）作为**字面文本**
+  // 写进任务项首段开头 —— 源码成为 `- [ ] 1. xxx`，阅读模式渲染为
+  // ☐ 1. xxx，序号码与原列表完全一致。
+  const isOrdered = listNode.type.name === "ordered_list";
+  const orderedPrefix = isOrdered
+    ? `${(Number(listNode.attrs.order) || 1) + itemIndexInList(listNode, itemPos - listPos)}${
+        listNode.attrs.delim === ")" ? ")" : "."
+      } `
+    : "";
   // 任务项内容模型与 list_item 相同（`paragraph block*`），因此把**整项内容**原样搬入。
   //
   // ⚠️ 只搬首段会**静默丢失**该项里的第二段与嵌套子列表（v0.13.2 复审发现的
@@ -138,10 +166,27 @@ function liftListItemToTaskList(view: EditorView): boolean {
   // 内容模型不兼容时（理论上不该发生）退回首段，保证命令本身不会整个失败。
   let taskItem: PMNode;
   try {
-    taskItem = schema.nodes.task_item.create({ checked: false }, itemNode.content);
+    let content = itemNode.content;
+    if (orderedPrefix) {
+      const first = itemNode.firstChild;
+      if (first && first.isTextblock) {
+        const prefixed = first.type.create(
+          first.attrs,
+          Fragment.fromArray([schema.text(orderedPrefix), ...first.content.content]),
+        );
+        content = Fragment.fromArray([prefixed, ...itemNode.content.content.slice(1)]);
+      }
+    }
+    taskItem = schema.nodes.task_item.create({ checked: false }, content);
   } catch {
     const para = firstParagraphOf(itemNode) ?? schema.nodes.paragraph.create();
-    taskItem = schema.nodes.task_item.create({ checked: false }, para);
+    const fallback = orderedPrefix
+      ? schema.nodes.paragraph.create(
+          null,
+          Fragment.fromArray([schema.text(orderedPrefix), ...para.content.content]),
+        )
+      : para;
+    taskItem = schema.nodes.task_item.create({ checked: false }, fallback);
   }
   const taskList = schema.nodes.task_list.create(null, taskItem);
 

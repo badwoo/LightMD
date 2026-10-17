@@ -13,6 +13,7 @@
  */
 import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
+import { TextSelection } from "prosemirror-state";
 import mermaid from "mermaid";
 // v0.12.0 需求6：块级选中（单击选中整块 → Delete 删除）
 import { applyBlockSelected, clearBlockSelected, handleBlockStopEvent, placeCaretInsideBlock } from "./blockSelection";
@@ -113,6 +114,14 @@ export class MermaidBlockView implements NodeView {
     // 预览层（显示渲染后的 SVG）
     this.previewLayer = document.createElement("div");
     this.previewLayer.className = "mermaid-preview-layer";
+    // v0.13.2 返修（需求3）：**渲染层绝不能被浏览器原生编辑**。
+    //
+    // 缺陷背景（用户复测）：「在上半部分进行编辑，下半部分编辑区没有实时更新内容。」
+    // 预览层是 contenteditable 编辑器（.ProseMirror）的后代：未显式标 false 时，
+    // 进入编辑态后再点渲染结果，浏览器会把原生光标放进 SVG/文本里，键入只改 DOM、
+    // 不进 ProseMirror —— 表现为"上面能改、下面对应源码不动"。标 false + 所有
+    // 预览层按下都 preventDefault，把输入统一路由回真正的 contentDOM。
+    this.previewLayer.setAttribute("contenteditable", "false");
     this.dom.appendChild(this.previewLayer);
 
     // 编辑层（ProseMirror 管理的文本编辑区）
@@ -163,9 +172,16 @@ export class MermaidBlockView implements NodeView {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest?.("button, select, input, textarea, a")) return;
-    if (this.isEditing) return;
+    // 源码编辑层自己的点击交给 ProseMirror（不要抢光标）
+    if (target && this.contentDOM.contains(target)) return;
     e.preventDefault();
     e.stopPropagation();
+    if (this.isEditing) {
+      // v0.13.2 返修（需求3）：编辑态下点块的其它区域（含上方渲染结果）不能
+      // 让浏览器在预览 DOM 里放原生光标 —— 统一把输入焦点交回源码编辑层。
+      this.contentDOM.focus?.();
+      return;
+    }
     this.enterEditMode();
     const pos = this.getPos();
     if (pos == null) return;
@@ -181,18 +197,52 @@ export class MermaidBlockView implements NodeView {
    */
   private handlePreviewPointerDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
-    if (this.isEditing) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest?.("button, select, input, textarea, a")) return;
     e.preventDefault();
     e.stopPropagation();
-    this.enterEditMode();
+    // v0.13.2 返修（需求3）：**编辑态下也拦截**。
+    // 旧实现 `if (this.isEditing) return;` 让第二次点击落进浏览器原生编辑路径：
+    // 光标进的是预览层 DOM，键入只改 SVG 文本、一半都不进 ProseMirror ——
+    // 用户看到的就是"在上半部分编辑，下半部分编辑区没有更新"。
+    if (!this.isEditing) this.enterEditMode();
     const pos = this.getPos();
     if (pos == null) return;
-    placeCaretInsideBlock(this.view, pos);
+    // 按点击落在渲染区的纵向比例换算到源码行 → 落光标（"点哪里改哪里"）
+    const caret = this.sourcePosFromPreviewY(pos, e.clientY);
+    try {
+      this.view.dispatch(
+        this.view.state.tr.setSelection(TextSelection.create(this.view.state.doc, caret)),
+      );
+    } catch {
+      // 位置非法（文档刚被替换等）→ 退回块内容起点
+      placeCaretInsideBlock(this.view, pos);
+    }
     // 编辑区出现后把焦点交给它，用户可以直接继续敲源码
     this.contentDOM.focus?.();
   };
+
+  /**
+   * 把「渲染区内的纵向点击位置」换算成源码文本位置。
+   *
+   * 渲染结果（SVG）与源码行没有一一对应关系，这里按**纵向比例**取最近的一行：
+   * 点图表上部 → 源码靠前的行；点下部 → 靠后的行。无法测量时退回内容起点。
+   */
+  private sourcePosFromPreviewY(blockPos: number, clientY: number): number {
+    const start = blockPos + 1;
+    const end = blockPos + this.node.nodeSize - 1;
+    const text = this.node.textContent;
+    if (!text) return start;
+    const lines = text.split("\n");
+    if (lines.length <= 1) return start;
+    const rect = this.previewLayer.getBoundingClientRect();
+    if (!rect.height) return start;
+    const ratio = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height));
+    const line = Math.min(lines.length - 1, Math.round(ratio * (lines.length - 1)));
+    let offset = 0;
+    for (let i = 0; i < line; i++) offset += lines[i].length + 1;
+    return Math.min(start + offset, end);
+  }
 
   /**
    * v0.13.0 返修（问题2）：双击语义（与公式块同款，避免"单击进编辑、

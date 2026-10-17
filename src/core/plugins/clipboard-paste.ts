@@ -165,10 +165,32 @@ function lightmdBlockMarkdown(data: DataTransfer, text: string): string | null {
 function inAppBlockMarkdown(text: string): string | null {
   const data = getInAppBlockClipboard();
   if (!data?.markdown) return null;
-  const trimmed = text.trim();
-  if (trimmed === data.markdown.trim()) return data.markdown;
-  if (data.plain !== undefined && trimmed === data.plain.trim()) return data.markdown;
+  const trimmed = normalizeClipboardText(text);
+  if (trimmed === normalizeClipboardText(data.markdown)) return data.markdown;
+  if (data.plain !== undefined && trimmed === normalizeClipboardText(data.plain)) {
+    return data.markdown;
+  }
   return null;
+}
+
+/**
+ * v0.13.2 返修（需求1）：剪贴板文本的**同源判定归一化**。
+ *
+ * 缺陷背景（用户复测）：「代码块复制按钮复制到别的文档，粘贴后还是普通文本；
+ * 三点菜单的复制/粘贴却正常。」
+ *
+ * 根因：代码块复制按钮写进 `text/plain` 的是**裸代码**（`plain`），应用内兜底
+ * 里存的 `markdown` 是围栏形态；粘贴时靠「剪贴板 text/plain === 兜底的 plain」
+ * 判断是不是同一次复制。但 Windows/WebView2 的剪贴板会把 `\n` 规范成 `\r\n`
+ * （读回来是 CRLF），多行代码 `trim()` 之后仍然对不上 → 判定失败 → 退回字面粘贴。
+ * 三点菜单走的是 `readBlockClipboard()`（直接取应用内数据、不比文本），所以不受影响。
+ *
+ * 归一口径：统一换行（CRLF/CR → LF）+ trim（两端空白/末尾换行不参与比较）。
+ * 只用于「同源判定」，真正插入文档的仍是未改写的 `data.markdown`，
+ * 不会把用户的换行风格带进文档。
+ */
+function normalizeClipboardText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").trim();
 }
 
 /**

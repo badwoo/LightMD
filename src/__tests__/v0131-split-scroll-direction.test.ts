@@ -35,7 +35,7 @@ describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
     expect(containerSrc).toContain("mapPreviewScrollToSourceLine(");
     expect(containerSrc).toContain("mapSourceLineToScrollTop(");
     expect(containerSrc).toContain("syncToSource");
-    expect(containerSrc).toContain("previewWin?.addEventListener(\"scroll\", syncToSource");
+    expect(containerSrc).toContain('previewWin.addEventListener("scroll", syncToSource');
   });
 
   it("左右两侧**不共用滚动条**：各自写自己的 scrollTop，不互相赋值同一个值", () => {
@@ -47,16 +47,23 @@ describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
     expect(containerSrc).not.toMatch(/preview\.scrollTop\s*=\s*textarea\.scrollTop/);
   });
 
-  it("防拉扯：两个方向共用同一个重入标记", () => {
-    // syncToPreview 与 syncToSource 都必须以 isSyncingScrollRef 做重入守卫
+  it("防拉扯：两个方向共用同一个**时间窗方向锁**（异步 scroll 回声不会反推）", () => {
+    // v0.13.2 返修：同步执行期的 isSyncingScrollRef 无法覆盖"下一帧才派发"的
+    // 程序性 scroll 事件（上一版正是在这里互推，用户看到完全不联动/跳回顶部）。
+    // 现在两侧都必须先问方向锁、再登记自己是本次滚动的发起者。
     const previewFn = containerSrc.slice(
       containerSrc.indexOf("const syncToPreview = () =>"),
       containerSrc.indexOf("const syncToSource = () =>"),
     );
     const sourceFn = containerSrc.slice(
       containerSrc.indexOf("const syncToSource = () =>"),
-      containerSrc.indexOf("textarea.addEventListener(\"scroll\", syncToPreview"),
+      containerSrc.indexOf('textarea.addEventListener("scroll", syncToPreview'),
     );
+    expect(previewFn).toContain('shouldAcceptScroll(lock, "source"');
+    expect(previewFn).toContain('markScrollSource(lock, "source"');
+    expect(sourceFn).toContain('shouldAcceptScroll(lock, "preview"');
+    expect(sourceFn).toContain('markScrollSource(lock, "preview"');
+    // 同一调用栈的重入仍由 isSyncingScrollRef 兜底（两道防线）
     expect(previewFn).toContain("if (isSyncingScrollRef.current) return;");
     expect(sourceFn).toContain("if (isSyncingScrollRef.current) return;");
   });
@@ -66,10 +73,11 @@ describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
     expect(containerSrc).toContain("syncToPreview();");
   });
 
-  it("清理干净：effect 卸载时移除两个方向的监听并复位同步标记（不泄漏）", () => {
+  it("清理干净：effect 卸载时移除两个方向的监听、复位方向锁与同步标记（不泄漏）", () => {
     expect(containerSrc).toContain('textarea.removeEventListener("scroll", syncToPreview)');
-    expect(containerSrc).toContain("previewWin?.removeEventListener(\"scroll\", syncToSource)");
-    expect(containerSrc).toContain("preview.removeEventListener(\"scroll\", syncToSource)");
+    expect(containerSrc).toContain('previewWin.removeEventListener("scroll", syncToSource)');
+    expect(containerSrc).toContain("previewDocNow?.removeEventListener(\"scroll\", syncToSource");
+    expect(containerSrc).toContain("resetScrollDirectionLock(lock);");
     expect(containerSrc).toContain("isSyncingScrollRef.current = false;");
   });
 

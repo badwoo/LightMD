@@ -225,6 +225,24 @@ export function ImageManagerDialog({
     return () => window.removeEventListener("keydown", handler);
   }, [open, requestClose]);
 
+  /**
+   * v0.13.2 返修（需求6）：**所有 Hook 必须在早退之前**。
+   *
+   * 缺陷背景（用户报告）：点击图片管理弹窗的关闭按钮报 React error #300
+   * （Rendered fewer hooks than expected）。
+   *
+   * 根因：`if (!open) return null;` 之后还有一个 `useMemo(findUnreferenced)`。
+   * 关闭时 App 把 `open` 置 false，但 `GenieDialogShell` 还要挂 300ms 播退场动画，
+   * 期间仍会渲染本组件 → 走到早退、跳过 useMemo → 本次渲染的 Hook 数量比上次少，
+   * React 直接抛 #300，界面被错误边界接管。
+   *
+   * 修法：把用到的 useMemo 全部上移到早退之前（早退只决定"渲染什么"，不决定"Hook 数量"）。
+   */
+  const unreferenced = useMemo(
+    () => findUnreferenced(assetsFiles, docImages),
+    [assetsFiles, docImages],
+  );
+
   if (!open) return null;
 
   /** 当前 assets 目录中的文件名（迁移/重命名冲突消解用） */
@@ -399,11 +417,6 @@ export function ImageManagerDialog({
     }
     await loadAssetsFiles();
   };
-
-  const unreferenced = useMemo(
-    () => findUnreferenced(assetsFiles, docImages),
-    [assetsFiles, docImages],
-  );
 
   return (
     // v0.13.1 需求10：closing 类驱动退场动画；两条关闭路径都走 requestClose

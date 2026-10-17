@@ -187,7 +187,37 @@ describe("需求3：真实编辑器里的渲染区编辑入口", () => {
     }
   });
 
-  it("点在**渲染出的 SVG** 上同样进入编辑态（不是只有预览层空白处可点）", async () => {
+  /**
+   * v0.13.2 返修（用户复测）：「在上半部分进行编辑，下半部分编辑区没有实时更新内容。」
+   *
+   * 根因：预览层是 contenteditable 编辑器的后代，且 `handlePreviewPointerDown`
+   * 在 `isEditing === true` 时直接 return（不 preventDefault）→ 第二次点击把浏览器
+   * 原生光标放进 SVG/预览 DOM，键入只改预览、不进 ProseMirror，下方源码自然不动。
+   * 修法：预览层 `contenteditable=false` + **编辑态下也拦截** mousedown，
+   * 把输入焦点和光标统一路由回真正的 contentDOM。
+   */
+  it("编辑态下再点渲染区：焦点回到源码编辑层，预览层不可被原生编辑", async () => {
+    const { view, host } = mount();
+    try {
+      await flush();
+      const preview = previewOf(host);
+      const codeEl = codeElOf(host);
+      expect(preview.getAttribute("contenteditable")).toBe("false");
+
+      // 第一次点：进入编辑态
+      mouse(preview, "mousedown");
+      await flush();
+      expect(wrapperOf(host).classList.contains("mermaid-editing")).toBe(true);
+      // 第二次点（编辑态）：旧实现在这里直接 return，键入会落在预览 DOM
+      mouse(preview, "mousedown");
+      expect(document.activeElement).toBe(codeEl);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("点渲染出的 SVG 上同样进入编辑态（不是只有预览层空白处可点）", async () => {
     const { view, host } = mount();
     try {
       await flush();

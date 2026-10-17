@@ -28,6 +28,13 @@ import {
   type PreviewAnchorSet,
   type SourceViewportMetrics,
 } from "../utils/blockScrollAlign";
+import {
+  SPLIT_SCROLL_LOCK_MS,
+  createScrollDirectionLock,
+  markScrollSource,
+  resetScrollDirectionLock,
+  shouldAcceptScroll,
+} from "../utils/splitScrollSync";
 
 /**
  * 典型锚点集（内容坐标系）：
@@ -314,20 +321,91 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
     const sourceFn = fnBody("const syncToSource = () =>", 'textarea.addEventListener("scroll", syncToPreview');
     expect(previewFn).toContain("collectAnchors()");
     expect(sourceFn).toContain("collectAnchors()");
-    // 采集函数把视口坐标换算回内容坐标（scrollTop 也在内容坐标系）
-    expect(src).toContain("rect.top - previewRectTop + preview.scrollTop");
+    // 采集函数把视口坐标换算回内容坐标（scrollTop 也在内容坐标系）。
+    // 注意：根元素 rect.top 恒等于 -scrollTop，**不能**再减它，否则锚点虚高。
+    expect(src).toContain("tops.push(rect.top + preview.scrollTop);");
+    expect(src).not.toContain("rect.top - previewRectTop + preview.scrollTop");
   });
 
-  it("重入标记在两侧都先检查再置位，并用 rAF 复位（避免回环拉扯）", () => {
+  it("方向锁在两侧都先检查再登记（异步 scroll 回声不会把另一侧反推回去）", () => {
     const previewFn = fnBody("const syncToPreview = () =>", "const syncToSource = () =>");
     const sourceFn = fnBody("const syncToSource = () =>", 'textarea.addEventListener("scroll", syncToPreview');
+    // 两道防线：方向锁（跨帧回声）+ isSyncingScrollRef（同调用栈重入）
+    expect(previewFn).toContain('shouldAcceptScroll(lock, "source"');
+    expect(previewFn).toContain('markScrollSource(lock, "source"');
+    expect(sourceFn).toContain('shouldAcceptScroll(lock, "preview"');
+    expect(sourceFn).toContain('markScrollSource(lock, "preview"');
     for (const fn of [previewFn, sourceFn]) {
       expect(fn).toContain("if (isSyncingScrollRef.current) return;");
       expect(fn).toContain("isSyncingScrollRef.current = true;");
-      expect(fn).toContain("requestAnimationFrame(() => { isSyncingScrollRef.current = false; });");
+      expect(fn).toContain("isSyncingScrollRef.current = false;");
     }
     // 两个方向写的是各自的容器，不共用滚动条
     expect(previewFn).toContain("preview.scrollTop = next;");
     expect(sourceFn).toContain("textarea.scrollTop = top;");
+  });
+
+  it("每次同步都现取预览滚动容器（完整重写会换掉 documentElement）", () => {
+    expect(src).toContain("const getPreviewScroller = (): HTMLElement | null =>");
+    expect(src).toContain("d?.scrollingElement ?? d?.documentElement ?? d?.body");
+    // collectAnchors 与写入路径都必须经由 getPreviewScroller，不能缓存 preview 引用
+    expect(src).toContain("const preview = getPreviewScroller();");
+    expect(src).not.toContain("const preview = previewDoc?.documentElement");
+  });
+});
+
+// ═══════════════ 方向锁：异步 scroll 回声不会反推（v0.13.2 返修） ═══════════════
+
+describe("需求8 返修 · 滚动方向锁", () => {
+  it("初始为空锁：两侧都能发起同步", () => {
+    const lock = createScrollDirectionLock();
+    expect(lock.active).toBeNull();
+    expect(shouldAcceptScroll(lock, "source", 0)).toBe(true);
+    expect(shouldAcceptScroll(lock, "preview", 0)).toBe(true);
+  });
+
+  it("左屏发起后 250ms 内：右屏（程序写入的回声）被忽略，左屏后续滚动仍接受", () => {
+    const lock = createScrollDirectionLock();
+    markScrollSource(lock, "source", 1000);
+    expect(lock.active).toBe("source");
+    expect(lock.until).toBe(1000 + SPLIT_SCROLL_LOCK_MS);
+    // 右屏回声（下一帧）→ 忽略
+    expect(shouldAcceptScroll(lock, "preview", 1020)).toBe(false);
+    // 用户继续滚左屏 → 接受（并可在调用处续期）
+    expect(shouldAcceptScroll(lock, "source", 1100)).toBe(true);
+    // 锁过期后用户改滚右屏 → 接受
+    expect(shouldAcceptScroll(lock, "preview", 1260)).toBe(true);
+  });
+
+  it("右屏发起后同理：左屏回声被忽略", () => {
+    const lock = createScrollDirectionLock();
+    markScrollSource(lock, "preview", 5000);
+    expect(shouldAcceptScroll(lock, "source", 5010)).toBe(false);
+    expect(shouldAcceptScroll(lock, "preview", 5100)).toBe(true);
+    expect(shouldAcceptScroll(lock, "source", 5000 + SPLIT_SCROLL_LOCK_MS + 1)).toBe(true);
+  });
+
+  it("续期：同一侧连续滚动会不断把窗口往后推", () => {
+    const lock = createScrollDirectionLock();
+    markScrollSource(lock, "source", 1000);
+    const firstUntil = lock.until;
+    markScrollSource(lock, "source", 1150);
+    expect(lock.until).toBeGreaterThan(firstUntil);
+    // 原窗口刚过、续期窗口内，右屏回声仍被忽略
+    expect(shouldAcceptScroll(lock, "preview", firstUntil + 10)).toBe(false);
+  });
+
+  it("reset 后回到初始状态（effect 清理 / 模式切换）", () => {
+    const lock = createScrollDirectionLock();
+    markScrollSource(lock, "preview", 1);
+    resetScrollDirectionLock(lock);
+    expect(lock).toEqual({ active: null, until: 0 });
+    expect(shouldAcceptScroll(lock, "source", 2)).toBe(true);
+  });
+
+  it("非法 now 不制造 NaN 死锁（按可接受处理）", () => {
+    const lock = createScrollDirectionLock();
+    expect(shouldAcceptScroll(lock, "source", Number.NaN)).toBe(true);
+    expect(shouldAcceptScroll(lock, "preview", Number.NaN)).toBe(true);
   });
 });

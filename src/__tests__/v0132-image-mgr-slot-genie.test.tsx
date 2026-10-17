@@ -218,13 +218,16 @@ describe("需求4 · CSS 契约：槽位公式、平移过渡、淡出三件套�
     expect(all).toContain("transform: none");
   });
 
-  it("EditorContainer 的接线：无图 → slot 0 且图片管理 visible=false；有图反之", () => {
+  it("EditorContainer 的接线：无图 → 「译」slot 1 且图片管理 visible=false；有图 → 「译」slot 2", () => {
     // 需要完整 App + 编辑器上下文才能渲染这一段（EditorContainer 依赖 Tauri/iframe/
     // 预览渲染），因此按项目既有做法锁接线源码；组件的变量注入行为已在上方覆盖。
     const src = SRC("components/editor/EditorContainer.tsx");
     expect(src).toContain('data-genie-anchor="image-manager"');
     expect(src).toContain("visible={docHasImageFlag}");
-    expect(src).toContain("slot={docHasImageFlag ? 1 : 0}");
+    // v0.13.2 返修：模式切换 slot0 / 图片管理 slot1 /「译」无图 slot1、有图 slot2。
+    // 旧值 `1 : 0` 会让「译」与图片管理或模式切换完全重合。
+    expect(src).toContain("slot={docHasImageFlag ? 2 : 1}");
+    expect(src).not.toContain("slot={docHasImageFlag ? 1 : 0}");
     // 图片管理入口自身固定 slot=1
     expect(src).toContain("slot={1}");
   });

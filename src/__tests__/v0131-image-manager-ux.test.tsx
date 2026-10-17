@@ -200,8 +200,8 @@ describe("需求7：图片管理图标排在「译」按钮上方（槽位 + 气
   it("把公式代入变量后的真实几何：两图标等距、齿轮与气泡各不相交", () => {
     // jsdom 不解析 calc()，这里按 CSS 里声明的变量值手工代入，
     // 断言"槽位序"而非像素渲染（像素只能靠实机，已在交付说明里注明）。
-    // v0.13.2 需求4：图片管理可见时「译」在 slot=1（与图片管理等距），
-    // 图片管理不可见时「译」补位到 slot=0（紧跟模式切换）。
+    // v0.13.2 需求4（返修后口径）：图片管理可见时「译」在 slot=2（与图片管理等距），
+    // 图片管理不可见时「译」补位到 slot=1（紧跟模式切换）；slot=0 永远属于模式切换。
     const TOP = 10;
     const SIZE = 34;
     const GAP = 6;
@@ -567,6 +567,42 @@ describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画
     const body = effect.slice(0, effect.indexOf("}, [open]);"));
     expect(body).toContain("setClosing(false)");
     expect(body).toContain("closingRef.current = false");
+  });
+
+  /**
+   * v0.13.2 返修（需求6）：关闭图片管理弹窗报 React error #300
+   * （Rendered fewer hooks than expected）。
+   *
+   * 根因：`if (!open) return null;` 之后还有一个 useMemo。关闭时 App 把 open 置 false，
+   * 但 GenieDialogShell 仍挂 300ms 播退场 —— 期间组件照常渲染 → 早退跳过 useMemo →
+   * Hook 数量比上一次少 → React 抛 #300。这里用真实 React 渲染模拟"打开 → 关闭 →
+   * 再打开"，断言不再抛错（Hook 顺序错误的修复不可能靠源码字面量锁住）。
+   */
+  it("open true→false→true 不抛 React #300（Hook 数量必须稳定）", () => {
+    const doc = markdownToDoc("![图](./assets/a.png)\n");
+    const baseProps = {
+      doc,
+      docPath: DOC_PATH,
+      onRewriteRefs: vi.fn(),
+      onClose: vi.fn(),
+    };
+    const { container, rerender, unmount } = render(
+      createElement(ImageManagerDialog, { ...baseProps, open: true }),
+    );
+    expect(container.querySelector(".image-mgr-dialog")).not.toBeNull();
+
+    // 关闭：壳还在挂载期 → 组件仍被渲染（这正是崩溃现场）
+    expect(() =>
+      rerender(createElement(ImageManagerDialog, { ...baseProps, open: false })),
+    ).not.toThrow();
+    expect(container.querySelector(".image-mgr-dialog")).toBeNull();
+
+    // 不卸载直接重开也要正常
+    expect(() =>
+      rerender(createElement(ImageManagerDialog, { ...baseProps, open: true })),
+    ).not.toThrow();
+    expect(container.querySelector(".image-mgr-dialog")).not.toBeNull();
+    unmount();
   });
 });
 

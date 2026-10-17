@@ -393,7 +393,19 @@ npm run tauri build
 | 9 | 从 A 复制表格到新文档 B 后，光标移不到表格下面；点文档空白处也没有插入符 | 表格 / 代码块 / 公式 / Mermaid 都是 ProseMirror 的**隔离型**块，文档以它们结尾时光标无处可落 —— 这是「粘一个表格进来就再也写不了字」的真正原因，并非点击逻辑缺陷 | `paragraph` 增加结构性属性 `attrs.pad`；新增 `core/plugins/trailing-paragraph.ts`：`appendTransaction` 在文档结束于 `table / code_block / mermaid_block / math_block` 时补一个 pad 段落，段落一旦有内容就自动清掉 `pad` 标记，事务带 `addToHistory:false`（补位本身不该进撤销栈）；`withTrailingParagraph` 同时用于初始文档包装；序列化器收集块时**跳过 `pad === true` 的段落**，因此补位段落永不写进 `.md`，而用户自己打的尾随空段落（非 pad）仍照常序列化 —— v0.7.0 起的既有契约由负向测试守着 |
 | 10 | 图片功能调整：右上角小手柄进入编辑、点图片改为激活、拖边缘调大小 | 点图片直接开弹窗，导致无法选中/拖动图片，也没有任何尺寸调节入口 | 采纳「只记宽度、保持宽高比」：新增 `core/plugins/image-node.ts` 的 `ImageView` NodeView —— 右上角 `.image-node-handle` 悬停显现，点击派发 `lightmd:image-edit`（带 `{pos}`）由 `EditorContainer` 打开编辑弹窗；点图片本身改为 `NodeSelection` 激活（`view.editable === false` 时跳过，保留阅读模式点击放大的既有行为）；六向 `.image-resize-zone[data-dir]` 拖拽调大小，**只写宽度**、高度由图片自身比例决定，最小 24px，西侧方向做符号反转；拖拽过程中不写事务，`mouseup` 时一次性 `setNodeMarkup`，一次拖拽 = 一次撤销 |
 
-**测试与验证**：新增 8 个行为级测试文件（跨文档顺序撤销 / Mermaid 预览区编辑联动 / 表格后尾随段落 / 图片 NodeView 缩放 / `Ctrl+T` 列表提升 / 图片管理槽位与精灵弹窗 / 大纲跟随与滚动记忆 / 分屏双向映射），共 174 个用例；全量回归 **297 文件 / 5111 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例）；`tsc --noEmit` 零错误；`npx tauri build` 产出 MSI + NSIS，版本元数据 0.13.2（详见 `release/v0.13.2/RELEASE_NOTES_v0.13.2.md`）。
+**实机复测返修（版本仍为 0.13.2）**：用户安装 0.13.2 后复测，7 项未达预期，逐条修复：
+
+| # | 复测问题 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 代码块快捷复制到别的文档，粘贴仍是普通文本（三点菜单的复制/粘贴正常） | 代码块按钮写入 `text/plain` 的是裸代码，应用内兜底存的是围栏 Markdown；粘贴时按「`text/plain` 与兜底 `plain` 逐字节相等」判定同源。Windows/WebView2 会把多行代码的 `\n` 规范成 `\r\n`，多行代码永远对不上 → 退回字面粘贴。三点菜单直接读应用内数据、不比对文本，所以不受影响 | `clipboard-paste` 的同源判定改为**归一化比较**（CRLF/CR → LF + trim）；真正插入文档的仍是未改写的 `data.markdown`，不会把换行风格带进文档。新增「CRLF 剪贴板 → code_block」行为测试 |
+| 2 | 给有序列表加任务列表后，有序列表消失了；期望 `- [ ] 1. xxx` | 任务项只有 bullet 标记，提升时丢弃了原序号 | `pmCommands.liftListItemToTaskList` 与源码模式 `liftListLineToTask` 都把**原序号（含 `)` 分隔符）作为字面文本保留**在任务项首段：`- [ ] 2. bb`；多段/嵌套内容仍整体搬迁 |
+| 3 | Mermaid 在上半部分（渲染区）编辑时，下半部分编辑区不更新 | 预览层是 contenteditable 编辑器的后代；且「编辑态」下再点渲染区会直接 return（不 `preventDefault`）→ 浏览器把原生光标放进预览 DOM，键入只改预览、不进 ProseMirror | 预览层显式 `contenteditable=false`；**编辑态下也拦截**渲染区 mousedown，按点击纵向比例换算源码行并把选区/焦点交回 `contentDOM` |
+| 4 | 「译」字图标与分屏编辑图标重叠 | 槽位算错：模式切换占 slot 0，而「译」无图时也取 slot 0、有图时与图片管理同取 slot 1，完全重合 | 槽位固定为 模式切换 0 / 图片管理 1 /「译」无图 1、有图 2；同步修正文档与测试 |
+| 5 | 撤销/恢复应严格按文档独立，不再跨文档 | 上一轮实现了「跨文档顺序撤销」账本，会在当前文档撤完后自动切标签去撤另一个文档 | 移除 `services/docUndoOrder.ts` 与 `lightmd:undo-switch-doc` 路由；`Ctrl+Z`/`Ctrl+Y` 回到原生 `undo`/`redo`，只作用于当前文档。保留 `docHistoryStore`：切走时保存、切回时按内容严格配对装回，各文档历史互不干扰 |
+| 6 | 点图片管理弹窗的关闭按钮报 React error #300 | `if (!open) return null;` 之后还有一个 `useMemo`。关闭时壳要挂 300ms 播退场，期间仍渲染组件 → 早退跳过 Hook → 本次 Hook 数量少于上次 | 所有 Hook 上移到早退之前，并加真实 React 渲染的「打开→关闭→再打开」回归测试 |
+| 7 | 分屏左右滚动完全不联动 | ① 浏览器对 `scrollTop=` 派发的 scroll 事件是异步的，同步执行期的 `isSyncingScrollRef` 到那时已释放 → 两屏互推（实测把左屏写成 0）；② `documentElement.getBoundingClientRect().top` 恒等于 `-scrollTop`，锚点坐标被算成 `rect.top + 2*scrollTop`，越滚越虚高，右屏直接顶到底；③ 完整重写预览会换掉 `documentElement`，缓存的旧引用写 scrollTop 无效 | 新增 `utils/splitScrollSync.ts` 的**时间窗方向锁**（发起侧 250ms 内拥有同步权，另一侧的 scroll 视为回声忽略；同侧连续滚动续期）；锚点坐标改为 `rect.top + scrollTop`；每次同步现取 `scrollingElement`；右屏同时在 `contentWindow` 与 `contentDocument` 捕获阶段监听。已在真实 Chrome 中验证双向联动，且左屏顶部标题与右屏顶部标题一致 |
+
+**测试与验证**：新增 8 个行为级测试文件（按文档独立撤销历史 / Mermaid 预览区编辑联动 / 表格后尾随段落 / 图片 NodeView 缩放 / `Ctrl+T` 列表提升 / 图片管理槽位与精灵弹窗 / 大纲跟随与滚动记忆 / 分屏双向映射）；返修后全量回归 **297 文件 / 5097 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例）；`tsc --noEmit` 零错误；`npx tauri build` 产出 MSI + NSIS，版本元数据 0.13.2（详见 `release/v0.13.2/RELEASE_NOTES_v0.13.2.md`）。分屏双向联动、Mermaid 上半区编辑与代码块 CRLF 跨文档粘贴另在**真实 Chrome** 中做了实机验证。
 
 ### v0.13.1（2026-10-16）
 

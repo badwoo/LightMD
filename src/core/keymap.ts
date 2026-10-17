@@ -31,8 +31,7 @@ import { toggleComment } from "./toggleComment";
 import { copySelectedBlock, cutSelectedBlock } from "../utils/blockClipboardOps";
 import { notify } from "../services/notificationService";
 import { t } from "../i18n/state";
-// v0.13.2 需求5：跨文档顺序撤销 / 恢复的路由（账本在 services，零 React 依赖）
-import { routeUndo, noteUndone, noteRedone, getActiveDocKey } from "../services/docUndoOrder";
+
 
 const schema = lightMDSchema;
 
@@ -224,47 +223,19 @@ const swallowAtCellBoundary = (atStart: boolean): Command => (state) =>
   atCellContentBoundary(state, atStart);
 
 /**
- * v0.13.2 需求5：撤销 / 恢复走**跨文档顺序**路由。
+ * v0.13.2 需求5（返修后口径）：撤销 / 恢复**只在当前文档生效**。
  *
- * 缺陷背景（用户报告）：「在 a 编辑、切到 b 编辑，切回 a 后发现 a 的编辑撤不回来；
- * 而且撤销应该是顺序的 —— 在 b 撤完 b 的两处，再撤就应自动跳到 a 继续撤」。
+ * 用户复测明确推翻了上一轮的「跨文档顺序撤销」：「不再跨文档，当前文档的编辑撤销和
+ * 恢复只在当前文档生效，切换到其他文档进行撤销恢复也是在对应文档，互不干扰。」
  *
- * 路由逻辑在 `services/docUndoOrder.routeUndo`（零依赖纯账本）：
- * - 目标就是当前文档 → 执行本地 `undo` / `redo` 并记一笔账（`noteUndone` /
- *   `noteRedone`，跨文档顺序状态机的基础）；
- * - 目标在别的文档 → 派 `lightmd:undo-switch-doc` 让 App 切标签，
- *   切换完成后由 EditorContainer 消费待执行请求再撤；
- * - 账本为空 / 桥未注册 → 退回本地 `undo` / `redo`（行为与旧版一致）。
+ * 因此回到 prosemirror-history 的原生 `undo` / `redo`：每个 EditorState 自带
+ * 独立历史栈，切文档时 EditorContainer 负责把**离开文档**的历史快照存起来、
+ * 回来时装回去（`services/docHistoryStore`），但撤销动作本身永不切换文档。
  *
- * 注意：**不能**在路由返回 `"switched"` 时返回 false —— 那样 baseKeymap 的
- * undo 会紧接着再撤一次当前文档，把用户的意图打乱。
+ * 保留动态键位表里的条目（用户改键后仍生效），只是不再做跨文档路由。
  */
-const undoWithDocRouting: Command = (state, dispatch, view) => {
-  const routed = routeUndo("undo");
-  if (routed === "switched") return true;
-  if (!dispatch) return undo(state, dispatch);
-  // 本地撤销：先记当前文档键与撤销前的 doc，执行后按"doc 真的变了"记账。
-  // ⚠️ 必须用 `view.state.doc` 复查：`state` 是不可变的旧 state，dispatch 不会改它，
-  // 直接比较 `state.doc !== before` 恒为 false（会漏记所有撤销）。
-  const key = getActiveDocKey();
-  const before = state.doc;
-  const ok = undo(state, dispatch);
-  const after = view?.state.doc ?? before;
-  if (ok && after !== before && key) noteUndone(key);
-  return ok;
-};
-
-const redoWithDocRouting: Command = (state, dispatch, view) => {
-  const routed = routeUndo("redo");
-  if (routed === "switched") return true;
-  if (!dispatch) return redo(state, dispatch);
-  const key = getActiveDocKey();
-  const before = state.doc;
-  const ok = redo(state, dispatch);
-  const after = view?.state.doc ?? before;
-  if (ok && after !== before && key) noteRedone(key);
-  return ok;
-};
+const undoLocal = undo;
+const redoLocal = redo;
 
 /**
  * 可自定义键 → ProseMirror 命令映射（id 对齐 core/shortcuts.ts SHORTCUT_DEFS）。
@@ -272,9 +243,9 @@ const redoWithDocRouting: Command = (state, dispatch, view) => {
  * 因静态 keymap 不再登记 history 键）。
  */
 const PM_COMMAND_BY_ID: Record<string, Command> = {
-  "edit.undo": undoWithDocRouting,
-  "edit.redo": redoWithDocRouting,
-  "edit.redo2": redoWithDocRouting,
+  "edit.undo": undoLocal,
+  "edit.redo": redoLocal,
+  "edit.redo2": redoLocal,
 
   "format.bold": toggleMark(schema.marks.strong),
   "format.italic": toggleMark(schema.marks.em),

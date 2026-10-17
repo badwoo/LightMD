@@ -465,9 +465,12 @@ describe("问题6：图片管理（命令路由 + 悬浮入口）", () => {
    * 分屏编辑图标下面。这个向上填补要有顺滑的平移动画，这样当文档中删除了所有图片，
    * 那么就图片管理图标淡出消失，「译」图标顺滑上移补上。」
    */
-  it("「译」图标槽位随图片管理是否可见动态切换（0 ↔ 1）", () => {
+  it("「译」图标槽位随图片管理是否可见动态切换（1 ↔ 2，slot 0 永远属于模式切换）", () => {
     const src = SRC("components/editor/EditorContainer.tsx");
-    expect(src).toContain("slot={docHasImageFlag ? 1 : 0}");
+    // v0.13.2 返修：旧值 1/0 分别与图片管理(slot 1)、模式切换(slot 0)完全重合，
+    // 用户实机看到「译字图标和分屏编辑图标重叠」。正确槽位：无图 1 / 有图 2。
+    expect(src).toContain("slot={docHasImageFlag ? 2 : 1}");
+    expect(src).not.toContain("slot={docHasImageFlag ? 1 : 0}");
     const css = SRC("components/editor/FullTranslateButton.css");
     // 槽位由 --ftb-slot 驱动（不再是写死的 2*）
     expect(css).toContain("var(--ftb-slot, 1)");

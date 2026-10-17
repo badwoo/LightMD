@@ -250,12 +250,15 @@ export function liftListLineToTask(text: string, cursorPos: number): FormatResul
     idx++;
   }
   const line = lines[idx];
-  // 有序/无序列表项：`1. ` / `1) ` / `- ` / `* ` / `+ `，允许 0~3 空格缩进
-  const m = /^(\s{0,3})(?:\d{1,9}[.)]|[-*+])(\s+)(.*)$/.exec(line);
+  // 有序/无序列表项：`1. ` / `1) ` / `- ` / `* ` / `+ `，允许 0~3 空格缩进。
+  // v0.13.2 返修（需求2）：**捕获列表标记本身**——有序列表的 `1.` 必须保留在
+  // 任务行里（用户明确要 `- [ ] 1. xxx`），否则"一加任务列表有序列表就消失了"。
+  const m = /^(\s{0,3})(\d{1,9}[.)]|[-*+])(\s+)(.*)$/.exec(line);
   if (!m) return null;
   // 已经是任务项 → 不接管（避免把 `- [ ]` 又提升一层）
-  if (/^\[[ xX]\](\s|$)/.test(m[3])) return null;
-  const body = m[3];
+  if (/^\[[ xX]\](\s|$)/.test(m[4])) return null;
+  const marker = m[2];
+  const body = m[4];
 
   // 向上找到该列表块的起始行（连续的列表项行）
   const isListLine = (s: string) => /^\s{0,3}(?:\d{1,9}[.)]|[-*+])\s+\S/.test(s);
@@ -266,7 +269,9 @@ export function liftListLineToTask(text: string, cursorPos: number): FormatResul
   const rest = [...lines.slice(0, idx), ...lines.slice(idx + 1)];
   // 删除当前行后，块起点若在当前行之后则要左移一位
   const insertAt = blockStart > idx ? blockStart - 1 : blockStart;
-  const taskLine = `- [ ] ${body}`;
+  // 有序列表保留序号（`1.` / `1)`），无序列表不保留 bullet 符号（任务项自带 `- [ ]`）
+  const keepMarker = /^\d/.test(marker) ? `${marker} ` : "";
+  const taskLine = `- [ ] ${keepMarker}${body}`;
   const next = [...rest.slice(0, insertAt), taskLine, ...rest.slice(insertAt)];
   const newText = next.join("\n");
 

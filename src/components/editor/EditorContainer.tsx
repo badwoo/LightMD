@@ -13,9 +13,8 @@ import {
   createEditor,
   getMarkdownFromDoc,
   clearSerializationCache,
-  // v0.13.2 需求5：换文档时保存/装回 PM 撤销历史 + 深度查询
+  // v0.13.2 需求5：换文档时保存/装回 PM 撤销历史
   getPmHistoryState,
-  pmHistoryDepth,
 } from "../../core/editor";
 // v0.11.0 B4-3：主题明暗判定单源（night 也是暗色，此前被 `theme === "dark"` 漏判）
 import { isDarkTheme, mermaidThemeName } from "../../utils/themeTone";
@@ -132,6 +131,13 @@ import {
   mapSourceLineToScrollTop,
   type PreviewAnchorSet,
 } from "../../utils/blockScrollAlign";
+// v0.13.2 需求8（返修）：分屏双向联动的**方向锁**（异步 scroll 回声防拉扯）
+import {
+  createScrollDirectionLock,
+  markScrollSource,
+  resetScrollDirectionLock,
+  shouldAcceptScroll,
+} from "../../utils/splitScrollSync";
 import { isMarkdownFile, LARGE_FILE_THRESHOLD } from "../../utils/constants";
 import { resolveImageSrc, setCurrentDocPath } from "../../utils/imagePath";
 import { resolveLinkAction, anchorMatchesHeading } from "../../utils/linkNav";
@@ -206,21 +212,8 @@ import { versionSnapshotService } from "../../services/versionSnapshotService";
 import { notifyWarning, notifySuccess } from "../../services/notificationService";
 // v0.7.0 bug修复：按文件记录浏览进度（切换标签保留，重新打开重置）
 import { fileScrollProgress } from "../../services/fileScrollProgress";
-// v0.13.2 需求5：撤销历史按文档保管 + 跨文档顺序撤销账本
-import {
-  saveDocHistory,
-  loadDocHistory,
-  docHistoryUndoDepth,
-  docHistoryRedoDepth,
-} from "../../services/docHistoryStore";
-import {
-  noteEdit as noteDocEdit,
-  noteUndone as noteDocUndone,
-  noteRedone as noteDocRedone,
-  routeUndo as routeDocUndo,
-  registerUndoBridge,
-  consumePendingRequest as consumePendingUndoRequest,
-} from "../../services/docUndoOrder";
+// v0.13.2 需求5（返修后口径）：撤销历史按文档保管，**不跨文档路由**
+import { saveDocHistory, loadDocHistory } from "../../services/docHistoryStore";
 // v0.8.3 需求3：源码模式光标行列/选中字符数纯函数
 import { computeTextareaCursorPosition } from "../../utils/cursorPosition";
 // v0.8.3 WP4 需求6：进度键前缀（临时标签 = untitled:<id>，与 utils/tabKey.ts 单源）
@@ -801,33 +794,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (diff.deleted === "" && diff.inserted === "") return; // 无变化
     const entry: HistoryEntry = { ...diff, cursorPos, scrollTop };
     pushUndoEntry(entry);
-    // v0.13.2 需求5：登记"这个文档刚被编辑过"，供跨文档顺序撤销挑选目标
-    noteDocEdit(docKeyRef.current);
   }, [pushUndoEntry]);
 
   /**
-   * v0.13.2 需求5：当前活动文档**还能撤/恢复几步**（跨文档路由的判据）。
+   * v0.13.2 需求5（返修后口径）：执行一次**当前文档**的撤销。
    *
-   * 活动文档用真实视图/栈（最新状态），非活动文档用 `docHistoryStore`
-   * 里保存的离线快照深度。
-   */
-  const undoDepthOfDoc = useCallback((key: string, kind: "undo" | "redo"): number => {
-    if (key === docKeyRef.current) {
-      if (viewMode === "preview") {
-        const view = viewRef.current;
-        if (!view) return 0;
-        const d = pmHistoryDepth(view.state);
-        return kind === "undo" ? d.undo : d.redo;
-      }
-      return kind === "undo" ? undoStackRef.current.length : redoStackRef.current.length;
-    }
-    return kind === "undo" ? docHistoryUndoDepth(key) : docHistoryRedoDepth(key);
-  }, [viewMode]);
-
-  /**
-   * v0.13.2 需求5：执行一次**本地**撤销（当前文档）。
+   * 用户复测明确要求：「不再跨文档；当前文档的编辑撤销和恢复只在当前文档生效，
+   * 切换到其他文档进行撤销恢复也是在对应文档，互不干扰。」
+   * 因此这里只操作当前文档的栈（PM history / 源码 diff 栈），不做任何切换文档的路由。
    *
-   * @returns 是否真的撤销了一步（false = 本地栈已空）
+   * @returns 是否真的撤销了一步（false = 当前文档撤销栈已空）
    */
   const doLocalUndo = useCallback((): boolean => {
     if (viewMode === "preview") {
@@ -835,9 +811,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (!view) return false;
       const before = view.state.doc;
       undo(view.state, view.dispatch);
-      const changed = view.state.doc !== before;
-      if (changed) noteDocUndone(docKeyRef.current ?? "");
-      return changed;
+      return view.state.doc !== before;
     }
     const textarea = sourceTextareaRef.current;
     if (!textarea) return false;
@@ -859,7 +833,6 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setDirtyRef.current(true);
     // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
     lastContentRef.current = unmaskBase64Images(undoneContent, base64TokensRef.current);
-    noteDocUndone(docKeyRef.current ?? "");
     requestAnimationFrame(() => {
       const ta = sourceTextareaRef.current;
       if (ta) {
@@ -872,16 +845,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     return true;
   }, [viewMode]);
 
-  /** v0.13.2 需求5：执行一次**本地**恢复（当前文档） */
+  /** v0.13.2 需求5（返修后口径）：执行一次**当前文档**的恢复（不跨文档） */
   const doLocalRedo = useCallback((): boolean => {
     if (viewMode === "preview") {
       const view = viewRef.current;
       if (!view) return false;
       const before = view.state.doc;
       redo(view.state, view.dispatch);
-      const changed = view.state.doc !== before;
-      if (changed) noteDocRedone(docKeyRef.current ?? "");
-      return changed;
+      return view.state.doc !== before;
     }
     const textarea = sourceTextareaRef.current;
     if (!textarea || redoStackRef.current.length === 0) return false;
@@ -900,7 +871,6 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     setDirtyRef.current(true);
     // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
     lastContentRef.current = unmaskBase64Images(redoneContent, base64TokensRef.current);
-    noteDocRedone(docKeyRef.current ?? "");
     requestAnimationFrame(() => {
       const ta = sourceTextareaRef.current;
       if (ta) {
@@ -914,81 +884,21 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, [viewMode]);
 
   /**
-   * v0.13.2 需求5：**撤销/恢复总入口**（Ctrl+Z / Ctrl+Y / 菜单 / 工具栏共用）。
+   * v0.13.2 需求5（返修后口径）：**撤销/恢复总入口**（Ctrl+Z / Ctrl+Y / 菜单 / 工具栏共用）。
    *
-   * 顺序语义（用户确认，与 Word 一致）：
-   * - 目标文档 = 账本里**最近编辑过、且仍能撤**的那个；
-   * - 目标就是当前文档 → 本地撤销；
-   * - 目标在别的文档 → 切过去（`lightmd:undo-switch-doc` 由 App 处理），
-   *   装载完成后由本组件的换文档 effect 消费待执行请求再撤销；
-   * - 账本空了 → 给出"已到撤销边界"提示（与源码模式旧行为一致）。
+   * 用户复测要求：撤销/恢复**只在当前文档生效**，切到别的文档后各自操作自己的历史，
+   * 互不干扰。因此这里直接执行当前文档的本地撤销；当前文档已撤到底时给出边界提示，
+   * **不**切换到其他文档（跨文档顺序撤销账本已移除）。
    */
   const handleUndo = useCallback(() => {
-    const routed = routeDocUndo("undo");
-    if (routed === "switched") return;
-    if (routed === "none") {
-      const boundaryMsg = sourceUndoBoundaryMessage(0);
-      if (boundaryMsg) notifyWarning(boundaryMsg);
-      return;
-    }
-    if (!doLocalUndo()) {
-      // 本地已撤到底：账本可能与实际栈不同步，再路由一次（可能切到别的文档）
-      const again = routeDocUndo("undo");
-      if (again === "switched") return;
-      const boundaryMsg = sourceUndoBoundaryMessage(0);
-      if (boundaryMsg) notifyWarning(boundaryMsg);
-    }
+    if (doLocalUndo()) return;
+    const boundaryMsg = sourceUndoBoundaryMessage(0);
+    if (boundaryMsg) notifyWarning(boundaryMsg);
   }, [doLocalUndo]);
 
   const handleRedo = useCallback(() => {
-    const routed = routeDocUndo("redo");
-    if (routed === "switched") return;
-    if (routed === "none") return;
-    if (!doLocalRedo()) {
-      const again = routeDocUndo("redo");
-      if (again === "switched") return;
-    }
+    doLocalRedo();
   }, [doLocalRedo]);
-
-  /**
-   * v0.13.2 需求5：消费"切到目标文档后要执行的撤销/恢复"。
-   *
-   * 由换文档 effect 在装好新文档（含装回历史）后调用。
-   * 用 `requestAnimationFrame` 延后一帧：让 PM 先把新文档渲染完，
-   * 否则撤销事务里的选区恢复可能落在旧 DOM 上。
-   */
-  const flushPendingUndoRequest = useCallback(() => {
-    const req = consumePendingUndoRequest();
-    if (!req) return;
-    requestAnimationFrame(() => {
-      if (req.kind === "undo") doLocalUndo();
-      else doLocalRedo();
-    });
-  }, [doLocalUndo, doLocalRedo]);
-
-  /**
-   * v0.13.2 需求5：注册跨文档撤销路由桥。
-   *
-   * `core/keymap.ts` 的 PM 内 Ctrl+Z 与 App 层的全局 Ctrl+Z 都走这里，
-   * 保证「键盘 / 菜单 / 工具栏」三条入口的跨文档语义完全一致。
-   */
-  useEffect(() => {
-    registerUndoBridge({
-      activeKey: () => docKeyRef.current,
-      depthOf: undoDepthOfDoc,
-      switchTo: (key) => {
-        // 交给 App 编排标签切换（只有它知道标签表与内容装载）。
-        // cancelable：App 找不到该文档时 preventDefault → 本层按"切不过去"处理。
-        const ev = new CustomEvent("lightmd:undo-switch-doc", {
-          detail: { key },
-          cancelable: true,
-        });
-        window.dispatchEvent(ev);
-        return !ev.defaultPrevented;
-      },
-    });
-    return () => registerUndoBridge(null);
-  }, [undoDepthOfDoc]);
 
   // ─── 注册撤销/恢复回调到 store ─────────────────
   useEffect(() => {
@@ -1441,12 +1351,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       redoStackRef.current = (restored?.sourceRedo as HistoryEntry[] | undefined) ?? [];
       lastHistoryContentRef.current = content;
       docKeyRef.current = incomingKey;
-      // 跨文档撤销请求：如果这次切换正是为了撤销另一个文档，装载完立即执行
-      flushPendingUndoRequest();
     } catch (e) {
       console.error("更新编辑器内容失败:", e);
     }
-  }, [content, forceUpdateKey, isMdFile, filePath, flushPendingUndoRequest]);
+  }, [content, forceUpdateKey, isMdFile, filePath]);
 
   // ─── v0.7.0 bug修复：文件切换保留浏览进度 ─────────
   // 需求：切换不同打开的文件时浏览进度不重置；重新打开该文件时重置到顶部。
@@ -6362,47 +6270,66 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   //   · 右 → 左：右侧视口顶 → 所属顶层块 → 块内比例 → 反算源码行 → textarea scrollTop。
   // 由于两侧都锚在**同一个块的同一相对位置**，块高差异再大也能对齐。
   //
-  // 防拉扯：`isSyncingScrollRef` 在同步期间置位，被同步的一侧产生的 scroll 事件
-  // 直接忽略；每次同步完成后延后一帧再解锁（覆盖浏览器派发 scroll 事件的时机差）。
+  // 防拉扯（v0.13.2 返修的核心）：浏览器对 `el.scrollTop = x` 派发的 scroll 事件是
+  // **异步**的（下一帧），同步执行期置位的 `isSyncingScrollRef` 到那时早已被清除，
+  // 于是被同步的一侧会把滚动再反推回来 —— 两屏互相拉扯、最终停在随机位置（实测还会
+  // 把左屏 scrollTop 写成 0）。现在改用 `utils/splitScrollSync` 的**时间窗方向锁**：
+  // 哪一侧先发起滚动，谁在窗口期内拥有同步权，另一侧的 scroll 事件一律按回声忽略。
   useEffect(() => {
     if (viewMode !== "split") return;
     const textarea = sourceTextareaRef.current;
     const iframe = previewIframeRef.current;
     if (!textarea || !iframe) return;
-    // iframe 预览区的滚动目标是其 contentDocument.documentElement
-    const previewDoc = iframe.contentDocument;
-    const preview = previewDoc?.documentElement || previewDoc?.body;
-    if (!preview || !previewDoc) return;
+    const previewWin = iframe.contentWindow;
+    if (!previewWin) return;
+
+    const lock = createScrollDirectionLock();
+
+    /**
+     * 取右侧当前滚动容器。
+     *
+     * **每次现取**：完整重写预览（`doc.open()/write()`，例如首次进入分屏、主题切换、
+     * 首次出现 mermaid）会换掉 documentElement —— 缓存下来的旧引用写 scrollTop 是
+     * 写到一个已脱离文档的节点上，right→left / left→right 会"看起来完全没反应"。
+     */
+    const getPreviewScroller = (): HTMLElement | null => {
+      const d = iframe.contentDocument;
+      return ((d?.scrollingElement ?? d?.documentElement ?? d?.body) as HTMLElement | null) ?? null;
+    };
 
     /**
      * 采集右侧锚点集合（每次同步时现算，块高会被 mermaid/katex 异步改变）。
      *
-     * 用 `offsetTop` 而不是 `getBoundingClientRect().top`：后者随滚动变化，
-     * 而映射需要的是**内容坐标系**里的位置（scrollTop 也是内容坐标系）。
+     * 用 `getBoundingClientRect().top - previewRectTop + scrollTop` 换算到内容坐标：
+     * `scrollTop` 与块高都必须是同一个坐标系，否则对齐会整体偏移。
      */
     const collectAnchors = (): PreviewAnchorSet | null => {
+      const preview = getPreviewScroller();
+      if (!preview) return null;
       const tagged = preview.querySelectorAll<HTMLElement>("[data-src-line]");
       if (tagged.length === 0) return null;
       const lines: number[] = [];
       const tops: number[] = [];
       const heights: number[] = [];
-      const previewRectTop = preview.getBoundingClientRect().top;
+      // ⚠️ v0.13.2 返修：**不要**减 `documentElement.getBoundingClientRect().top`。
+      // 根元素自身的矩形 top 就等于 `-scrollTop`（它随滚动整体上移），
+      // 旧写法 `rect.top - previewRectTop + scrollTop` 实际算成了
+      // `rect.top + 2 * scrollTop` —— 越往下滚锚点坐标越虚高，右侧直接顶到底、
+      // 反算回左屏又变成 0（用户看到"完全不联动 / 乱跳"）。
+      // 元素 rect 本来就是**相对 iframe 视口**的坐标，加上 scrollTop 即内容坐标。
       for (const el of tagged) {
         const line = Number(el.dataset.srcLine);
         if (!Number.isFinite(line)) return null;
         const rect = el.getBoundingClientRect();
         lines.push(line);
-        // 内容坐标 = 视口坐标 + 当前滚动量 - 预览容器自身视口偏移
-        tops.push(rect.top - previewRectTop + preview.scrollTop);
+        tops.push(rect.top + preview.scrollTop);
         heights.push(rect.height);
       }
-      return {
-        lines,
-        tops,
-        heights,
-        totalHeight: preview.scrollHeight,
-      };
+      return { lines, tops, heights, totalHeight: preview.scrollHeight };
     };
+
+    const totalSourceLines = (): number =>
+      previewSourceMarkdown === "" ? 0 : previewSourceMarkdown.split("\n").length;
 
     /** 左屏视口顶对应的源码行（浮点） */
     const currentTopSourceLine = (): number =>
@@ -6410,68 +6337,69 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         scrollTop: textarea.scrollTop,
         scrollHeight: textarea.scrollHeight,
         clientHeight: textarea.clientHeight,
-        totalSourceLines: previewSourceMarkdown === "" ? 0 : previewSourceMarkdown.split("\n").length,
+        totalSourceLines: totalSourceLines(),
       });
 
     /**
      * 左 → 右：源码行映射到预览 scrollTop。
      *
-     * 回退：非 md 文件、未贴标签（数量自校验失败）、或任何测量异常 →
-     * 走既有的 `computeSyncScrollTop` 百分比映射。块对齐是**增强**，不是替代。
+     * 回退链：块锚点映射 → 百分比映射 → 无（测量不到就放弃，不写坏滚动位置）。
      */
     const syncToPreview = () => {
+      const now = performance.now();
+      if (!shouldAcceptScroll(lock, "source", now)) return;
+      markScrollSource(lock, "source", now);
+      const preview = getPreviewScroller();
+      if (!preview) return;
       if (isSyncingScrollRef.current) return;
       isSyncingScrollRef.current = true;
-      let handled = false;
       try {
-        const anchors = collectAnchors();
-        if (anchors) {
-          const next = mapSourceLineToPreviewScroll(
-            anchors,
-            currentTopSourceLine(),
-            preview.clientHeight,
-          );
-          if (next !== null && Number.isFinite(next)) {
-            preview.scrollTop = next;
-            handled = true;
+        let handled = false;
+        try {
+          const anchors = collectAnchors();
+          if (anchors) {
+            const next = mapSourceLineToPreviewScroll(
+              anchors,
+              currentTopSourceLine(),
+              preview.clientHeight,
+            );
+            if (next !== null && Number.isFinite(next)) {
+              preview.scrollTop = next;
+              handled = true;
+            }
           }
+        } catch {
+          handled = false;
         }
-      } catch {
-        // 块对齐失败（iframe 未就绪 / 测量异常）→ 落到下面的百分比映射
-        handled = false;
+        if (!handled) {
+          preview.scrollTop = computeSyncScrollTop(
+            textarea.scrollTop, textarea.scrollHeight, textarea.clientHeight,
+            preview.scrollHeight, preview.clientHeight,
+          );
+        }
+      } finally {
+        isSyncingScrollRef.current = false;
       }
-      if (!handled) {
-        preview.scrollTop = computeSyncScrollTop(
-          textarea.scrollTop, textarea.scrollHeight, textarea.clientHeight,
-          preview.scrollHeight, preview.clientHeight
-        );
-      }
-      requestAnimationFrame(() => { isSyncingScrollRef.current = false; });
     };
 
-    /**
-     * 右 → 左：预览 scrollTop 反算源码行，再换算成 textarea scrollTop。
-     *
-     * 与左→右共用同一个 `isSyncingScrollRef`：左→右写入 preview.scrollTop 后，
-     * 浏览器会派发一次 preview 的 scroll 事件，此时标记仍置位 → 直接忽略，
-     * 不会形成"左推右、右又推左"的回环。
-     */
+    /** 右 → 左：预览 scrollTop 反算源码行，再换算成 textarea scrollTop。 */
     const syncToSource = () => {
+      const now = performance.now();
+      if (!shouldAcceptScroll(lock, "preview", now)) return;
+      markScrollSource(lock, "preview", now);
+      const preview = getPreviewScroller();
+      if (!preview) return;
       if (isSyncingScrollRef.current) return;
       isSyncingScrollRef.current = true;
       try {
         const anchors = collectAnchors();
-        const totalLines = previewSourceMarkdown === "" ? 0 : previewSourceMarkdown.split("\n").length;
         let line: number | null = null;
         if (anchors) line = mapPreviewScrollToSourceLine(anchors, preview.scrollTop);
         if (line === null) {
-          // 回退：百分比反算
           const pct = computeSyncScrollTop(
             preview.scrollTop, preview.scrollHeight, preview.clientHeight,
             textarea.scrollHeight, textarea.clientHeight,
           );
-          // computeSyncScrollTop 的语义是"给定源 scrollTop 求目标"，
-          // 这里把 preview 当源、textarea 当目标，再按 textarea 的可滚动区间落位
           const max = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
           textarea.scrollTop = Math.min(Math.max(0, pct), max);
         } else {
@@ -6480,7 +6408,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               scrollTop: textarea.scrollTop,
               scrollHeight: textarea.scrollHeight,
               clientHeight: textarea.clientHeight,
-              totalSourceLines: totalLines,
+              totalSourceLines: totalSourceLines(),
             },
             line,
           );
@@ -6488,35 +6416,33 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         }
       } catch {
         /* 测量异常：放弃本次同步（不写坏滚动位置） */
+      } finally {
+        isSyncingScrollRef.current = false;
       }
-      requestAnimationFrame(() => { isSyncingScrollRef.current = false; });
     };
 
     textarea.addEventListener("scroll", syncToPreview, { passive: true });
-    // v0.13.2 需求8：右屏滚动也回推左屏（双向映射）。
-    // 监听挂在 iframe 的 contentWindow 上（滚动发生在 iframe 自己的文档里）。
-    const previewWin = iframe.contentWindow;
-    previewWin?.addEventListener("scroll", syncToSource, { passive: true });
-    // 兜底：部分环境（jsdom / 老内核）documentElement 与 window 的 scroll 派发不一致，
-    // 直接在滚动容器上也挂一份（回调内部有防重入，重复触发无副作用）。
-    preview.addEventListener("scroll", syncToSource, { passive: true });
+    // 右屏滚动：window 上接一份（iframe 文档滚动会在 contentWindow 派发），
+    // 再在 contentDocument 上接一份捕获阶段兜底（部分 WebView2 版本只在 document
+    // 层派发；捕获阶段对不冒泡的 scroll 同样有效）。
+    previewWin.addEventListener("scroll", syncToSource, { passive: true });
+    const previewDocNow = iframe.contentDocument;
+    previewDocNow?.addEventListener("scroll", syncToSource, { capture: true, passive: true });
 
     // ─── 内容重渲染后**主动重同步一次** ──────────────
-    // 缺陷背景：右屏正文在防抖后被整段替换（`doc.body.innerHTML = previewHtml`），
-    // 而 mermaid/katex 还会**异步**撑高内容；替换后 iframe 只保留**像素** scrollTop，
-    // 文档高度一变，同一个像素就对应到别的内容了 —— 用户看到"要把屏幕往下拉一拉
-    // 才能看到左屏正在编辑的图表"。本 effect 的依赖含 `previewHtml`，每次内容更新
-    // 都会重跑，因此在绑定监听后立刻按左屏位置重算一次；再补一帧覆盖异步渲染。
+    // 右屏正文被防抖替换后只保留像素 scrollTop，而块高（mermaid/katex 异步渲染）
+    // 变了 → 同一像素对应到别的内容。本 effect 依赖 previewHtml，每次内容更新都重跑，
+    // 在绑定监听后立刻按左屏位置重算一次；再补一帧覆盖异步渲染。
     syncToPreview();
     const raf = requestAnimationFrame(() => {
-      isSyncingScrollRef.current = false;
       syncToPreview();
     });
     return () => {
       cancelAnimationFrame(raf);
       textarea.removeEventListener("scroll", syncToPreview);
-      previewWin?.removeEventListener("scroll", syncToSource);
-      preview.removeEventListener("scroll", syncToSource);
+      previewWin.removeEventListener("scroll", syncToSource);
+      previewDocNow?.removeEventListener("scroll", syncToSource, { capture: true } as EventListenerOptions);
+      resetScrollDirectionLock(lock);
       isSyncingScrollRef.current = false;
     };
   }, [viewMode, previewHtml, previewSourceMarkdown]); // 依赖 previewHtml / 源码文本，因为 iframe 内容更新后需要重新同步
@@ -6683,11 +6609,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
         {/* v0.6.2 问题3：「译」字按钮智能判断——有选中文本时翻译选区，无选区时全文翻译；
             翻译运行中点击 = 取消（startFullTranslate 内部处理）。
-            v0.13.2 需求4：槽位**动态**——图片管理入口显示时让到第 2 格（slot=1），
-            不显示时补上那个空缺（slot=0，紧跟模式切换按钮），并带 CSS top 过渡。 */}
+            v0.13.2 需求4：槽位**动态**——图片管理入口显示时让到第 3 格（slot=2），
+            不显示时补上那个空缺（slot=1，紧跟模式切换按钮），并带 CSS top 过渡。
+            ⚠️ v0.13.2 返修：模式切换固定占第 0 格（10px）。旧值 `有图 ? 1 : 0`
+            会让「译」与图片管理（slot=1）完全重合、无图时又与模式切换按钮（slot=0）
+            完全重合 —— 用户实机看到的就是"译字图标和分屏编辑图标重叠"。 */}
         {(viewMode === "preview" || viewMode === "split") && isMdFile && translateEnabled && (
           <FullTranslateButton
-            slot={docHasImageFlag ? 1 : 0}
+            slot={docHasImageFlag ? 2 : 1}
             onStart={() => {
               if (fullTranslateRunning) {
                 startFullTranslateRef.current(); // 运行中点击 = 取消
