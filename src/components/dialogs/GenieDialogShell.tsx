@@ -29,10 +29,10 @@ import type { ReactNode } from "react";
  * 退场动画总时长（毫秒）。
  *
  * **必须与 ImageManagerDialog.css 的 image-mgr-genie-out 时长保持一致**
- * （当前 0.26s = 260ms，另留 40ms 余量）。改一处必须同时改另一处，
- * 否则会出现"动画还没播完就卸载"或"已经不可见却还挂在 DOM 上"。
+ * （v0.13.2 返修后与搜索框同族：0.38s = 380ms，另留 60ms 余量）。
+ * 改一处必须同时改另一处，否则会出现"动画还没播完就卸载"或"已经不可见却还挂在 DOM 上"。
  */
-export const IMAGE_MGR_GENIE_OUT_MS = 300;
+export const IMAGE_MGR_GENIE_OUT_MS = 440;
 
 export interface GenieDialogShellProps {
   /** 是否应当显示（驱动挂载/退场） */

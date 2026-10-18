@@ -404,11 +404,11 @@ describe("需求6 · 几何变量：从按钮中心长出来 / 缩回按钮", ()
 // ═══════════ 需求6：CSS / 常量的时序对应（jsdom 观测不到动画时序） ═══════════
 
 describe("需求6 · 时序与 keyframes 常量对齐", () => {
-  it("GenieDialogShell 的退场阈值 300ms（入场时长由 CSS 0.32s 单点定义，不设重复常量）", () => {
-    expect(IMAGE_MGR_GENIE_OUT_MS).toBe(300);
+  it("GenieDialogShell 的退场阈值 440ms（与 0.38s 退场动画对齐，留 60ms 余量）", () => {
+    expect(IMAGE_MGR_GENIE_OUT_MS).toBe(440);
   });
 
-  it("ImageManagerDialog.css：genie 入场 0.32s / 退场 0.26s，遮罩 0.15s / 0.22s", () => {
+  it("ImageManagerDialog.css：genie 入场 0.48s / 退场 0.38s，遮罩为静态亮度", () => {
     // CSS 动画时长无法在 jsdom 里被观测（无渲染引擎），只能锁源文本。
     const css = SRC("components/dialogs/ImageManagerDialog.css");
     expect(css).toContain("@keyframes image-mgr-genie-in");
@@ -418,19 +418,18 @@ describe("需求6 · 时序与 keyframes 常量对齐", () => {
       ".image-mgr-genie-in .image-mgr-dialog",
       ".image-mgr-genie-in .image-mgr-dialog {",
     );
-    expect(inRule).toMatch(/animation:\s*image-mgr-genie-in\s+0\.32s/);
+    expect(inRule).toMatch(/animation:\s*image-mgr-genie-in\s+0\.48s/);
     const outRule = ruleOfSnippet(
       css,
       ".image-mgr-genie-out .image-mgr-dialog",
       ".image-mgr-genie-out .image-mgr-dialog {",
     );
-    expect(outRule).toMatch(/animation:\s*image-mgr-genie-out\s+0\.26s/);
+    expect(outRule).toMatch(/animation:\s*image-mgr-genie-out\s+0\.38s/);
     expect(outRule).toContain("pointer-events: none");
-    expect(css).toMatch(/animation:\s*image-mgr-scrim-in\s+0\.15s/);
-    expect(css).toContain(".image-mgr-genie-out .image-mgr-overlay::before");
-    expect(css).toMatch(/animation:\s*image-mgr-scrim-out\s+0\.22s/);
-    // 退场 0.26s（260ms）< 壳的 300ms 卸载阈值（留 40ms 余量）
-    expect(IMAGE_MGR_GENIE_OUT_MS).toBeGreaterThan(260);
+    // v0.13.2 返修：遮罩不再淡入（整屏半透明层 opacity 动画在 iframe 上方会闪）
+    expect(css).not.toContain("image-mgr-scrim-in");
+    expect(css).not.toContain("image-mgr-scrim-out");
+    expect(IMAGE_MGR_GENIE_OUT_MS).toBeGreaterThan(380);
   });
 
   it("弹窗不再自持关闭延迟（退场由壳统一负责，避免 open=false 后无 DOM 可动画）", () => {
@@ -443,7 +442,7 @@ describe("需求6 · 时序与 keyframes 常量对齐", () => {
     expect(src).not.toMatch(/^\s*if \(!open\) return null;/m);
   });
 
-  it("reduced-motion：genie 入场/退场与遮罩动画全部关闭", () => {
+  it("reduced-motion：genie 入场/退场动画关闭", () => {
     const css = SRC("components/dialogs/ImageManagerDialog.css");
     const all = reducedMotionBlocks(css).join("\n");
     expect(all).not.toBe("");

@@ -218,10 +218,9 @@ describe("v0.8.5 需求6：弹窗打开过渡动画类", () => {
 });
 
 describe("v0.8.5 需求6+反馈：弹窗动画 CSS 源文本（背景透出闪动修复）", () => {
-  it("NewFolderDialog.css 定义 overlay 淡入与本体 pop-in keyframes", () => {
-    const fade = extractKeyframes(dialogCss, "dialog-overlay-fade-in");
-    expect(fade).toContain("opacity: 0");
-    expect(fade).toContain("opacity: 1");
+  it("NewFolderDialog.css：遮罩为静态亮度，本体保留 pop-in keyframes", () => {
+    // v0.13.2 返修：遮罩不再淡入（大范围半透明层 opacity 动画在 iframe 上方会闪）
+    expect(dialogCss).not.toContain("@keyframes dialog-overlay-fade-in");
 
     const pop = extractKeyframes(dialogCss, "dialog-pop-in");
     // 本体：轻微上移 + 缩放 → 原位
@@ -243,15 +242,15 @@ describe("v0.8.5 需求6+反馈：弹窗动画 CSS 源文本（背景透出闪�
     expect(dialogRule).toContain("background: var(--bg-primary)");
   });
 
-  it("遮罩淡入挂在 overlay 的 ::before 独立层（与弹窗透明度解耦）", () => {
+  it("遮罩挂在 overlay 的 ::before 独立层，且为**静态亮度**（不做 opacity 动画）", () => {
     const mask = extractRule(dialogCss, ".dialog-overlay-in::before");
     expect(mask).toContain("content:");
     // 半透明遮罩视觉不回退（遮罩背景由伪元素承载）
     expect(mask).toContain("background: rgba(0, 0, 0, 0.35)");
-    // 合成层提升：遮罩仅 opacity 动画 + will-change
-    expect(mask).toContain("animation: dialog-overlay-fade-in 0.15s ease-out both");
-    expect(mask).toContain("will-change: opacity");
-    // overlay 容器自身不再有 animation（透明度不再叠加到弹窗）
+    // v0.13.2 返修：不再对整屏半透明层做动画/合成层提升（iframe 上方会闪）
+    expect(mask).not.toContain("animation:");
+    expect(mask).not.toContain("will-change");
+    // overlay 容器自身也不承载透明度/动画
     const overlayRule = extractRule(dialogCss, ".newfolder-overlay {");
     expect(overlayRule).not.toContain("animation");
   });
@@ -271,16 +270,14 @@ describe("v0.8.5 需求6+反馈：弹窗动画 CSS 源文本（背景透出闪�
       expect(rule).not.toContain("box-shadow");
       expect(rule).not.toContain("transition");
     }
-    // 两组 keyframes 内均不得引入 box-shadow（阴影随合成层静态栅格化，不逐帧重绘）
-    expect(extractKeyframes(dialogCss, "dialog-overlay-fade-in")).not.toContain("box-shadow");
+    // pop-in keyframes 内不得引入 box-shadow（阴影随合成层静态栅格化，不逐帧重绘）
     expect(extractKeyframes(dialogCss, "dialog-pop-in")).not.toContain("box-shadow");
   });
 
-  it("弹窗动画含 prefers-reduced-motion 降级（含伪元素遮罩）", () => {
+  it("弹窗动画含 prefers-reduced-motion 降级", () => {
     const m = dialogCss.indexOf("@media (prefers-reduced-motion: reduce)");
     expect(m).toBeGreaterThanOrEqual(0);
     const block = dialogCss.slice(m, dialogCss.indexOf("}", m) + 1);
-    expect(block).toContain(".dialog-overlay-in::before");
     expect(block).toContain(".dialog-pop-in");
     expect(block).toContain("animation: none");
   });
@@ -348,7 +345,61 @@ describe("v0.8.5 需求7+反馈：搜索面板出现/收回动画（延迟卸载
 
   it("StatusBar 搜索按钮带 data-genie-anchor 锚点（出现/收回动画的几何依据）", () => {
     render(createElement(GenieHarness));
-    expect(document.querySelector("[data-genie-anchor]")).toBeTruthy();
+    expect(document.querySelector('[data-genie-anchor="search"]')).toBeTruthy();
+  });
+
+  /**
+   * v0.13.2 返修：图片管理入口也带 `data-genie-anchor="image-manager"`，且
+   * EditorContainer 在 DOM 中排在 StatusBar 之前。旧实现用泛选择器
+   * `[data-genie-anchor]` 量到了图片管理图标 → 搜索面板出现/收回的几何变量错误，
+   * 用户反馈「搜索框动画的尾巴没了」。这里放一个更靠前的诱饵锚点，断言只认搜索按钮。
+   */
+  it("DOM 里存在更靠前的 image-manager 锚点时，仍以搜索按钮为锚点", () => {
+    const toRect = (r: { left: number; top: number; width: number; height: number }) =>
+      ({
+        x: r.left,
+        y: r.top,
+        ...r,
+        right: r.left + r.width,
+        bottom: r.top + r.height,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: DOMRect) {
+        const el = this as unknown as HTMLElement;
+        const anchor = el.getAttribute("data-genie-anchor");
+        if (anchor === "image-manager") {
+          return toRect({ left: 1200, top: 50, width: 34, height: 34 });
+        }
+        if (anchor === "search") {
+          return toRect({ left: 720, top: 760, width: 60, height: 24 });
+        }
+        if (el.classList.contains("search-replace")) {
+          return toRect({ left: 300, top: 120, width: 460, height: 80 });
+        }
+        return toRect({ left: 0, top: 0, width: 0, height: 0 });
+      });
+
+    function DecoyHarness() {
+      return createElement(
+        Fragment,
+        null,
+        // 模拟 EditorContainer 的图片管理入口：先于 StatusBar 出现在文档中
+        createElement("span", { "data-genie-anchor": "image-manager" }),
+        createElement(GenieHarness),
+      );
+    }
+
+    const { container } = render(createElement(DecoyHarness));
+    clickSearchButton();
+    flushGenieMeasure();
+    const shell = container.querySelector('[data-testid="search-genie"]') as HTMLElement;
+    // 搜索按钮上沿 760 - 面板下沿 200 = 560；若错误锚到图片管理（top 50）会得到 0
+    expect(shell.style.getPropertyValue("--genie-from-y")).toBe("560px");
+    // 横向原点 = 按钮中心 750 - 面板左沿 300 = 450
+    expect(shell.style.getPropertyValue("--genie-origin-x")).toBe("450px");
+    spy.mockRestore();
   });
 
   it("面板挂载后测量按钮/面板位置并注入出现·收回几何变量", () => {

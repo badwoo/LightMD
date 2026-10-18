@@ -21,31 +21,19 @@
   padding-top: 10vh;
 }
 
-/* 遮罩独立成 ::before 层：淡出时只动这一层的 opacity，
-   不会顺带把弹窗子树一起淡化（两者透明度不再叠加）。
-   注意 overlay 自身不再有 background / animation。 */
+/* v0.13.2 返修（用户反馈：弹窗出现时背景闪动）：
+   遮罩**不再做 opacity 动画**，从第一帧起就是最终亮度。
+   缺陷背景：对覆盖整个视口的半透明层做 opacity 动画时，Chromium/WebView2 会把它
+   提升为独立合成层；动画期间与下方内容（分屏预览是 iframe，属于独立合成层）的
+   重采样不同步，观感就是"背景变暗的那一瞬闪一下"。
+   搜索框弹窗没有遮罩、从未出现该问题；新建文件夹/新建文件弹窗共用
+   `NewFolderDialog.css` 的 `dialog-overlay-in::before` 淡入，已一并改为静态遮罩。
+   动画全部交给弹窗本体的 transform（合成层属性，稳定不闪）。 */
 .image-mgr-overlay::before {
   content: "";
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
-  will-change: opacity;
-  animation: image-mgr-scrim-in 0.15s ease-out both;
-}
-
-.image-mgr-genie-out .image-mgr-overlay::before {
-  animation: image-mgr-scrim-out 0.22s ease-in both;
-}
-
-/* 遮罩 0.15s：短促、只动 opacity（淡淡的明暗变化） */
-@keyframes image-mgr-scrim-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes image-mgr-scrim-out {
-  from { opacity: 1; }
-  to   { opacity: 0; }
 }
 
 .image-mgr-dialog {
@@ -65,8 +53,10 @@
      默认 0，由组件按拖拽状态写 inline style。 */
   left: 0;
   top: 0;
-  /* 全程只动 opacity/transform（合成层属性，不触发布局/重绘） */
-  will-change: opacity, transform;
+  /* 全程只动 transform（合成层属性，不触发布局/重绘）。
+     ⚠️ 不再声明 `will-change: opacity`：弹窗本体**完全不做透明度动画** ——
+     半透明期间背后内容会透过面板显形，与位移/缩放叠加就是"背景在弹窗里闪动"。 */
+  will-change: transform;
 }
 
 /* 待命态：几何变量尚未注入（挂载后 2 帧内），面板先藏起来，
@@ -75,56 +65,46 @@
   opacity: 0;
 }
 
-/* 【打开】从按钮位置长出来：起点在按钮中心、缩到 0.3 且极扁 */
+/* 【打开】从按钮位置「长出来」：与搜索框同族 —— 位移回按钮中心 + 朝按钮方向收拢，
+   **不做 opacity**；起点更小（0.42×0.3）让"从图标里被拉出来"的过程看得见。
+   时长/缓动与 SearchReplace.css 对齐（0.48s easeOutCubic），观感更从容细腻。 */
 @keyframes image-mgr-genie-in {
   from {
     transform: translate(var(--genie-from-x, 0px), var(--genie-from-y, -40px))
-      scale(0.3, 0.18);
-    opacity: 0;
-  }
-  60% {
-    opacity: 1;
+      scale(0.42, 0.3);
   }
   to {
     transform: translate(0, 0) scale(1, 1);
-    opacity: 1;
   }
 }
 
-/* 【关闭】原路缩回按钮：先慢后快（被吸回去） */
+/* 【关闭】原路缩回按钮：先慢后快（像被图标吸回去），同样不参与 opacity。
+   终点比入场更扁一点，收拢感更明显。 */
 @keyframes image-mgr-genie-out {
   from {
     transform: translate(0, 0) scale(1, 1);
-    opacity: 1;
-  }
-  40% {
-    opacity: 0.85;
   }
   to {
     transform: translate(var(--genie-from-x, 0px), var(--genie-from-y, -40px))
-      scale(0.3, 0.12);
-    opacity: 0;
+      scale(0.38, 0.14);
   }
 }
 
 .image-mgr-genie-in .image-mgr-dialog {
   transform-origin: var(--genie-origin-x, 50%) var(--genie-origin-y, 0%);
-  animation: image-mgr-genie-in 0.32s cubic-bezier(0.33, 1, 0.68, 1) both;
+  animation: image-mgr-genie-in 0.48s cubic-bezier(0.33, 1, 0.68, 1) both;
 }
 
 .image-mgr-genie-out .image-mgr-dialog {
   transform-origin: var(--genie-origin-x, 50%) var(--genie-origin-y, 0%);
-  animation: image-mgr-genie-out 0.26s cubic-bezier(0.32, 0, 0.67, 0) both;
+  animation: image-mgr-genie-out 0.38s cubic-bezier(0.32, 0, 0.67, 0) both;
   /* 收回期间禁交互，防误点 */
   pointer-events: none;
 }
 
-/* 尊重系统「减少动态效果」：直接呈现/消失，不做动画
-   （遮罩动画挂在伪元素上，降级必须同样指向 ::before，
-   animation:none 后伪元素 opacity 回落默认值 1，遮罩直接呈现） */
+/* 尊重系统「减少动态效果」：直接呈现/消失，不做位移动画
+   （遮罩已是静态层，无需降级处理） */
 @media (prefers-reduced-motion: reduce) {
-  .image-mgr-overlay::before,
-  .image-mgr-genie-out .image-mgr-overlay::before,
   .image-mgr-genie-in .image-mgr-dialog,
   .image-mgr-genie-out .image-mgr-dialog {
     animation: none;

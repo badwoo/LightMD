@@ -46,7 +46,9 @@ export function ImageManagerButton({ slot, visible = true, onOpen }: ImageManage
       className={`image-manager-btn${visible ? "" : " is-hidden"}`}
       // 槽位 → 纵向偏移由 CSS 变量驱动，保证与上方图标等距、居中对齐
       style={{ ["--imb-slot" as string]: String(slot) }}
-      title={t("imageManager.title")}
+      // v0.13.2 返修：改用**自绘浮动提示**（CSS ::after 读 data-tip），
+      // 原生 title 有 1s 左右延迟、且与自绘提示会重复，故不再设置 title。
+      data-tip={t("imageManager.title")}
       aria-label={t("imageManager.title")}
       aria-hidden={visible ? undefined : true}
       tabIndex={visible ? undefined : -1}

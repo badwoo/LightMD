@@ -700,7 +700,10 @@ export function GenieSearchDialog(props: SearchReplaceProps & { active: boolean 
    */
   const syncGenieVars = useCallback(() => {
     const shell = shellRef.current;
-    const anchor = document.querySelector<HTMLElement>("[data-genie-anchor]");
+    // ⚠️ 必须指名搜索按钮：图片管理入口也带 `data-genie-anchor="image-manager"`，
+    // 且在 DOM 中更靠前。用泛选择器 `[data-genie-anchor]` 会量到图片管理图标，
+    // 搜索面板的出现/收回动画就会锚错位置（用户反馈"尾巴动画没了"）。
+    const anchor = document.querySelector<HTMLElement>('[data-genie-anchor="search"]');
     const panel = shell?.querySelector<HTMLElement>(".search-replace");
     if (!shell || !anchor || !panel) return;
     const btn = anchor.getBoundingClientRect();

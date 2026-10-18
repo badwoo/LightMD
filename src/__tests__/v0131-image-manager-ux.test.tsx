@@ -240,6 +240,20 @@ describe("需求7：图片管理图标排在「译」按钮上方（槽位 + 气
     expect(translateNoImg.top - modeSwitch.top).toBe(step);
   });
 
+  it("图片管理图标带自绘浮动提示（data-tip + CSS ::after，不依赖原生 title）", () => {
+    const { container, unmount } = render(
+      createElement(ImageManagerButton, { slot: 1, onOpen: vi.fn() }),
+    );
+    const btn = container.querySelector('[data-testid="image-manager-btn"]') as HTMLElement;
+    expect(btn.getAttribute("data-tip")).toBeTruthy();
+    // 原生 title 有延迟且会与自绘提示重复 → 不再设置
+    expect(btn.getAttribute("title")).toBeNull();
+    const css = SRC("components/editor/FullTranslateButton.css");
+    expect(css).toContain("content: attr(data-tip)");
+    expect(css).toMatch(/\.image-manager-btn:hover::after[\s\S]{0,80}?opacity:\s*1/);
+    unmount();
+  });
+
   it("JSX 传下来的 --imb-slot 是常量 1（不再跟随 translateSlotShown）", () => {
     const { unmount } = render(
       createElement(ImageManagerButton, { slot: 1, onOpen: vi.fn() }),
@@ -392,16 +406,14 @@ describe("需求9：点击「本地文件」徽标 → 在资源管理器中定�
 describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画", () => {
   const css = () => SRC("components/dialogs/ImageManagerDialog.css");
 
-  it("CSS 自带**两个方向**的 keyframes（scrim + genie，不再借 TabBar / SettingsDialog 的）", () => {
+  it("CSS 自带双向 genie keyframes（遮罩已改为静态亮度，不再有 scrim keyframes）", () => {
     const src = css();
-    for (const name of [
-      "image-mgr-scrim-in",
-      "image-mgr-scrim-out",
-      "image-mgr-genie-in",
-      "image-mgr-genie-out",
-    ]) {
+    for (const name of ["image-mgr-genie-in", "image-mgr-genie-out"]) {
       expect(src, `缺 @keyframes ${name}`).toContain(`@keyframes ${name} {`);
     }
+    // v0.13.2 返修：整屏半透明层不做 opacity 动画（iframe 上方会闪）
+    expect(src).not.toContain("@keyframes image-mgr-scrim-in");
+    expect(src).not.toContain("@keyframes image-mgr-scrim-out");
     // 借来的旧 keyframes 必须消失，否则下次对方改名这里会静默失效
     expect(src).not.toMatch(/animation:\s*fadeIn\b/);
     expect(src).not.toMatch(/animation:\s*slideUp\b/);
@@ -416,7 +428,7 @@ describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画
     expect(src).toContain("transform-origin: var(--genie-origin-x, 50%) var(--genie-origin-y, 0%)");
   });
 
-  it("遮罩移到独立层 ::before，overlay 本体不再有 background/animation", () => {
+  it("遮罩移到独立层 ::before，且为静态亮度（无 animation/will-change）", () => {
     const src = css();
     const overlay = ruleBody(src, ".image-mgr-overlay");
     expect(overlay).not.toContain("background:");
@@ -424,44 +436,45 @@ describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画
     const scrim = ruleBody(src, ".image-mgr-overlay::before");
     expect(scrim).toContain("content:");
     expect(scrim).toContain("background: rgba(0, 0, 0, 0.4)");
-    expect(scrim).toContain("image-mgr-scrim-in");
-    // 退场走壳的 image-mgr-genie-out 类
-    expect(src).toContain(".image-mgr-genie-out .image-mgr-overlay::before {");
+    expect(scrim).not.toContain("animation:");
+    expect(scrim).not.toContain("will-change");
+    // 退场仍走壳的 image-mgr-genie-out 类（只动画弹窗本体）
     expect(src).toContain(".image-mgr-genie-out .image-mgr-dialog {");
   });
 
-  it("只动 opacity / transform（不得出现 width/height/display 过渡）", () => {
+  it("弹窗本体只动 transform（不做 opacity，避免背景透出闪动）", () => {
     const src = css();
     const dialog = ruleBody(src, ".image-mgr-dialog");
-    expect(dialog).toContain("will-change: opacity, transform");
+    expect(dialog).toContain("will-change: transform");
+    // 只匹配可执行声明（注释里允许解释"为何不再声明"）
+    expect(dialog).not.toMatch(/^\s*will-change:\s*opacity/m);
     expect(src).not.toMatch(/transition:[^;]*\b(?:width|height|display)\b/);
-    const dialogIn = src.slice(src.indexOf("@keyframes image-mgr-genie-in {"));
-    const inBody = dialogIn.slice(0, dialogIn.indexOf("\n}"));
-    expect(inBody).toContain("opacity");
-    expect(inBody).toContain("transform");
+    for (const name of ["image-mgr-genie-in", "image-mgr-genie-out"]) {
+      const start = src.indexOf(`@keyframes ${name} {`);
+      const body = src.slice(start, src.indexOf("\n}", start));
+      expect(body, `${name} 不得含 opacity`).not.toContain("opacity");
+      expect(body).toContain("transform");
+    }
   });
 
-  it("时长：遮罩 0.15s / 入场 0.32s / 退场 0.26s；壳的延迟卸载覆盖退场", () => {
+  it("时长与搜索框同族：入场 0.48s / 退场 0.38s；壳的延迟卸载覆盖退场", () => {
     const src = css();
-    expect(src).toContain("image-mgr-scrim-in 0.15s");
-    expect(src).toContain("image-mgr-scrim-out 0.22s");
-    expect(src).toContain("image-mgr-genie-in 0.32s");
-    expect(src).toContain("image-mgr-genie-out 0.26s");
-    // v0.13.2 返修：面板不再自己延迟关闭（否则 open=false 后子组件先返回 null，
-    // 壳的退场动画没有 DOM 可播）。延迟卸载只由壳负责，且常量必须覆盖 260ms 动画。
+    expect(src).toContain("image-mgr-genie-in 0.48s");
+    expect(src).toContain("image-mgr-genie-out 0.38s");
+    // 面板不自己延迟关闭；延迟卸载只由壳负责，且常量必须覆盖 380ms 动画
     const tsx = SRC("components/dialogs/ImageManagerDialog.tsx");
     expect(tsx).not.toContain("IMAGE_MGR_CLOSE_MS");
     const shell = SRC("components/dialogs/GenieDialogShell.tsx");
-    expect(shell).toContain("IMAGE_MGR_GENIE_OUT_MS = 300");
+    expect(shell).toContain("IMAGE_MGR_GENIE_OUT_MS = 440");
   });
 
-  it("存在 prefers-reduced-motion 降级块，且同时覆盖伪元素与弹窗", () => {
+  it("存在 prefers-reduced-motion 降级块，覆盖弹窗本体", () => {
     const src = css();
     const at = src.indexOf("@media (prefers-reduced-motion: reduce) {");
     expect(at).toBeGreaterThanOrEqual(0);
     const block = src.slice(at, src.indexOf("}", src.indexOf("animation: none;", at)));
-    expect(block).toContain(".image-mgr-overlay::before");
-    expect(block).toContain(".image-mgr-dialog");
+    expect(block).toContain(".image-mgr-genie-in .image-mgr-dialog");
+    expect(block).toContain(".image-mgr-genie-out .image-mgr-dialog");
     expect(block).toContain("animation: none");
   });
 

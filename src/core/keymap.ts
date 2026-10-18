@@ -17,7 +17,7 @@ import { keymap } from "prosemirror-keymap";
 import { lightMDSchema } from "./schema";
 import { matchShortcut } from "./shortcuts";
 // E2(v0.9.2):Tab 三处缺失的补齐
-import { tableTab, tableShiftTab } from "./tableNav";
+import { tableTab, tableShiftTab, tableEnter } from "./tableNav";
 import { codeBlockIndent, codeBlockOutdent } from "./plugins/code-indent";
 // v0.12.1 需求6：代码块末尾按 → 退出代码块（落到块后的下一个块；末块则新建段落）
 import { exitCodeBlockForward } from "./plugins/code-block-exit";
@@ -372,7 +372,11 @@ export function buildKeymap() {
     // 都不适用时返回 false，交回 baseKeymap 的 splitBlock 处理普通段落。
     // v0.12.3 需求12：**顶层普通段落**里回车 = 换行（不再凭空新建段落，源码不出现多余空行）。
     // 必须排在列表分裂之前：列表项内的段落 depth ≥ 2，本命令自动放行 → 仍走 splitListItem。
+    // v0.13.2 返修：表格单元格内回车 = **下移到同列下一格**（末行追加一行）。
+    // 必须排在 insertSoftBreakOnEnter / splitBlock 之前，否则会落进 splitBlock，
+    // 在单元格内拆出第二个段落（用户看到的就是"右边多出一格、光标跑过去"）。
     Enter: chainCommands(
+      tableEnter,
       insertSoftBreakOnEnter,
       splitListItem(schema.nodes.task_item),
       splitListItem(schema.nodes.list_item),

@@ -197,24 +197,22 @@
    → 修法：
    · 弹窗本体**完全不做 opacity 动画**：第一帧起就不透明，背景永远不可能透出来，
      观感由 transform（上浮 + 轻微缩放）承担，且它是合成层属性、在合成器线程完成；
-   · 遮罩淡入仍挂在 overlay 的 ::before 独立层，只动一个纯色层的 opacity，代价极低；
+   · v0.13.2 返修：遮罩也从"淡入"改为**静态亮度**（见下方说明），
+     消除大范围半透明层动画在 iframe 上方产生的合成闪烁；
    · 弹窗阴影是静态值（不参与动画），缩放由合成层承担，不会逐帧重绘整屏。 */
 
-/* 遮罩层：挂在 overlay 的 ::before 独立层上，仅 opacity 参与（合成层属性），
-   弹窗与遮罩各自独立动画、互不叠加透明度 */
+/* 遮罩层：挂在 overlay 的 ::before 独立层上。
+   v0.13.2 返修（用户反馈：打开弹窗"背景变暗那一瞬闪动"）：
+   **遮罩不再做 opacity 动画**，从第一帧起就是最终亮度。
+   根因：对覆盖整个视口的半透明层做 opacity 动画时，Chromium/WebView2 会把它提升为
+   独立合成层，动画帧与下层内容（编辑器/分屏 iframe 是独立合成层）的重采样不同步，
+   观感就是背景闪一下。图片管理弹窗的遮罩已同口径改为静态。
+   动画只保留弹窗本体的 transform（合成层属性，稳定不闪）。 */
 .dialog-overlay-in::before {
   content: "";
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.35);
-  will-change: opacity;
-  animation: dialog-overlay-fade-in 0.15s ease-out both;
-}
-
-/* 遮罩淡入（约 150ms，仅 opacity） */
-@keyframes dialog-overlay-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 
 /* 弹窗本体：轻微上移 + 缩放（约 180ms，ease-out 顺滑落定）。
@@ -235,10 +233,8 @@
 }
 
 /* 尊重系统减弱动效：直接显示，无动画
-   （遮罩动画在伪元素上，降级需同样指向 ::before；animation:none 后伪元素
-   opacity 回落默认值 1，遮罩直接呈现，视觉效果不变） */
+   （遮罩已是静态层，只需关掉弹窗本体的 pop-in） */
 @media (prefers-reduced-motion: reduce) {
-  .dialog-overlay-in::before,
   .dialog-pop-in {
     animation: none;
   }

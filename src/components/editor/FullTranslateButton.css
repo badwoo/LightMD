@@ -367,6 +367,43 @@
   transform: scale(0.86);
 }
 
+/* v0.13.2 返修：图片管理图标的**浮动文字提示**。
+   原生 title 要悬停约 1 秒才出现，用户反馈"鼠标放上去没有提示"，因此自绘：
+   - 文案来自按钮的 data-tip（i18n 单源）；
+   - 浮在图标**左侧**（图标贴右缘，右侧没有空间），带 120ms 淡入 + 轻微位移；
+   - pointer-events:none，不挡住图标本身的点击；
+   - 隐藏态（文档无图片）不显示。 */
+.image-manager-btn::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 10px);
+  transform: translateY(-50%) translateX(4px);
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 40;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.image-manager-btn:hover::after,
+.image-manager-btn:focus-visible::after {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+/* 无图时按钮只是不可见的占位，提示也不应出现 */
+.image-manager-btn.is-hidden::after {
+  content: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .image-manager-btn {
     transition: opacity 0.12s ease;
@@ -374,6 +411,10 @@
 
   .image-manager-btn.is-hidden {
     transform: none;
+  }
+
+  .image-manager-btn::after {
+    transition: none;
   }
 }
 

@@ -39,9 +39,9 @@ f84a6da4d9cfa5783b04c6db31f5383579fdfe7fe7f4ef817a78c4b95025b344  LightMD_0.13.2
 | 9 | 从 A 复制表格到新文档 B 后光标移不到表格下面；点空白处也没有插入符 | 表格/代码块/公式/Mermaid 都是**隔离型**块，文档以它们结尾时光标无处可落（项目未装 gap cursor） | `paragraph` 增加结构性属性 `attrs.pad`；新增 `core/plugins/trailing-paragraph.ts`：`appendTransaction` 在文档结束于上述块时补 pad 段落，段落有内容即清标记，事务带 `addToHistory:false`；序列化器收集块时**跳过 `pad === true`**，补位段落永不写进 `.md`，而用户自己打的尾随空段落（非 pad）仍照常序列化（v0.7.0 起的契约由负向测试守着） |
 | 10 | 图片功能调整：右上角小手柄进编辑、点图片改为激活、拖边缘调大小 | 点图片直接开弹窗 → 无法选中/拖动，也没有尺寸调节入口 | 采纳「只记宽度、保持宽高比」：新增 `core/plugins/image-node.ts` 的 `ImageView` NodeView —— 右上角 `.image-node-handle` 悬停显现、点击派发 `lightmd:image-edit`（带 `{pos}`）开弹窗；点图片本身改为 `NodeSelection` 激活（`view.editable === false` 时跳过，保留阅读模式点击放大）；六向 `.image-resize-zone[data-dir]` 拖拽，**只写宽度**、最小 24px、西侧符号反转，拖拽过程不写事务、`mouseup` 一次性 `setNodeMarkup`（一次拖拽 = 一次撤销） |
 
-## 二·补、安装后复测返修（版本仍为 0.13.2，9 项）
+## 二·补、安装后复测返修（版本仍为 0.13.2，14 项）
 
-用户安装 0.13.2 后逐条复测，以下 9 项未达预期，已在本版本内返修并重新打包：
+用户安装 0.13.2 后分批复测，以下 14 项未达预期，已在本版本内返修并重新打包：
 
 | # | 复测问题 | 根因 | 修复 |
 |---|---|---|---|
@@ -53,7 +53,12 @@ f84a6da4d9cfa5783b04c6db31f5383579fdfe7fe7f4ef817a78c4b95025b344  LightMD_0.13.2
 | 6 | 关闭图片管理弹窗报 React error #300 | `if (!open) return null;` 之后还有一个 `useMemo`；关闭时壳挂 300ms 播退场仍渲染组件 → 早退跳过 Hook → Hook 数量少于上次 | 所有 Hook 上移到早退之前，并加真实 React「打开→关闭→再打开」回归测试 |
 | 7 | 分屏左右滚动完全不联动 | ① `scrollTop=` 派发的 scroll 事件是异步的，同步执行期的 `isSyncingScrollRef` 到那时已释放 → 两屏互推（实测左屏被写成 0）；② `documentElement.getBoundingClientRect().top` 恒等于 `-scrollTop`，锚点坐标被算成 `rect.top + 2*scrollTop`，越滚越虚高、右屏直接顶到底；③ 完整重写预览会换掉 `documentElement`，缓存旧引用写入无效 | 新增 `utils/splitScrollSync.ts` 的**时间窗方向锁**（发起侧 250ms 内拥有同步权，另一侧 scroll 视为回声忽略，同侧连续滚动续期）；锚点坐标改为 `rect.top + scrollTop`；每次同步现取 `scrollingElement`；右屏在 `contentWindow` 与 `contentDocument` 捕获阶段双监听。**真实 Chrome 验证**双向联动，左右顶部标题一致 |
 | 8 | 打开新文档编辑内容，切到其他文档再切回来 `Ctrl+Z` 不生效 | 换文档 effect 在保存**离开文档**历史之前就把 `lastContentRef` 覆盖成新文档内容 → 快照是「新文档内容 + 旧文档 history」；切回时内容不匹配，`loadDocHistory` 按安全策略丢弃快照，历史归零 | 内容基线更新移到 `saveDocHistory` **之后**；新增挂载真实 `EditorContainer` 的「编辑 → 切走 → 切回 → undo」集成测试 |
-| 9 | 图片管理窗口不能拖拽；关闭没有「顺滑回到图标」动效 | ① 面板保留 `if (!open) return null;`，父组件置 open=false 后子组件先返回 null，壳的 300ms 退场没有可动画的 DOM；② 没有拖拽实现 | 关闭立即上抛、面板在 `open=false` 期间保持渲染，壳播完 `image-mgr-genie-out` 后统一卸载（真实 Chrome 验证 transform 持续缩向按钮）；标题栏拖拽（位移走 `left/top`，避开 genie 动画占用的 `transform`），限制视口内、重开复位 |
+| 9 | 图片管理窗口不能拖拽；关闭没有「顺滑回到图标」动效 | ① 面板保留 `if (!open) return null;`，父组件置 open=false 后子组件先返回 null，壳的退场没有可动画的 DOM；② 没有拖拽实现 | 关闭立即上抛、面板在 `open=false` 期间保持渲染，壳播完 `image-mgr-genie-out` 后统一卸载（真实 Chrome 验证 transform 持续缩向按钮）；标题栏拖拽（位移走 `left/top`，避开 genie 动画占用的 `transform`），限制视口内、重开复位 |
+| 10 | 图片管理图标没有浮动文字提示 | 只有原生 `title`，悬停约 1 秒才出现且样式不可控 | 按钮 `data-tip` + CSS `::after` 自绘：提示浮在图标左侧、120ms 淡入/位移、`pointer-events:none`、隐藏态不显示、补 reduced-motion |
+| 11 | 图片管理弹窗动画不够顺滑细腻 | 0.32s/0.26s、缩放 0.3×0.18，且叠加 opacity 淡入，与搜索框动画不同族 | 对齐搜索框：入场 0.48s easeOutCubic / 退场 0.38s easeInCubic，起点 scale(0.42,0.3)，**纯 transform 去掉 opacity**；壳延迟卸载 440ms；拖拽保留 |
+| 12 | 搜索框「从按钮出现 / 缩回按钮」动画消失 | `GenieSearchDialog` 用泛选择器 `[data-genie-anchor]`；图片管理入口也带该属性且 DOM 更靠前 → 量错按钮 | 只认 `[data-genie-anchor="search"]`；新增「诱饵锚点更靠前」回归测试 |
+| 13 | 图片管理 / 新建文件夹弹窗出现时背景闪动 | 整屏半透明遮罩做 opacity 动画，被提升为独立合成层，与下方内容（分屏 iframe 也是独立层）重采样不同步；图片管理弹窗本体还叠加 opacity | 遮罩改为**静态亮度**（首帧即最终明暗，无 animation/will-change）；图片管理弹窗本体只做 transform；新建文件/文件夹共用的遮罩同步改为静态。真实 Chrome 验证 `animationName = none` |
+| 14 | 表格单元格内 Enter 在右边新增单元格并跳过去 | Enter 链无表格分支 → 落到 `baseKeymap` 的 `splitBlock`，单元格内容 `paragraph block*` 被拆成第二段，NodeView 铺开后像右边多一格 | 新增 `tableEnter` 置于 Enter 链最前：光标下移到**同列下一格**；末行追加一行并落同列；真实 keydown + 真实表格 DOM 断言 |
 
 ## 三、版本内容（v0.13.1，16 项）
 
@@ -80,9 +85,9 @@ f84a6da4d9cfa5783b04c6db31f5383579fdfe7fe7f4ef817a78c4b95025b344  LightMD_0.13.2
 
 | 项目 | 结果 |
 |---|---|
-| 前端测试 | **297 文件 / 5099 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例；本版新增 8 个行为级测试文件，返修后同步调整既有断言；另在 `v0131-undo-per-document` 增加真实 `EditorContainer` 集成用例） |
-| 新增行为级测试 | 8 个 v0.13.2 专测文件：按文档独立撤销历史（11）、Mermaid 预览区编辑与联动（11）、表格后尾随段落（25）、图片 NodeView 缩放（11）、Ctrl+T 列表提升（25）、图片管理槽位与精灵弹窗（25）、大纲跟随与滚动记忆（16）、分屏双向映射（34） |
-| 实机验证（真实 Chrome） | 分屏双向联动：左屏 5000→右屏 5765、右屏 8000→左屏 6945；两侧顶部均为「标题 105」。Mermaid：编辑态下点上半区后输入落到源码。代码块复制：CRLF 剪贴板仍渲染为 `code_block`。图片管理：拖拽标题栏位移 (120,90)、关闭时 `transform` 持续缩向按钮并在 300ms 内卸载 |
+| 前端测试 | **298 文件 / 5107 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例；本版新增 9 个行为级测试文件，返修后同步调整既有断言；另在 `v0131-undo-per-document` 增加真实 `EditorContainer` 集成用例） |
+| 新增行为级测试 | 9 个 v0.13.2 专测文件：按文档独立撤销历史（11）、Mermaid 预览区编辑与联动（11）、表格后尾随段落（25）、图片 NodeView 缩放（11）、Ctrl+T 列表提升（25）、图片管理槽位与精灵弹窗（25）、大纲跟随与滚动记忆（16）、分屏双向映射（34）、表格内 Enter 导航（6） |
+| 实机验证（真实 Chrome） | 分屏双向联动：左屏 5000→右屏 5765、右屏 8000→左屏 6945；两侧顶部均为「标题 105」。Mermaid：编辑态下点上半区后输入落到源码。代码块复制：CRLF 剪贴板仍渲染为 `code_block`。图片管理：拖拽位移生效、关闭时 `transform` 持续缩向按钮并卸载；图标 hover 提示 `content="图片管理"`；遮罩 `animationName=none`。搜索框：`--genie-from-y=434px` 且收回时出现 `search-genie-out`。表格：单元格内 Enter 后格数不变、光标落在下一行同列 |
 | 测试形态 | 真实 `createEditor` + 真实鼠标/键盘事件序列 + 真实定时器（`vi.advanceTimersByTime`）+ 真实 `localStorage`；仅在 jsdom 无法建模布局处 stub `getBoundingClientRect` / `IntersectionObserver`，并在注释标明理由 |
 | 类型检查 | `tsc --noEmit` 零错误 |
 | 打包 | `npx tauri build` 产出 MSI + NSIS，版本元数据 0.13.2 |

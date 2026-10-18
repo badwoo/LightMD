@@ -172,3 +172,123 @@ export const tableShiftTab: Command = (state, dispatch) => {
   }
   return true;
 };
+
+// ─── v0.13.2 返修：表格单元格内 Enter 的导航语义 ─────────────────────────
+//
+// 用户实测：「在某个单元格内按回车，会在单元格右边新增一个单元格，光标也移到
+// 那个新单元格；正常应该把光标移到**同一列的下一个单元格**。」
+//
+// 根因：Enter 没进表格分支，落到 baseKeymap 的 splitBlock —— 单元格内容模型是
+// `paragraph block*`，split 会在本格内再拆一个段落（视觉上像"右边多出一格"），
+// 而表格 NodeView 的布局又会把多段内容撑开。这里显式接管：
+//   · 有下一行 → 光标落到**下一行同一列**的单元格内容起点；
+//   · 已是最后一行 → 追加一行（复用 insertRowBelow），光标落到新行同一列；
+//   · 列索引按"物理 cell 下标"计算（与 Tab 导航同一口径），合并格场景下
+//     若下一行格数不足则收敛到末格，不会越界。
+
+/** 光标所在 cell 的行下标 / 列下标（物理下标，与 Tab 导航同口径） */
+function cellRowCol(state: EditorState): {
+  rowIdx: number;
+  cellIdx: number;
+  rowPos: number;
+  row: Node;
+  tablePos: number;
+  table: Node;
+} | null {
+  const { $from } = state.selection;
+  let cellDepth = -1;
+  for (let d = $from.depth; d > 0; d--) {
+    const name = $from.node(d).type.name;
+    if (name === "table_cell" || name === "table_header") {
+      cellDepth = d;
+      break;
+    }
+  }
+  if (cellDepth < 0) return null;
+  const rowDepth = cellDepth - 1;
+  if (rowDepth < 1 || $from.node(rowDepth).type.name !== "table_row") return null;
+  let tableDepth = -1;
+  for (let d = rowDepth - 1; d > 0; d--) {
+    if ($from.node(d).type.name === "table") {
+      tableDepth = d;
+      break;
+    }
+  }
+  if (tableDepth < 0) return null;
+  const row = $from.node(rowDepth);
+  const rowPos = $from.before(rowDepth);
+  const cellPos = $from.before(cellDepth);
+  let cellIdx = -1;
+  let p = rowPos + 1;
+  for (let i = 0; i < row.childCount; i++) {
+    if (p === cellPos) {
+      cellIdx = i;
+      break;
+    }
+    p += row.child(i).nodeSize;
+  }
+  if (cellIdx < 0) return null;
+  const table = $from.node(tableDepth);
+  const tablePos = $from.before(tableDepth);
+  const rows = collectRows(table, tablePos);
+  const rowIdx = rows.findIndex((r) => r.pos === rowPos);
+  if (rowIdx < 0) return null;
+  return { rowIdx, cellIdx, rowPos, row, tablePos, table };
+}
+
+/** 某个 row 内第 idx 个 cell 的**内容起点**（越界收敛到末格） */
+function cellContentStart(rowPos: number, row: Node, cellIdx: number): number {
+  const idx = Math.max(0, Math.min(cellIdx, row.childCount - 1));
+  let pos = rowPos + 1;
+  for (let i = 0; i < idx; i++) pos += row.child(i).nodeSize;
+  // cell 内容起点 = cell 开标签 + 1
+  return pos + 1;
+}
+
+/**
+ * 表格内 Enter：光标下移到同列下一格；末行则追加一行并落位。
+ * 不在表格内 / 非空选区 / IME 组合中返回 false，交回原有 Enter 链。
+ */
+export const tableEnter: Command = (state, dispatch, view) => {
+  if (!inTableCell(state)) return false;
+  if (!state.selection.empty) return false;
+  if (view?.composing) return false;
+  const info = cellRowCol(state);
+  if (!info) return false;
+  const rows = collectRows(info.table, info.tablePos);
+  const nextRow = rows[info.rowIdx + 1];
+  if (dispatch) {
+    if (nextRow) {
+      const target = cellContentStart(nextRow.pos, nextRow.node, info.cellIdx);
+      dispatch(
+        state.tr
+          .setSelection(TextSelection.near(state.doc.resolve(Math.min(target, state.doc.content.size))))
+          .scrollIntoView(),
+      );
+      return true;
+    }
+    // 末行：复用 insertRowBelow（tbody 行插在其后；thead 行插到 tbody 顶部）
+    const tr = insertRowBelow(state.tr, state.selection.$from);
+    if (!tr) return false;
+    // 计算新行起点（与 insertRowBelow 的插入点一致）
+    let newRowPos: number;
+    if (isInHead(state.selection.$from)) {
+      const head = info.table.firstChild;
+      const body = info.table.maybeChild(1);
+      if (!head || head.type.name !== "table_head" || !body || body.type.name !== "table_body") {
+        return false;
+      }
+      newRowPos = info.tablePos + 1 + head.nodeSize + 1;
+    } else {
+      newRowPos = info.rowPos + info.row.nodeSize;
+    }
+    const target = cellContentStart(newRowPos, info.row, info.cellIdx);
+    dispatch(
+      tr
+        .setSelection(TextSelection.near(tr.doc.resolve(Math.min(target, tr.doc.content.size))))
+        .scrollIntoView(),
+    );
+    return true;
+  }
+  return true;
+};
