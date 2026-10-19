@@ -17,11 +17,11 @@
 | `LightMD_0.13.2_x64_en-US.msi` | MSI 安装包（企业分发） |
 
 ```
-1cdd7efe097f0c855d2e76ae015ea91ca9b537c904e0951d532af041a64c6ea5  LightMD_0.13.2_x64-setup.exe
-3da29968dc8d92aa2dd2b5acec48645025adddda0e417942d112cdf25cae72b1  LightMD_0.13.2_x64_en-US.msi
+535c9ad50a32cf2eccf78b312bc488ef7ccb8f6c7ea8364245488f053bc3c67a  LightMD_0.13.2_x64-setup.exe
+9d0f27fbf1a5fea63e462aa29ce197d7f659272ebd2daa2d3fb72b763fe30d76  LightMD_0.13.2_x64_en-US.msi
 ```
 
-> 这是 **2026-10-18 23:18 返修后的重新打包**（同版本号 0.13.2），请以本组校验值为准；
+> 这是 **2026-10-19 10:54 返修后的重新打包**（同版本号 0.13.2），请以本组校验值为准；
 > `lightmd.exe` 的 `FileVersion` / `ProductVersion` 均为 `0.13.2`。
 
 ## 二、版本内容（v0.13.2，10 项）
