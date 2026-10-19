@@ -17,7 +17,7 @@ import { headingAnchorPlugin, collectHeadings, type TocHeading } from "./heading
 import { tocPlugin } from "./toc-plugin";
 import { setBlockSource } from "./blockSourceMap";
 // v0.13.0 需求12：表格合并单元格形态识别（`<td colspan>` 包裹）
-import { extractTdWrapper } from "../tableGrid";
+import { extractTdWrapper, trimTablePlaceholderCells } from "../tableGrid";
 // E14(v0.9.2):段内换行语义默认值取自设置(与 auto-pair 同款 getState 先例)
 import { useSettingsStore } from "../../stores/useSettingsStore";
 
@@ -847,7 +847,12 @@ function parseTable(tokens: Token[], index: number): ParseResult {
     tableChildren.push(schema.nodes.table_body.create(null, [emptyRow]));
   }
 
-  return { node: schema.nodes.table.create(null, tableChildren), nextIndex: i };
+  // v0.13.2 返修：markdown-it 会把数据行恒定补齐到 columnCount 个 td，
+  // 合并序列化又刻意跳过被占位的空洞 → 回读时这些补齐格会变成**真实节点**，
+  // 表现为"合并的那一行多出一个单元格"。这里按与网格同一套布点规则裁掉行尾占位格。
+  // 纯管道表格（无 span）直接返回原节点，零 diff。
+  const tableNode = schema.nodes.table.create(null, tableChildren);
+  return { node: trimTablePlaceholderCells(tableNode), nextIndex: i };
 }
 
 function buildTableRow(

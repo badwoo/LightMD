@@ -623,15 +623,12 @@ describe("需求4 · setRangeAlign 纯函数契约", () => {
     expect(out).not.toBeNull();
     const next = st.apply(out!);
     const cells = cellsOf(next.doc);
-    // ⚠️ v0.13.1 返修：这里必须把**尾部补齐幻影格**算进去。
-    // markdown-it 的表格规则按**表头源列数**（3）对每一行恒定输出 3 个 cell，
-    // 该数据行源文只写了 2 格 → 解析后 doc 里就是 3 个 cell（X(colspan2) / "3" / "")。
-    // 旧断言按"物理 2 格"写成了 5 项，于是把幻影格当成了多余产物。
-    // 幻影格由序列化层（trimRowTrailingEmpties + gridColumnCount）负责在存盘时裁掉，
-    // 往返仍然稳定（见 v0131-table-empty-cell.test.ts），此处不应断言它不存在。
+    // v0.13.2 返修：markdown-it 按表头源列数（3）补齐出来的行尾空单元格，
+    // 现在会在**解析阶段**被 `trimTablePlaceholderCells` 裁掉（否则重开文档后
+    // 合并的那一行会多出一格，破坏表格结构）。因此这里是 3 + 2 = 5 个 cell。
     expect(cells.map((c) => `${c.text}:${c.align}`)).toEqual([
       "A:left", "B:left", "C:left",
-      "X:left", "3:center", ":left",
+      "X:left", "3:center",
     ]);
     // 关键回归点：改的是**逻辑列 2**（"3"），而不是物理下标 2（那会落到幻影格上）
     expect(cells.find((c) => c.text === "3")!.align).toBe("center");

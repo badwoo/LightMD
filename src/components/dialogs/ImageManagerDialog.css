@@ -11,6 +11,11 @@
    · `--genie-origin-x/y`：按钮中心相对面板左上角（transform-origin）。
    入场：位移 + 放大松开 → 面板从按钮位置长出来；
    退场：原路缩回按钮（先慢后快，像被吸回去），只动 transform/opacity。 */
+/* v0.13.2 返修（用户复测）：「参考搜索框的弹窗，不要把背景变暗」。
+   搜索面板本来就没有遮罩层（浮层直接盖在文档上），图片管理原先的半透明遮罩
+   既让背景变暗、又因为整屏半透明层动画产生过闪烁。这里**彻底去掉遮罩**：
+   overlay 只保留「点击外部关闭」的命中层，本身完全透明。
+   视觉与搜索框一致，也不再有任何背景明暗变化。 */
 .image-mgr-overlay {
   position: fixed;
   inset: 0;
@@ -19,21 +24,7 @@
   align-items: flex-start;
   justify-content: center;
   padding-top: 10vh;
-}
-
-/* v0.13.2 返修（用户反馈：弹窗出现时背景闪动）：
-   遮罩**不再做 opacity 动画**，从第一帧起就是最终亮度。
-   缺陷背景：对覆盖整个视口的半透明层做 opacity 动画时，Chromium/WebView2 会把它
-   提升为独立合成层；动画期间与下方内容（分屏预览是 iframe，属于独立合成层）的
-   重采样不同步，观感就是"背景变暗的那一瞬闪一下"。
-   搜索框弹窗没有遮罩、从未出现该问题；新建文件夹/新建文件弹窗共用
-   `NewFolderDialog.css` 的 `dialog-overlay-in::before` 淡入，已一并改为静态遮罩。
-   动画全部交给弹窗本体的 transform（合成层属性，稳定不闪）。 */
-.image-mgr-overlay::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: transparent;
 }
 
 .image-mgr-dialog {
@@ -65,28 +56,27 @@
   opacity: 0;
 }
 
-/* 【打开】从按钮位置「长出来」：与搜索框同族 —— 位移回按钮中心 + 朝按钮方向收拢，
-   **不做 opacity**；起点更小（0.42×0.3）让"从图标里被拉出来"的过程看得见。
-   时长/缓动与 SearchReplace.css 对齐（0.48s easeOutCubic），观感更从容细腻。 */
+/* 【打开】从图标位置「长出来」：**只有缩放**（以 transform-origin = 图标中心为不动点）。
+   ⚠️ v0.13.2 返修：不再叠加 translate —— 旧实现同时做「把面板中心搬到按钮」的位移
+   和「以按钮为原点缩放」，两者对同一件事重复计算，起点被推到视口外右侧
+   （用户看到"从最右边飞进来"）。现在只靠原点缩放，面板就从图标处展开。
+   时长/缓动与搜索框同族（0.48s easeOutCubic），不做 opacity。 */
 @keyframes image-mgr-genie-in {
   from {
-    transform: translate(var(--genie-from-x, 0px), var(--genie-from-y, -40px))
-      scale(0.42, 0.3);
+    transform: scale(0.3, 0.2);
   }
   to {
-    transform: translate(0, 0) scale(1, 1);
+    transform: scale(1, 1);
   }
 }
 
-/* 【关闭】原路缩回按钮：先慢后快（像被图标吸回去），同样不参与 opacity。
-   终点比入场更扁一点，收拢感更明显。 */
+/* 【关闭】原路缩回图标：先慢后快（像被图标吸回去），同样只做缩放。 */
 @keyframes image-mgr-genie-out {
   from {
-    transform: translate(0, 0) scale(1, 1);
+    transform: scale(1, 1);
   }
   to {
-    transform: translate(var(--genie-from-x, 0px), var(--genie-from-y, -40px))
-      scale(0.38, 0.14);
+    transform: scale(0.28, 0.12);
   }
 }
 

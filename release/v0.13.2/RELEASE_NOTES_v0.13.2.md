@@ -39,9 +39,9 @@
 | 9 | 从 A 复制表格到新文档 B 后光标移不到表格下面；点空白处也没有插入符 | 表格/代码块/公式/Mermaid 都是**隔离型**块，文档以它们结尾时光标无处可落（项目未装 gap cursor） | `paragraph` 增加结构性属性 `attrs.pad`；新增 `core/plugins/trailing-paragraph.ts`：`appendTransaction` 在文档结束于上述块时补 pad 段落，段落有内容即清标记，事务带 `addToHistory:false`；序列化器收集块时**跳过 `pad === true`**，补位段落永不写进 `.md`，而用户自己打的尾随空段落（非 pad）仍照常序列化（v0.7.0 起的契约由负向测试守着） |
 | 10 | 图片功能调整：右上角小手柄进编辑、点图片改为激活、拖边缘调大小 | 点图片直接开弹窗 → 无法选中/拖动，也没有尺寸调节入口 | 采纳「只记宽度、保持宽高比」：新增 `core/plugins/image-node.ts` 的 `ImageView` NodeView —— 右上角 `.image-node-handle` 悬停显现、点击派发 `lightmd:image-edit`（带 `{pos}`）开弹窗；点图片本身改为 `NodeSelection` 激活（`view.editable === false` 时跳过，保留阅读模式点击放大）；六向 `.image-resize-zone[data-dir]` 拖拽，**只写宽度**、最小 24px、西侧符号反转，拖拽过程不写事务、`mouseup` 一次性 `setNodeMarkup`（一次拖拽 = 一次撤销） |
 
-## 二·补、安装后复测返修（版本仍为 0.13.2，14 项）
+## 二·补、安装后复测返修（版本仍为 0.13.2，16 项）
 
-用户安装 0.13.2 后分批复测，以下 14 项未达预期，已在本版本内返修并重新打包：
+用户安装 0.13.2 后分批复测，以下 16 项未达预期，已在本版本内返修并重新打包：
 
 | # | 复测问题 | 根因 | 修复 |
 |---|---|---|---|
@@ -59,6 +59,9 @@
 | 12 | 搜索框「从按钮出现 / 缩回按钮」动画消失 | `GenieSearchDialog` 用泛选择器 `[data-genie-anchor]`；图片管理入口也带该属性且 DOM 更靠前 → 量错按钮 | 只认 `[data-genie-anchor="search"]`；新增「诱饵锚点更靠前」回归测试 |
 | 13 | 图片管理 / 新建文件夹弹窗出现时背景闪动 | 整屏半透明遮罩做 opacity 动画，被提升为独立合成层，与下方内容（分屏 iframe 也是独立层）重采样不同步；图片管理弹窗本体还叠加 opacity | 遮罩改为**静态亮度**（首帧即最终明暗，无 animation/will-change）；图片管理弹窗本体只做 transform；新建文件/文件夹共用的遮罩同步改为静态。真实 Chrome 验证 `animationName = none` |
 | 14 | 表格单元格内 Enter 在右边新增单元格并跳过去 | Enter 链无表格分支 → 落到 `baseKeymap` 的 `splitBlock`，单元格内容 `paragraph block*` 被拆成第二段，NodeView 铺开后像右边多一格 | 新增 `tableEnter` 置于 Enter 链最前：光标下移到**同列下一格**；末行追加一行并落同列；真实 keydown + 真实表格 DOM 断言 |
+
+| 15 | 表格单元格合并后重开文档，合并的那行多出一个单元格，破坏表格结构 | markdown-it 对数据行恒定输出 `columnCount` 个 td（缺列补空），而合并序列化跳过被占位空洞 → 回读时补齐格变成**真实节点**：横向合并行的补齐格逻辑列 ≥ columnCount、纵向合并末行的补齐格正落在 rowspan 空洞 | 新增 `core/tableGrid.planTableRowTrim` / `trimTablePlaceholderCells`，解析后按与网格同一套布点规则裁掉行尾占位格（只裁行尾、只裁空普通格）；无 span 的纯管道表格直接返回原节点（零 diff） |
+| 16 | 图片管理弹窗应参考搜索框：背景不要变暗；动画要从图标位置开始（当前从最右侧飞出） | ① 遮罩是整屏 rgba(0,0,0,.4)，搜索框本来无遮罩；② `GenieDialogShell` 同时注入 `translate(按钮中心−面板中心)` 与以按钮为原点的 scale —— 位移与缩放原点重复计算，起点被推到视口外右侧（实测约 1700px） | ① 彻底删除遮罩层（overlay 透明，仅作点击外部关闭的命中层）；② 位移恒 0、只保留 `transform-origin = 图标中心`，keyframes 改为纯 `scale(0.3,0.2) → 1`（0.48s/0.38s，与搜索框同族）。真实 Chrome 验证：起点为纯缩放无位移、原点指向按钮、背景透明 |
 
 ## 三、版本内容（v0.13.1，16 项）
 
@@ -85,8 +88,8 @@
 
 | 项目 | 结果 |
 |---|---|
-| 前端测试 | **298 文件 / 5107 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例；本版新增 9 个行为级测试文件，返修后同步调整既有断言；另在 `v0131-undo-per-document` 增加真实 `EditorContainer` 集成用例） |
-| 新增行为级测试 | 9 个 v0.13.2 专测文件：按文档独立撤销历史（11）、Mermaid 预览区编辑与联动（11）、表格后尾随段落（25）、图片 NodeView 缩放（11）、Ctrl+T 列表提升（25）、图片管理槽位与精灵弹窗（25）、大纲跟随与滚动记忆（16）、分屏双向映射（34）、表格内 Enter 导航（6） |
+| 前端测试 | **299 文件 / 5113 用例**全部通过（v0.13.1 基线 289 文件 / 4924 用例；本版新增 10 个行为级测试文件，返修后同步调整既有断言；另在 `v0131-undo-per-document` 增加真实 `EditorContainer` 集成用例） |
+| 新增行为级测试 | 9 个 v0.13.2 专测文件：按文档独立撤销历史（11）、Mermaid 预览区编辑与联动（11）、表格后尾随段落（25）、图片 NodeView 缩放（11）、Ctrl+T 列表提升（25）、图片管理槽位与精灵弹窗（25）、大纲跟随与滚动记忆（16）、分屏双向映射（34）、表格内 Enter 导航（6）、合并单元格重开结构（6） |
 | 实机验证（真实 Chrome） | 分屏双向联动：左屏 5000→右屏 5765、右屏 8000→左屏 6945；两侧顶部均为「标题 105」。Mermaid：编辑态下点上半区后输入落到源码。代码块复制：CRLF 剪贴板仍渲染为 `code_block`。图片管理：拖拽位移生效、关闭时 `transform` 持续缩向按钮并卸载；图标 hover 提示 `content="图片管理"`；遮罩 `animationName=none`。搜索框：`--genie-from-y=434px` 且收回时出现 `search-genie-out`。表格：单元格内 Enter 后格数不变、光标落在下一行同列 |
 | 测试形态 | 真实 `createEditor` + 真实鼠标/键盘事件序列 + 真实定时器（`vi.advanceTimersByTime`）+ 真实 `localStorage`；仅在 jsdom 无法建模布局处 stub `getBoundingClientRect` / `IntersectionObserver`，并在注释标明理由 |
 | 类型检查 | `tsc --noEmit` 零错误 |

@@ -406,38 +406,36 @@ describe("需求9：点击「本地文件」徽标 → 在资源管理器中定�
 describe("需求6：图片管理弹窗改为「底部栏搜索框同款」动画", () => {
   const css = () => SRC("components/dialogs/ImageManagerDialog.css");
 
-  it("CSS 自带双向 genie keyframes（遮罩已改为静态亮度，不再有 scrim keyframes）", () => {
+  it("CSS 自带双向 genie keyframes（已彻底去掉遮罩层）", () => {
     const src = css();
     for (const name of ["image-mgr-genie-in", "image-mgr-genie-out"]) {
       expect(src, `缺 @keyframes ${name}`).toContain(`@keyframes ${name} {`);
     }
-    // v0.13.2 返修：整屏半透明层不做 opacity 动画（iframe 上方会闪）
+    // v0.13.2 返修：参考搜索框 —— 不要背景变暗，遮罩整层删除
     expect(src).not.toContain("@keyframes image-mgr-scrim-in");
     expect(src).not.toContain("@keyframes image-mgr-scrim-out");
+    expect(src).not.toContain(".image-mgr-overlay::before");
     // 借来的旧 keyframes 必须消失，否则下次对方改名这里会静默失效
     expect(src).not.toMatch(/animation:\s*fadeIn\b/);
     expect(src).not.toMatch(/animation:\s*slideUp\b/);
   });
 
-  it("位移由 --genie-from-x/y 驱动，transform-origin 指向按钮（--genie-origin-x/y）", () => {
+  it("位移恒 0，只用 transform-origin 指向按钮（避免位移+原点重复计算飞出视口）", () => {
     const src = css();
-    // 起点 = 按钮中心相对面板中心的位移（面板从按钮位置出发）
-    expect(src).toContain("var(--genie-from-x, 0px)");
-    expect(src).toContain("var(--genie-from-y, -40px)");
-    // transform-origin = 按钮中心相对面板左上角
+    // v0.13.2 返修：位移与缩放原点重复计算会让起点落到视口外右侧
     expect(src).toContain("transform-origin: var(--genie-origin-x, 50%) var(--genie-origin-y, 0%)");
+    const inKeyframes = src.slice(src.indexOf("@keyframes image-mgr-genie-in {"));
+    expect(inKeyframes.slice(0, 200)).not.toContain("var(--genie-from-x");
+    expect(inKeyframes.slice(0, 200)).not.toContain("var(--genie-from-y");
   });
 
-  it("遮罩移到独立层 ::before，且为静态亮度（无 animation/will-change）", () => {
+  it("overlay 完全透明（不变暗背景），且不再有 ::before 遮罩", () => {
     const src = css();
     const overlay = ruleBody(src, ".image-mgr-overlay");
-    expect(overlay).not.toContain("background:");
     expect(overlay).not.toContain("animation:");
-    const scrim = ruleBody(src, ".image-mgr-overlay::before");
-    expect(scrim).toContain("content:");
-    expect(scrim).toContain("background: rgba(0, 0, 0, 0.4)");
-    expect(scrim).not.toContain("animation:");
-    expect(scrim).not.toContain("will-change");
+    // 没有半透明黑底（搜索框弹窗也没有遮罩）
+    expect(overlay).not.toMatch(/background:\s*rgba\(0,\s*0,\s*0/);
+    expect(src).not.toContain("rgba(0, 0, 0, 0.4)");
     // 退场仍走壳的 image-mgr-genie-out 类（只动画弹窗本体）
     expect(src).toContain(".image-mgr-genie-out .image-mgr-dialog {");
   });

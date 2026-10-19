@@ -480,7 +480,7 @@ export function rectContainsSpan(
 }
 
 /**
- * ③ 拆分：把某格的 colspan/rowspan 复位为 1。
+ * 拆分：把某格的 colspan/rowspan 复位为 1。
  *
  * @returns 该格的新跨度（恒为 {1,1}）与是否需要事务；
  *          输入非法（无此格 / 已是普通格）时 null
@@ -489,4 +489,118 @@ export function planSplit(cell: GridCell): CellSpan | null {
   if (!cell) return null;
   if (cell.colspan <= 1 && cell.rowspan <= 1) return null;
   return { colspan: 1, rowspan: 1 };
+}
+
+// ─── v0.13.2 返修：合并单元格回读后的「多余单元格」 ───────────────────────
+//
+// 用户实测：「表格合并正常，但关闭文档重新打开后，合并的那一行会多出一个单元格，
+// 破坏表格整体结构。」
+//
+// 根因（markdown-it 的表格规则决定，见 `lib/rules_block/table.mjs`）：
+//   · 表头行的**源管道格数** = `columnCount`；
+//   · 数据行**恒定输出 `columnCount` 个 td**（`columns[i] ? ... : ''`），
+//     源文里少写的列会被补成空单元格。
+// 而合并序列化会**跳过被占位的空洞**（`| <td colspan="2">1</td> | 3 |` 只有 2 格，
+// 或纵向合并时 `| 4 | 5 |` 只有 2 格）——于是回读时被补齐出来的空单元格
+// 变成了 PM 文档里**真实存在的第 3 个 cell**：
+//   · 横向合并行：多出的空格落在**逻辑列 ≥ columnCount**（被 colspan 挤出表外）；
+//   · 纵向合并行：多出的空格正好落在**被 rowspan 占据的列**（占位符）。
+// 两者在网格层都被识别（所以合并/序列化本身是对的），但**节点仍留在文档里**，
+// 表格 NodeView 会把它渲染成一个真实单元格 → 用户看到"合并的那行多一格"。
+//
+// 修法：解析后把这些「补齐出来的尾巴」从文档里删掉（只删行尾、只删空普通格，
+// 且必须命中上面两种判据之一）。纯管道表格没有跨度、逻辑列也不会超出 columnCount，
+// 因此本函数对其**恒为空操作**（零 diff 回归锁不受影响）。
+
+/**
+ * 计算每一行应当丢弃的**行尾 cell 下标**（0-based，升序）。
+ *
+ * @param table     table 节点
+ * @param tablePos  表格起始位置（仅用于行位置计算，传 0 亦可）
+ */
+export function planTableRowTrim(table: Node, tablePos = 0): number[][] {
+  const rows = collectTableRows(table, tablePos);
+  const columnCount = tableLogicalColumnCount(table, tablePos);
+  const pending: boolean[][] = [];
+  const plan: number[][] = rows.map(() => []);
+
+  for (let r = 0; r < rows.length; r++) {
+    if (!pending[r]) pending[r] = [];
+    const occupied = pending[r];
+    const cells: Node[] = [];
+    rows[r].row.forEach((c) => cells.push(c));
+
+    // 与 buildTableGrid 同一套「第一个空闲列」布点规则（口径必须唯一）
+    const placed: Array<{ col: number; placeholder: boolean }> = [];
+    let col = 0;
+    for (const cell of cells) {
+      const { colspan, rowspan } = spanOf(cell);
+      if (col < occupied.length && occupied[col] && isEmptyPlainCell(cell)) {
+        placed.push({ col, placeholder: true });
+        col++;
+        continue;
+      }
+      while (occupied[col]) col++;
+      placed.push({ col, placeholder: false });
+      for (let c = col; c < col + colspan; c++) occupied[c] = true;
+      for (let rr = r + 1; rr < r + rowspan; rr++) {
+        if (!pending[rr]) pending[rr] = [];
+        for (let c = col; c < col + colspan; c++) pending[rr][c] = true;
+      }
+      col += colspan;
+    }
+
+    // 只裁**行尾**：占位符（rowspan 空洞）或逻辑列超出 columnCount 的空普通格
+    const drop: number[] = [];
+    for (let i = cells.length - 1; i >= 0; i--) {
+      const p = placed[i];
+      if (!p) break;
+      if (p.placeholder) {
+        drop.push(i);
+        continue;
+      }
+      if (!isEmptyPlainCell(cells[i])) break;
+      if (p.col < columnCount) break;
+      drop.push(i);
+    }
+    plan[r] = drop.reverse();
+  }
+  return plan;
+}
+
+/**
+ * 从表格节点里删掉 markdown-it 补齐出来的行尾空单元格（见上方根因说明）。
+ *
+ * @returns 新的 table 节点；无需裁剪时**返回原节点**（引用相等，调用方可据此跳过）
+ */
+export function trimTablePlaceholderCells(table: Node): Node {
+  if (!tableHasSpan(table)) return table; // 纯管道表格零 diff
+  const plan = planTableRowTrim(table, 0);
+  if (!plan.some((d) => d.length > 0)) return table;
+
+  let rowIdx = 0;
+  const sections: Node[] = [];
+  table.forEach((section) => {
+    if (section.type.name !== "table_head" && section.type.name !== "table_body") {
+      sections.push(section);
+      return;
+    }
+    const rows: Node[] = [];
+    section.forEach((row) => {
+      const drop = plan[rowIdx] ?? [];
+      rowIdx++;
+      if (drop.length === 0) {
+        rows.push(row);
+        return;
+      }
+      const keep: Node[] = [];
+      row.forEach((cell, _offset, index) => {
+        if (!drop.includes(index)) keep.push(cell);
+      });
+      // 全被裁掉时保留一个空格（表格行不能为空）
+      rows.push(row.type.create(row.attrs, keep.length > 0 ? keep : [row.child(0)]));
+    });
+    sections.push(section.type.create(section.attrs, rows));
+  });
+  return table.type.create(table.attrs, sections);
 }

@@ -60,8 +60,19 @@ export function GenieDialogShell({
 
   /**
    * 测量「按钮 ↔ 面板」的关系，注入四个 CSS 变量（开合各一次，无监听、无持续开销）。
-   * 测量失败（锚点缺失/被隐藏，如文档无图片时按钮 `is-hidden`）时退化为
-   * 「从右上角方向浮入」的常规动画，不至于原地闪现。
+   *
+   * ─── v0.13.2 返修（用户复测：「动画是从最右侧出来的，不符合需求」）───
+   *
+   * 旧实现同时注入 `translate(btnCenter - panelCenter)` **和** scale，
+   * 且 `transform-origin` 又设在按钮位置 —— 位移与缩放原点被**重复计算**：
+   * `translate(t) scale(s)` 以 origin 为不动点，而 origin 换算回屏幕坐标
+   * 恰好就是按钮中心（`originX = btnCx - panelLeft`），
+   * 再叠加"把面板中心搬到按钮"的位移后，起点被推到
+   * `2*btnCx - panelLeft - w/2`（实测约 1700px，视口外右侧）——
+   * 用户看到的就是"从屏幕最右边飞进来"。
+   *
+   * 正确做法：**位移恒为 0，只保留缩放原点**（origin 已在按钮中心）。
+   * 缩放以按钮为不动点 → 面板从图标处向外长出来 / 缩回图标。
    */
   const syncGenieVars = useCallback(() => {
     const shell = shellRef.current;
@@ -73,19 +84,19 @@ export function GenieDialogShell({
     const anchored =
       !!btn && btn.width > 0 && btn.height > 0 && pn.width > 0 && pn.height > 0;
     if (!anchored) {
-      // 兜底：面板从自身右上角方向缩入/缩出（视觉上仍是"从右上角来"）
+      // 兜底：锚点不可用（如文档无图片时按钮 is-hidden）→ 从自身右上角轻微浮入
       shell.style.setProperty("--genie-from-x", "0px");
-      shell.style.setProperty("--genie-from-y", "-40px");
+      shell.style.setProperty("--genie-from-y", "-24px");
       shell.style.setProperty("--genie-origin-x", "100%");
       shell.style.setProperty("--genie-origin-y", "0%");
       return;
     }
     const btnCx = btn.left + btn.width / 2;
     const btnCy = btn.top + btn.height / 2;
-    const pnCx = pn.left + pn.width / 2;
-    const pnCy = pn.top + pn.height / 2;
-    shell.style.setProperty("--genie-from-x", `${Math.round(btnCx - pnCx)}px`);
-    shell.style.setProperty("--genie-from-y", `${Math.round(btnCy - pnCy)}px`);
+    // 位移恒 0：缩放原点已是按钮中心，再位移会把起点推出视口（见上方说明）
+    shell.style.setProperty("--genie-from-x", "0px");
+    shell.style.setProperty("--genie-from-y", "0px");
+    // 按钮中心相对面板左上角（可落在面板外，CSS 允许 transform-origin 在盒外）
     shell.style.setProperty("--genie-origin-x", `${Math.round(btnCx - pn.left)}px`);
     shell.style.setProperty("--genie-origin-y", `${Math.round(btnCy - pn.top)}px`);
   }, [anchorSelector, panelSelector]);

@@ -96,14 +96,14 @@ describe("v0.13.0 需求12 横向合并（colspan）", () => {
     );
     expect(table).toBeTruthy();
     const cells = collectCells(table!);
-    // markdown-it 会把数据行补齐到表头列数：源码 2 格 + 自动补 1 空格
-    expect(cells).toHaveLength(6);
+    // v0.13.2 返修：markdown-it 补齐出来的行尾占位格会在解析后裁掉，
+    // 因此这里是 表头 3 + 数据行 2 = 5（不再多出一个空单元格）
+    expect(cells).toHaveLength(5);
     const merged = cells[3];
     expect(merged.colspan).toBe(2);
     expect(merged.rowspan).toBe(1);
     expect(merged.text).toBe("M");
     expect(cells[4].text).toBe("C");
-    expect(cells[5].text).toBe(""); // 自动补齐的空格
   });
 
   it("合并行序列化回 <td colspan=\"2\"> 形态", () => {
@@ -202,8 +202,9 @@ describe("v0.13.0 需求12 拆分", () => {
     );
     expect(Number(plain.attrs.colspan)).toBe(1);
     expect(plain.textContent).toBe("M");
-    // 拆分行重新组装后仍能序列化
-    const newRow = schema.nodes.table_row.create(null, [plain, row.child(1)]);
+    // 拆分行重新组装后仍能序列化（v0.13.2 返修后该数据行只剩 1 个真实格：
+    // markdown-it 补齐的幻影格已在解析阶段被裁掉）
+    const newRow = schema.nodes.table_row.create(null, [plain]);
     const newBody = schema.nodes.table_body.create(null, [newRow]);
     const newTable = schema.nodes.table.create(null, [table!.child(0), newBody]);
     const md = docToMarkdown(schema.nodes.doc.create(null, [newTable]));

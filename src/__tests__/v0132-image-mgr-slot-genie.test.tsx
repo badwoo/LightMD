@@ -347,8 +347,15 @@ describe("需求6 · GenieDialogShell：延迟卸载 + 双 rAF 入场", () => {
   });
 });
 
-describe("需求6 · 几何变量：从按钮中心长出来 / 缩回按钮", () => {
-  it("打开时按 anchor 与面板矩形写入 4 个变量（精确像素）", () => {
+describe("需求6 · 几何变量：从图标处缩放（位移恒 0，原点=按钮中心）", () => {
+  /**
+   * v0.13.2 返修（用户复测）：「动画是从最右侧出来的」。
+   *
+   * 旧实现既注入 `translate(按钮中心 − 面板中心)`，又把 transform-origin 设在按钮上，
+   * 两者对同一件事（把面板搬到按钮）重复计算 → 起点被推到视口外右侧。
+   * 现在：位移恒 0，只用 origin；缩放以按钮为不动点。
+   */
+  it("打开时写入原点（精确像素）且位移恒为 0", () => {
     render(<Harness active />);
     const anchor = document.querySelector('[data-testid="image-manager-btn"]')!;
     stubRect(anchor, ANCHOR_RECT);
@@ -357,31 +364,31 @@ describe("需求6 · 几何变量：从按钮中心长出来 / 缩回按钮", ()
 
     flushRaf(2);
     const style = shellOf()!.style;
-    // 按钮中心 (1217, 67)；面板中心 (740, 350) → 位移 (477, -283)
-    expect(style.getPropertyValue("--genie-from-x")).toBe("477px");
-    expect(style.getPropertyValue("--genie-from-y")).toBe("-283px");
+    // 位移必须为 0：缩放原点已在按钮中心，再位移就会飞出视口
+    expect(style.getPropertyValue("--genie-from-x")).toBe("0px");
+    expect(style.getPropertyValue("--genie-from-y")).toBe("0px");
     // 按钮中心相对面板左上角 (1217-400, 67-100)
     expect(style.getPropertyValue("--genie-origin-x")).toBe("817px");
     expect(style.getPropertyValue("--genie-origin-y")).toBe("-33px");
   });
 
-  it("关闭时重新测量（面板可能已被滚动/布局移动）→ 变量更新为当前位置", () => {
+  it("关闭时重新测量（面板可能已被拖拽/布局移动）→ 原点按当前位置更新", () => {
     const utils = render(<Harness active />);
     const anchor = document.querySelector('[data-testid="image-manager-btn"]')!;
     stubRect(anchor, ANCHOR_RECT);
     const panel = document.querySelector(".image-mgr-dialog")!;
     stubRect(panel, { left: 400, top: 100, width: 680, height: 500 });
     flushRaf(2);
-    expect(shellOf()!.style.getPropertyValue("--genie-from-x")).toBe("477px");
+    expect(shellOf()!.style.getPropertyValue("--genie-origin-x")).toBe("817px");
 
-    // 面板移动到 (300, 200)：按钮中心 (1217,67) − 面板中心 (640,450)
+    // 面板移动到 (300, 200)：按钮中心 (1217,67) − 面板左上角 (300,200)
     stubRect(panel, { left: 300, top: 200, width: 680, height: 500 });
     act(() => {
       utils.rerender(<Harness active={false} />);
     });
     const style = shellOf()!.style;
-    expect(style.getPropertyValue("--genie-from-x")).toBe("577px");
-    expect(style.getPropertyValue("--genie-from-y")).toBe("-383px");
+    expect(style.getPropertyValue("--genie-from-x")).toBe("0px");
+    expect(style.getPropertyValue("--genie-from-y")).toBe("0px");
     expect(style.getPropertyValue("--genie-origin-x")).toBe("917px");
     expect(style.getPropertyValue("--genie-origin-y")).toBe("-133px");
   });
@@ -395,7 +402,7 @@ describe("需求6 · 几何变量：从按钮中心长出来 / 缩回按钮", ()
     );
     for (const v of values) expect(v).not.toBe("");
     expect(style.getPropertyValue("--genie-from-x")).toBe("0px");
-    expect(style.getPropertyValue("--genie-from-y")).toBe("-40px");
+    expect(style.getPropertyValue("--genie-from-y")).toBe("-24px");
     expect(style.getPropertyValue("--genie-origin-x")).toBe("100%");
     expect(style.getPropertyValue("--genie-origin-y")).toBe("0%");
   });
