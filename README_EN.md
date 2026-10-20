@@ -148,6 +148,20 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - `Ctrl+,` is reclaimed by a Rust-level native hotkey so Chinese IMEs can no longer swallow it
 - Settings dialog fades in/out; the custom shortcut dialog uses a 3×3 card layout with every shortcut visible in one screen
 
+### 🪟 Multi-Window (added in 0.9.0)
+
+- 🪟 **Peer multi-window** — `Ctrl+Shift+N` or the title-bar "Window" menu opens an auxiliary window (max 8); each window has its **own tabs, editor state, reading progress and AI chat window**
+- 🔁 **Live global sync** — theme, font, sidebar width, AI settings, recent files and favourites sync instantly across windows
+- 📂 **Many ways into a new window** — file-tree / open-files context menus, tab context menu "Move to new window" (scratch tabs carry their content), **dragging a tab out of the tab bar**, and `Ctrl+Alt+O` to pick a file and open it in a new window
+- 🗂 **Title-bar "Window" menu** — lists every window and its tabs (with unsaved dots); clicking a window activates it, clicking a tab activates that window and switches to the tab; also offers "Merge into main window" (you can also drag an auxiliary window's tab onto the main tab bar and confirm the merge)
+- 🪟 **Drag-to-merge** — hold an auxiliary window over the main window's tab bar and confirm "Merge back into the main window?" to move every tab over and close it (0.9.0 round 3)
+- ⚔️ **File conflict detection** — if a file is already open in another window with unsaved changes, an in-app dialog offers read-only / force edit / switch to that window / cancel; read-only tabs show `[read-only]`
+- 👀 **External change and delete handling** — clean tabs reload with a notice, dirty tabs are marked pending; deleting a file closes its tabs; **the app's own writes are never mistaken for external changes**
+- 🤖 **AI task isolation** — translation / continue / polish / summary / chat in window A no longer cancels the task in window B (inside one window a new task still cancels the old one)
+- 💾 **Session restore** — a "restore other windows at startup" switch (default off, main window only) plus "Quit LightMD" (`Ctrl+Q`, records only the **main** window so nothing else revives); windows merged into the main window do not duplicate
+- ✅ **Smart close confirmation** — closing a window or quitting only prompts for **files already on disk with unsaved changes**; scratch (untitled) tabs are remembered and restored instead
+- 🧹 **Backward compatible** — behaviour is identical to 0.8.5 when you never use multi-window; the main window keeps the old data file with zero migration
+
 ### 🗂 Tabs & File Management (strengthened throughout 0.8.0 ~ 0.8.5)
 
 - 🆕 **Untitled scratch tabs** — create with `Ctrl+N` or by double-clicking the empty tab-bar area; nothing is written to disk until the first save, and unsaved scratch tabs are restored on restart
