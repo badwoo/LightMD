@@ -23,6 +23,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useState } from "react";
 import { renderHook, act } from "@testing-library/react";
 import { useResizable } from "../hooks/useResizable";
+import { useSettingsStore } from "../stores/useSettingsStore";
 
 // ─── 工具：模拟分割条元素（jsdom 的 getBoundingClientRect 恒为 0，必须打桩）───
 
@@ -211,8 +212,45 @@ describe("v0.14.0 需求3：拖到边界后反向拖立即响应（无死区）"
   });
 });
 
-// ═══ 3. 外部 store 值同步（拖拽中不覆盖）═══
+// ═══ 2.5 hook 的 split 钳制常量必须与 store 一致（Lead 关注点 1）═══
 
+describe("v0.14.0 需求3：hook 与 store 的 split 边界常量一致", () => {
+  it("hook 拖到边界时的取值 == store setSplitRatio 的钳制值（0.3 / 0.7）", () => {
+    // 若两处常量不一致（例如 hook 用 0.25、store 用 0.3），会出现：
+    //   拖到 hook 的 0.25 → store 钳成 0.3 → 下次按下起点用 store 值 0.3
+    //   → 边界附近反复"到不了 / 再拖不动"的假死。这里把两边锁在一起。
+    const { hook, divider, changes } = renderSplit(0.5, 1000);
+    const { result } = hook;
+
+    // hook 侧下限
+    act(() => result.current.onMouseDown(makeDownEvent(600, divider)));
+    act(() => moveTo(0));
+    act(() => mouseUp());
+    const hookMin = changes[changes.length - 1];
+
+    // store 侧下限
+    useSettingsStore.setState({ splitRatio: 0.5 });
+    useSettingsStore.getState().setSplitRatio(0.01);
+    const storeMin = useSettingsStore.getState().splitRatio;
+
+    // hook 侧上限
+    act(() => result.current.onMouseDown(makeDownEvent(0, divider)));
+    act(() => moveTo(1000));
+    act(() => mouseUp());
+    const hookMax = changes[changes.length - 1];
+
+    // store 侧上限
+    useSettingsStore.getState().setSplitRatio(0.99);
+    const storeMax = useSettingsStore.getState().splitRatio;
+
+    expect(hookMin).toBeCloseTo(0.3, 10);
+    expect(hookMax).toBeCloseTo(0.7, 10);
+    expect(hookMin).toBeCloseTo(storeMin, 10);
+    expect(hookMax).toBeCloseTo(storeMax, 10);
+  });
+});
+
+// ═══ 3. 外部 store 值同步（拖拽中不覆盖）═══
 describe("v0.14.0 需求3：外部 initialRatio 变化时同步内部 ratio", () => {
   it("非拖拽时外部值被改动（如「重置布局」）→ hook.ratio 跟随", () => {
     const { hook } = renderSplit(0.5, 1000);
@@ -345,6 +383,39 @@ describe("v0.14.0 需求3：拖拽期间屏蔽 iframe 指针事件（根因兜�
 // ═══ 5. 老方向行为不变（left / right，对照 v0.4.0-resizer.test.ts）═══
 
 describe("v0.14.0 需求3：direction=left/right 老行为回归", () => {
+  it("left/right/vertical 也走 pointer 去重：一次物理移动只回调一次（不会双倍 setWidth）", () => {
+    // Lead 关注点：pointer 通道是为 split 引入的，但监听是**通用路径**。
+    // 这里对三类老方向各做一次「同坐标的 pointermove + 兼容 mousemove」，
+    // 断言只回调 1 次、且数值正确（若双重触发，left 会算出 260+50=310 后又 310+50=360）。
+    const cases = [
+      { direction: "left" as const, extra: { initialWidth: 260, minWidth: 180, maxWidth: 480 }, expectAfter: 310 },
+      { direction: "right" as const, extra: { initialWidth: 240, minWidth: 180, maxWidth: 480 }, expectAfter: 190 },
+      // vertical：delta 取反 → 200 - 50 = 150
+      { direction: "vertical" as const, extra: { initialHeight: 200, minHeight: 80, maxHeight: 400 }, expectAfter: 150, clientY: 50 },
+    ];
+
+    for (const c of cases) {
+      const onChange = vi.fn();
+      const { result, unmount } = renderHook(() => useResizable({ direction: c.direction, ...c.extra, onChange }));
+
+      act(() => result.current.onMouseDown(makeDownEvent(100, null)));
+      // Chromium 真实派发顺序：pointermove 先到，兼容 mousemove 紧随其后（同一坐标）
+      act(() => {
+        document.dispatchEvent(
+          new PointerEvent("pointermove", { bubbles: true, clientX: 150, clientY: c.clientY ?? 0, buttons: 1 }),
+        );
+        document.dispatchEvent(
+          new MouseEvent("mousemove", { bubbles: true, clientX: 150, clientY: c.clientY ?? 0, buttons: 1 }),
+        );
+      });
+
+      expect(onChange).toHaveBeenCalledTimes(1); // 关键：不是 2 次
+      expect(onChange).toHaveBeenCalledWith(c.expectAfter);
+      act(() => mouseUp());
+      unmount();
+    }
+  });
+
   it("left 方向：delta 正→宽度增加（260 + 50 = 310）", () => {
     const onChange = vi.fn();
     const { result } = renderHook(() =>
