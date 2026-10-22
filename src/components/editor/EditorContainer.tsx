@@ -6937,7 +6937,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             // 「鼠标移到右屏时分割线显出竖排小字」完全由 CSS 的 `:has()` 实现
             // （见 editor.css 的 `.editor-main-area:has(.split-preview-shell:hover)`），
             // 不引入任何 React state，避免 hover 引发整棵编辑器重渲染。
-            onMouseDown={previewShown ? splitResizer.onMouseDown : undefined}
+            onMouseDown={(e) => {
+              // ⚠️ 实测踩坑：竖排小字是分割条的**子元素**，若在这里启动拖拽，
+              // useResizable 会 setPointerCapture 把指针捕获到分割条上，
+              // 随后派发的 click 被重定向到分割条 → 按钮的 onClick 永远不触发
+              // （表现为「点『关闭预览』毫无反应」，实机 CDP 已复现并证实）。
+              // 因此凡是落在开关按钮上的按下，一律不启动拖拽，交给按钮自己处理。
+              if ((e.target as HTMLElement | null)?.closest?.(".split-divider-label")) return;
+              if (!previewShown) return;
+              splitResizer.onMouseDown(e);
+            }}
           >
             <button
               type="button"
