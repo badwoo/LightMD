@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.13.2**
+**Current Version: v0.14.0**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -12,11 +12,14 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ## 🎯 Core Features
 
-### 📝 Three Editing Modes
+### 📝 Two Editing Modes (v0.14.0: three merged into two)
 
 - **Preview Mode** — WYSIWYG with Markdown syntax hints on the cursor line
-- **Source Mode** — Pure text editing with a toolbar for quick syntax insertion
-- **Split Mode** — Side-by-side editing with synchronized scrolling
+- **Edit Mode** — Source on the left, live preview on the right (this **is** the old Split view,
+  now the default when you click Edit). The preview can be collapsed into a pure source view and
+  slid back in from the vertical "Open preview" rail at the editor's right edge.
+  - Double-tap `Ctrl`: toggle Preview ↔ Edit; double-tap `Shift`: toggle the preview pane
+  - Hover the divider centre for the vertical, breathing "Close preview / Open preview" label
 
 ### 📊 Rich Content Support
 
@@ -36,7 +39,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 ### ⚡ Productivity Boosters
 
 - 🗂 **Multi-Tab** with file tree sync (`Ctrl+W` to close, `Ctrl+Tab` to switch; right-click a tab/file/recent item to "Open file location", 0.5.0)
-- 🔍 **Global Search & Replace** (`Ctrl+F` / `Ctrl+H`)
+- 🔍 **Global Search & Replace** (`Ctrl+F` / `Ctrl+H`) — with **whole word / match case / in selection / regex** checkboxes (default off) and a **"Find in open files"** results banner listing file name + matched line with highlighted hits; works in both Preview and Edit mode (0.14.0)
 - ⚡ **Quick file switcher** (`Ctrl+P`) — open tabs / recent files / workspace files in groups, subsequence fuzzy matching with highlighted hits (0.13.0)
 - 📑 **Document Outline** with click-to-jump navigation and drag-to-reorder; collapsible headings (0.13.0) and per-document scroll memory (0.13.2)
 - 📁 **File Tree** + drag-and-drop open
@@ -314,10 +317,10 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.13.2 installers:
+Visit the [Releases](../../releases) page to download the 0.14.0 installers:
 
-- **`LightMD_0.13.2_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.13.2_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.14.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.14.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -368,6 +371,31 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.14.0 (2026-10-23)
+
+**Interaction consolidation and search capabilities — three modes merged into two / search enhancements / one-way divider drag fixed**
+
+The previously planned CodeMirror 6 migration is **cancelled** (re-evaluated and dropped); this
+release instead implements the three requirements below. All 45 acceptance checks were verified on
+the **packaged build with real WebView2 mouse/keyboard gestures** via CDP.
+
+| # | Requirement | What landed |
+| --- | --- | --- |
+| 1 | Merge three modes into two | The mode switch now has only **Read / Edit**. Clicking **Edit** lands in the old Split look (source + preview). Double-tap `Ctrl` toggles Read ↔ Edit; double-tap `Shift` toggles the preview pane (from Read it enters Edit with the preview open) |
+| 2 | Vertical breathing label on the divider | Hovering the preview pane reveals a faint grey **vertical** (`vertical-rl` + `upright`) "Close preview" label with a 2.4 s breathing animation. Clicking it **slides the preview pane out to the right** (leaving an 18 px rail at the editor's right edge) and the label becomes "Open preview"; clicking again **slides it back in** |
+| 3 | Search enhancements | New **whole word**, **match case** and **in selection** checkboxes (all off by default; regex kept). "In selection" captures the selection at the moment you tick it and **shifts it as replacements are applied**. With no selection it shows 0 matches plus a hint — it never silently falls back to the whole document (which would make "Replace all" destructive) |
+| 4 | Find in open files | A banner under the search box lists **file name + matched line**, with `<mark>` highlighting for hits and a "N matches (M files)" summary. Clicking an entry jumps to that file and position (tab switch first, then locate by "Nth occurrence"). Works in **both** Preview and Edit mode |
+| 5 | One-way divider drag | Measured root cause: the divider sits flush against the preview `iframe`; once the pointer enters it the parent document receives **no** `mousemove`/`mouseup` (left drag 6/6 events, right drag 0/6). Fixed with `setPointerCapture` + suppressing `pointer-events` on `iframe/embed/object` during the drag + a de-duplicated pointer/mouse dual channel + `initialRatio` sync. After the fix: left drag 1008→1228 px and right drag 1228→968 px both work |
+| 6 | Label not clickable (found on real device) | It is a child of the divider, so the drag's `setPointerCapture` redirected the following `click` to the divider and the button never fired. Presses landing on the label now bypass the drag |
+
+Quality: `tsc --noEmit` exit 0; full suite **304 files / 5262 tests** green; 6 new test files
+(`v0140-two-modes` 21 · `v0140-split-divider` 23 · `v0140-search-engine` 68 · `v0140-search-ui` 29 ·
+`v0140-search-reading-mode` 8); real-device acceptance 45/45 PASS.
+
+Known trade-offs: search/replace results are not pushed onto the source undo stack (`Ctrl+Z` cannot
+undo them — use a reverse replace); the "in selection" snapshot does not follow later manual
+selection changes; the results banner does not recompute while you edit the document.
 
 ### v0.13.2 (2026-10-17)
 
