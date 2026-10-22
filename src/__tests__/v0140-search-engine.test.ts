@@ -26,6 +26,7 @@ import {
   buildRawOffsetMap,
   rawOffsetToNormalized,
   resolveJumpOffset,
+  resolveJumpByOccurrence,
   MAX_FILE_RESULTS,
   type MatchRange,
   type OffsetBlock,
@@ -380,6 +381,74 @@ describe("v0.14.0 collectFileResults：多文件结果", () => {
     expect(results[0].fileKey).toBe("f1");
     expect(results[0].filePath).toBe("D:/docs/a.md");
     expect(results[0].fileName).toBe("a.md");
+  });
+
+  it("occurrence 是该行首个命中在文件全部命中中的 0 基序号（跨行累计）", () => {
+    // 第 1 行两处、第 3 行一处 → occurrence 分别是 0 与 2
+    const content = "hit hit\nnone\nhit";
+    const { results } = collectFileResults(content, { query: "hit" }, meta);
+    expect(results.length).toBe(2);
+    expect(results[0].occurrence).toBe(0);
+    expect(results[1].occurrence).toBe(2);
+  });
+
+  it("occurrence 在单行多命中时只标首个，后续可用 行内序号 推算", () => {
+    const { results } = collectFileResults("hit hit hit", { query: "hit" }, meta);
+    expect(results.length).toBe(1);
+    expect(results[0].occurrence).toBe(0);
+    expect(results[0].ranges.length).toBe(3);
+  });
+});
+
+// ─── 跨文本空间跳转（occurrence 定位）─────────────────────
+
+describe("v0.14.0 resolveJumpByOccurrence：跨文本空间定位", () => {
+  it("按 occurrence 取第 N 次出现（0 基）", () => {
+    const text = "aaa bbb aaa ccc aaa";
+    expect(resolveJumpByOccurrence(text, "aaa", 0)).toBe(0);
+    expect(resolveJumpByOccurrence(text, "aaa", 1)).toBe(8);
+    expect(resolveJumpByOccurrence(text, "aaa", 2)).toBe(16);
+  });
+
+  it("源码空间多次出现、渲染文本只合并成一处时，occurrence 越界仍能靠「唯一一处」兜底", () => {
+    // 源码里 "链接" 出现 2 次，但渲染文本只有 1 次（模拟语法记号被吃掉后的合并）
+    expect(resolveJumpByOccurrence("只有一处 链接 文本", "链接", 3)).toBe(5);
+  });
+
+  it("occurrence 越界且文本有多处 → 返回 null（不猜，交给调用方提示）", () => {
+    expect(resolveJumpByOccurrence("aaa bbb aaa", "aaa", 5)).toBeNull();
+  });
+
+  it("文本里没有关键词 → null", () => {
+    expect(resolveJumpByOccurrence("nothing here", "aaa", 0)).toBeNull();
+  });
+
+  it("空关键词 → null", () => {
+    expect(resolveJumpByOccurrence("abc", "", 0)).toBeNull();
+  });
+
+  it("尊重大小写与全词选项（与搜索口径一致）", () => {
+    const text = "Cat cat concat";
+    // 区分大小写：只有下标 4 的小写 cat
+    expect(resolveJumpByOccurrence(text, "cat", 0, { caseSensitive: true })).toBe(4);
+    // 全词（大小写不敏感）：Cat(0) 与 cat(4) 两处，concat 里的不算
+    expect(resolveJumpByOccurrence(text, "cat", 0, { wholeWord: true })).toBe(0);
+    expect(resolveJumpByOccurrence(text, "cat", 1, { wholeWord: true })).toBe(4);
+    // 只有 2 处 → occurrence 2 越界，且不唯一 → null
+    expect(resolveJumpByOccurrence(text, "cat", 2, { wholeWord: true })).toBeNull();
+  });
+
+  it("忽略传入的 range（跨空间范围无意义）", () => {
+    // 即使传了 range 也应无视，仍按全文 occurrence 定位
+    expect(resolveJumpByOccurrence("aaa bbb aaa", "aaa", 1, { range: { start: 0, end: 3 } })).toBe(8);
+  });
+
+  it("正则模式下按 occurrence 定位（匹配长度可变）", () => {
+    // 下标：n0 1→1，空格2，n3 2,2→4..6，空格6，n7 3,3,3→8..11
+    const text = "n1 n22 n333";
+    expect(resolveJumpByOccurrence(text, "\\d+", 0, { useRegex: true })).toBe(1);
+    expect(resolveJumpByOccurrence(text, "\\d+", 1, { useRegex: true })).toBe(4);
+    expect(resolveJumpByOccurrence(text, "\\d+", 2, { useRegex: true })).toBe(8);
   });
 });
 

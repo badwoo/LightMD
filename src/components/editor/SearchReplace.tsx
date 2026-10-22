@@ -37,13 +37,14 @@ import {
   applyReplacementToRange,
   collectFileResults,
   resolveJumpOffset,
+  resolveJumpByOccurrence,
   MAX_FILES,
   type MatchRange,
   type OffsetBlock,
   type SearchOptions,
   type SearchFileResult,
 } from "../../utils/searchEngine";
-import { requestSearchJump, type SearchJumpTarget } from "../../utils/searchJump";
+import { requestSearchJump, peekSearchJump, takeSearchJump, type SearchJumpTarget } from "../../utils/searchJump";
 import "./SearchReplace.css";
 
 // R4 起 MatchRange 就由本文件导出（既有测试/调用方按此路径 import），
@@ -230,10 +231,20 @@ export function SearchReplaceDialog({
   docKey,
   collectFiles,
   onJumpToFile,
-  splitPreviewOpen = true,
+  splitPreviewOpen,
 }: SearchReplaceProps) {
   const t = useT();
   const viewMode = useEditorStore((s) => s.viewMode);
+  /**
+   * 编辑模式下右侧预览是否打开（v0.14.0 两模式合并后由 store 持有）。
+   *
+   * 为什么这里既支持 prop 又读 store：
+   * - store 里的 `splitPreviewOpen` 是权威值（Lead 已接线），面板独立渲染时也能拿到正确的默认值；
+   * - prop 保留作显式覆盖入口（测试/将来把面板复用到其它宿主时用）。
+   * 缺省按 `true` 处理（与 store 默认值一致），保证面板不会因未接线而少一块高度。
+   */
+  const storeSplitPreviewOpen = useEditorStore((s) => s.splitPreviewOpen);
+  const previewOpen = splitPreviewOpen ?? storeSplitPreviewOpen ?? true;
   /**
    * 源码模式判定（v0.14.0：两模式合并后**唯一正确**的写法是 `viewMode !== "preview"`）。
    *
@@ -799,6 +810,14 @@ export function SearchReplaceDialog({
    *
    * 数据来源：props.collectFiles()（App 侧提供所有已打开文件 + 实时 getText）；
    * 缺省时退化成「仅当前文档」——保证面板可独立测试，也保证未接线时不崩。
+   *
+   * 文本空间口径（与 Lead 的接线约定一致，改动前请先对齐）：
+   * - 当前文档：优先用 readCurrentText()（阅读模式 = PM 文本、编辑模式 = 源码文本）。
+   *   为什么必须走它：`selectionRange` 是当前文档文本空间的偏移，替换/上一个下一个
+   *   全部依赖同一空间；用 getText()（源码）来搜当前文档，在阅读模式下会和替换坐标系打架。
+   * - 其他文件：用 getText()（App 传的是该标签的 markdown 源码）。
+   * - 「选取范围内」勾选时**跳过其他文件**：选区只有当前文档有，把当前文档的文本偏移
+   *   套到别的文件上毫无意义，只会把所有结果误杀成 0（用户会以为"别的文件里没有"）。
    */
   const rebuildResults = useCallback(() => {
     if (!searchText) {
@@ -808,14 +827,19 @@ export function SearchReplaceDialog({
       setResultsTruncated(false);
       return;
     }
-    const files: SearchableFile[] = collectFilesRef.current
-      ? collectFilesRef.current()
-      : (() => {
-          const key = docKey ?? FALLBACK_FILE_KEY;
-          const name = docKey ? docKey.split(/[\\/]/).pop() ?? docKey : "";
-          const text = readCurrentText().text;
-          return [{ fileKey: key, filePath: "", fileName: name, getText: () => text }];
-        })();
+    const currentKey = docKey ?? FALLBACK_FILE_KEY;
+    const currentText = readCurrentText().text;
+    const provided = collectFilesRef.current ? collectFilesRef.current() : null;
+    const files: SearchableFile[] = provided
+      ? provided
+      : [
+          {
+            fileKey: currentKey,
+            filePath: "",
+            fileName: docKey ? docKey.split(/[\\/]/).pop() ?? docKey : "",
+            getText: () => currentText,
+          },
+        ];
 
     const results: SearchFileResult[] = [];
     const counts: Record<string, number> = {};
@@ -827,8 +851,13 @@ export function SearchReplaceDialog({
     if (files.length > MAX_FILES) truncated = true;
     for (let i = 0; i < limit; i++) {
       const f = files[i];
+      const isCurrentDoc = f.fileKey === currentKey;
+      // 选取范围内只对当前文档成立 → 其他文件整份跳过（见函数头注释）
+      if (inSelection && !isCurrentDoc) continue;
+      const content = isCurrentDoc ? currentText : f.getText();
+      // 当前文档带 range；其他文件 range 恒为 null（optionsForFile 内部已保证）
       const res = collectFileResults(
-        f.getText(),
+        content,
         { query: searchText, ...optionsForFile(f.fileKey) },
         { fileKey: f.fileKey, filePath: f.filePath, fileName: f.fileName },
       );
@@ -860,9 +889,12 @@ export function SearchReplaceDialog({
    * 点击某条结果 → 跳转。
    *
    * 两种分支：
-   * - 目标是当前文档：**就地跳转**（不派发切标签事件，避免 App 多余地重建编辑器导致面板失焦）
-   * - 目标是别的文件：派发 lightmd:search-jump 让 App 切标签，并把目标交给 onJumpToFile
-   *   （接收方在文档就绪后用 takeSearchJump(fileKey) 取走并定位）
+   * - 目标是当前文档：**就地跳转**，用「行/列 + 关键词」在同文本空间里定位，最精确
+   *   （不派发切标签事件，避免 App 多余地重建编辑器导致面板失焦）
+   * - 目标是别的文件：把目标（含 `occurrence`）写入跨组件跳转契约并派发事件让 App 切标签。
+   *   为什么跨文件不用行号：结果算在源码空间，跳过去可能是阅读模式（PM 文本空间），
+   *   行号会错位；用「第 N 次出现」定位见 resolveJumpByOccurrence。
+   *   定位闭环由下面的 docKey effect 在本文件内完成 —— 不依赖 EditorContainer 改定位逻辑。
    */
   const handleResultClick = useCallback((r: SearchFileResult) => {
     const length = Math.max(1, (r.ranges[0]?.end ?? 0) - (r.ranges[0]?.start ?? 0));
@@ -873,6 +905,7 @@ export function SearchReplaceDialog({
       column: r.column,
       length,
       query: searchText,
+      occurrence: r.occurrence,
     };
     const currentKey = docKey ?? FALLBACK_FILE_KEY;
     if (r.fileKey === currentKey) {
@@ -899,6 +932,52 @@ export function SearchReplaceDialog({
     requestSearchJump(target);
   }, [docKey, readCurrentText, searchText, highlightMatch, onJumpToFile]);
 
+  /**
+   * v0.14.0：跨文件跳转的「接收端」——切标签完成后由本面板自己完成定位闭环。
+   *
+   * 时序：点击结果 → requestSearchJump 写入 pending + 派发 lightmd:search-jump →
+   * App 切标签 → `docKey` 变成目标文件的键 → 本 effect 触发。
+   *
+   * 为什么用 docKey 变化来触发而不是监听事件：
+   * 事件派发时目标文档还没加载好（内容/文本空间都还是旧的），此时定位必然算错。
+   * docKey 变化才是「目标文档已成为当前文档」的可靠信号。
+   *
+   * 为什么拿 peekSearchJump 再 take：
+   * 别的窗口/别的面板实例也可能有 pending，必须先确认 fileKey 与当前 docKey 一致才消费，
+   * 否则会把别人的跳转请求吃掉（表现为"点了结果但没反应"）。
+   */
+  useEffect(() => {
+    const key = docKey;
+    if (!key) return;
+    const pending = peekSearchJump();
+    if (!pending || pending.fileKey !== key) return;
+    const taken = takeSearchJump(key);
+    if (!taken) return;
+    // 用「第 N 次出现」在当前文本空间定位（跨源码/PM 空间靠 occurrence，不靠行号）
+    const { text } = readCurrentText();
+    const offset = resolveJumpByOccurrence(text, taken.query, taken.occurrence, {
+      caseSensitive,
+      useRegex,
+      wholeWord,
+    });
+    const matches = matchesRef.current;
+    let idx = offset === null ? -1 : matches.findIndex((m) => offset >= m.start && offset < m.end);
+    if (idx < 0 && offset !== null) idx = matches.findIndex((m) => m.start >= offset);
+    if (idx >= 0) {
+      setCurrentMatch(idx + 1);
+      highlightMatch(idx);
+      setJumpFailed(false);
+    } else {
+      // 定位不到（文本刚被改过 / 关键词在渲染文本里形态不同）：给可见提示，2 秒后复位
+      setJumpFailed(true);
+      if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
+      jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
+    }
+    // 依赖里只放 docKey 与搜索选项：本 effect 的职责就是"文档就绪后消费一次 pending"，
+    // 把 matches 等易变引用放进来会重复触发消费（pending 已被 take，第二次为空但语义混淆）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docKey, caseSensitive, useRegex, wholeWord]);
+
   // 键盘事件
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -913,7 +992,7 @@ export function SearchReplaceDialog({
   return (
     <div
       ref={containerRef}
-      className={`search-replace search-replace-floating${splitPreviewOpen ? "" : " search-replace-solo"}`}
+      className={`search-replace search-replace-floating${previewOpen ? "" : " search-replace-solo"}`}
       style={initialized ? { left: position.x, top: position.y } : undefined}
       onKeyDown={handleKeyDown}
     >

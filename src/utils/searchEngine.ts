@@ -406,6 +406,14 @@ export interface SearchFileResult {
   lineText: string;
   segments: SearchLineSegment[];
   ranges: MatchRange[];
+  /**
+   * 该行**首个**命中在本文件全部命中中的序号（0 基）。
+   *
+   * 用途同 SearchJumpTarget.occurrence：跨文本空间（源码 → PM 渲染文本）跳转时
+   * 行号/列号会错位，但关键词出现的次序是稳定的，用「第 N 次出现」定位最可靠。
+   * 一行多个命中时，后续命中可以用 `occurrence + 行内序号` 推算。
+   */
+  occurrence: number;
 }
 
 /** 文件元信息（由调用方提供，纯函数层不认识 store / 标签页） */
@@ -571,18 +579,24 @@ export function collectFileResults(
   let truncated = false;
   let matchCount = 0;
   let mi = 0;
+  // 全局命中序号（跨行累计），用于给每行回填 occurrence
+  let occurrenceCursor = 0;
   for (let li = 0; li < lineStarts.length; li++) {
     const lineStart = lineStarts[li];
     // 行尾：下一行行首 - 1（去掉 \n）；最后一行直接到文末
     const lineEnd = li + 1 < lineStarts.length ? lineStarts[li + 1] - 1 : text.length;
     const lineRanges: MatchRange[] = [];
+    const lineFirstOccurrence = occurrenceCursor;
     while (mi < all.length && all[mi].start < lineEnd) {
       const m = all[mi];
       mi++;
       const start = Math.max(0, m.start - lineStart);
       const end = Math.min(lineEnd - lineStart, m.end - lineStart);
       // 跨行匹配截到行尾后可能为空（例如命中正好落在行尾换行上），此时忽略
-      if (end > start) lineRanges.push({ start, end });
+      if (end > start) {
+        lineRanges.push({ start, end });
+        occurrenceCursor++;
+      }
     }
     if (lineRanges.length === 0) continue;
     matchCount += lineRanges.length;
@@ -604,6 +618,7 @@ export function collectFileResults(
       lineText: clipped.displayText,
       segments: buildSegments(clipped.displayText, clipped.ranges),
       ranges: lineRanges,
+      occurrence: lineFirstOccurrence,
     });
   }
   return { results, truncated, matchCount };
@@ -648,4 +663,51 @@ export function resolveJumpOffset(
   const global = text.toLowerCase().indexOf(query.toLowerCase());
   if (global >= 0) return global;
   return candidate;
+}
+
+/**
+ * 按「第 N 次出现」把跨文件跳转目标落到**当前文本空间**的字符偏移。
+ *
+ * 为什么不用行号：搜索结果是在**源码空间**算的（collectFiles 的 getText 返回 markdown 源码），
+ * 而跳到目标文件后若处于阅读模式，当前文本空间是 PM 渲染文本（语法记号已被解析掉/重排），
+ * 行号/列号必然错位。关键词出现的**次序**在两个空间里是稳定的
+ * （渲染文本是源码去掉语法记号后的子序列），所以用 occurrence 定位，退化为「第 N 次出现」。
+ *
+ * 三级降级（顺序不可换，越靠前越精确）：
+ * 1. occurrence 在范围内且该处文本确实是关键词 → 直接用它
+ *    （用 `opts` 的选项做匹配，保证与搜索时的口径一致）；
+ * 2. 文本里只有**唯一**一处 query → 用那一处（源码里出现多次、渲染文本只合并成一处的
+ *    情况很常见，比如链接文字与 URL 相同）；
+ * 3. 都不行 → 返回 null，调用方给「无法跳转」提示（不瞎跳，跳错比不跳更让人困惑）。
+ *
+ * @param text 当前文本空间的内容（阅读模式 = buildOffsetMap().text，编辑模式 = 源码归一化文本）
+ * @param query 搜索关键词（原文大小写）
+ * @param occurrence 0 基的出现序号
+ * @param opts 搜索选项（大小写/正则/全词；**不要**传 range —— 跨空间的范围没有可比性）
+ * @returns 命中起始字符偏移；无法定位返回 null
+ */
+export function resolveJumpByOccurrence(
+  text: string,
+  query: string,
+  occurrence: number,
+  opts: SearchOptions = {},
+): number | null {
+  if (!query) return null;
+  // 跨空间不能带范围约束（源码里的范围坐标在渲染文本里毫无意义）
+  const ranges = findMatchRangesEx(text, query, {
+    caseSensitive: opts.caseSensitive,
+    useRegex: opts.useRegex,
+    wholeWord: opts.wholeWord,
+    range: null,
+  });
+  if (!ranges || ranges.length === 0) return null;
+  // ① 首选：按次序命中（occurrence 必须**在范围之内**才算命中；
+  //    越界时不能夹到最后一处 —— 那等于跳到另一个位置，跳错比不跳更糟）
+  if (Number.isFinite(occurrence) && occurrence >= 0 && occurrence < ranges.length) {
+    return ranges[occurrence].start;
+  }
+  // ② 兜底：全文只有唯一一处
+  if (ranges.length === 1) return ranges[0].start;
+  // ③ 次序越界且有多处 → 不猜，交给调用方提示
+  return null;
 }

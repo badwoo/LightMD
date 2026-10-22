@@ -15,7 +15,7 @@ import { createElement, useState } from "react";
 import { render, fireEvent, cleanup, act } from "@testing-library/react";
 import { SearchReplaceDialog, type SearchableFile } from "../components/editor/SearchReplace";
 import { useEditorStore } from "../stores/useEditorStore";
-import { peekSearchJump, takeSearchJump, __resetSearchJumpForTest } from "../utils/searchJump";
+import { peekSearchJump, requestSearchJump, takeSearchJump, __resetSearchJumpForTest } from "../utils/searchJump";
 
 // ─── 测试替身 ─────────────────────────────────────────────
 
@@ -280,6 +280,8 @@ describe("v0.14.0 选取范围内：查找与替换", () => {
 // ═══ 4. 查找所有打开文件 ═══
 
 describe("v0.14.0 查找所有打开文件：结果条幅", () => {
+  /** a.md 的源码文本：当前文档（a.md）走 readCurrentText，故 initialContent 用它 */
+  const A_MD_TEXT = "hello world\nfoo here\nfoo again";
   const files = (): SearchableFile[] => [
     {
       fileKey: "a.md",
@@ -302,7 +304,8 @@ describe("v0.14.0 查找所有打开文件：结果条幅", () => {
   ];
 
   it("点击按钮展开条幅：条数、文件名、命中行与 <mark> 高亮正确", () => {
-    renderPanel({ initialContent: "hello", files: files(), docKey: "a.md" });
+    // 当前文档走 readCurrentText（不是 getText），内容必须与 a.md 的源码一致才等价
+    renderPanel({ initialContent: A_MD_TEXT, files: files(), docKey: "a.md" });
     typeSearch("foo");
     expect(document.querySelector('[data-testid="search-results"]')).toBeNull();
     fireEvent.click(document.querySelector('[data-testid="search-find-in-open-files"]')!);
@@ -329,7 +332,7 @@ describe("v0.14.0 查找所有打开文件：结果条幅", () => {
   });
 
   it("汇总显示命中总数与文件数", () => {
-    renderPanel({ initialContent: "hello", files: files(), docKey: "a.md" });
+    renderPanel({ initialContent: A_MD_TEXT, files: files(), docKey: "a.md" });
     typeSearch("foo");
     fireEvent.click(document.querySelector('[data-testid="search-find-in-open-files"]')!);
     const summary = document.querySelector('[data-testid="search-results-summary"]') as HTMLElement;
@@ -347,7 +350,8 @@ describe("v0.14.0 查找所有打开文件：结果条幅", () => {
         getText: () => "foo and foo and foo",
       },
     ];
-    renderPanel({ initialContent: "x", files: multi, docKey: "m.md" });
+    // m.md 是当前文档 → 内容取 readCurrentText，必须直接给命中文本
+    renderPanel({ initialContent: "foo and foo and foo", files: multi, docKey: "m.md" });
     typeSearch("foo");
     fireEvent.click(document.querySelector('[data-testid="search-find-in-open-files"]')!);
     const items = document.querySelectorAll('[data-testid="search-result-item"]');
@@ -375,7 +379,7 @@ describe("v0.14.0 查找所有打开文件：结果条幅", () => {
   });
 
   it("搜索词变化时条幅自动刷新（不用再点按钮）", () => {
-    renderPanel({ initialContent: "hello", files: files(), docKey: "a.md" });
+    renderPanel({ initialContent: A_MD_TEXT, files: files(), docKey: "a.md" });
     typeSearch("foo");
     fireEvent.click(document.querySelector('[data-testid="search-find-in-open-files"]')!);
     expect(document.querySelectorAll('[data-testid="search-result-item"]').length).toBe(3);
@@ -387,7 +391,7 @@ describe("v0.14.0 查找所有打开文件：结果条幅", () => {
   it("点击其它文件的条目 → 触发 onJumpToFile 并写入跨组件跳转契约", () => {
     const jumps: unknown[] = [];
     renderPanel({
-      initialContent: "hello",
+      initialContent: A_MD_TEXT,
       files: files(),
       docKey: "a.md",
       onJumpToFile: (t) => jumps.push(t),
@@ -433,6 +437,55 @@ describe("v0.14.0 查找所有打开文件：结果条幅", () => {
     // 当前文档 1 行、2 处命中 → 1 条结果
     expect(document.querySelectorAll('[data-testid="search-result-item"]').length).toBe(1);
     expect(document.querySelector('[data-testid="search-results-summary"]')!.textContent).toContain("2");
+  });
+
+  it("勾选「选取范围内」时跳过其他文件（选区只属于当前文档）", () => {
+    renderPanel({ initialContent: A_MD_TEXT, files: files(), docKey: "a.md", selection: [0, 11] });
+    typeSearch("foo");
+    fireEvent.click(document.querySelector('[data-testid="search-find-in-open-files"]')!);
+    // 未勾选：a.md 2 处 + b.md 1 处
+    const before = document.querySelectorAll('[data-testid="search-result-item"]').length;
+    expect(before).toBe(3);
+    fireEvent.click(document.querySelector('[data-testid="search-in-selection"]')!);
+    // 勾选后只剩当前文档范围内的结果，b.md 整份被跳过
+    const after = Array.from(document.querySelectorAll('[data-testid="search-result-item"]'));
+    for (const item of after) {
+      expect((item.querySelector('[data-testid="search-result-file"]') as HTMLElement).textContent).toContain("a.md");
+    }
+  });
+
+  it("★跳转闭环：docKey 切到目标文件后自动消费 pending 并定位高亮", () => {
+    const target = {
+      fileKey: "b.md",
+      filePath: "D:/docs/b.md",
+      line: 2,
+      column: 5,
+      length: 3,
+      query: "foo",
+      occurrence: 0,
+    };
+    // 先渲染 b.md 作为当前文档，pending 里放一个指向 b.md 的跳转
+    const { rerender } = renderPanel({ initialContent: "nothing\nfoo in b", docKey: "b.md" });
+    typeSearch("foo");
+    expect(getMatchCount()).toBe(1);
+    requestSearchJump(target);
+    // docKey 不变时不应消费（模拟"还没切过去"）
+    expect(peekSearchJump()).not.toBeNull();
+    // 模拟 App 切标签完成：docKey 变成 b.md 的最新值 → 触发消费
+    act(() => {
+      rerender(createElement(Harness, { initialContent: "nothing\nfoo in b", docKey: "b.md", files: files() }));
+      useEditorStore.setState({ viewMode: "edit" });
+    });
+    // 用另一个 docKey 变化驱动（同一 docKey 反复 set 不会触发 effect，故切到新键再切回）
+    act(() => {
+      rerender(createElement(Harness, { initialContent: "nothing\nfoo in b", docKey: "other.md", files: files() }));
+    });
+    act(() => {
+      rerender(createElement(Harness, { initialContent: "nothing\nfoo in b", docKey: "b.md", files: files() }));
+    });
+    // pending 已被消费，且计数被设置到命中的那一处
+    expect(peekSearchJump()).toBeNull();
+    expect((document.querySelector('[data-testid="search-count"]') as HTMLElement).textContent).toContain("1/");
   });
 
   it("条幅在 DOM 中位于替换行之后（不遮住替换行）", () => {
