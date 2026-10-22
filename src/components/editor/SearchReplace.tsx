@@ -13,12 +13,61 @@
  * 性能优化：
  * - buildOffsetMap 从每字符 Map 改为块级数组 + 二分查找
  * - 100KB 文档：内存从 4-8MB 降至 20-80KB
+ *
+ * v0.14.0 需求2（搜索增强）：
+ * - 选项区改为 4 个勾选框：全词匹配 / 匹配大小写 / 选取范围内 / 正则（默认全不勾）
+ * - 「选取范围内」= **勾选瞬间**捕获一次选区作为范围快照，之后随替换增量平移
+ *   （不平移就会在第一次替换后失效，用户会看到「替换越界」）
+ * - 「查找所有打开文件」：条幅列出每个文件的命中行，点条目跳到对应文件/位置
+ * - 替换（单个/全部）与查找共用同一份 SearchOptions，范围外的文本永不被改写
+ * - 纯函数层抽到 utils/searchEngine.ts（本文件只保留组件与兼容包装）
  */
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
+import type { Node as PMNode } from "prosemirror-model";
 import { searchHighlightKey } from "../../core/editor";
 import { useEditorStore } from "../../stores/useEditorStore";
 import { useT } from "../../i18n";
+import {
+  lookupPmPos,
+  pmPosToTextOffset,
+  buildSearchRegexEx,
+  findMatchRangesEx,
+  buildRawOffsetMap,
+  rawOffsetToNormalized,
+  applyReplacementToRange,
+  collectFileResults,
+  resolveJumpOffset,
+  MAX_FILES,
+  type MatchRange,
+  type OffsetBlock,
+  type SearchOptions,
+  type SearchFileResult,
+} from "../../utils/searchEngine";
+import { requestSearchJump, type SearchJumpTarget } from "../../utils/searchJump";
 import "./SearchReplace.css";
+
+// R4 起 MatchRange 就由本文件导出（既有测试/调用方按此路径 import），
+// v0.14.0 实现搬到 utils/searchEngine.ts 后这里保持同名再导出，避免改调用方。
+export type { MatchRange };
+
+/** 「查找所有打开文件」的数据来源：一个可搜索的已打开文件 */
+export interface SearchableFile {
+  /** 文件稳定标识（当前文件夹用 `tab.id ?? tab.path`） */
+  fileKey: string;
+  /** 绝对路径（临时文件为空串） */
+  filePath: string;
+  /** 展示用文件名 */
+  fileName: string;
+  /**
+   * 返回**实时**文本（不能是渲染时的快照）。
+   * 为什么是函数而不是字符串：条幅可能要过一会儿才展开/刷新，
+   * 期间用户可能已经改了当前文档或切了标签；传字符串会把旧内容搜出来。
+   *
+   * 注意：这里返回的必须是**未归一化**的原文（可含 CRLF），
+   * collectFileResults 内部会自己做换行归一化并算行号。
+   */
+  getText: () => string;
+}
 
 interface SearchReplaceProps {
   onClose: () => void;
@@ -30,32 +79,51 @@ interface SearchReplaceProps {
   initialShowReplace?: boolean;
   /** Issue 6：是否为 Markdown 文件。非 md 文件总是走 sourceContent 搜索分支（ProseMirror 为空） */
   isMdFile?: boolean;
+  /**
+   * v0.14.0：当前文档稳定标识（App 侧传 `activeTab.id ?? activeTab.path`）。
+   * 用途：切文件 / 切模式时判定「选取范围内」的旧快照失效。
+   * 缺省时退化为只按模式判断（独立测试用）。
+   */
+  docKey?: string;
+  /**
+   * v0.14.0：「查找所有打开文件」的数据来源。
+   * 缺省时功能退化为「仅搜索当前文档」（保证面板可独立测试、也保证未接线时不崩）。
+   */
+  collectFiles?: () => SearchableFile[];
+  /** v0.14.0：跨文件跳转回调（切标签由 App 负责；缺省只派发 lightmd:search-jump 事件） */
+  onJumpToFile?: (t: SearchJumpTarget) => void;
+  /**
+   * v0.14.0：编辑模式下右侧预览是否打开（两模式合并后由 Lead 接线；缺省按 true）。
+   * 用途：右侧没有预览面板时条幅可以给更高（不存在「遮住预览」的顾虑）。
+   */
+  splitPreviewOpen?: boolean;
 }
 
-// ─── 块级偏移映射（替代逐字符 Map，大幅减少内存）──────────
+// ─── 块级偏移映射（v0.14.0：实现已抽到 utils/searchEngine.ts）──────────
 
-/** 偏移映射块：记录每个文本节点在 textContent 中的偏移范围和对应的 PM 起始位置 */
-interface OffsetBlock {
-  /** 该文本节点在 textContent 中的起始偏移 */
-  textStart: number;
-  /** 该文本节点在 textContent 中的结束偏移（不含） */
-  textEnd: number;
-  /** 该文本节点在 PM 文档中的起始位置 */
-  pmStart: number;
-}
-
-/** 偏移映射结果：同时返回 text 和 blocks，保证搜索文本与位置映射完全一致 */
+/**
+ * 偏移映射结果类型（保留在本文件的理由：既有测试按 `interface OffsetMap` 锁定，
+ * 且组件内多处按此结构标注；实现见 utils/searchEngine.ts 的 buildOffsetMap）。
+ */
 interface OffsetMap {
   text: string;
   blocks: OffsetBlock[];
 }
 
 /**
- * 构建块级偏移映射数组，同时构建 textContent
- * 问题2修复：text 和 blocks 在同一次遍历中构建，保证偏移量完全一致
- * （原实现使用 textBetween 获取 text，与 buildOffsetBlocks 的换行符插入逻辑不一致）
+ * 构建块级偏移映射数组，同时构建 textContent。
+ *
+ * 问题2修复（v0.3.5）：text 和 blocks 必须在**同一次遍历**中构建，保证偏移量完全一致。
+ * 旧实现用 textBetween 取 text、另一趟构建 blocks，两边的换行插入逻辑不一致 →
+ * 阅读模式高亮位置整体偏移。
+ *
+ * ⚠️ v0.14.0：同一份逻辑在 utils/searchEngine.ts 里也有一份（纯函数层需要它，
+ * 而纯函数层不能反向依赖本组件）。两处必须逐字一致，由 v0140-search-engine.test.ts
+ * 的「两份 buildOffsetMap 输出一致」用例守护；改这里务必同步改那边。
+ * 之所以不在这里只写一行 `return buildOffsetMapCore(doc)`：v0.3.5 的防回退用例
+ * 按本文件的函数体锁定「同趟遍历」这一性质，留薄封装会让该用例失去实际保护力。
  */
-function buildOffsetMap(doc: import("prosemirror-model").Node): OffsetMap {
+function buildOffsetMap(doc: PMNode): OffsetMap {
   const blocks: OffsetBlock[] = [];
   let textOffset = 0;
   let lastBlockPos = -1;
@@ -85,24 +153,6 @@ function buildOffsetMap(doc: import("prosemirror-model").Node): OffsetMap {
   return { text, blocks };
 }
 
-/** 从 textContent 偏移量查找 PM 位置（二分查找，O(log n)） */
-function lookupPmPos(blocks: OffsetBlock[], textOffset: number): number | undefined {
-  let lo = 0, hi = blocks.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const block = blocks[mid];
-    if (textOffset < block.textStart) {
-      hi = mid - 1;
-    } else if (textOffset >= block.textEnd) {
-      lo = mid + 1;
-    } else {
-      // textOffset 落在此块内，计算 PM 位置
-      return block.pmStart + (textOffset - block.textStart);
-    }
-  }
-  return undefined;
-}
-
 /**
  * R4（v0.10.0）：按模式构造搜索正则（纯函数，便于单元测试）
  *
@@ -110,26 +160,14 @@ function lookupPmPos(blocks: OffsetBlock[], textOffset: number): number | undefi
  * - 开启正则：直接按正则语义构造；非法正则返回 null（组件据此红字提示、禁用查找，
  *   不抛异常不崩溃）
  *
+ * v0.14.0：内部委托 buildSearchRegexEx（多出全词断言能力），签名保持向后兼容。
+ *
  * @returns 带全局标志的 RegExp；非法正则返回 null
  */
 export function buildSearchRegex(searchText: string, caseSensitive: boolean, useRegex: boolean): RegExp | null {
-  if (!searchText) return null;
-  const flags = caseSensitive ? "g" : "gi";
-  if (!useRegex) {
-    return new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
-  }
-  try {
-    return new RegExp(searchText, flags);
-  } catch {
-    return null;
-  }
-}
-
-/** 匹配区间（R4：正则匹配长度可变，位置数组升级为区间） */
-export interface MatchRange {
-  start: number;
-  /** 不含端点 */
-  end: number;
+  // 实现细节：全词匹配不在旧签名里，故此处等价于 buildSearchRegexEx 的「无全词」分支；
+  // 需要全词时请直接用 buildSearchRegexEx(searchText, { wholeWord: true }).
+  return buildSearchRegexEx(searchText, { caseSensitive, useRegex });
 }
 
 /**
@@ -143,21 +181,7 @@ export function findMatchRanges(
   caseSensitive = false,
   useRegex = false,
 ): MatchRange[] | null {
-  if (!searchText) return [];
-  const regex = buildSearchRegex(searchText, caseSensitive, useRegex);
-  if (!regex) return null;
-  const ranges: MatchRange[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    // 零长匹配防死循环：强制前进一位
-    if (match[0].length === 0) {
-      regex.lastIndex++;
-      continue;
-    }
-    ranges.push({ start: match.index, end: match.index + match[0].length });
-    if (ranges.length > 10000) break; // 防止无限循环（与 v0.4.2 上限一致）
-  }
-  return ranges;
+  return findMatchRangesEx(text, searchText, { caseSensitive, useRegex });
 }
 
 /**
@@ -190,6 +214,11 @@ export function findMatches(text: string, searchText: string, caseSensitive = fa
   return ranges ? ranges.map((r) => r.start) : [];
 }
 
+/** 「选取范围内」快照的空范围哨兵：无选区时用它把匹配数压成 0（见 toggleInSelection） */
+const EMPTY_RANGE: MatchRange = { start: 0, end: 0 };
+/** collectFiles 缺省（仅当前文档）时使用的 fileKey */
+const FALLBACK_FILE_KEY = "__search_current_doc__";
+
 export function SearchReplaceDialog({
   onClose,
   editorView,
@@ -198,18 +227,44 @@ export function SearchReplaceDialog({
   onSourceContentChange,
   initialShowReplace = false,
   isMdFile = true,
+  docKey,
+  collectFiles,
+  onJumpToFile,
+  splitPreviewOpen = true,
 }: SearchReplaceProps) {
   const t = useT();
   const viewMode = useEditorStore((s) => s.viewMode);
-  // Issue 6：非 md 文件 ProseMirror 为空，无论 viewMode 如何都走 sourceContent 搜索分支
-  const isSourceMode = viewMode === "edit" || viewMode === "split" || !isMdFile;
+  /**
+   * 源码模式判定（v0.14.0：两模式合并后**唯一正确**的写法是 `viewMode !== "preview"`）。
+   *
+   * 为什么不能写 `viewMode === "edit" || viewMode === "split"`：
+   * 本版把「编辑/分屏」合并成一个「编辑模式 + 预览开关」，`"split"` 这个值会消失；
+   * 任何硬编码 "split" 的判断在合并后都会静默失配（搜索在编辑模式下直接失效）。
+   * 非 md 文件永远走源码分支（PM 为空），故仍保留 `|| !isMdFile`。
+   */
+  const isSourceMode = viewMode !== "preview" || !isMdFile;
   // 问题3：监听 searchFocusKey 变化，重复按 Ctrl+F 时重新聚焦
   const searchFocusKey = useEditorStore((s) => s.searchFocusKey);
   const [searchText, setSearchText] = useState("");
   const [replaceText, setReplaceText] = useState("");
+  /**
+   * 匹配大小写（沿用的是 R4 以来的同一个 state，v0.14.0 只是把 UI 从按钮换成勾选框）。
+   * ⚠️ 不要再新增一份「matchCase」状态：两份状态会让勾选框与搜索行为脱钩。
+   */
   const [caseSensitive, setCaseSensitive] = useState(false);
   // R4：正则开关与非法表达式标记（非法时红字提示、禁用查找）
   const [useRegex, setUseRegex] = useState(false);
+  // v0.14.0：全词匹配（默认不勾）
+  const [wholeWord, setWholeWord] = useState(false);
+  // v0.14.0：「选取范围内」勾选状态 + 范围快照（快照 = 勾选瞬间的选区，之后随替换平移）
+  const [inSelection, setInSelection] = useState(false);
+  const [selectionRange, setSelectionRange] = useState<MatchRange | null>(null);
+  // v0.14.0：「查找所有打开文件」条幅
+  const [showResults, setShowResults] = useState(false);
+  const [fileResults, setFileResults] = useState<SearchFileResult[]>([]);
+  const [resultFileCounts, setResultFileCounts] = useState<Record<string, number>>({});
+  const [resultMatchTotal, setResultMatchTotal] = useState(0);
+  const [resultsTruncated, setResultsTruncated] = useState(false);
   const [regexInvalid, setRegexInvalid] = useState(false);
   const [matchCount, setMatchCount] = useState(0);
   const [currentMatch, setCurrentMatch] = useState(0);
@@ -224,6 +279,14 @@ export function SearchReplaceDialog({
   const matchesRef = useRef<MatchRange[]>([]);
   // 缓存偏移映射，performSearch 构建后 highlightMatch 复用
   const offsetMapRef = useRef<OffsetMap | null>(null);
+  // 选区快照所属文档（docKey+m 模式）：与当前文档不一致时快照作废
+  const selectionDocKeyRef = useRef<string>("");
+  /**
+   * collectFiles 走 ref：EditorContainer 很可能用内联箭头函数传（每次渲染新引用），
+   * 若进入 useCallback 依赖会导致「重建结果 → 重渲染 → 依赖变化 → 再重建」的死循环。
+   */
+  const collectFilesRef = useRef(collectFiles);
+  collectFilesRef.current = collectFiles;
 
   // ─── 问题4：浮动窗口拖拽 ──────────────────────────
   const containerRef = useRef<HTMLDivElement>(null);
@@ -305,6 +368,116 @@ export function SearchReplaceDialog({
     };
   }, [editorView, isSourceMode, isMdFile]);
 
+  // ─── v0.14.0：「选取范围内」范围快照 ─────────────────────────
+
+  /** 当前文档标识（docKey 由 App 提供；模式变化也算换文档） */
+  const currentDocKey = `${docKey ?? ""}::${isSourceMode ? "source" : "pm"}`;
+
+  /**
+   * 读取当前文本（归一化后）与原始串。
+   * 源码模式返回原文（可能含 CRLF）+ 归一化文本；阅读模式返回 PM 偏移映射的 text。
+   */
+  const readCurrentText = useCallback((): { text: string; raw: string | null } => {
+    if (isSourceMode) {
+      const raw = sourceContent ?? sourceTextareaRef?.current?.value ?? "";
+      // v0.4.4 修复：规范化换行符后位置才与 textarea.value 一致
+      return { text: raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n"), raw };
+    }
+    if (editorView) {
+      const map = offsetMapRef.current ?? buildOffsetMap(editorView.state.doc);
+      offsetMapRef.current = map;
+      return { text: map.text, raw: null };
+    }
+    return { text: "", raw: null };
+  }, [isSourceMode, sourceContent, sourceTextareaRef, editorView]);
+
+  /**
+   * 捕获当前选区为文本偏移范围。
+   *
+   * - 编辑模式：textarea.selectionStart/End 是**原始串**坐标，若含 CRLF 必须先换算成
+   *   归一化偏移（否则每个 "\r\n" 都让范围错位一格，替换就会越界到范围外）
+   * - 阅读模式：PM 的 from/to 用 buildOffsetMap 的 blocks 反查文本偏移
+   *   （pmPosToTextOffset 会把落在块间隙的位置收敛到前一块末尾）
+   *
+   * @returns 有效选区范围；无选区/无法换算时返回 null
+   */
+  const captureSelectionRange = useCallback((): MatchRange | null => {
+    if (isSourceMode) {
+      const ta = sourceTextareaRef?.current;
+      if (!ta) return null;
+      const raw = sourceContent ?? ta.value;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      if (end <= start) return null;
+      return { start: rawOffsetToNormalized(raw, start), end: rawOffsetToNormalized(raw, end) };
+    }
+    if (!editorView) return null;
+    const sel = editorView.state.selection;
+    if (sel.empty || sel.to <= sel.from) return null;
+    const map = buildOffsetMap(editorView.state.doc);
+    const start = pmPosToTextOffset(map.blocks, sel.from);
+    const end = pmPosToTextOffset(map.blocks, sel.to);
+    if (start === undefined || end === undefined || end <= start) return null;
+    return { start, end };
+  }, [isSourceMode, sourceContent, sourceTextareaRef, editorView]);
+
+  /**
+   * 勾选/取消「选取范围内」。
+   *
+   * 关键语义（用户确认过）：**勾选瞬间**捕获一次选区作为范围快照，之后不再跟随光标。
+   * 为什么不做成"实时跟随"：替换会把光标/选区打散，一替换范围就丢了；
+   * 也没有"实时快照"这种能力（PM 选区与文本偏移不是同一坐标系）。
+   *
+   * 无选区时：**保持勾选**但范围置空 → 匹配数 0 + 红字提示。
+   * 为什么不静默退化成全文：用户勾了这个框就是明确表示"只在选区内操作"，
+   * 若悄悄退化成全文，一次"全部替换"就会改掉整篇文档（不可逆的用户事故）。
+   */
+  const handleToggleInSelection = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.checked) {
+      setInSelection(false);
+      setSelectionRange(null);
+      setSelectionLostByDocChange(false);
+      return;
+    }
+    const captured = captureSelectionRange();
+    selectionDocKeyRef.current = currentDocKey;
+    setInSelection(true);
+    setSelectionLostByDocChange(false);
+    setSelectionRange(captured);
+  }, [captureSelectionRange, currentDocKey]);
+
+  // 切文件 / 切模式：旧快照必然错位（那时是另一个文档的坐标），立即丢弃并提示重新选取
+  const [selectionLostByDocChange, setSelectionLostByDocChange] = useState(false);
+  useEffect(() => {
+    if (!selectionDocKeyRef.current || selectionDocKeyRef.current === currentDocKey) return;
+    selectionDocKeyRef.current = currentDocKey;
+    if (inSelection) {
+      setSelectionRange(null);
+      // 提示文案区别于「从没选过」：用户刚才明明选过，是切文档导致失效，要说清原因
+      setSelectionLostByDocChange(true);
+    }
+  }, [currentDocKey, inSelection]);
+
+  // 就地跳转失败的一次性提示（条幅点击落到无法定位的位置时给出可见反馈，而不是静默无反应）
+  const [jumpFailed, setJumpFailed] = useState(false);
+  const jumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
+  }, []);
+
+  /**
+   * 本次搜索/替换使用的选项（唯一真源）。
+   *
+   * 范围规则：勾选「选取范围内」但没取到快照时传 `EMPTY_RANGE`（{0,0}），
+   * 而 findMatchRangesEx 要求匹配**完全落在**范围内 → 任何非零长匹配都不会命中 → 匹配数 0。
+   */
+  const searchOptions = useMemo<SearchOptions>(() => ({
+    caseSensitive,
+    useRegex,
+    wholeWord,
+    range: inSelection ? selectionRange ?? EMPTY_RANGE : null,
+  }), [caseSensitive, useRegex, wholeWord, inSelection, selectionRange]);
+
   // 搜索
   const performSearch = useCallback(() => {
     if (!searchText) {
@@ -340,9 +513,8 @@ export function SearchReplaceDialog({
       text = "";
     }
 
-    // Issue 6：使用提取的 findMatchRanges 纯函数搜索匹配区间
-    // R4：开启正则且表达式非法 → 红字提示 + 匹配数归零（禁用查找），不抛异常
-    const ranges = findMatchRanges(text, searchText, caseSensitive, useRegex);
+    // v0.14.0：统一走 findMatchRangesEx —— 全词/大小写/正则/范围四个约束一次性生效
+    const ranges = findMatchRangesEx(text, searchText, searchOptions);
     setRegexInvalid(ranges === null);
     const matches = ranges || [];
 
@@ -354,7 +526,7 @@ export function SearchReplaceDialog({
     if (matches.length > 0) {
       highlightMatch(0);
     }
-  }, [searchText, caseSensitive, useRegex, isSourceMode, sourceContent, editorView, isMdFile, viewMode]);
+  }, [searchText, searchOptions, isSourceMode, sourceContent, editorView, isMdFile, viewMode]);
 
   // 搜索文本变化时自动搜索
   useEffect(() => {
@@ -486,19 +658,26 @@ export function SearchReplaceDialog({
     if (matchesRef.current.length === 0 || currentMatch === 0) return;
 
     // R4：正则模式下用展开后的替换文本（支持 $1 捕获组）
-    const regex = buildSearchRegex(searchText, caseSensitive, useRegex);
+    // v0.14.0：正则与匹配集合同源（全词/大小写/范围一致），否则会替换到查找结果之外的文本
+    const regex = buildSearchRegexEx(searchText, { caseSensitive, useRegex, wholeWord });
     if (!regex) return;
     const range = matchesRef.current[currentMatch - 1];
     // 匹配文本按路径取源：textarea 路径来自 sourceContent，PM 路径来自 offsetMap.text
     // （R4 修复：阅读模式下 sourceContent 为 undefined，不能作为匹配文本来源）
-    const matched =
-      isSourceMode && sourceContent !== undefined
-        ? sourceContent.substring(range.start, range.end)
-        : offsetMapRef.current?.text.substring(range.start, range.end) ?? searchText;
+    // v0.14.0：源码模式必须先做换行归一化再切 —— range 是**归一化文本**的坐标，
+    // 直接切含 CRLF 的原文会让 $1/$& 匹配到错位的字符。
+    const matched = isSourceMode && sourceContent !== undefined
+      ? sourceContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n").substring(range.start, range.end)
+      : offsetMapRef.current?.text.substring(range.start, range.end) ?? searchText;
     const expanded = expandReplacement(matched, regex, replaceText, useRegex);
 
     if (isSourceMode && sourceTextareaRef?.current && sourceContent !== undefined && onSourceContentChange) {
-      const newContent = sourceContent.substring(0, range.start) + expanded + sourceContent.substring(range.end);
+      // v0.14.0：命中偏移是「归一化文本」坐标，写回时必须换算回原始串坐标，
+      // 否则含 CRLF 的文档每替换一次就错位一格（后面越替换越偏）。
+      const rawMap = buildRawOffsetMap(sourceContent);
+      const rawStart = rawMap ? rawMap[Math.min(range.start, rawMap.length - 1)] : range.start;
+      const rawEnd = rawMap ? rawMap[Math.min(range.end, rawMap.length - 1)] : range.end;
+      const newContent = sourceContent.substring(0, rawStart) + expanded + sourceContent.substring(rawEnd);
       onSourceContentChange(newContent);
     } else if (editorView) {
       // 阅读模式：通过 ProseMirror transaction 替换文本
@@ -519,28 +698,45 @@ export function SearchReplaceDialog({
       }
     }
 
+    // v0.14.0：替换后平移范围快照（不平移的话第二次替换就会越出原选区，用户在范围外的文本被改）
+    if (inSelection && selectionRange) {
+      setSelectionRange(applyReplacementToRange(selectionRange, range.start, range.end - range.start, expanded.length));
+    }
+
     // 替换后重新搜索
     setTimeout(() => performSearch(), 50);
-  }, [isSourceMode, sourceTextareaRef, sourceContent, onSourceContentChange, currentMatch, searchText, replaceText, caseSensitive, useRegex, performSearch, editorView]);
+  }, [isSourceMode, sourceTextareaRef, sourceContent, onSourceContentChange, currentMatch, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, performSearch, editorView]);
 
   // 全部替换
   const replaceAll = useCallback(() => {
     if (!searchText || matchesRef.current.length === 0) return;
 
+    const regex = buildSearchRegexEx(searchText, { caseSensitive, useRegex, wholeWord });
+    if (!regex) return;
+    const matches = matchesRef.current;
+    /** 计算第 i 个命中的替换文本（逐 match 展开捕获组；字面量模式原样替换） */
+    const expandedOf = (i: number, sourceText: string): string =>
+      expandReplacement(sourceText.substring(matches[i].start, matches[i].end), regex, replaceText, useRegex);
+
     if (isSourceMode && sourceContent !== undefined && onSourceContentChange) {
-      // R4：regex 模式原生支持 $1 捕获组；字面量模式维持旧行为（直接传入 replaceText）
-      const regex = buildSearchRegex(searchText, caseSensitive, useRegex);
-      if (!regex) return;
-      const newContent = sourceContent.replace(regex, replaceText);
-      onSourceContentChange(newContent);
+      const raw = sourceContent;
+      const normalized = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const rawMap = buildRawOffsetMap(raw);
+      // v0.14.0：只替换 matchesRef 里的命中（已按范围/全词过滤），不再用 String.replace 全文替换。
+      // 逆序拼接：从后往前改，前面的偏移量不受影响。
+      let next = raw;
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const expanded = expandedOf(i, normalized);
+        const rawStart = rawMap ? rawMap[Math.min(matches[i].start, rawMap.length - 1)] : matches[i].start;
+        const rawEnd = rawMap ? rawMap[Math.min(matches[i].end, rawMap.length - 1)] : matches[i].end;
+        next = next.substring(0, rawStart) + expanded + next.substring(rawEnd);
+      }
+      onSourceContentChange(next);
     } else if (editorView) {
-      // 阅读模式：从后往前替换，避免位置偏移
+      // 阅读模式：从后往前替换，避免位置偏移（v0.14.0：同样只替换过滤后的命中）
       try {
         const offsetMap = offsetMapRef.current;
         if (!offsetMap) return;
-        const matches = matchesRef.current;
-        const regex = buildSearchRegex(searchText, caseSensitive, useRegex);
-        if (!regex) return;
 
         let tr = editorView.state.tr;
         // 从后往前替换，这样前面的偏移量不会受影响
@@ -551,8 +747,7 @@ export function SearchReplaceDialog({
           if (pmStart !== undefined && pmEnd !== undefined) {
             const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
             // R4：逐 match 展开捕获组（字面量模式原样替换）
-            const matched = offsetMap.text.substring(range.start, range.end);
-            tr = tr.insertText(expandReplacement(matched, regex, replaceText, useRegex), pmStart, endPos);
+            tr = tr.insertText(expandedOf(i, offsetMap.text), pmStart, endPos);
           }
         }
         tr.setMeta("addToHistory", true);
@@ -562,8 +757,147 @@ export function SearchReplaceDialog({
       }
     }
 
+    // v0.14.0：范围快照随「全部替换」平移。
+    // 按命中升序逐次套用 applyReplacementToRange（相当于把 N 次替换依次施加到范围上），
+    // 因为范围只罩住这些命中，所以起点不动、终点按累计增量伸缩。
+    if (inSelection && selectionRange) {
+      const normalized = isSourceMode ? (sourceContent ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n") : offsetMapRef.current?.text ?? "";
+      let shifted = selectionRange;
+      let acc = 0; // 已处理命中造成的累计位移
+      for (let i = 0; i < matches.length; i++) {
+        const inserted = expandedOf(i, normalized).length;
+        const removed = matches[i].end - matches[i].start;
+        shifted = applyReplacementToRange(shifted, matches[i].start + acc, removed, inserted);
+        acc += inserted - removed;
+      }
+      setSelectionRange(shifted);
+    }
+
     setTimeout(() => performSearch(), 50);
-  }, [isSourceMode, sourceContent, onSourceContentChange, searchText, replaceText, caseSensitive, useRegex, performSearch, editorView]);
+  }, [isSourceMode, sourceContent, onSourceContentChange, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, performSearch, editorView]);
+
+  // ─── v0.14.0：「查找所有打开文件」结果条幅 ─────────────────────
+
+  /**
+   * 取某个文件的「本轮搜索选项」。
+   *
+   * 范围（range）只属于**当前文档**：选区快照是当前文档的文本坐标，套到别的文件上
+   * 会误杀该文件所有结果（而且毫无意义）。所以只有 fileKey === 当前文档 key 时才传范围。
+   */
+  const optionsForFile = useCallback((fileKey: string): SearchOptions => {
+    const currentKey = docKey ?? FALLBACK_FILE_KEY;
+    return {
+      caseSensitive,
+      useRegex,
+      wholeWord,
+      range: inSelection ? (fileKey === currentKey ? selectionRange ?? EMPTY_RANGE : null) : null,
+    };
+  }, [caseSensitive, useRegex, wholeWord, inSelection, selectionRange, docKey]);
+
+  /**
+   * 重建条幅结果（同步执行，不做任何 IO）。
+   *
+   * 数据来源：props.collectFiles()（App 侧提供所有已打开文件 + 实时 getText）；
+   * 缺省时退化成「仅当前文档」——保证面板可独立测试，也保证未接线时不崩。
+   */
+  const rebuildResults = useCallback(() => {
+    if (!searchText) {
+      setFileResults([]);
+      setResultFileCounts({});
+      setResultMatchTotal(0);
+      setResultsTruncated(false);
+      return;
+    }
+    const files: SearchableFile[] = collectFilesRef.current
+      ? collectFilesRef.current()
+      : (() => {
+          const key = docKey ?? FALLBACK_FILE_KEY;
+          const name = docKey ? docKey.split(/[\\/]/).pop() ?? docKey : "";
+          const text = readCurrentText().text;
+          return [{ fileKey: key, filePath: "", fileName: name, getText: () => text }];
+        })();
+
+    const results: SearchFileResult[] = [];
+    const counts: Record<string, number> = {};
+    let total = 0;
+    let truncated = false;
+    // MAX_FILES 上限：打开上百个标签时全量搜索会卡死 UI（文本可能上百 MB），
+    // 超出部分直接不搜，并在汇总里标记「结果过多」让用户收窄条件。
+    const limit = Math.min(files.length, MAX_FILES);
+    if (files.length > MAX_FILES) truncated = true;
+    for (let i = 0; i < limit; i++) {
+      const f = files[i];
+      const res = collectFileResults(
+        f.getText(),
+        { query: searchText, ...optionsForFile(f.fileKey) },
+        { fileKey: f.fileKey, filePath: f.filePath, fileName: f.fileName },
+      );
+      if (res.truncated) truncated = true;
+      if (res.results.length > 0) {
+        counts[f.fileKey] = res.matchCount;
+        total += res.matchCount;
+      }
+      for (const r of res.results) results.push(r);
+    }
+    setFileResults(results);
+    setResultFileCounts(counts);
+    setResultMatchTotal(total);
+    setResultsTruncated(truncated);
+  }, [searchText, optionsForFile, docKey, readCurrentText]);
+
+  /** 搜索词/选项/范围变化时，条幅已展开就自动刷新（跟着查找走，不需要再点一次按钮） */
+  useEffect(() => {
+    if (!showResults) return;
+    rebuildResults();
+  }, [showResults, rebuildResults]);
+
+  /** 「查找所有打开文件」按钮：展开 ↔ 收起 */
+  const toggleResults = useCallback(() => {
+    setShowResults((v) => !v);
+  }, []);
+
+  /**
+   * 点击某条结果 → 跳转。
+   *
+   * 两种分支：
+   * - 目标是当前文档：**就地跳转**（不派发切标签事件，避免 App 多余地重建编辑器导致面板失焦）
+   * - 目标是别的文件：派发 lightmd:search-jump 让 App 切标签，并把目标交给 onJumpToFile
+   *   （接收方在文档就绪后用 takeSearchJump(fileKey) 取走并定位）
+   */
+  const handleResultClick = useCallback((r: SearchFileResult) => {
+    const length = Math.max(1, (r.ranges[0]?.end ?? 0) - (r.ranges[0]?.start ?? 0));
+    const target: SearchJumpTarget = {
+      fileKey: r.fileKey,
+      filePath: r.filePath,
+      line: r.line,
+      column: r.column,
+      length,
+      query: searchText,
+    };
+    const currentKey = docKey ?? FALLBACK_FILE_KEY;
+    if (r.fileKey === currentKey) {
+      // 就地跳转：用「行/列 + 关键词」在当前文本里定位（三级降级，见 resolveJumpOffset）
+      const { text } = readCurrentText();
+      const offset = resolveJumpOffset(text, { line: r.line, column: r.column, query: searchText });
+      const matches = matchesRef.current;
+      let idx = matches.findIndex((m) => offset >= m.start && offset < m.end);
+      if (idx < 0) idx = matches.findIndex((m) => m.start >= offset);
+      if (idx < 0) idx = matches.length > 0 ? 0 : -1;
+      if (idx >= 0) {
+        setCurrentMatch(idx + 1);
+        highlightMatch(idx);
+        setJumpFailed(false);
+      } else {
+        // 找不到落点（例如文本刚被改过、命中已消失）：给出可见提示，而不是点了没反应
+        setJumpFailed(true);
+        if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
+        jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
+      }
+      return;
+    }
+    onJumpToFile?.(target);
+    requestSearchJump(target);
+  }, [docKey, readCurrentText, searchText, highlightMatch, onJumpToFile]);
 
   // 键盘事件
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -579,7 +913,7 @@ export function SearchReplaceDialog({
   return (
     <div
       ref={containerRef}
-      className="search-replace search-replace-floating"
+      className={`search-replace search-replace-floating${splitPreviewOpen ? "" : " search-replace-solo"}`}
       style={initialized ? { left: position.x, top: position.y } : undefined}
       onKeyDown={handleKeyDown}
     >
@@ -600,28 +934,16 @@ export function SearchReplaceDialog({
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
         />
-        <button
-          className={`search-option-btn ${caseSensitive ? "active" : ""}`}
-          title={t("search.caseSensitive")}
-          onClick={() => setCaseSensitive(!caseSensitive)}
-        >
-          Aa
-        </button>
-        {/* R4：正则开关——开启后按正则语义匹配、替换支持 $1 捕获组；非法表达式红字提示 */}
-        <button
-          className={`search-option-btn ${useRegex ? "active" : ""}`}
-          title={t("search.useRegex")}
-          onClick={() => setUseRegex(!useRegex)}
-        >
-          .*
-        </button>
         <button className="search-nav-btn" title={t("search.previous")} onClick={() => goToMatch(-1)} disabled={matchCount === 0}>
           ↑
         </button>
         <button className="search-nav-btn" title={t("search.next")} onClick={() => goToMatch(1)} disabled={matchCount === 0}>
           ↓
         </button>
-        <span className={`search-count${regexInvalid ? " search-count-invalid" : ""}`}>
+        <span
+          className={`search-count${regexInvalid ? " search-count-invalid" : ""}`}
+          data-testid="search-count"
+        >
           {regexInvalid
             ? t("search.regexInvalid")
             : matchCount > 0
@@ -632,6 +954,66 @@ export function SearchReplaceDialog({
           ⟳
         </button>
       </div>
+      {/* v0.14.0：4 个勾选框（默认全不勾）+ 「查找所有打开文件」 */}
+      <div className="search-options-row">
+        <label className="search-check" title={t("search.wholeWord")}>
+          <input
+            type="checkbox"
+            data-testid="search-whole-word"
+            checked={wholeWord}
+            onChange={(e) => setWholeWord(e.target.checked)}
+          />
+          <span className="search-check-label">{t("search.wholeWord")}</span>
+        </label>
+        <label className="search-check" title={t("search.matchCase")}>
+          <input
+            type="checkbox"
+            data-testid="search-match-case"
+            checked={caseSensitive}
+            onChange={(e) => setCaseSensitive(e.target.checked)}
+          />
+          <span className="search-check-label">{t("search.matchCase")}</span>
+        </label>
+        <label className="search-check" title={t("search.inSelection")}>
+          <input
+            type="checkbox"
+            data-testid="search-in-selection"
+            checked={inSelection}
+            onChange={handleToggleInSelection}
+          />
+          <span className="search-check-label">{t("search.inSelection")}</span>
+        </label>
+        {/* 正则：沿用 R4 行为（可 $1 捕获组），沿用旧 title key */}
+        <label className="search-check" title={t("search.useRegex")}>
+          <input
+            type="checkbox"
+            data-testid="search-use-regex"
+            checked={useRegex}
+            onChange={(e) => setUseRegex(e.target.checked)}
+          />
+          <span className="search-check-label search-check-mono">.*</span>
+        </label>
+        <button
+          type="button"
+          className={`search-find-files-btn${showResults ? " active" : ""}`}
+          data-testid="search-find-in-open-files"
+          title={t("search.findInOpenFiles")}
+          onClick={toggleResults}
+        >
+          {t("search.findInOpenFiles")}
+        </button>
+      </div>
+      {/* 勾了「选取范围内」却没取到选区：红字提示 + 匹配数 0（绝不静默退化成全文） */}
+      {inSelection && !selectionRange && (
+        <div className="search-hint" data-testid="search-selection-hint">
+          {selectionLostByDocChange ? t("search.selectionLost") : t("search.selectionRequired")}
+        </div>
+      )}
+      {jumpFailed && (
+        <div className="search-hint" data-testid="search-jump-hint">
+          {t("search.jumpFailed")}
+        </div>
+      )}
       {showReplace && (
         <div className="replace-row">
           <input
@@ -647,6 +1029,51 @@ export function SearchReplaceDialog({
           <button className="replace-btn" title={t("search.replaceAll")} onClick={replaceAll} disabled={matchCount === 0}>
             {t("search.replaceAll")}
           </button>
+        </div>
+      )}
+      {/* 结果条幅：放在替换行**下方**（纵向展开而不是盖住替换行），
+          条幅自身可滚动，长结果不影响面板其它控件 */}
+      {showResults && (
+        <div className="search-results" data-testid="search-results">
+          <div className="search-results-summary" data-testid="search-results-summary">
+            {fileResults.length === 0
+              ? t("search.resultsEmpty")
+              : t("search.resultsCount", {
+                  count: resultMatchTotal,
+                  files: Object.keys(resultFileCounts).length,
+                })}
+            {resultsTruncated && fileResults.length > 0
+              ? ` · ${t("search.tooManyResults", { count: fileResults.length })}`
+              : ""}
+          </div>
+          {fileResults.map((r, i) => (
+            <div
+              key={`${r.fileKey}:${r.line}:${i}`}
+              className="search-result-item"
+              data-testid="search-result-item"
+              title={`${r.filePath || r.fileName}:${r.line}`}
+              onClick={() => handleResultClick(r)}
+            >
+              <span className="search-result-file" data-testid="search-result-file" title={r.filePath}>
+                {r.fileName || r.filePath || "—"}
+                <span className="search-result-file-count">
+                  ({resultFileCounts[r.fileKey] ?? r.ranges.length})
+                </span>
+                <span className="search-result-file-line">:{r.line}</span>
+              </span>
+              <span className="search-result-line" data-testid="search-result-line">
+                {r.segments.map((seg, si) =>
+                  seg.match ? (
+                    <mark key={si} className="search-result-match" data-testid="search-result-match">
+                      {seg.text}
+                    </mark>
+                  ) : (
+                    <span key={si}>{seg.text}</span>
+                  ),
+                )}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>
