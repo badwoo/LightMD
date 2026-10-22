@@ -196,7 +196,8 @@ export function useAutoSave(
     const view = viewRef.current;
     const sourceRef = sourceContentRefRef.current;
     if (!view || !path) return null;
-    const isSourceMode = viewModeRef.current === "edit" || viewModeRef.current === "split";
+    // v0.14.0 需求1：二模式后「源码侧」= 非阅读模式
+    const isSourceMode = viewModeRef.current !== "preview";
     const isMdFile = isMarkdownFile(path);
     if ((isSourceMode || !isMdFile) && sourceRef?.current !== undefined) {
       return sourceRef.current;

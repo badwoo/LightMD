@@ -188,10 +188,15 @@ export const zhCN: Record<string, string> = {
   // ─── 标题栏 ────────────────────────────────────
   "titlebar.read": "阅读",
   "titlebar.edit": "编辑",
+  // v0.14.0 需求1：三模式合并为二模式，标题栏不再有独立「分屏」入口。
+  // 键保留（en-US 同步保留），旧代码/测试引用到时不至于拿到 key 本身。
   "titlebar.split": "分屏",
   "titlebar.readMode": "阅读模式",
-  "titlebar.editMode": "编辑模式",
+  "titlebar.editMode": "编辑模式（双击 Ctrl）",
   "titlebar.splitMode": "分屏模式 (双击Shift)",
+  // ─── v0.14.0 需求1：编辑模式内的预览面板开关（分割线上的竖排呼吸小字）───
+  "preview.toggle.close": "关闭预览",
+  "preview.toggle.open": "打开预览",
   "titlebar.new": "新建 ▾",
   "titlebar.newFile": "📄 新建文件",
   "titlebar.newFolder": "📁 新建文件夹",
@@ -841,6 +846,8 @@ export const zhCN: Record<string, string> = {
   "command.view.preview": "阅读模式",
   "command.view.edit": "编辑模式",
   "command.view.split": "分屏模式",
+  // v0.14.0 需求1：三模式合并后，「分屏」变成编辑模式内的预览面板开关
+  "command.view.togglePreview": "切换预览面板（编辑模式）",
   "command.view.toggleTheme": "切换主题",
   "command.view.toggleFocusMode": "切换专注模式",
   "command.view.toggleTypewriter": "切换打字机模式",
@@ -935,6 +942,17 @@ export const zhCN: Record<string, string> = {
   "search.replaceAll": "全部替换",
   "search.close": "关闭",
   "search.toggleReplace": "替换",
+  // ─── v0.14.0 需求2：搜索增强（勾选项 / 选取范围内 / 跨文件结果条幅）───
+  "search.wholeWord": "全词匹配",
+  "search.matchCase": "匹配大小写",
+  "search.inSelection": "选取范围内",
+  "search.selectionRequired": "请先在编辑器中选中一段文本",
+  "search.selectionLost": "选区已失效，请重新选中后再查找",
+  "search.findInOpenFiles": "查找所有打开文件",
+  "search.resultsCount": "{count} 处（{files} 个文件）",
+  "search.resultsEmpty": "无匹配结果",
+  "search.tooManyResults": "结果过多，仅显示前 {count} 条",
+  "search.jumpFailed": "无法跳转到该位置",
   // ─── 语法辅助 ────────────────────────────────────
   "syntax.title": "语法辅助",
   "syntax.clickToInsert": "点击插入: {code}",
@@ -1086,8 +1104,10 @@ export const zhCN: Record<string, string> = {
   "translate.undo.label": "取消翻译",
   "translate.undo.tip": "取消翻译并恢复原文",
   // v0.6.1 问题5：模式切换悬浮按钮
+  // v0.14.0 需求1：三模式合并为二模式，按钮语义改为「阅读 ↔ 编辑」
   "mode.switch.toSplit": "切换到分屏模式",
   "mode.switch.toPreview": "切换回阅读模式",
+  "mode.switch.toEdit": "切换到编辑模式",
   "translate.streaming": "翻译中…",
   "translate.retry": "重试",
   "translate.replace": "替换",

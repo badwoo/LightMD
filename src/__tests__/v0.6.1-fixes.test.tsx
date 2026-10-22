@@ -107,24 +107,27 @@ describe("v0.6.1 问题2/3 useEditorStore 翻译回写状态", () => {
 describe("v0.6.1 问题5 ModeSwitchButton 模式切换按钮", () => {
   beforeEach(cleanup);
 
-  it("阅读模式显示羽毛笔，点击切换到分屏", () => {
+  // v0.14.0 需求1：三模式合并为二模式后，按钮语义改为「阅读 ↔ 编辑」。
+  // 旧用例断言的是 `"split"`（那时 split 还是独立视图模式）；
+  // 按 v0.13.0 §10 教训 18 的约定，交互模型变更时**改写**既有用例而非删除/skip。
+  it("阅读模式显示羽毛笔，点击进入编辑模式", () => {
     const onSwitch = vi.fn();
     render(<ModeSwitchButton viewMode="preview" onSwitch={onSwitch} />);
     fireEvent.click(screen.getByRole("button"));
-    expect(onSwitch).toHaveBeenCalledWith("split");
+    expect(onSwitch).toHaveBeenCalledWith("edit");
   });
 
-  it("分屏模式显示书本，点击切回阅读", () => {
+  it("编辑模式显示书本，点击切回阅读", () => {
     const onSwitch = vi.fn();
-    render(<ModeSwitchButton viewMode="split" onSwitch={onSwitch} />);
+    render(<ModeSwitchButton viewMode="edit" onSwitch={onSwitch} />);
     fireEvent.click(screen.getByRole("button"));
     expect(onSwitch).toHaveBeenCalledWith("preview");
   });
 
   it("tooltip 文案随模式切换", () => {
     const { rerender } = render(<ModeSwitchButton viewMode="preview" onSwitch={() => {}} />);
-    expect(screen.getByRole("button").title).toBe("切换到分屏模式");
-    rerender(<ModeSwitchButton viewMode="split" onSwitch={() => {}} />);
+    expect(screen.getByRole("button").title).toBe("切换到编辑模式");
+    rerender(<ModeSwitchButton viewMode="edit" onSwitch={() => {}} />);
     expect(screen.getByRole("button").title).toBe("切换回阅读模式");
     cleanup();
   });

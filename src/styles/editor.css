@@ -1894,7 +1894,10 @@ body.format-painter-armed .source-editor {
 }
 
 .split-divider {
-  /* v0.4.0：可拖拽分割条，6px 宽，hover 时显示背景色 */
+  /* v0.4.0：可拖拽分割条，6px 宽，hover 时显示背景色
+     v0.14.0 需求1：它同时是「关闭预览 / 打开预览」竖排小字的挂载点；
+     预览关闭后仍保留（作为编辑区右缘的窄 rail），但不再可拖拽。 */
+  position: relative;
   width: 6px;
   min-width: 6px;
   cursor: col-resize;
@@ -1904,9 +1907,140 @@ body.format-painter-armed .source-editor {
   align-self: stretch;
 }
 
-.split-divider:hover,
-.split-divider:active {
+/* 预览关闭后：这条 rail 只是「打开预览」的悬浮入口，不再是可拖拽的分割条。
+   宽度加宽到 18px —— 竖排「打开预览」四个字（11px 字号）需要这点宽度才放得下，
+   否则文字会向左溢到正文里。它紧贴语法辅助栏左缘，视觉上是一条静默的竖条。 */
+.split-divider-closed {
+  width: 18px;
+  min-width: 18px;
+  cursor: default;
+}
+
+/* 关闭状态：入口只有这一处（另一处是双击 Shift），因此**常驻半可见**，
+   而不是像展开态那样必须悬停才出现。 */
+.split-divider-closed .split-divider-label {
+  opacity: 0.45;
+  pointer-events: auto;
+  animation: splitDividerLabelBreathe 3.2s ease-in-out infinite;
+}
+
+.split-divider-closed:hover .split-divider-label,
+.split-divider-closed .split-divider-label:hover,
+.split-divider-closed .split-divider-label:focus-visible {
+  opacity: 1;
+  color: var(--accent-color);
+}
+
+.split-divider-open:hover,
+.split-divider-open:active,
+.split-divider:has(.split-divider-label:hover) {
   background: var(--border-color);
+}
+
+/* ─── v0.14.0 需求1：分割线上的竖排呼吸小字 ─────────────────────
+   交互口径（用户原话）：「鼠标移动到右屏时在中间的分割线会隐约出现一列
+   呼吸律动的灰色竖排小字『关闭预览』」。
+   实现：默认 opacity:0 + 轻微位移（"隐约"）；右屏或分割条 hover 时显现。
+   ⚠️ 不能做成常驻可见——6px 宽的分割条装不下文字，会盖住正文。 */
+.split-divider-label {
+  position: absolute;
+  /* 竖排：writing-mode 让文字自上而下排列；居中贴在分割条上 */
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  padding: 10px 3px;
+  border: none;
+  border-radius: 8px;
+  /* 淡淡的药丸底：竖排文字会浮在正文之上，无底色时与文字互相干扰看不清 */
+  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  letter-spacing: 2px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.24s ease, transform 0.24s ease, color var(--transition-fast);
+  /* 呼吸律动：只在显现后播放（见下方 hover 规则的 animation） */
+}
+
+/* 悬停右屏 / 悬停分割条时浮现。
+   `:has()` 在本项目已有先例（见 .ProseMirror p:has(> img) 等）。 */
+.editor-main-area:has(.split-preview-shell:hover) .split-divider-label,
+.split-divider:hover .split-divider-label,
+.split-divider-label:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+  color: var(--text-secondary);
+  animation: splitDividerLabelBreathe 2.4s ease-in-out infinite;
+}
+
+.split-divider-label:hover {
+  color: var(--accent-color);
+}
+
+@keyframes splitDividerLabelBreathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .split-divider-label { animation: none !important; }
+}
+
+/* ─── v0.14.0 需求1：右侧预览面板外壳（滑出 / 滑回）─────────────
+   iframe 常驻在外壳内，外壳宽度 0 ↔ (1-ratio) 过渡：
+   · 关闭 → 宽度收到 0，右屏"往右滑到语法辅助栏左侧"（视觉上是滑出编辑区）；
+   · 打开 → 从 0 展开，右屏"从右往左滑出"恢复分屏。
+   为什么外壳要 overflow:hidden：iframe 有最小内容宽度，不加裁剪时
+   宽度过渡期间 iframe 会先"溢出"再被压缩，出现横向闪跳。 */
+.split-preview-shell {
+  flex-shrink: 0;
+  overflow: hidden;
+  display: block;
+  background: var(--bg-primary);
+  transition: width 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: width;
+}
+
+/* 外壳内的 iframe 跟随外壳宽度，自身不再做宽度过渡 */
+.split-preview-shell > iframe.split-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* 左侧源码栏同步做宽度过渡，保证两栏"一起动"而不是一栏先跳 */
+.editor-main-area > .source-editor-wrapper {
+  transition: width 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* 拖拽分割条期间禁用过渡（否则拖拽会滞后一帧、手感发飘）。
+   注意 class 名是 EditorContainer 专有的 `split-resizing`，
+   不要复用 AppShell 的 `resizing`（两者各管一套，共用会互相清掉标记）。 */
+body.split-resizing .editor-main-area > .source-editor-wrapper,
+body.split-resizing .split-preview-shell {
+  transition: none;
+}
+
+/* v0.14.0 需求3（双保险）：拖拽分割条期间屏蔽预览 iframe 抢指针。
+ * 用户实机缺陷「往左拖能拖、往右拖拖不回来」的根因就是：分割条右侧紧贴
+ * iframe.split-preview，指针一进入 iframe，父文档的 mousemove/mouseup 全部丢失
+ * → 拖拽链路中断、ratio 冻结，且 mouseup 丢失让 body 卡在 col-resize。
+ * `useResizable` 已在 JS 侧用 setPointerCapture + 运行时注入样式表兜底；
+ * 这里再加一条静态规则，覆盖"拖拽正好从 iframe 边缘开始"的场景。 */
+body.split-resizing iframe.split-preview {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .split-preview-shell,
+  .editor-main-area > .source-editor-wrapper { transition: none; }
 }
 
 .split-preview {

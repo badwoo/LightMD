@@ -163,12 +163,17 @@ export const commands: Command[] = [
     keywords: ["编辑", "edit"],
     action: () => dispatchCommand("view.edit"),
   },
+  // v0.14.0 需求1：三模式合并为二模式。
+  // 「分屏模式」不再是独立视图（编辑模式默认就带右侧预览），改成一个
+  // 「切换编辑模式预览面板」的命令，让命令面板/自定义快捷键仍能开关右屏。
+  // ⚠️ 命令总数因此不变（删 view.split、增 view.togglePreview），
+  // g8-command-palette 的计数断言无需改动。
   {
-    id: "view.split",
-    titleKey: "command.view.split",
+    id: "view.togglePreview",
+    titleKey: "command.view.togglePreview",
     group: "view",
-    keywords: ["分屏", "split"],
-    action: () => dispatchCommand("view.split"),
+    keywords: ["分屏", "预览", "split", "preview", "右侧预览"],
+    action: () => dispatchCommand("view.togglePreview"),
   },
   {
     id: "view.toggleTheme",

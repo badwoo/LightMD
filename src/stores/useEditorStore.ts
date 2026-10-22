@@ -3,7 +3,20 @@ import type { WordCountResult } from "../utils/wordCount";
 // 直接从 i18n/state 引入（不经过 i18n/index，避免 index → useSettingsStore 的依赖回环）
 import { t } from "../i18n/state";
 
-export type ViewMode = "preview" | "edit" | "split";
+/**
+ * 视图模式（v0.14.0 需求1：由三模式合并为二模式）。
+ *
+ * 旧口径是 `"preview" | "edit" | "split"`：阅读 / 编辑（纯源码） / 分屏（左源码右预览）。
+ * 用户要求「菜单入口只留阅读和编辑两个模式，点击编辑模式默认进入的是原来的分屏模式」，
+ * 因此：
+ * - `"edit"` = 编辑模式，**默认带右侧预览**（即旧 `split` 的观感）；
+ * - 右侧预览的开关是独立状态 `splitPreviewOpen`（编辑模式内可关，关掉后就是旧 `edit`）。
+ *
+ * ⚠️ 全仓判据统一为：
+ * - 是否源码编辑区可见 → `viewMode !== "preview"`（**不要再写 `=== "edit" || === "split"`**）
+ * - 是否显示右侧预览   → `viewMode === "edit" && splitPreviewOpen`
+ */
+export type ViewMode = "preview" | "edit";
 
 export interface TabInfo {
   path: string;
@@ -114,7 +127,18 @@ interface EditorState {
   /** 字数统计详情（G11：扩展为对象，含字数/字符数/行数/段落数/阅读时长） */
   wordCount: WordCountResult;
   viewMode: ViewMode;
-  /** 上一个非分屏模式，用于双击Shift切回 */
+  /**
+   * v0.14.0 需求1：编辑模式内「右侧预览面板」是否展开。
+   *
+   * 语义：`viewMode === "edit" && splitPreviewOpen` 等价于旧的三模式里的 `split`；
+   * `viewMode === "edit" && !splitPreviewOpen` 等价于旧的 `edit`（纯源码）。
+   * 与 viewMode 分开存，是为了「切到阅读再切回编辑」能恢复用户上次的预览开关状态。
+   */
+  splitPreviewOpen: boolean;
+  /**
+   * @deprecated v0.14.0 需求1：三模式合并后不再有「上一个非分屏模式」。
+   * 保留字段只是为了让既有测试/外部引用不炸，业务代码**不应再读它**。
+   */
   prevViewMode: ViewMode;
   focusMode: boolean;
   // 源码模式下的语法插入回调，由 EditorContainer 注册
@@ -158,6 +182,13 @@ interface EditorState {
   /** 更新字数统计详情（接收 calculateWordCount 的结果） */
   setWordCount: (count: WordCountResult) => void;
   setViewMode: (mode: ViewMode) => void;
+  /**
+   * v0.14.0 需求1：设置编辑模式内右侧预览面板的展开状态。
+   * 非编辑模式下调用只记状态、不产生视觉影响（切回编辑时按此恢复）。
+   */
+  setSplitPreviewOpen: (open: boolean) => void;
+  /** v0.14.0 需求1：双击 Shift / 分割条上的「关闭预览 / 打开预览」共用的开关 */
+  toggleSplitPreview: () => void;
   toggleFocusMode: () => void;
   setSourceInsertHandler: (handler: ((syntax: string, cursorOffset?: number, opts?: { label?: string; ghost?: string }) => void) | null) => void;
   setUndoHandler: (handler: (() => void) | null) => void;
@@ -214,6 +245,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   selectedChars: 0,
   wordCount: { words: 0, chars: 0, charsNoSpaces: 0, lines: 0, paragraphs: 0, readingTimeMin: 0 },
   viewMode: "preview",
+  // v0.14.0 需求1：编辑模式默认带右侧预览（= 旧的三模式里的「分屏」）
+  splitPreviewOpen: true,
+  /** @deprecated 三模式合并后无意义，仅为兼容既有引用保留 */
   prevViewMode: "preview",
   focusMode: false,
   sourceInsertHandler: null,
@@ -251,11 +285,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setCursorColumn: (column) => set({ cursorColumn: column }),
   setSelectedChars: (count) => set({ selectedChars: count }),
   setWordCount: (count) => set({ wordCount: count }),
-  setViewMode: (mode) => set((s) => {
-    // 记录上一个非分屏模式
-    const prevMode = s.viewMode !== "split" ? s.viewMode : s.prevViewMode;
-    return { viewMode: mode, prevViewMode: prevMode };
-  }),
+  setViewMode: (mode) => set({ viewMode: mode }),
+  // v0.14.0 需求1：预览面板开关。
+  // 只改 splitPreviewOpen，**不动 viewMode**——用户在编辑模式里关预览是为了腾出宽度，
+  // 不应该因此掉回阅读模式；切到阅读再切回编辑时按此状态恢复。
+  setSplitPreviewOpen: (open) => set({ splitPreviewOpen: open }),
+  toggleSplitPreview: () => set((s) => ({ splitPreviewOpen: !s.splitPreviewOpen })),
   toggleFocusMode: () => set((s) => ({ focusMode: !s.focusMode })),
   setSourceInsertHandler: (handler) => set({ sourceInsertHandler: handler }),
   setUndoHandler: (handler) => set({ undoHandler: handler }),

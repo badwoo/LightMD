@@ -123,7 +123,16 @@ export function TitleBar({
     if (showWindowMenu) void refreshWindowList();
   }, [showWindowMenu, refreshWindowList]);
 
+  /**
+   * 模式切换（v0.14.0 需求1）。
+   *
+   * 点击「编辑」= 进入编辑模式并**默认打开右侧预览**（即旧的「分屏」观感）；
+   * 用户在编辑模式内关掉预览后，再点「编辑」按钮会重新打开预览——
+   * 这与"点击编辑模式默认进入分屏"的验收口径一致（按钮是入口，不是开关）。
+   * 编辑模式内的预览开关另有两条路径：双击 Shift、分割线上的竖排文字。
+   */
   const handleModeClick = (mode: ViewMode) => {
+    if (mode === "edit") useEditorStore.getState().setSplitPreviewOpen(true);
     if (viewMode !== mode) setViewMode(mode);
   };
 
@@ -135,7 +144,7 @@ export function TitleBar({
         {/* v0.8.1 需求6：无边框窗口靠 data-tauri-drag-region 拖动，
             直接命中的元素需自带该属性（子元素不会继承），故逐个补齐 */}
         <span className="titlebar-brand" data-tauri-drag-region>LightMD</span>
-        {/* 模式切换按钮组：阅读 / 编辑 / 分屏 */}
+        {/* 模式切换按钮组：阅读 / 编辑（v0.14.0 需求1：三模式合并为二模式） */}
         <div className="titlebar-mode-switch">
           <button
             className={`titlebar-mode-btn ${viewMode === "preview" ? "active" : ""}`}
@@ -150,13 +159,6 @@ export function TitleBar({
             onClick={() => handleModeClick("edit")}
           >
             {t("titlebar.edit")}
-          </button>
-          <button
-            className={`titlebar-mode-btn ${viewMode === "split" ? "active" : ""}`}
-            title={t("titlebar.splitMode")}
-            onClick={() => handleModeClick("split")}
-          >
-            {t("titlebar.split")}
           </button>
         </div>
         <div className="titlebar-menu">

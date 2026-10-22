@@ -66,6 +66,8 @@ import { loadUntitledTabs, saveUntitledTabs, clearUntitledTabs, isUntitledRestor
 import { saveLastActiveTab, loadLastActiveTab, resolveLastActiveIndex, clearLastActiveTab } from "./utils/lastActiveTab";
 // v0.8.3 WP4 需求6：浏览进度的标签键（真实文件 = path，临时标签 = untitled:<id>）
 import { tabsProgressKeys, untitledProgressKey, UNTITLED_PROGRESS_PREFIX } from "./utils/tabKey";
+// v0.14.0 需求2：搜索面板结果条幅的跨文件跳转事件（切标签由本文件负责）
+import { SEARCH_JUMP_EVENT } from "./utils/searchJump";
 // v0.13.2 需求7b：右侧大纲滚动位置记忆（按文档键）
 import {
   loadOutlineScrollSnapshot,
@@ -228,7 +230,10 @@ function App() {
   const openFile = useEditorStore((s) => s.openFile);
   const setDirty = useEditorStore((s) => s.setDirty);
   const viewMode = useEditorStore((s) => s.viewMode);
-  const prevViewMode = useEditorStore((s) => s.prevViewMode);
+  // v0.14.0 需求1：三模式合并为二模式后，「分屏」不再是视图模式，
+  // 而是编辑模式内的**右侧预览面板开关**（双击 Shift / 分割线竖排文字共用）。
+  const splitPreviewOpen = useEditorStore((s) => s.splitPreviewOpen);
+  const toggleSplitPreview = useEditorStore((s) => s.toggleSplitPreview);
   const setViewMode = useEditorStore((s) => s.setViewMode);
   const sourceInsertHandler = useEditorStore((s) => s.sourceInsertHandler);
   const undoHandler = useEditorStore((s) => s.undoHandler);
@@ -408,8 +413,8 @@ function App() {
     [],
   );
 
-  // 是否为源码编辑类模式（edit 或 split）
-  const isSourceMode = viewMode === "edit" || viewMode === "split";
+  // 是否为源码编辑类模式（v0.14.0 需求1：二模式后就是「非阅读模式」）
+  const isSourceMode = viewMode !== "preview";
   /** v0.9.0 WP9：当前活跃标签是否只读（标题栏标记 + 编辑器可编辑性） */
   const activeIsReadonly = useEditorStore((s) => !!s.openTabs[s.activeTabIdx]?.isReadonly);
 
@@ -533,6 +538,10 @@ function App() {
                 if (currentMode !== "edit") {
                   setViewMode("edit");
                 }
+                // v0.14.0 需求1：大文件渲染右侧预览代价极高，**顺带关掉预览面板**
+                // （旧三模式直接切到 edit = 纯源码；若不关，进入编辑会立刻渲染
+                // 5MB+ 文档的 HTML，正是这条优化要规避的卡顿）。
+                useEditorStore.getState().setSplitPreviewOpen(false);
                 // 通过通知服务提示用户
                 const { notify } = await import("./services/notificationService");
                 notify(t("app.largeFileNotify", { size: (fileSize / 1024 / 1024).toFixed(1) }));
@@ -1864,7 +1873,8 @@ function App() {
       // 默认：按当前模式从编辑区取内容（与 handleSaveFile 一致）
       const { getMarkdownFromDoc } = await import("./core/editor");
       const currentMode = useEditorStore.getState().viewMode;
-      const isSourceMode = currentMode === "edit" || currentMode === "split";
+      // v0.14.0 需求1：二模式后「源码侧」= 非阅读模式
+      const isSourceMode = currentMode !== "preview";
       markdown = isSourceMode ? contentRef.current : getMarkdownFromDoc(view.state.doc);
     }
 
@@ -1987,7 +1997,8 @@ function App() {
     // - 阅读模式：从 ProseMirror doc 序列化
     const { getMarkdownFromDoc } = await import("./core/editor");
     const currentMode = useEditorStore.getState().viewMode;
-    const isSourceMode = currentMode === "edit" || currentMode === "split";
+    // v0.14.0 需求1：二模式后「源码侧」= 非阅读模式
+    const isSourceMode = currentMode !== "preview";
     // 编辑/分屏模式直接用 content state（已是最新的 textarea 内容）
     // 阅读模式从 ProseMirror doc 序列化
     // v0.9.0 D7：CRLF 文档的序列化输出统一转回 CRLF（B6 快路径已逐字节
@@ -2845,8 +2856,11 @@ function App() {
 
       // 视图命令
       if (id === "view.preview") { setViewMode("preview"); return; }
-      if (id === "view.edit") { setViewMode("edit"); return; }
-      if (id === "view.split") { setViewMode("split"); return; }
+      // v0.14.0 需求1：进入编辑模式 = 旧「分屏」观感，因此顺带打开右侧预览
+      // （用户关掉预览后再从菜单/命令进入编辑，仍应看到默认的分屏样子）
+      if (id === "view.edit") { useEditorStore.getState().setSplitPreviewOpen(true); setViewMode("edit"); return; }
+      // v0.14.0 需求1：原 view.split 命令改为「切换编辑模式内的预览面板」
+      if (id === "view.togglePreview") { toggleSplitPreview(); return; }
       if (id === "view.toggleTheme") {
         const idx = THEMES.indexOf(theme as Theme);
         setTheme(THEMES[(idx + 1) % THEMES.length]);
@@ -2891,7 +2905,7 @@ function App() {
       // 回落 runPreviewCommand（它已覆盖列表/引用/标题/插入类），
       // 两者都不认识才静默返回。
       const currentMode = useEditorStore.getState().viewMode;
-      const isSource = currentMode === "edit" || currentMode === "split";
+      const isSource = currentMode !== "preview";
       const syntaxEntry = COMMAND_SYNTAX[id];
 
       if (isSource) {
@@ -3059,7 +3073,7 @@ function App() {
         exitImmersive();
         return;
       }
-      // 双击 Ctrl 切换阅读/编辑模式
+      // 双击 Ctrl 切换阅读/编辑模式（v0.14.0 需求1：二模式）
       // v0.6.1 修复：长按 Ctrl 时浏览器持续派发 repeat keydown 导致模式连续切换，
       // 使用 evalDoublePress 三态判定（skip 时完全忽略，不刷新时间戳）
       if (e.key === "Control") {
@@ -3067,13 +3081,11 @@ function App() {
         const r = evalDoublePress(now, lastCtrlTimeRef.current, DOUBLE_PRESS_THRESHOLD, e.repeat);
         if (r === "toggle") {
           e.preventDefault();
-          // 在阅读和编辑之间切换
+          // v0.14.0 需求1：进入编辑模式时**默认显示右侧预览**（= 旧分屏观感）
           if (viewMode === "preview") {
+            useEditorStore.getState().setSplitPreviewOpen(true);
             setViewMode("edit");
-          } else if (viewMode === "edit") {
-            setViewMode("preview");
           } else {
-            // 分屏模式切回阅读
             setViewMode("preview");
           }
           lastCtrlTimeRef.current = 0;
@@ -3083,17 +3095,21 @@ function App() {
         return;
       }
 
-      // 双击 Shift 切换分屏模式（同样过滤长按 repeat 事件）
+      // 双击 Shift 切换「编辑模式的右侧预览面板」（同样过滤长按 repeat 事件）
+      //
+      // v0.14.0 需求1（用户确认的语义）：
+      // - 阅读模式下双击 Shift：进入编辑模式并**默认显示预览**（与「点击编辑」同口径）；
+      // - 已在编辑模式：等同上/下侧「关闭预览 / 打开预览」，纯开关预览，不改视图模式。
       if (e.key === "Shift" && !e.ctrlKey && !e.altKey && !e.metaKey) {
         const now = Date.now();
         const r = evalDoublePress(now, lastShiftTimeRef.current, DOUBLE_PRESS_THRESHOLD, e.repeat);
         if (r === "toggle") {
           e.preventDefault();
-          // 如果当前是分屏模式，切回上一个模式；否则切到分屏
-          if (viewMode === "split") {
-            setViewMode(prevViewMode);
+          if (viewMode === "preview") {
+            useEditorStore.getState().setSplitPreviewOpen(true);
+            setViewMode("edit");
           } else {
-            setViewMode("split");
+            toggleSplitPreview();
           }
           lastShiftTimeRef.current = 0;
         } else if (r === "record") {
@@ -3166,7 +3182,7 @@ function App() {
         case "insert.taskList":
         case "insert.link": {
           const mode = useEditorStore.getState().viewMode;
-          const isSource = mode === "edit" || mode === "split";
+          const isSource = mode !== "preview";
           const pmEditable = editorViewRef.current?.editable === true;
           if (!isSource && !pmEditable) return;
           window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: def.id } }));
@@ -3235,7 +3251,7 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [theme, setTheme, toggleFocusMode, toggleTypewriter, viewMode, prevViewMode, setViewMode, handleOpenFile, handleSaveFile, handleSaveAsFile, handleNewFile, setShowSearch, setShowSearchReplace, undoHandler, redoHandler, handleTabClose, updateTabContent, setActiveTab]);
+  }, [theme, setTheme, toggleFocusMode, toggleTypewriter, viewMode, toggleSplitPreview, setViewMode, handleOpenFile, handleSaveFile, handleSaveAsFile, handleNewFile, setShowSearch, setShowSearchReplace, undoHandler, redoHandler, handleTabClose, updateTabContent, setActiveTab]);
 
   // ─── 内容变化回调（localStorage 防抖写入，减少同步大字符串写入的内存峰值）──
   const lsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3351,7 +3367,7 @@ function App() {
   const handleImageRefsRewrite = useCallback(
     (ops: Array<{ oldSrc: string; newSrc: string }>) => {      if (ops.length === 0) return;
       const mode = useEditorStore.getState().viewMode;
-      const isSourceMode = mode === "edit" || mode === "split";
+      const isSourceMode = mode !== "preview";
       if (isSourceMode) {
         let text = contentRef.current;
         let changed = false;
@@ -3447,6 +3463,35 @@ function App() {
   useEffect(() => {
     handleTabSwitchRef.current = handleTabSwitch;
   }, [handleTabSwitch]);
+
+  /**
+   * v0.14.0 需求2：搜索面板结果条幅的「跳到别的文件」。
+   *
+   * SearchReplace 只负责派发 `lightmd:search-jump`（带目标文件的 fileKey），
+   * 真正的切标签必须走 App 的 handleTabSwitch —— 它一处维护了 filePath / content /
+   * 语言 / forceUpdateKey / 撤销历史边界，重复实现必然漏项。
+   *
+   * 定位与高亮仍由 SearchReplace 自己做：面板在同一实例里常驻（GenieSearchDialog
+   * 不随标签切换卸载），切完标签后 docKey 变化会触发它 `takeSearchJump`。
+   */
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ fileKey?: string }>).detail;
+      const fileKey = detail?.fileKey;
+      if (!fileKey) return;
+      const st = useEditorStore.getState();
+      const idx = st.openTabs.findIndex((tab, i) =>
+        tab.isUntitled
+          ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? i}` === fileKey
+          : (tab.path || "") === fileKey,
+      );
+      if (idx < 0) return;
+      if (idx === st.activeTabIdx) return; // 已是当前文档，无需切换
+      handleTabSwitchRef.current(st.openTabs[idx]);
+    };
+    window.addEventListener(SEARCH_JUMP_EVENT, handler);
+    return () => window.removeEventListener(SEARCH_JUMP_EVENT, handler);
+  }, []);
 
   // v0.13.2 需求5（返修后口径）：撤销/恢复不再跨文档，因此这里**没有**切文档路由。
   // 每个文档的撤销历史由 EditorContainer 按 docKey 保存/装回，Ctrl+Z 只作用于当前文档。

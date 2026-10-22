@@ -218,6 +218,9 @@ import { saveDocHistory, loadDocHistory } from "../../services/docHistoryStore";
 import { computeTextareaCursorPosition } from "../../utils/cursorPosition";
 // v0.8.3 WP4 需求6：进度键前缀（临时标签 = untitled:<id>，与 utils/tabKey.ts 单源）
 import { UNTITLED_PROGRESS_PREFIX } from "../../utils/tabKey";
+// v0.14.0 需求2：搜索面板的跨文件跳转（结果条幅点条目 → 切标签 → 本文档定位）
+import { SEARCH_JUMP_EVENT, type SearchJumpTarget } from "../../utils/searchJump";
+import type { SearchableFile } from "./SearchReplace";
 import "../../styles/editor.css";
 
 /**
@@ -562,6 +565,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const focusMode = useEditorStore((s) => s.focusMode);
   const viewMode = useEditorStore((s) => s.viewMode);
   const setViewMode = useEditorStore((s) => s.setViewMode);
+  // v0.14.0 需求1：编辑模式内的预览面板开关（双击 Shift / 分割线竖排文字同源）
+  const splitPreviewOpen = useEditorStore((s) => s.splitPreviewOpen);
+  const toggleSplitPreview = useEditorStore((s) => s.toggleSplitPreview);
   const setSourceInsertHandler = useEditorStore((s) => s.setSourceInsertHandler);
   const setUndoHandler = useEditorStore((s) => s.setUndoHandler);
   const setRedoHandler = useEditorStore((s) => s.setRedoHandler);
@@ -611,7 +617,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    */
   const [docHasImageFlag, setDocHasImageFlag] = useState(false);
 
-  const isSourceMode = viewMode === "edit" || viewMode === "split";
+  // v0.14.0 需求1：三模式合并为二模式后，源码编辑区在**所有非阅读模式**下都可见。
+  // （旧写法 `viewMode === "edit" || viewMode === "split"` 已随 split 一起废弃。）
+  const isSourceMode = viewMode !== "preview";
+
+  /**
+   * v0.14.0 需求1：是否显示右侧预览面板。
+   *
+   * `viewMode === "edit" && splitPreviewOpen` 等价于旧的三模式里的 `split`；
+   * 关掉预览后即为旧的 `edit`（纯源码，左栏铺满）。
+   * 非 Markdown 文件也显示代码预览（与旧 split 行为一致）。
+   */
+  const previewShown = viewMode === "edit" && splitPreviewOpen;
 
   // v0.4.0：分屏分割条拖拽 hook（direction="split"，按容器总宽计算 ratio）
   const splitResizer = useResizable({
@@ -624,6 +641,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   });
   // 分屏比例（优先用拖拽中的实时值，确保拖拽过程跟手）
   const effectiveSplitRatio = splitResizer.isDragging ? splitResizer.ratio : splitRatio;
+  // v0.14.0 需求3：拖拽期间禁用两栏 width 过渡所需的 `body.split-resizing`
+  // 由 `useResizable` 自己挂/摘（见其 handleMouseUp 的 teardown），这里**不再重复管理**——
+  // 两处各 toggle 同一个类，会在"一边结束、另一边还以为在拖"时互相清掉标记。
   // 判断当前文件是否为 Markdown 文件
   // 非 Markdown 文件（txt/代码文件）不显示格式栏、不渲染 Markdown
   //
@@ -639,7 +659,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * （AI 翻译开启 → 图片管理在第 3 格；未开启 → 接在模式切换之后第 2 格）。
    */
   const translateSlotShown =
-    (viewMode === "preview" || viewMode === "split") && isMdFile && translateEnabled;
+    (viewMode === "preview" || previewShown) && isMdFile && translateEnabled;
   // v0.8.0 修复 P11-2：是否有已打开的文档（用于区分"新建的空临时文档"与"确实没打开文件"）
   const openTabCount = useEditorStore((s) => s.openTabs.length);
   // v0.4.0：当前文件语言标识（由 App.tsx 在打开文件时设置），用于代码文件语法高亮
@@ -1402,7 +1422,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         return;
       }
       el.scrollTop = newTop ?? 0;
-      if (isSourceMode && viewMode === "split") {
+      if (isSourceMode && previewShown) {
         // 分屏模式 iframe 异步写入：记录待恢复百分比，iframe 写入 effect 末尾消费
         pendingIframeScrollRef.current = percent;
       }
@@ -1430,7 +1450,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // 判断切换方向
     const fromPreview = prevMode === "preview";
     const toPreview = viewMode === "preview";
-    const fromSource = prevMode === "edit" || prevMode === "split";
+    const fromSource = prevMode !== "preview";
     const toSource = isSourceMode;
 
     // 编辑 ↔ 分屏：不需要同步内容，只恢复滚动位置
@@ -1667,7 +1687,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         // 根因：原代码只恢复 textarea，iframe 滚动位置丢失，需鼠标滚动一下才同步
         // iframe 内容在另一个 useEffect 中异步写入，此时可能尚未写入或 scrollHeight 不准确，
         // 因此先记录待恢复百分比，由 iframe 写入完成后再设置
-        if (targetMode === "split") {
+        // v0.14.0 需求1：右侧预览面板是否显示（旧 split）
+        if (targetMode === "edit" && useEditorStore.getState().splitPreviewOpen) {
           // v0.8.0 修复3 TODO：split 模式左（源码）右（iframe 预览）锚点定位待实现，
           // 暂沿用滚动百分比恢复，后续接入双栏锚点映射
           pendingIframeScrollRef.current = percent;
@@ -2527,6 +2548,74 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const activeKeyRef = useRef<number>(0);
   activeKeyRef.current = forceUpdateKey ?? 0;
 
+  /**
+   * v0.14.0 需求2：搜索面板用的「当前文档稳定键」。
+   *
+   * 与 `currentDocKeyFromStore()` 同口径（真实文件 = 路径 / 临时标签 = `untitled:<id>`），
+   * 但**走 React 派生**而不是 store 快照：搜索面板在渲染期就需要这个值，
+   * 直接读 store 会拿到与本次渲染不同步的值（切标签时 setActiveTab 与 setContent
+   * 是两次 setState，面板可能先用新 key 渲染、内容却还是旧的）。
+   */
+  const currentDocKey = useCallback((): string | null => {
+    const st = useEditorStore.getState();
+    const tab = st.openTabs[st.activeTabIdx];
+    if (!tab) return null;
+    return tab.isUntitled
+      ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? st.activeTabIdx}`
+      : tab.path || null;
+  }, []);
+
+  /**
+   * v0.14.0 需求2：「查找所有打开文件」的数据源。
+   *
+   * 三条硬约束：
+   * 1. `getText()` 必须是**实时**读取（面板会在条幅展开期间多次调用），
+   *    所以这里给的是闭包而不是字符串快照；
+   * 2. 当前文档要取**编辑区里最新的内容**：
+   *    · 编辑模式 → `sourceContentRef`（textarea 实时文本，可能还没回写 store）；
+   *    · 阅读模式 → `openTabs[activeTabIdx].content`（PM 编辑已通过 onContentChange
+   *      写进标签；从 PM doc 现序列化会与"用户眼前看到的"不一致，且代价高）；
+   * 3. 其余标签取 `tab.content`（就是该标签最后保存/同步的内存内容）。
+   *
+   * ⚠️ 不 unmask base64：搜索是按用户可见文本匹配的，显示层短标记与原文
+   * 里都不是用户要找的关键词；两者混用会让行号错位。
+   */
+  const collectSearchFiles = useCallback((): SearchableFile[] => {
+    const st = useEditorStore.getState();
+    const curKey = currentDocKey();
+    const out: SearchableFile[] = [];
+    for (let i = 0; i < st.openTabs.length; i++) {
+      const tab = st.openTabs[i];
+      const key = tab.isUntitled
+        ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? i}`
+        : tab.path || "";
+      if (!key) continue;
+      const isCurrent = curKey !== null && key === curKey;
+      out.push({
+        fileKey: key,
+        filePath: tab.path || "",
+        fileName: tab.name,
+        getText: () => {
+          // 当前文档在编辑模式下以 textarea 的实时内容为准（PM 编辑模式下
+          // 若读标签内容会漏掉最近一次 onContentChange 之后的字符）
+          if (isCurrent && isSourceMode) return sourceContentRef.current;
+          return useEditorStore.getState().openTabs[i]?.content ?? "";
+        },
+      });
+    }
+    return out;
+  }, [currentDocKey, isSourceMode]);
+
+  /**
+   * v0.14.0 需求2：结果条幅点「别的文件」的命中时，面板派发 `lightmd:search-jump`，
+   * **由 App 层切标签**（见 App.tsx 的 SEARCH_JUMP_EVENT 监听）。
+   *
+   * 为什么不在本组件里切：切标签要同步 filePath / content / 语言 / forceUpdateKey
+   * / 撤销历史，这些逻辑只在 App.handleTabSwitch 一处维护；在这里重复实现必然漏项。
+   * 本组件只负责「切过来之后」的事：SearchReplace 自己的 effect 会
+   * `takeSearchJump(docKey)` 取走目标并定位/高亮（同一实例跨标签常驻，docKey 变化即触发）。
+   */
+
   /** 执行翻译任务：打开气泡 → 流式调用 → finish/fail；resultMode 非 bubble 时自动应用结果 */
   const runTranslate = useCallback((
     text: string,
@@ -2657,8 +2746,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           return;
         }
       }
-      // 3. split 模式 textarea 无选区 → iframe 预览选区（纯文本通道）
-      if (viewMode === "split") {
+      // 3. 编辑模式 textarea 无选区 → iframe 预览选区（纯文本通道）
+      if (previewShown) {
         const iframe = previewIframeRef.current;
         const doc = iframe?.contentDocument;
         const text = doc ? extractFromIframe(doc) : null;
@@ -4304,14 +4393,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 既有格式化入口 —— 与 Ctrl+0 同一条路径，真正移除行首 `#`。
       if (id === "format.paragraph") {
         const vm = useEditorStore.getState().viewMode;
-        if (vm === "edit" || vm === "split") handleFormatAction.current("paragraph");
+        if (vm !== "preview") handleFormatAction.current("paragraph");
       }
       // v0.13.2 需求2：源码模式的 Ctrl+T（任务列表）。
       // App.tsx 对该 id 在源码模式直接放行，由这里走「把当前行提升为任务项」，
       // 与阅读模式 pmCommands 的语义一致（见 sourceFormat.liftListLineToTask）。
       if (id === "insert.taskList") {
         const vm = useEditorStore.getState().viewMode;
-        if (vm === "edit" || vm === "split") handleFormatAction.current("taskListLift");
+        if (vm !== "preview") handleFormatAction.current("taskListLift");
       }
     };
     window.addEventListener("lightmd:command", handler);
@@ -5100,7 +5189,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // 与既有 iframe 锚点效应同口径：锚 iframe 文档滚动元素内的 body > *。
     let iframeScroller: Element | null = null;
     let iframeBlockAnchor: ViewportAnchor | null = null;
-    if (viewMode === "split") {
+    if (previewShown) {
       const doc = previewIframeRef.current?.contentDocument;
       const s = (doc?.scrollingElement ?? doc?.documentElement) ?? null;
       if (s) {
@@ -5109,7 +5198,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       }
     }
     return { container, blockAnchor, ta, textAnchor, iframeScroller, iframeBlockAnchor };
-  }, [viewMode, isMdFile, isSourceMode]);
+  }, [viewMode, isMdFile, isSourceMode, previewShown]);
 
   const restoreTypographyAnchor = useCallback(
     (anchor: ReturnType<typeof captureTypographyAnchor>) => {
@@ -5202,7 +5291,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         )
       : null;
     const iframeDoc =
-      zoomChanged && viewMode === "split" ? previewIframeRef.current?.contentDocument : null;
+      zoomChanged && previewShown ? previewIframeRef.current?.contentDocument : null;
     const iframeScroller = (iframeDoc?.scrollingElement ??
       iframeDoc?.documentElement ??
       null) as HTMLElement | null;
@@ -5802,6 +5891,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 首次进入分屏模式立即渲染，编辑时延迟 300ms 防抖，减少连续击键时的渲染开销
   const [debouncedSourceContent, setDebouncedSourceContent] = useState(sourceContent);
   const justEnteredSplitRef = useRef(false);
+  /**
+   * v0.14.0 需求1：右侧预览面板「上一帧是否可见」。
+   * 旧实现用 `prevViewModeRef` 判"刚进 split"，但预览开关现在是独立状态
+   * （编辑模式内反复开关、阅读↔编辑来回切），必须按 previewShown 的**边沿**判定，
+   * 否则从阅读模式切回编辑（预览本来开着）不会触发"立即渲染"，
+   * 右屏会先空白 300ms 再出现。
+   */
+  const prevPreviewShownRef = useRef(false);
   // iframe 引用，用于分屏预览（隔离 DOM，减少主文档节点数）
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   // iframe 初始化状态追踪：首次进入分屏完整加载脚本，后续只更新 body
@@ -5815,19 +5912,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const lastIframeHtmlRef = useRef("");
   const lastIframeTypoKeyRef = useRef("");
 
-  // 追踪是否刚切换到分屏模式
+  // 追踪是否刚打开右侧预览面板（v0.14.0 需求1：由「切到 split」改为「预览面板展开」）
   useEffect(() => {
-    if (viewMode === "split" && prevViewModeRef.current !== "split") {
+    if (previewShown && !prevPreviewShownRef.current) {
       justEnteredSplitRef.current = true;
-      // 进入分屏时重置 iframe 初始化状态，确保首次完整加载
+      // 重新展开预览时重置 iframe 初始化状态，确保首次完整加载
       previewIframeInitRef.current = { mermaid: false, math: false, theme: "" };
     }
-  }, [viewMode]);
+    prevPreviewShownRef.current = previewShown;
+  }, [previewShown]);
 
-  // 防抖：首次进入 split 立即渲染，编辑时延迟渲染
+  // 防抖：首次展开预览立即渲染，编辑时延迟渲染
   // 大文件（>1MB）增加防抖时间到 1000ms，减少渲染开销
   useEffect(() => {
-    if (viewMode !== "split") return;
+    if (!previewShown) return;
     if (justEnteredSplitRef.current) {
       setDebouncedSourceContent(sourceContent);
       justEnteredSplitRef.current = false;
@@ -5837,14 +5935,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const debounceMs = sourceContent.length > LARGE_FILE_THRESHOLD ? 1000 : 300;
     const timer = setTimeout(() => setDebouncedSourceContent(sourceContent), debounceMs);
     return () => clearTimeout(timer);
-  }, [sourceContent, viewMode]);
+  }, [sourceContent, previewShown]);
 
-  // 分屏预览 HTML（仅分屏模式才计算，基于防抖内容）
+  // 右侧预览 HTML（仅预览面板展开时计算，基于防抖内容）
   // Markdown 文件：渲染 markdown + mermaid + 代码高亮
   // 非 Markdown 文件（txt/代码等）：v0.4.0 用 PrismJS 对整个内容语法高亮，不渲染 markdown
   const previewHtml = useMemo(
     () => {
-      if (viewMode !== "split") return "";
+      if (!previewShown) return "";
       if (!isMdFile) {
         // v0.4.0：非 Markdown 文件用 renderCodeFilePreview 生成带语法高亮的 HTML
         // v0.6.6 问题4：unmask 还原 base64（显示层短标记不进预览）
@@ -5859,7 +5957,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       });
       return html;
     },
-    [debouncedSourceContent, viewMode, isMdFile, filePath, currentLanguage]
+    [debouncedSourceContent, previewShown, isMdFile, filePath, currentLanguage]
   );
 
   /**
@@ -5872,10 +5970,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    */
   const previewSourceMarkdown = useMemo(
     () =>
-      viewMode === "split" && isMdFile
+      previewShown && isMdFile
         ? unmaskBase64Images(debouncedSourceContent, base64TokensRef.current)
         : "",
-    [viewMode, isMdFile, debouncedSourceContent],
+    [previewShown, isMdFile, debouncedSourceContent],
   );
 
   // v0.4.0：阅读模式下非 Markdown 文件的语法高亮 HTML（用 useMemo 缓存避免重复计算）
@@ -5964,7 +6062,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   );
 
   useEffect(() => {
-    if (viewMode !== "split") return;
+    if (!previewShown) return;
     const iframe = previewIframeRef.current;
     if (!iframe) return;
     const doc = iframe.contentDocument;
@@ -6227,7 +6325,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // ② 滚动监听挂在 contentWindow 上（doc.open() 重写文档后 window 对象仍稳定，
   //    而 scroller 元素会被替换 —— 每次捕获/恢复时动态获取 scrollingElement）。
   useEffect(() => {
-    if (viewMode !== "split") return;
+    if (!previewShown) return;
     const iframe = previewIframeRef.current;
     if (!iframe || typeof ResizeObserver === "undefined") return;
 
@@ -6286,7 +6384,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 把左屏 scrollTop 写成 0）。现在改用 `utils/splitScrollSync` 的**时间窗方向锁**：
   // 哪一侧先发起滚动，谁在窗口期内拥有同步权，另一侧的 scroll 事件一律按回声忽略。
   useEffect(() => {
-    if (viewMode !== "split") return;
+    if (!previewShown) return;
     const textarea = sourceTextareaRef.current;
     const iframe = previewIframeRef.current;
     if (!textarea || !iframe) return;
@@ -6608,12 +6706,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       <div className="editor-main-area" ref={mainAreaRef}>
         {/* v0.12.0 需求5：右下角缩放尺（hover 显现；拖动/点击调整 docZoom） */}
         <ZoomRuler value={docZoom} onChange={setDocZoom} />
-        {/* v0.6.1 问题5：模式切换悬浮按钮（阅读=羽毛笔→分屏 / 分屏=书本→阅读）
-            v0.12.1 需求11：编辑模式同样渲染（组件内 edit → 小书本，点击跳阅读模式） */}
+        {/* v0.6.1 问题5：模式切换悬浮按钮（阅读=羽毛笔→编辑 / 编辑=书本→阅读）
+            v0.14.0 需求1：二模式后语义为「阅读 ↔ 编辑」，进入编辑时默认带右侧预览 */}
         {isMdFile && (
           <ModeSwitchButton
             viewMode={viewMode}
-            onSwitch={(m) => setViewMode(m)}
+            onSwitch={(m) => {
+              // 进编辑模式一律打开右侧预览（与标题栏「编辑」按钮同口径）
+              if (m === "edit") useEditorStore.getState().setSplitPreviewOpen(true);
+              setViewMode(m);
+            }}
           />
         )}
 
@@ -6624,7 +6726,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             ⚠️ v0.13.2 返修：模式切换固定占第 0 格（10px）。旧值 `有图 ? 1 : 0`
             会让「译」与图片管理（slot=1）完全重合、无图时又与模式切换按钮（slot=0）
             完全重合 —— 用户实机看到的就是"译字图标和分屏编辑图标重叠"。 */}
-        {(viewMode === "preview" || viewMode === "split") && isMdFile && translateEnabled && (
+        {/* v0.14.0 需求1：二模式后「译」在阅读模式与编辑模式都显示
+            （旧口径是 preview 或 split；现在编辑模式关掉预览也照样能全文翻译） */}
+        {(viewMode === "preview" || isSourceMode) && isMdFile && translateEnabled && (
           <FullTranslateButton
             slot={docHasImageFlag ? 2 : 1}
             onStart={() => {
@@ -6769,14 +6873,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           />
         )}
 
-        {/* textarea：编辑/分屏模式可见，始终渲染确保 ref 有效 */}
+        {/* 源码编辑区：v0.14.0 需求1 后所有非阅读模式都可见；
+            预览面板展开时左栏按分割比例收窄，关闭时铺满整个编辑区 */}
         {/* 外层 wrapper 提供相对定位上下文，供专注遮罩 overlay 使用 */}
         <div
           className="source-editor-wrapper"
           style={{
-            // v0.4.0：split 模式下用 width 控制宽度（ratio 来自拖拽），edit 模式用 flex:1
-            flex: viewMode === "split" ? "none" : isSourceMode ? 1 : 0,
-            width: viewMode === "split" ? `calc(${effectiveSplitRatio * 100}% - 3px)` : undefined,
+            // v0.14.0 需求1：previewShown 时用 width 控制宽度（ratio 来自拖拽），
+            // 否则铺满（flex:1）——即旧「编辑模式」的观感。
+            flex: previewShown ? "none" : isSourceMode ? 1 : 0,
+            width: previewShown ? `calc(${effectiveSplitRatio * 100}% - 3px)` : undefined,
             display: isSourceMode ? "flex" : "none",
             // v0.12.1 需求3：编辑模式的可滚动区域改为**整个编辑区**（滚动条贴最右），
             // 与阅读模式一致。实现方式：wrapper 不再收窄/居中（旧实现在这里加
@@ -6787,7 +6893,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         >
           <textarea
             ref={sourceTextareaRef}
-            className={`source-editor ${viewMode === "split" ? "split-editor" : ""}`}
+            className={`source-editor ${previewShown ? "split-editor" : ""}`}
             value={sourceContent}
             onChange={handleSourceChange.current}
             onKeyDown={handleSourceKeyDown}
@@ -6805,11 +6911,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               // 打坏专注遮罩与打字机测量；字号放大后行高/换行/测量体系天然一致）。
               fontSize: `calc(${fontSize}px * var(--doc-zoom, 1))`,
               fontFamily: `${fontFamily}, "Cascadia Code", "Consolas", monospace`,
-              // v0.4.0：split 模式下右边框由分割条替代，避免双线
-              borderRight: viewMode === "split" ? "none" : "none",
+              // v0.4.0：分屏模式下右边框由分割条替代，避免双线
+              borderRight: "none",
             }}
           />
-          {/* 专冔模式遮罩：仅在 edit/split 模式 + focusMode 开启时显示 */}
+          {/* 专冔模式遮罩：仅在编辑模式 + focusMode 开启时显示 */}
           {focusMode && isSourceMode && (
             <div ref={focusOverlayRef} className="source-focus-overlay" />
           )}
@@ -6818,29 +6924,58 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           <div ref={sourceGhostOverlayRef} className="source-ghost-overlay" />
         </div>
 
-        {/* v0.4.0：分屏分割条（仅 split 模式渲染，6px 宽，可拖拽调整左右比例） */}
-        {viewMode === "split" && (
+        {/* ─── 分割条 / 预览开关（v0.14.0 需求1）────────────────────────
+            · 预览展开时：6px 可拖拽分割条，悬停（或悬停右屏）时浮出竖排小字「关闭预览」；
+            · 预览关闭后：这条 rail 仍留在编辑区右缘（紧贴语法辅助栏左侧），
+              悬停浮出「打开预览」，点击右屏从右往左滑回。
+            · 关闭状态下不再可拖拽（没有右屏可调比例），故只在展开时挂 onMouseDown。 */}
+        {isSourceMode && (
           <div
-            className="split-divider"
-            title={t("appshell.dragToResize")}
-            onMouseDown={splitResizer.onMouseDown}
-          />
+            className={`split-divider ${previewShown ? "split-divider-open" : "split-divider-closed"}`}
+            title={previewShown ? t("appshell.dragToResize") : t("preview.toggle.open")}
+            // v0.14.0 需求1：只有预览展开时才可拖拽（关闭态没有右屏可调比例）。
+            // 「鼠标移到右屏时分割线显出竖排小字」完全由 CSS 的 `:has()` 实现
+            // （见 editor.css 的 `.editor-main-area:has(.split-preview-shell:hover)`），
+            // 不引入任何 React state，避免 hover 引发整棵编辑器重渲染。
+            onMouseDown={previewShown ? splitResizer.onMouseDown : undefined}
+          >
+            <button
+              type="button"
+              className="split-divider-label"
+              data-testid="split-preview-toggle"
+              aria-pressed={previewShown}
+              title={previewShown ? t("preview.toggle.close") : t("preview.toggle.open")}
+              onClick={(e) => {
+                // 阻止冒泡到分割条：否则一次点击会同时触发拖拽起始逻辑
+                e.stopPropagation();
+                toggleSplitPreview();
+              }}
+            >
+              {previewShown ? t("preview.toggle.close") : t("preview.toggle.open")}
+            </button>
+          </div>
         )}
 
-        {/* 分屏预览区：使用 iframe 隔离 DOM，减少主文档节点数和 GC 压力 */}
-        <iframe
-          ref={previewIframeRef}
-          className="split-preview ProseMirror"
-          style={{
-            // v0.4.0：split 模式下用 width 控制宽度（1-ratio），其他模式 flex:0 隐藏
-            flex: viewMode === "split" ? "none" : 0,
-            display: viewMode === "split" ? "block" : "none",
-            border: "none",
-            width: viewMode === "split" ? `calc(${(1 - effectiveSplitRatio) * 100}% - 3px)` : "0",
-          }}
-          title={t("editor.preview")}
-          sandbox="allow-same-origin allow-scripts"
-        />
+        {/* 右侧预览面板：使用 iframe 隔离 DOM，减少主文档节点数和 GC 压力。
+            v0.14.0 需求1：外壳宽度过渡 → 关闭时右屏「往右滑到语法辅助栏左侧」，
+            重新打开时「从右往左滑出」。iframe 常驻挂载（宽度 0），
+            这样滑出动画期间内容是现成的，不会先空白再出现。 */}
+        {isSourceMode && (
+          <div
+            className={`split-preview-shell ${previewShown ? "split-preview-open" : "split-preview-closed"}`}
+            style={{
+              width: previewShown ? `calc(${(1 - effectiveSplitRatio) * 100}% - 3px)` : "0px",
+            }}
+            aria-hidden={!previewShown}
+          >
+            <iframe
+              ref={previewIframeRef}
+              className="split-preview ProseMirror"
+              title={t("editor.preview")}
+              sandbox="allow-same-origin allow-scripts"
+            />
+          </div>
+        )}
       </div>
 
       {/* 搜索/替换（v0.8.5 需求7：由 GenieSearchDialog 包裹，active 驱动呼出/收回动画，
@@ -6860,6 +6995,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         }}
         initialShowReplace={showSearchReplace}
         isMdFile={isMdFile}
+        // v0.14.0 需求2：「选取范围内」的选区快照按文档归属校验
+        docKey={currentDocKey() ?? undefined}
+        // v0.14.0 需求2：「查找所有打开文件」的数据源（实时取文本，不传快照）
+        collectFiles={collectSearchFiles}
+        // v0.14.0 需求2：编辑模式关掉右侧预览时，结果条幅可用更高空间
+        splitPreviewOpen={previewShown}
       />
 
       {/* 链接插入对话框 */}

@@ -187,10 +187,14 @@ export const enUS: Record<string, string> = {
   // ─── Title bar ───────────────────────────────────
   "titlebar.read": "Read",
   "titlebar.edit": "Edit",
+  // v0.14.0 req 1: three modes collapsed into two — no standalone "Split" entry.
   "titlebar.split": "Split",
   "titlebar.readMode": "Read Mode",
-  "titlebar.editMode": "Edit Mode",
+  "titlebar.editMode": "Edit Mode (double-click Ctrl)",
   "titlebar.splitMode": "Split Mode (double-click Shift)",
+  // v0.14.0 req 1: preview-pane toggle on the divider
+  "preview.toggle.close": "Close preview",
+  "preview.toggle.open": "Open preview",
   "titlebar.new": "New ▾",
   "titlebar.newFile": "📄 New File",
   "titlebar.newFolder": "📁 New Folder",
@@ -834,6 +838,8 @@ export const enUS: Record<string, string> = {
   "command.view.preview": "Read Mode",
   "command.view.edit": "Edit Mode",
   "command.view.split": "Split Mode",
+  // v0.14.0 req 1: split is now the preview-pane toggle inside edit mode
+  "command.view.togglePreview": "Toggle Preview Pane (Edit Mode)",
   "command.view.toggleTheme": "Toggle Theme",
   "command.view.toggleFocusMode": "Toggle Focus Mode",
   "command.view.toggleTypewriter": "Toggle Typewriter",
@@ -928,6 +934,17 @@ export const enUS: Record<string, string> = {
   "search.replaceAll": "Replace all",
   "search.close": "Close",
   "search.toggleReplace": "Replace",
+  // ─── v0.14.0 req 2: search enhancements (options / in-selection / cross-file results) ───
+  "search.wholeWord": "Whole word",
+  "search.matchCase": "Match case",
+  "search.inSelection": "In selection",
+  "search.selectionRequired": "Select some text in the editor first",
+  "search.selectionLost": "The selection is gone — select again to search",
+  "search.findInOpenFiles": "Find in open files",
+  "search.resultsCount": "{count} matches ({files} files)",
+  "search.resultsEmpty": "No matches",
+  "search.tooManyResults": "Too many results, showing the first {count}",
+  "search.jumpFailed": "Could not jump to that location",
   // ─── Syntax helper ───────────────────────────────────
   "syntax.title": "Syntax Helper",
   "syntax.clickToInsert": "Click to insert: {code}",
@@ -1079,8 +1096,10 @@ export const enUS: Record<string, string> = {
   "translate.undo.label": "Undo translation",
   "translate.undo.tip": "Undo translation and restore original text",
   // v0.6.1 issue 5: mode switch floating button
+  // v0.14.0 req 1: two modes now — the button toggles Read ↔ Edit
   "mode.switch.toSplit": "Switch to split view",
   "mode.switch.toPreview": "Switch back to reading view",
+  "mode.switch.toEdit": "Switch to edit mode",
   "translate.streaming": "Translating…",
   "translate.retry": "Retry",
   "translate.replace": "Replace",

@@ -359,13 +359,17 @@ describe("v0.12.1 需求9：排版实时预览", () => {
 // ─── 需求11：编辑模式的书本悬浮按钮 ─────────────────────────
 
 describe("v0.12.1 需求11：编辑模式也有跳阅读模式的悬浮按钮", () => {
+  // v0.14.0 需求1：三模式合并为二模式，按钮的 "toSplit" 语义已改为 "toEdit"。
+  // 原始意图（编辑模式显示书本图标并可一键回阅读）保持不变，只更新实现形态断言。
   it("ModeSwitchButton 支持 edit 模式（走书本图标 + 跳 preview）", () => {
-    expect(modeBtnSrc).toContain('const toPreview = viewMode === "split" || viewMode === "edit";');
-    expect(modeBtnSrc).toContain('onSwitch(toPreview ? "preview" : "split")');
+    expect(modeBtnSrc).toContain('const toPreview = viewMode !== "preview";');
+    expect(modeBtnSrc).toContain('onSwitch(toPreview ? "preview" : "edit")');
   });
 
   it("EditorContainer 在三种模式下都渲染该按钮（不限 preview/split）", () => {
     expect(containerSrc).toMatch(/\{isMdFile && \(\s*<ModeSwitchButton/);
+    // 旧断言锁的是三模式时代的「译」按钮条件；二模式后该条件改为
+    // `(viewMode === "preview" || isSourceMode) && isMdFile && translateEnabled`
     expect(containerSrc).not.toContain('(viewMode === "preview" || viewMode === "split") && isMdFile && (');
   });
 
