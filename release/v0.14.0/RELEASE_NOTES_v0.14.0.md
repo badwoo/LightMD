@@ -17,7 +17,7 @@
 
 ```
 0e53494c63d3ccf227437a76b19f37861faee4db83d62b219ce8b1d4b6bb6e12  LightMD_0.14.0_x64-setup.exe
-a6e746af10d6fb2e8d5aee31fa9bb1f4f95ac05b27c06ff19b6510f2775a40  LightMD_0.14.0_x64_en-US.msi
+a6e746af10d6fb2e8d5aee31fa9bb1f4f95ac05b27c06feff19b6510f2775a40  LightMD_0.14.0_x64_en-US.msi
 ```
 
 > `lightmd.exe` 的 `FileVersion` / `ProductVersion` 实测均为 `0.14.0`。
