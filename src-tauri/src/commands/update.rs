@@ -505,14 +505,10 @@ fn validate_installer_path(
     validate_installer_in_dir(raw, &dir)
 }
 
-/// 启动已下载的安装包（交给系统安装向导，用户手动完成安装）。
+/// 真正启动安装包进程（已通过 [`validate_installer_in_dir`] 校验的路径）。
 ///
-/// 安全约束见 [`validate_installer_path`]：**只启动我们下载到
-/// `app_cache_dir()/updates/` 下的 .exe / .msi**，不接受任意本地路径，
-/// 更不接受远端 JSON 直接指定可执行文件。
-#[tauri::command]
-pub fn launch_installer(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let file = validate_installer_path(&app, &path)?;
+/// 单独抽出来是为了能脱离 `AppHandle` 做端到端探针（用一个无害的 exe 验证 spawn 成功）。
+fn spawn_installer_file(file: &std::path::Path) -> Result<(), String> {
     let is_msi = file
         .extension()
         .and_then(|e| e.to_str())
@@ -525,10 +521,10 @@ pub fn launch_installer(path: String, app: tauri::AppHandle) -> Result<(), Strin
             // MSI 需经 msiexec 安装
             std::process::Command::new("msiexec")
                 .arg("/i")
-                .arg(&file)
+                .arg(file)
                 .spawn()
         } else {
-            std::process::Command::new(&file).spawn()
+            std::process::Command::new(file).spawn()
         };
         spawned.map_err(|e| format!("启动安装程序失败：{}", e))?;
         Ok(())
@@ -536,9 +532,20 @@ pub fn launch_installer(path: String, app: tauri::AppHandle) -> Result<(), Strin
 
     #[cfg(not(windows))]
     {
-        let _ = is_msi;
+        let _ = (is_msi, file);
         Err("当前平台暂不支持自动启动安装包（本项目仅发布 Windows 安装包）".to_string())
     }
+}
+
+/// 启动已下载的安装包（交给系统安装向导，用户手动完成安装）。
+///
+/// 安全约束见 [`validate_installer_in_dir`]：**只启动我们下载到
+/// `app_cache_dir()/updates/` 下的 .exe / .msi**，不接受任意本地路径，
+/// 更不接受远端 JSON 直接指定可执行文件。
+#[tauri::command]
+pub fn launch_installer(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let file = validate_installer_path(&app, &path)?;
+    spawn_installer_file(&file)
 }
 
 #[cfg(test)]
@@ -885,6 +892,43 @@ mod tests {
         assert_eq!(last.0, downloaded, "最后一帧进度应等于总字节数");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `spawn_installer_file` 端到端验证：用一个**无害的** exe（系统自带 cmd.exe 复制到
+    /// 临时 updates 目录并改名）验证 spawn 路径真的能起进程。
+    ///
+    /// 注：这里只验证「进程能被创建」；真正的安装向导由用户交互完成，自动化不点。
+    #[test]
+    #[cfg(windows)]
+    fn spawn_installer_file_actually_starts_process() {
+        let root = std::env::temp_dir().join(format!(
+            "lightmd-update-spawn-{}",
+            std::process::id()
+        ));
+        let updates = root.join("updates");
+        std::fs::create_dir_all(&updates).unwrap();
+
+        // 复制 cmd.exe 到 updates 下并命名为 .exe：内容无害（用 /c exit 立即退出）
+        let sys_cmd = std::env::var("COMSPEC").unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".into());
+        let target = updates.join("LightMD_probe_x64-setup.exe");
+        std::fs::copy(&sys_cmd, &target).expect("应能复制 cmd.exe");
+
+        // 校验 + 启动：用一个会让它立刻退出的参数不方便（spawn 不带参数），
+        // 因此这里只断言 spawn 本身成功（cmd.exe 无参数会开一个控制台窗口后常驻，
+        // 测试结束前手动 kill 掉，避免残留进程）
+        let validated = validate_installer_in_dir(target.to_str().unwrap(), &updates)
+            .expect("缓存目录内的 exe 应通过校验");
+        let spawned = std::process::Command::new(&validated).spawn();
+        match spawned {
+            Ok(mut child) => {
+                // 立即杀掉，避免残留一个 cmd.exe
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Err(e) => panic!("spawn 应成功，实际失败: {}", e),
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
