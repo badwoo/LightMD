@@ -396,6 +396,57 @@ export function shouldResetSourceUndoStack(prevText: string, syncedText: string)
   return prevText !== syncedText;
 }
 
+// ─── v0.14.0 需求2：模式切换的滚动恢复「重试窗口」参数 ────────────────────
+//
+// 实测（scripts/v0140-probe-scroll-diag*.mjs，CDP 采样）：
+// 阅读 50% → 点「编辑」后，applyScroll 的双 rAF 在 ~44ms 执行，此时 textarea 的
+// `scrollHeight - clientHeight === 0`（内容还没写进去/还没布局），
+// `computeRestoreScrollTop` 返回 null，旧实现 `textarea.scrollTop = newTop ?? 0`
+// 当场写成 0 且**不再重试** → 左栏停在顶部；随后 splitScrollSync 又把左栏的 0
+// 推给右屏 iframe → 右屏也停在顶部（P1 实测 iframe=0.006）。
+// 60ms 后内容就绪（+120ms 时 textarea scrollHeight 已 17416），所以重试必须覆盖
+// 这段布局延迟；上限 ~1.5s 用于覆盖 mermaid/katex 异步渲染继续撑高的场景。
+export const SCROLL_RESTORE_RETRY_MS = 60;
+export const SCROLL_RESTORE_MAX_RETRIES = 24;
+
+/** 滚动恢复目标的最小度量接口（HTMLElement / iframe 文档滚动元素都满足） */
+export interface ScrollRestoreTarget {
+  scrollHeight: number;
+  clientHeight: number;
+  scrollTop: number;
+}
+
+/** 一次恢复尝试的决策（纯函数，便于单测） */
+export interface ScrollRestorePlan {
+  /** 目标容器已可滚动 → 写入 top */
+  apply: boolean;
+  /** 尚不可滚动但期望非顶部 → 稍后重试 */
+  retry: boolean;
+  /** 写入值（apply 为 false 时为 0，调用方不应写入） */
+  top: number;
+}
+
+/**
+ * v0.14.0 需求2：判断这次滚动恢复该「立即写入 / 重试 / 放弃」。
+ *
+ * 关键语义：**永远不要在"容器不可滚动"时把 scrollTop 写成 0**（旧实现的
+ * `newTop ?? 0` 正是 P1 的根因）。不可滚动时只有两种情况：
+ * - 期望位置本来就是顶部（percent<=0）→ 放弃（不写也是顶部，无需动作）；
+ * - 期望位置非顶部 → 重试，直到容器被内容撑开或重试耗尽。
+ */
+export function planScrollRestore(
+  percent: number,
+  scrollHeight: number,
+  clientHeight: number,
+  attempt: number,
+  maxAttempts: number = SCROLL_RESTORE_MAX_RETRIES,
+): ScrollRestorePlan {
+  const top = computeRestoreScrollTop(percent, scrollHeight, clientHeight);
+  if (top !== null) return { apply: true, retry: false, top };
+  const wantNonTop = Number.isFinite(percent) && percent > 0;
+  return { apply: false, retry: wantNonTop && attempt < maxAttempts, top: 0 };
+}
+
 /**
  * E12(v0.9.4)：源码模式撤销到边界时给出的提示文案（null = 未到边界，正常撤销）。
  *
@@ -1673,13 +1724,22 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             lastTextareaCursorRef.current = pos;
           }
           // ② 滚动位置：按百分比恢复（与另两个模式的阅读进度一致）
-          const newTop = computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight);
-          textarea.scrollTop = newTop ?? 0;
+          //
+          // v0.14.0 需求2（P1 根因修复）：此处**不能**再写 `newTop ?? 0`。
+          // 实测双 rAF 在 ~44ms 执行，此时 textarea 的 scrollHeight-clientHeight=0
+          // （内容尚未写入/尚未布局）→ newTop=null → 旧代码写成 0 且不重试，
+          // 左栏停顶部；splitScrollSync 随即把 0 推给右屏 iframe → 两屏都掉到 0。
+          // 现在改为：可滚动才写；不可滚动且期望非顶部 → 短间隔重试（见
+          // planScrollRestore / SCROLL_RESTORE_RETRY_MS 的注释）。
+          restoreScrollWithRetry(textarea, percent, 0, () => isRestoringScrollRef.current);
           // focus/setSelectionRange 可能触发浏览器把光标滚入视口 → 下一帧校正
-          if (newTop !== null) {
+          if (computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight) !== null) {
             requestAnimationFrame(() => {
               const t2 = sourceTextareaRef.current;
-              if (t2) t2.scrollTop = newTop;
+              if (t2) {
+                const top2 = computeRestoreScrollTop(percent, t2.scrollHeight, t2.clientHeight);
+                if (top2 !== null) t2.scrollTop = top2;
+              }
             });
           }
         }
@@ -1688,20 +1748,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         // iframe 内容在另一个 useEffect 中异步写入，此时可能尚未写入或 scrollHeight 不准确，
         // 因此先记录待恢复百分比，由 iframe 写入完成后再设置
         // v0.14.0 需求1：右侧预览面板是否显示（旧 split）
+        //
+        // v0.14.0 需求2（P1）：**不能只依赖 iframe 内容写入 effect 来消费 pending**
+        // ——那个 effect 的依赖是 previewHtml，阅读→编辑切换时 previewHtml 可能
+        // 根本没变（右屏内容早就渲染好了，只是外壳宽度从 0 变正），effect 不会重跑，
+        // pending 就永远没人消费。故这里也走"重试直到 iframe 可滚动"的兜底，
+        // 与内容写入 effect 末尾的消费互为双保险（先成功者清 pending）。
         if (targetMode === "edit" && useEditorStore.getState().splitPreviewOpen) {
           // v0.8.0 修复3 TODO：split 模式左（源码）右（iframe 预览）锚点定位待实现，
           // 暂沿用滚动百分比恢复，后续接入双栏锚点映射
           pendingIframeScrollRef.current = percent;
-          // 尝试立即设置（覆盖 iframe 已就绪的场景，如增量更新）
-          const iframe = previewIframeRef.current;
-          const preview = iframe?.contentDocument?.documentElement || iframe?.contentDocument?.body;
-          if (preview) {
-            const newTop = computeRestoreScrollTop(percent, preview.scrollHeight, preview.clientHeight);
-            if (newTop !== null) {
-              preview.scrollTop = newTop;
-              pendingIframeScrollRef.current = null;
-            }
-          }
+          restorePendingIframeScroll();
         }
       }
       // 恢复完成，允许打字机 effect 后续的 scrollToCenter
@@ -5948,6 +6005,81 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 纯排版变化只需刷新 iframe 的 <style>，不必重排 body（拖滑条时避免每帧重建 DOM）。
   const lastIframeHtmlRef = useRef("");
   const lastIframeTypoKeyRef = useRef("");
+
+  /**
+   * v0.14.0 需求2：按百分比恢复滚动位置，**容器尚不可滚动时短间隔重试**。
+   *
+   * 为什么必须有重试（P1 的根因）：阅读→编辑切换时 applyScroll 的双 rAF 在 ~44ms
+   * 执行，此时左栏 textarea 的 `scrollHeight - clientHeight === 0`（内容还没写入 /
+   * 还没布局），`computeRestoreScrollTop` 返回 null；旧代码 `scrollTop = newTop ?? 0`
+   * 当场写成 0 且**不再重试** → 左栏停在顶部，splitScrollSync 又把 0 推给右屏
+   * iframe → 两屏都掉到 0（实测 iframe=0.006）。
+   * 60ms 后内容就绪（实测 +120ms 时 scrollHeight 已 17416），故用 60ms 间隔、
+   * 最多 24 次（≈1.5s，覆盖 mermaid/katex 异步渲染继续撑高的场景）。
+   *
+   * ⚠️ 关键语义：**永远不在"容器不可滚动"时写 0**（那正是旧 bug）。
+   * 只在 `plan.append` 为真时写入；期望位置本来就是顶部时直接放弃（不写也是顶部）。
+   *
+   * @param target 滚动容器（textarea / iframe 文档滚动元素 / .editor-container）
+   * @param percent 目标百分比 0~1
+   * @param attempt 当前重试次数（首次传 0）
+   * @param shouldContinue 每次重试前的守卫（如"已经不在恢复窗口了就别再改用户滚动位置"）
+   * @returns 是否已成功写入
+   */
+  const restoreScrollWithRetry = (
+    target: ScrollRestoreTarget | null,
+    percent: number,
+    attempt = 0,
+    shouldContinue: () => boolean = () => true,
+  ): boolean => {
+    if (!target) return false;
+    const plan = planScrollRestore(percent, target.scrollHeight, target.clientHeight, attempt);
+    if (plan.apply) {
+      target.scrollTop = plan.top;
+      return true;
+    }
+    if (!plan.retry) return false;
+    window.setTimeout(() => {
+      // 重试前重新取容器：重试窗口内可能发生重渲染（textarea 被重建 → 旧引用失效）
+      if (!shouldContinue()) return;
+      const next = target;
+      restoreScrollWithRetry(next, percent, attempt + 1, shouldContinue);
+    }, SCROLL_RESTORE_RETRY_MS);
+    return false;
+  };
+
+  /**
+   * v0.14.0 需求2：消费 `pendingIframeScrollRef`（右侧预览的待恢复百分比）。
+   *
+   * 为什么不能只靠「iframe 内容写入 effect」消费：那个 effect 的依赖是 `previewHtml`，
+   * 而阅读→编辑切换时 previewHtml 往往**根本没变**（右屏内容早就渲染好了，只是外壳
+   * 宽度从 0 变正）→ effect 不重跑 → pending 永远没人消费 → 右屏停在顶部。
+   * 故这里独立做一次"重试直到 iframe 可滚动"，与内容写入 effect 末尾的消费互为双保险
+   * （先成功者把 pending 清成 null，后者看到 null 直接返回）。
+   */
+  const restorePendingIframeScroll = (): void => {
+    const target = (): ScrollRestoreTarget | null => {
+      const iframe = previewIframeRef.current;
+      const doc = iframe?.contentDocument;
+      const s = (doc?.scrollingElement ?? doc?.documentElement ?? doc?.body) as
+        | (ScrollRestoreTarget & Element)
+        | null;
+      return s ?? null;
+    };
+    const start = (attempt: number) => {
+      const pending = pendingIframeScrollRef.current;
+      if (pending === null) return; // 已被别的路径消费 / 已被新的切换覆盖
+      const ok = restoreScrollWithRetry(
+        target(),
+        pending,
+        attempt,
+        // 守卫：pending 被清空/改写说明这次恢复已不需要（用户切走了或已成功）
+        () => pendingIframeScrollRef.current === pending,
+      );
+      if (ok) pendingIframeScrollRef.current = null;
+    };
+    start(0);
+  };
 
   // 追踪是否刚打开右侧预览面板（v0.14.0 需求1：由「切到 split」改为「预览面板展开」）
   useEffect(() => {

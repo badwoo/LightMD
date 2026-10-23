@@ -486,12 +486,24 @@ function App() {
         setContent(targetContent);
         safeSetItem(CONTENT_KEY, targetContent);
         setForceUpdateKey((k) => k + 1);
-        // v0.7.0 bug修复：重新打开文件时清除浏览进度（从文件树点击 = 重新打开，重置到顶部）
-        // v0.8.0 修复 P11-7：已打开的文件属于"切回标签"，浏览进度应保留
-        // v0.8.3 WP4 需求6：启动恢复期间不清除——否则刚注入的跨会话进度会被当场清掉
-        if (detail.path && !alreadyOpen && !sessionRestoringRef.current) {
-          fileScrollProgress.clear(detail.path);
-        }
+        // v0.14.0 需求3：**不再**在"重新打开文件"时清除浏览进度。
+        //
+        // 历史沿革（为什么以前有这行）：
+        // - v0.7.0 把"从文件树点开"定义为"重新打开 = 重置到顶部"，于是这里 clear；
+        // - v0.8.0 P11-7 只把"已打开的标签"排除（切标签保留），关闭后重开仍走 clear。
+        //
+        // 用户 v0.14.0 明确反馈「关闭文档重新打开文档阅读进度重置了」并把它列为缺陷
+        // → 期望"关闭再打开仍保留进度"。因此这里删掉 clear，恢复交给 EditorContainer
+        // 的 [forceUpdateKey] 恢复效应（读内存 Map 里的同一进度键）。
+        //
+        // 取舍：进度只留在**当前会话的内存 Map**（同一窗口内关闭→重开可恢复）。
+        // 关闭后该键不再出现在 saveSnapshot(打开标签) 的 keys 里 → 不会落盘，
+        // 因此"关闭再重启应用"不会恢复已关闭文件的进度（这是刻意的：不写非打开标签，
+        // 快照大小与语义都保持"打开标签的进度"）。重启恢复（probe D）不受影响。
+        //
+        // 仍然保留的清理：关闭"启动载入上次文件"开关 / 会话恢复失败 → clearAll()；
+        // 文件被删除 → closeTabsByPath 里按路径清理（文件已不存在，保留无意义）。
+        // 启动恢复期间本来也不会清理（旧 sessionRestoringRef 判断随 clear 一起删除）。
 
         // 设置文件路径和清除 dirty 标记
         if (detail.path) {
@@ -604,14 +616,16 @@ function App() {
         // v0.8.5 需求6：最近打开为纯历史记录，关闭标签不再从 recentFiles 中移除条目
         // （旧 v0.4.5 行为已废弃——关闭文件后历史条目保留，供下次快速找回）
         if (closedTab) {
-          // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
-          // v0.8.3 WP4 需求6：未落盘标签按 untitled:<id> 键清理（path 为空串，
-          // 走 path 分支的 clear 会因空串被 fileScrollProgress 直接忽略）
+          // v0.14.0 需求3：**不再**清除浏览进度。
+          // 用户反馈「关闭文档重新打开文档阅读进度重置了」并列为缺陷 → 期望保留。
+          // 进度仍留在内存 Map（同一会话内关闭→重开可恢复）；因为 saveSnapshot 只写
+          // 当前打开标签的键，关闭后该键不会落盘 → 重启应用不恢复已关闭文件的进度
+          // （刻意取舍：快照只覆盖"打开标签"）。
+          // v0.8.3 WP4 需求6 的键口径保留：临时标签用 untitled:<id>。
           const closedKey = closedTab.path || untitledProgressKey(closedTab.id);
-          fileScrollProgress.clear(closedKey);
-          // v0.13.2 需求7b / 需求5：关闭的标签不再需要「大纲滚动位置」与
-          // 「撤销历史快照」——一并丢弃，行为与浏览进度保持一致（重开 = 重新打开），
-          // 同时避免长时间使用后累积无主记忆。
+          // v0.13.2 需求7b / 需求5：关闭的标签仍丢弃「大纲滚动位置」与「撤销历史快照」
+          // —— 这两项与阅读进度不同，跨关闭保留有位置敏感风险（撤销历史基线依赖内容
+          // 快照，重开后内容可能已变），故维持原样，仅阅读进度改为保留。
           clearOutlineScroll(closedKey);
           forgetDocHistory(closedKey);
         }
@@ -1373,11 +1387,10 @@ function App() {
         console.error("[启动] 窗口引导流程失败:", err);
       } finally {
         // v0.9.0 第二轮修复（问题1）：legacy 模式的恢复流程**在 setStartupMode 之后**
-        // 才由下方「启动恢复临时标签 / 最近文件」两个 effect 启动，它们每次派发
-        // lightmd:openFile 时都要靠 `sessionRestoringRef` 跳过「重新打开 → 清空浏览
-        // 进度」分支。若在此处提前复位，刚 loadSnapshot 注入的跨会话阅读位置会被
-        // 逐个清掉——用户感知为"重开软件后所有标签的阅读位置都重置了"。
-        // 故 legacy 的复位交给「最近文件恢复」effect 的 finally（见下方），
+        // 才由下方「启动恢复临时标签 / 最近文件」两个 effect 启动。
+        // v0.14.0 需求3 起，"重新打开文件"不再清空浏览进度（旧 clear 已删除），
+        // 但本 ref 仍用于其它恢复期语义（例如恢复期间不弹冲突、不重复恢复），
+        // 故复位时机保持原样：legacy 交给「最近文件恢复」effect 的 finally，
         // 其余情况（含异常路径）必须在这里复位，否则窗口会永久停在恢复期。
         if (shouldEndRestoreWindowOnBoot(appliedMode)) {
           sessionRestoringRef.current = false;
@@ -2124,20 +2137,17 @@ function App() {
     }
     // 关闭标签
     closeTab(idx);
-    // v0.8.0 WP1：临时标签（path 为空）不参与 recentFiles / 滚动进度 / 左侧临时文件列表
+    // v0.8.0 WP1：临时标签（path 为空）不参与 recentFiles / 左侧临时文件列表
     if (tab.path) {
       // v0.8.5 需求6：最近打开为纯历史记录，关闭标签不再从 recentFiles 中移除条目
       // （旧 v0.4.5 行为已废弃——关闭后历史条目保留，供下次快速找回）
-      // v0.7.0 bug修复：关闭标签清除浏览进度（关闭后再打开 = 重新打开，重置到顶部）
-      fileScrollProgress.clear(tab.path);
+      // v0.14.0 需求3：**不再**清除浏览进度（关闭后重开要保留，见 App 顶部
+      // lightmd:openFile 处注释里的完整取舍说明）。
       // 同步移除左侧"打开的文件"中的临时文件
       const { tempFiles } = useFileStore.getState();
       if (tempFiles.some(f => f.path === tab.path)) {
         useFileStore.getState().removeTempFile(tab.path);
       }
-    } else if (tab.isUntitled) {
-      // v0.8.3 WP4 需求6：未落盘标签的进度键是 untitled:<id>，关闭时按同一键清理
-      fileScrollProgress.clear(untitledProgressKey(tab.id));
     }
     const remainingTabs = useEditorStore.getState().openTabs;
     const newActiveIdx = useEditorStore.getState().activeTabIdx;
@@ -2158,8 +2168,9 @@ function App() {
 
   // ─── v0.8.0 WP3 需求8：批量关闭标签 ──
   // 接收待关闭下标数组（已排除固定标签/目标标签、已确认过未保存项），
-  // 复用 handleTabClose 的清理逻辑（recentFiles / 滚动进度 / 临时文件列表），
+  // 复用 handleTabClose 的清理逻辑（recentFiles / 临时文件列表），
   // 最后统一同步编辑器内容到新的活跃标签，保持与关闭单个标签一致的行为。
+  // v0.14.0 需求3：阅读进度不再随关闭清除（见 handleTabClose 与 lightmd:openFile 注释）。
   const handleCloseMany = useCallback((indices: number[]) => {
     const sorted = [...indices].sort((a, b) => b - a); // 从后往前关，避免索引漂移
     for (const i of sorted) {
@@ -2167,16 +2178,12 @@ function App() {
       if (!tab) continue;
       if (tab.path) {
         // v0.8.5 需求6：最近打开为纯历史记录，批量关闭不再从 recentFiles 中移除条目
-        // v0.7.0 bug修复：关闭标签清除浏览进度
-        fileScrollProgress.clear(tab.path);
+        // v0.14.0 需求3：不再 clear 浏览进度（关闭后重开需保留）
         // 同步移除左侧"打开的文件"中的临时文件
         const { tempFiles } = useFileStore.getState();
         if (tempFiles.some((f) => f.path === tab.path)) {
           useFileStore.getState().removeTempFile(tab.path);
         }
-      } else if (tab.isUntitled) {
-        // v0.8.3 WP4 需求6：未落盘标签按 untitled:<id> 键清理进度
-        fileScrollProgress.clear(untitledProgressKey(tab.id));
       }
       closeTab(i);
     }
@@ -2367,12 +2374,11 @@ function App() {
         );
         return;
       }
-      // 迁移成功：关闭原标签（清理进度键，与常规关闭一致）
-      if (tab.isUntitled) {
-        fileScrollProgress.clear(untitledProgressKey(tab.id));
-      } else if (tab.path) {
-        fileScrollProgress.clear(tab.path);
-      }
+      // 迁移成功：关闭原标签。
+      // v0.14.0 需求3：与常规关闭同口径，**不再**清除浏览进度——把"关闭标签"一律
+      // 视为"暂时移出本窗口"，进度留在本窗口内存 Map 里（若该标签之后又被移回/
+      // 重新打开，仍能回到原位）。新窗口有自己的进度键后缀（窗口级数据），
+      // 它首帧读到的是空 Map → 从顶部开始，属预期行为。
       closeTab(idx);
       const st = useEditorStore.getState();
       const active = st.openTabs[st.activeTabIdx];
