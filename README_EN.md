@@ -19,6 +19,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
   now the default when you click Edit). The preview can be collapsed into a pure source view and
   slid back in from the vertical "Open preview" rail at the editor's right edge.
   - Double-tap `Ctrl`: toggle Preview ↔ Edit; double-tap `Shift`: toggle the preview pane
+  - **Reading position is preserved**: when toggling between the two modes, and even after closing and reopening a tab (0.14.0 batch 2)
   - Hover the divider centre for the vertical, breathing "Close preview / Open preview" label
 
 ### 📊 Rich Content Support
@@ -39,12 +40,13 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 ### ⚡ Productivity Boosters
 
 - 🗂 **Multi-Tab** with file tree sync (`Ctrl+W` to close, `Ctrl+Tab` to switch; right-click a tab/file/recent item to "Open file location", 0.5.0)
-- 🔍 **Global Search & Replace** (`Ctrl+F` / `Ctrl+H`) — with **whole word / match case / in selection / regex** checkboxes (default off) and a **"Find in open files"** results banner listing file name + matched line with highlighted hits; works in both Preview and Edit mode (0.14.0)
+- 🔍 **Global Search & Replace** (`Ctrl+F` / `Ctrl+H`) — with **whole word / match case / in selection / regex** checkboxes (default off) and a **"Find in open files"** results banner listing file name + matched line with highlighted hits; works in both Preview and Edit mode (0.14.0). With the banner open, "Replace all" replaces **every matched file**, and switching documents makes the search follow (0.14.0 batch 2)
 - ⚡ **Quick file switcher** (`Ctrl+P`) — open tabs / recent files / workspace files in groups, subsequence fuzzy matching with highlighted hits (0.13.0)
 - 📑 **Document Outline** with click-to-jump navigation and drag-to-reorder; collapsible headings (0.13.0) and per-document scroll memory (0.13.2)
 - 📁 **File Tree** + drag-and-drop open
 - 📋 **Recent Files** quick access
 - 💾 **Auto-save** — periodically saves to disk, configurable interval or disable
+- 🔄 **Check for updates** (0.14.0) — the last section of Settings: query the latest GitHub release, read its notes, download and launch the installer (with a progress bar)
 - ⚡ **Slash Commands** — type `/` at line start to trigger the quick-insert menu (headings/lists/code blocks/tables/Mermaid/math, etc.) (0.2.0)
 - 🖱 **Editor Context Menu** — undo/cut/copy/paste/quick insert (0.2.0)
 - ⌨️ **Auto-Pair Completion** — brackets/quotes/asterisks auto-close as you type, toggleable in settings (0.5.0)
@@ -372,7 +374,27 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
 
-### v0.14.0 (2026-10-23)
+### v0.14.0 Batch 2 (2026-10-23, repackaged under the same version)
+
+**New feature and fixes — update check / reading position / cross-file replace / artistic divider label / table size persistence**
+
+Seven items (1 new feature + 5 fixes + 1 visual upgrade), all verified on the **packaged build with real WebView2 mouse/keyboard gestures**: **34/34 PASS**.
+
+| # | Item | What landed |
+| --- | --- | --- |
+| 1 | **Check for updates** (last section in Settings) | A new "Software Update" section at the end of Settings: one click queries the latest GitHub release; when a newer version exists you can expand its release notes and **download + launch the installer** with a percentage progress bar. Network access goes through Rust (the CSP `connect-src` has no https, so the webview cannot call out); versions are compared numerically, not as strings (`"0.9.0" > "0.14.0"` would be wrong) |
+| 2 | Reading position lost when toggling Read ↔ Edit | **Root cause**: `applyScroll` runs ~44 ms after the switch, when the source textarea is still not scrollable → the old `scrollTop = newTop ?? 0` wrote 0 without retrying, and the split-sync pushed that 0 to the preview; also the preview's pending percentage was only consumed by the iframe-content effect, whose `previewHtml` dependency **does not change** on a mode toggle → it never ran. **Fix**: `planScrollRestore` never writes 0 when unscrollable, plus 60 ms × 24 retries; the preview gets its own retry loop. Measured 50% → edit 0.50 / preview 0.52 → back to read 0.50 |
+| 3 | Closing and reopening a document reset the reading position | Removed four "clear progress on close/reopen" calls in `App.tsx` (v0.7.0 semantics, opposite of what was asked). Measured 0.62 before close → 0.62 after reopen |
+| 4 | Replacing after "Find in open files" only changed the current document | New `applyFileText` write-back channel + `replaceAllAcrossFiles()`: each matched file is re-scanned against **its own** text, replacements are applied back-to-front with CRLF preserved; the current document goes through the editor state, other tabs are written to the store **and marked dirty** (otherwise closing the window would not prompt to save). With the banner open the button reads "Replace all (all files)" and reports "Replaced in N file(s)". Measured both A and B replaced and both tabs dirty |
+| 5 | Search only affected the current document | New `contentVersion` prop + a re-search-on-document-change effect. **Root cause**: in Read mode the `editorView` object and `sourceContent` do not change across documents, so `performSearch`'s dependencies were unchanged and the effect never re-ran; worse, the timer scheduled at switch time captured a **stale closure** and overwrote the correct result with "no results". **Fix**: `performSearchRef` always uses the latest closure, plus a generation counter to discard late callbacks. Measured: search "李四" (no results in A) → switch to a document containing it → 1/1 immediately |
+| 6 | Divider label: artistic font / lighter / metallic sheen | System serif stack (Palatino/Georgia + Chinese serif → generic serif; **no font files, no network**); colour via `color-mix(text-tertiary 72%)`; a **static** 7-stop metallic gradient with `background-clip: text`, and the breathing animation touches **only `opacity`/`transform`**. CDP measurement: `LayoutCount 0`, `RecalcStyleCount 1` over 3 s, `TaskDuration 3.4 ms` (the anti-pattern, animating `background-position`, costs 180 style recalculations) |
+| 7 | Table row height / column width lost after reopening | Sizes lived only in PM attrs and GFM pipe tables cannot express them, so they were dropped on save. Added a **side-channel comment directive** (one blank line after the table): `<!-- lightmd-table-size: {...} -->`. Zero diff when no sizes; the parser reads it back into attrs and swallows the line; broken JSON is ignored silently; the B6 source-slice range covers the directive line (never lost, never duplicated); output is normalised to the real row/column counts (otherwise every save would rewrite the file). Measured drag 246→316 px, directive on disk, still 316 px after reopening |
+
+Quality: `tsc --noEmit` exit 0; full suite **309 files / 5369 tests** green; new tests in this batch: `v0140-update-version` 13 · `v0140-update-ui` 9 · `v0140-table-size` 35 · `v0140-search-crossfile` 9 · `v0140-divider-art` 38; real-device acceptance **34/34 PASS**.
+
+Known trade-offs: (a) the "new version → download → install" path needs a real newer release on GitHub (this machine had no outbound network, so only the failure path and its messaging were verified — it degrades gracefully); (b) reading positions live in **this session's memory**: closing and reopening within the session restores them, but a closed file is not restored after an app restart (the snapshot still covers open tabs only); (c) the table-size directive is a LightMD extension — other editors treat it as an HTML comment and ignore it (rendering unaffected).
+
+### v0.14.0 Batch 1 (2026-10-23)
 
 **Interaction consolidation and search capabilities — three modes merged into two / search enhancements / one-way divider drag fixed**
 
