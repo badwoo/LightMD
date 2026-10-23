@@ -175,6 +175,53 @@ const ITEM_COLLAPSE_DELAY_MS = 120;
  * 列表末尾的下一个条目位开始（5 条文件 → 面板顶部位于第 8 行）。 */
 export const SIDEBAR_ITEM_HEIGHT = 30;
 
+/**
+ * v0.14.0 需求4：文件夹栏默认可视条目数。
+ *
+ * 用户原话：「在左侧栏打开的文件夹中点击打开某个文件，打开的文件夹窗口就只有 7 个
+ * 文件条目的大小，请调整为 11 个条目的大小，其中最后一个条目留空白，方便鼠标右键
+ * 功能操作。」
+ *
+ * 因此默认高度 = 标题栏 + (11 个可见条目 + 1 个留空条目位) × 行高。
+ * 末尾那一个空条目位是**刻意**留白：用户要在这片空白处右键唤出文件夹空白区菜单
+ * （新建文件 / 新建文件夹 / 刷新 / 粘贴）。
+ */
+export const FOLDER_VISIBLE_ROWS = 11;
+
+/**
+ * v0.14.0 需求4：文件夹栏标题栏（`.filetree-root-path`）实测高度（px）。
+ *
+ * 打包产物 + WebView2 实测（scripts/v0140-probe-recent.mjs，_verify-out 有报告）：
+ * `padding: 6px 28px 6px 14px` + `font-size: 11px`（line-height 17.6px）
+ * + 上下各 1px border + 内嵌 12px 图标 → **32px**（不是 26~30 的估算值）。
+ */
+export const FOLDER_HEADER_HEIGHT = 32;
+
+/**
+ * v0.14.0 需求4：文件夹栏默认高度（px）——「11 个可见条目 + 末尾 1 行留白」。
+ * 32 + (11 + 1) × 30 = 392px。
+ *
+ * 仅作**默认值**使用：用户拖拽过的高度（settings.sidebarSectionSizes 持久化）优先，
+ * 见 sizeOf()。
+ */
+export const DEFAULT_FOLDER_SECTION_HEIGHT =
+  FOLDER_HEADER_HEIGHT + (FOLDER_VISIBLE_ROWS + 1) * SIDEBAR_ITEM_HEIGHT;
+
+/** v0.14.0 需求4：非文件夹栏（「打开的文件」/ 收藏 / 最近打开）的默认高度（px）。 */
+export const DEFAULT_SECTION_HEIGHT = 200;
+
+/**
+ * v0.14.0 需求4：section 默认高度（用户未拖拽过时的回退值）。
+ *
+ * 抽出为**导出纯函数**的原因：默认值原来是 sizeOf 里的字面量三元表达式，
+ * 单测无法断言「文件夹用新默认、其它栏不变」这条契约；现在测试可直达。
+ *
+ * @param key section key（文件夹栏形如 `folder:D:\path`）
+ */
+export function defaultSectionHeight(key: string): number {
+  return key.startsWith("folder:") ? DEFAULT_FOLDER_SECTION_HEIGHT : DEFAULT_SECTION_HEIGHT;
+}
+
 /** v0.8.2：section 关闭动画总时长（滑出 + 停顿 + 收起），到点后卸载 DOM */
 export const SECTION_OUT_TOTAL_MS =
   SECTION_SLIDE_OUT_MS + SECTION_COLLAPSE_DELAY_MS + SECTION_COLLAPSE_MS;
@@ -523,7 +570,10 @@ export function FileTree() {
   const removeFavorite = useFileStore((s) => s.removeFavorite);
   const favorites = useFileStore((s) => s.favorites);
   // v0.8.0 修复 P12-4：布局列表需要知道"最近打开"栏是否会真正渲染（空列表时该栏返回 null）
+  // v0.14.0 需求3：RecentFiles 自 v0.8.5 需求8 起是「文件 + 文件夹」混排，
+  // 只要任一类有记录就渲染——所以可见性判定必须同样两类都算（见 recentHasData）。
   const recentFiles = useFileStore((s) => s.recentFiles);
+  const recentFolders = useFileStore((s) => s.recentFolders);
   const renameFileEntry = useFileStore((s) => s.renameFileEntry);
   const t = useT();
   // 同步全局 filePath，确保关闭文件时能正确判断当前活跃文件
@@ -683,7 +733,9 @@ export function FileTree() {
   const prevTempSizeRef = useRef<number | null>(null);
 
   const sizeOf = useCallback(
-    (key: string) => sectionSizes[key] ?? (key.startsWith("folder:") ? 250 : 200),
+    // v0.14.0 需求4：文件夹栏默认高度改为「11 条可见 + 末尾 1 行留白」（392px，
+    // 见 DEFAULT_FOLDER_SECTION_HEIGHT）；用户拖拽过的持久化高度仍优先。
+    (key: string) => sectionSizes[key] ?? defaultSectionHeight(key),
     [sectionSizes],
   );
   const setPair = useCallback(
@@ -711,9 +763,24 @@ export function FileTree() {
 
   // 可见 section 的顺序（决定相邻配对与分隔条位置）
   const tempVisible = tempFiles.length > 0 || untitledTabs.length > 0;
+  /**
+   * v0.14.0 需求3（根因①）：最近打开栏"有数据"的判定必须与 RecentFiles 的渲染条件一致。
+   *
+   * 实机证据（scripts/v0140-probe-recent.mjs 阶段3，_verify-out/v0140-probe-recent.txt）：
+   * 只开过文件夹、没开过任何文件时 recentFiles=[] 而 recentFolders=['工作区']。
+   * 旧判定只看 recentFiles.length > 0 → 点了时钟按钮（按钮已 active）但整栏
+   * 既不进 ordered、SlideWrap 也 visible=false → 面板一次都不挂载，
+   * 用户看到的就是「点击窗口没有出来」。
+   *
+   * RecentFiles 自身从 v0.8.5 需求8 起就是「文件 + 文件夹」混排，任一类有记录即渲染
+   * （见其 `if (recentFiles.length === 0 && recentFolders.length === 0) return null`），
+   * 布局/动画层却还在用旧的"只看文件"口径——两边口径不一致就是本缺陷。
+   * 现在统一为 recentHasData，三处（compact / ordered / SlideWrap）共用。
+   */
+  const recentHasData = recentFiles.length > 0 || recentFolders.length > 0;
   // v0.9.5 问题6：收藏/最近打开任一栏展开时,「打开的文件」栏高度收缩为内容自适应,
   // 收藏/最近面板以紧凑内嵌形态(无标题栏、单行条目)紧贴其列表之下(空一个条目位)
-  const favRecentCompact = showFavorites || (showRecent && recentFiles.length > 0);
+  const favRecentCompact = showFavorites || (showRecent && recentHasData);
   const ordered: string[] = [];
   if (openFolders.length > 0) {
     openFolders.forEach((f) => ordered.push(`folder:${f.path}`));
@@ -722,9 +789,11 @@ export function FileTree() {
   }
   if (openFolders.length > 0 && tempVisible) ordered.push("temp");
   if (showFavorites) ordered.push("favorites");
-  // v0.8.0 修复 P12-4：最近文件为空时该栏不渲染（RecentFiles 返回 null），
-  // 布局列表需与"实际渲染的栏"一致，否则分隔条/拖拽配对与自动填充会指向不存在的栏。
-  if (showRecent && recentFiles.length > 0) ordered.push("recent");
+  // v0.8.0 修复 P12-4：最近打开栏为空（文件与文件夹都没记录）时该栏不渲染
+  // （RecentFiles 返回 null），布局列表需与"实际渲染的栏"一致，否则分隔条/拖拽配对
+  // 与自动填充会指向不存在的栏。
+  // v0.14.0 需求3：空判定改为「文件 + 文件夹都为空」（口径与 RecentFiles 对齐）。
+  if (showRecent && recentHasData) ordered.push("recent");
   const indexOfKey = (k: string) => ordered.indexOf(k);
   const prevOf = (k: string) => {
     const i = indexOfKey(k);
@@ -893,6 +962,53 @@ export function FileTree() {
   // v0.8.0 修复 P9-1：context 额外提供 sizeOf（含默认高度），
   // 保证标题栏拖拽以"渲染中的实际高度"为起点，不会从 0 起算而跳变
   const sectionSplitCtx = { sizes: sectionSizes, sizeOf, setPair, minHeight: MIN_SECTION_HEIGHT };
+
+  /**
+   * v0.14.0 需求3（根因②）：展开「最近打开」后把面板**滚进侧栏可视区**。
+   *
+   * 实机证据（scripts/v0140-probe-recent.mjs 阶段2，_verify-out/v0140-probe-recent.txt）：
+   * 开文件夹（250px）+ 15 个已打开文件（temp 栏 481px）时点时钟图标，
+   * `.recent-files` 其实**已经挂载**且高度 200px、18 条数据也渲染了——
+   * 但它是末栏，top=860.5px，而侧栏滚动容器只有 121.5..824 的可视区，
+   * scrollTop 停在 0 → 面板 100% 在视口下方。用户视线里侧栏"什么都没变"，
+   * 于是报「点击窗口没有出来」。这是**纯可见性**问题，不是数据/渲染条件问题。
+   *
+   * 修法：展开的同一个 tick 之后（等 section 完成挂载与高度落定，双 rAF），
+   * 若面板没有完整落在滚动容器可视区内 → 把它滚到可视区顶端附近。
+   * 只在"Our 亲自点了时钟"这一时刻做一次，不做持续跟随（否则会和用户
+   * 自己的滚动打架）。
+   */
+  useEffect(() => {
+    if (!showRecent) return;
+    let cancelled = false;
+    const revealRecent = () => {
+      if (cancelled) return;
+      const sc = scrollRef.current;
+      const panel = findSectionByKey(document, "recent");
+      if (!sc || !panel) return;
+      const scRect = sc.getBoundingClientRect();
+      const pRect = panel.getBoundingClientRect();
+      // 已经完整可见（含 1px 容差）→ 不动滚动位置，避免无谓跳动
+      if (pRect.top >= scRect.top - 1 && pRect.bottom <= scRect.bottom + 1) return;
+      // 目标：把面板顶边对齐到滚动区顶部（面板往往比可视区还高，对齐顶部才能看到标题栏+前几条）
+      const delta = pRect.top - scRect.top;
+      const nextTop = Math.max(0, sc.scrollTop + delta);
+      // behavior: "auto" —— 与侧栏既有滚动箭头/定位行为一致，不做平滑滚动动画
+      sc.scrollTo({ top: nextTop, behavior: "auto" });
+    };
+    // 双 rAF：第一帧等 React 提交 DOM，第二帧等 section 高度/动画包装器完成首次布局
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(revealRecent);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+    // 依赖 orderedKey：点开时钟时 ordered 新增 recent → 布局变化后再量才准
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showRecent, orderedKey]);
 
   // v0.8.4 需求7（C5）：排序模式按文件夹根记忆（settings persist），整树统一应用根的模式
   const fileTreeSort = useSettingsStore((s) => s.fileTreeSort);
@@ -3165,8 +3281,10 @@ export function FileTree() {
       </SlideWrap>
 
       {/* v0.4.1：最近文件（toggle 按钮控制显示，分隔条拖拽调整高度）
-          v0.8.2 功能3：SlideWrap 滑入/滑出动画 */}
-      <SlideWrap visible={showRecent && recentFiles.length > 0}>
+          v0.8.2 功能3：SlideWrap 滑入/滑出动画
+          v0.14.0 需求3：visible 判定改用 recentHasData（文件或文件夹任一有记录），
+          与 RecentFiles 的渲染条件、ordered 布局列表三处口径统一 */}
+      <SlideWrap visible={showRecent && recentHasData}>
         <>
           {prevOf("recent") && (
             <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("recent")!, "recent")} />

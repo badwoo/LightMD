@@ -235,6 +235,11 @@
 }
 
 /* ─── 根路径 ─────────────────────────────────────── */
+/* v0.14.0 需求4：本标题栏的实际高度被 FileTree.tsx 的 FOLDER_HEADER_HEIGHT 引用
+   （=DEFAULT_FOLDER_SECTION_HEIGHT 的加数，决定文件夹栏默认显示 11 条 + 末尾留白一行）。
+   实测 32px（打包产物 + WebView2，见 scripts/v0140-probe-recent.mjs）：
+   padding 6+6 + line-height 17.6(≈18) + 上下各 1px border + 内嵌 12px 图标对齐。
+   改这里的 padding / font-size 时必须同步 FOLDER_HEADER_HEIGHT，否则默认高度会偏。 */
 .filetree-root-path {
   position: relative;
   padding: 6px 28px 6px 14px;
