@@ -1945,22 +1945,32 @@ body.format-painter-armed .source-editor {
    实现：默认 opacity:0 + 轻微位移（"隐约"）；右屏或分割条 hover 时显现。
    ⚠️ 不能做成常驻可见——6px 宽的分割条装不下文字，会盖住正文。
 
-   ─── v0.14.0 需求6：艺术字体 + 更浅颜色 + 金属光泽呼吸 ──────────
-   ① 艺术字体：**不引入任何外部字体文件**。理由：离线环境无网络、安装包体积
-      敏感（中文艺术字体文件动辄数 MB），且 @font-face 还会带来首屏字体加载
-      抖动。这里用「系统自带衬线字体栈」做出艺术感：拉丁字符优先 Palatino /
-      Georgia（笔画粗细对比强），中文按字形逐字回退到华文中宋 / 宋体（衬线体）。
-      竖排 + upright 时衬线体的横细竖粗、起收笔顿挫最明显，观感已接近"艺术字"。
-      再配合 font-weight:500 与 small-caps（中文无效、拉丁有效，无害）。
-   ② 颜色：从 var(--text-tertiary) 改为 color-mix(..., 72%, transparent)，
-      即"在原三级文字色上再淡 28%"，6 套主题下都是"隐约可见但不抢眼"。
-      （实测合成对比度从旧版 1.5~6.9:1 降到 1.2~4.2:1，6 主题 × 3 状态全部更浅）。
-   ③ 金属光泽：静态金属色带渐变（background-clip:text 裁进字形）+ 只动
-      opacity/transform 的呼吸动画 —— 金属在光下明灭的感觉来自"渐变是静态的、
-      透明度在动"，不是逐帧重绘渐变。
+   ─── v0.14.0 需求6（第二批）→ 第三批改版：等宽几何「轻线条」风格 ──────────
+   用户第三批原话：「竖排小字艺术化再换个字体样式和风格，简单的呼吸渐变就行，
+   不要求金属光泽了。」→ 所以**整套衬线艺术字 + 金属色带全部换掉**，不再叠艺
+   术装饰，只要干净的几何线条 + 一处很淡的静态渐变底色。
+
+   ① 字体风格 = 等宽 / 几何「轻线条」（明确选择，不是随手换一个字体）：
+      · 拉丁/数字：Cascadia Code → Consolas → ui-monospace 等系统等宽栈。
+        等宽字的笔画是均匀等粗的直线与直角，与上一版 Palatino/Georgia 衬线
+        （横细竖粗 + 起收笔顿挫，古典"书法味"）是**完全相反的观感**：机械、精确、
+        克制，像刻度尺上的标注，与"分割条 / 尺寸标记"的语义也对得上。
+      · 中文：标签文案是「关闭预览 / 打开预览」四个汉字，等宽西文字体不含汉字字形，
+        会逐字回退。这里**显式指定无衬线几何字体**（微软雅黑 / PingFang SC）：
+        黑体是等粗笔画、方正骨架，和等宽西文的"几何感"同族；**不能**再落到宋体
+        （宋体=衬线，就是上一版那套被否掉的观感）。
+      · 零外部字体文件：全部系统自带（离线可打包、无首屏字体抖动、体积为零）。
+      · font-weight 400：细字重 = 轻线条；再配 letter-spacing 3px（上限值）把四字
+        拉开，呼吸时留白感更明显。font-variant: full-width 让万一出现拉丁字符时
+        也按全角方框排，和汉字同宽（当前文案全中文，属无害兜底）。
+   ② 颜色：保持上一版"更浅"的基调（color-mix 混 72% transparent，比三级文字更淡），
+      用户只要求换风格，没要求改回深色。
+   ③ 呼吸渐变：**只有一条很淡的静态单层线性渐变**（--label-sheen，竖向下浅上淡），
+      它只画一次、**永不参与动画**——渐变提供"有底色"的静态质感，明灭由关键帧里
+      的 opacity 单独负责。不做多段金属色带、不做径向柔光、不做 filter/text-shadow。
    ⚠️ 父级 .split-divider 展开态只有 6px、关闭态 18px（硬约束），所以字号维持
-      11px、letter-spacing 维持 2px：竖排四字总高 ≈ 4×11 + 3×2 + 20(padding) ≈ 66px，
-      远小于视口高度一半；横向占位 ≈ 11 + 2×3 = 17px < 18px。 */
+      11px、letter-spacing 取上限 3px：竖排四字总高 ≈ 4×11 + 3×3 + 20(padding)
+      ≈ 73px，远小于视口高度一半；横向占位 ≈ 11 + 2×3(padding) = 17px < 18px。 */
 .split-divider-label {
   position: absolute;
   /* 竖排：writing-mode 让文字自上而下排列；居中贴在分割条上 */
@@ -1973,108 +1983,87 @@ body.format-painter-armed .source-editor {
   border: none;
   border-radius: 8px;
   /* 兜底药丸底：不支持 background-clip:text 的环境直接可见；
-     支持时由 @supports 块改用「background 多层 + padding-box 裁剪」承载
+     支持时由 @supports 块改用「单层静态渐变 + padding-box 裁剪」承载
      （见下方注释：不能用 ::before，会被裁进字形的背景盖住）。 */
   background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
-  /* 需求6：更浅的基色。它同时是金属渐变的 currentColor 来源：
-     hover 时 color 变 var(--text-secondary)/var(--accent-color)，金属色带自动随之变亮/染色。 */
+  /* 需求6 第三批：保持"更浅"的基色（72% 三级文字色 + 透明）。
+     它同时是静态渐变 currentColor 的来源：hover 时 color 变
+     var(--text-secondary)/var(--accent-color)，浅底色随之微调。 */
   color: color-mix(in srgb, var(--text-tertiary) 72%, transparent);
-  /* 艺术字体栈：全部为系统自带衬线体，零字体文件、零网络请求 */
-  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia,
-    "STZhongsong", "华文中宋", "Songti SC", "SimSun", "Noto Serif CJK SC", serif;
+  /* 等宽几何字体栈：西文等宽（Cascadia Code/Consolas）+ 中文无衬线几何体
+     （雅黑/PingFang SC）。全部系统自带：零字体文件、零网络请求、无首屏抖动。
+     ⚠️ 中文回退**必须是无衬线**：宋体是衬线，就是上一版被用户否掉的观感。 */
+  font-family: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace,
+    SFMono-Regular, Menlo, "Microsoft YaHei UI", "Microsoft YaHei", "微软雅黑",
+    "PingFang SC", "Hiragino Sans GB", monospace;
   font-size: 11px;
-  font-weight: 500;
-  /* 中文不生效、拉丁文生效；无害的艺术化修饰 */
-  font-variant: small-caps;
-  letter-spacing: 2px;
+  /* 细字重 = "轻线条"风格（等宽体在 400 下笔画已经均匀，再加粗会变闷） */
+  font-weight: 400;
+  /* 拉丁字符按全角方框排，与汉字同宽（当前文案全中文，属无害兜底） */
+  font-variant: full-width;
+  letter-spacing: 3px;
   line-height: 1;
   white-space: nowrap;
-  /* ⚠️ 这里**故意不加 text-shadow**（浮雕是"可选加分"项）：
-     实测 background-clip:text + text-shadow 在本引擎（WebView2 / Chromium 155）
-     下会把字形吃掉 —— 白+黑两道阴影时墨迹像素从 ~8000 掉到 ~240，几乎看不见；
-     单道深色阴影更极端，字形完全消失（0 墨迹像素）。
-     浮雕感改由金属色带的明暗交替（--label-metal 的亮/暗节点）表达，
-     且它是**静态**的，不参与任何动画。 */
-  /* 静态金属色带（银灰 → 亮银 → 银灰 → 高光 → 银灰）。
-     全部由 currentColor 派生 → 6 套主题自动适配（不写死某个主题的灰）。
-     ⚠️ 四条实测约束（headless Edge 155 逐像素 + 6 主题截图逐格对比验证）：
-     a) 色标里**不要再混 transparent**：color 本身已是半透明（72%），
-        若色标再混 transparent，alpha 会相乘（0.72×0.68≈0.49），实测对比度只剩
-        1.3:1，肉眼几乎看不见。色标一律与**不透明**色相混。
-     b) **混向 var(--bg-primary)（当前主题背景），而不是 #ffffff**：
-        浅色主题下白≈背景、无副作用；但深色主题（dark/night）里混白会把文字
-        推亮 → 实测对比度飙到 12:1（比旧版抢眼 2 倍），完全违反"更浅"。
-        混背景色则是"朝背景方向变淡"，深浅主题行为一致（实测 6 主题全部
-        落在 1.2~4.2:1，且均比旧版更淡）。
-     c) **不许混入 #000 当暗节点**（同样会把整体压暗、与"更浅"冲突）。
-        明暗差只靠"混入背景色的比例差"制造（8%↔78%）。
-     d) 节点做 3~4 次明暗交替（而非整段一明一暗），竖排四字上才有"多处高光带"，
-        观感是抛光金属而不是一块渐变。
-     渐变本身永不参与动画，只由静态 paint 画一次。 */
-  --label-metal: linear-gradient(
+  /* ⚠️ 这里**故意不加 text-shadow / filter / 浮雕**（用户明确"不要求金属光泽"）：
+     本引擎（WebView2 / Chromium 155）下 background-clip:text + text-shadow 还会
+     把字形吃掉（上版实测墨迹像素从 ~8000 掉到 ~240），所以一并禁止。 */
+  /* 静态浅色带：**单层、极淡**的竖直线性渐变，只有两个色标（上浅下深一点点）。
+     它只画一次、永不参与动画 —— 给字形一点"有底色"的静态质感，
+     呼吸的明灭完全交给关键帧里的 opacity。
+     全部由 currentColor 派生 → 6 套主题自动适配。
+     ⚠️ 色标里不要再混 transparent：color 本身已是半透明（72%），alpha 相乘会让字
+     看不见；一律与**不透明的 var(--bg-primary)** 相混（混 #fff 在深色主题会越改越亮）。 */
+  --label-sheen: linear-gradient(
     180deg,
-    color-mix(in srgb, currentColor 92%, var(--bg-primary) 8%) 0%,
-    color-mix(in srgb, currentColor 30%, var(--bg-primary) 70%) 15%,
-    color-mix(in srgb, currentColor 80%, var(--bg-primary) 20%) 30%,
-    color-mix(in srgb, currentColor 22%, var(--bg-primary) 78%) 45%,
-    color-mix(in srgb, currentColor 85%, var(--bg-primary) 15%) 60%,
-    color-mix(in srgb, currentColor 35%, var(--bg-primary) 65%) 75%,
-    color-mix(in srgb, currentColor 92%, var(--bg-primary) 8%) 100%
+    color-mix(in srgb, currentColor 72%, var(--bg-primary) 28%) 0%,
+    color-mix(in srgb, currentColor 100%, var(--bg-primary) 0%) 100%
   );
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
   /* 只过渡 opacity / transform（合成层属性，hover 进出时不重排）。
-     color 过渡仅在 hover 状态切换时跑 0.24s（一次性重算渐变，元素约 17×66px，
+     color 过渡仅在 hover 状态切换时跑 0.24s（一次性重算单层渐变，元素约 17×73px，
      开销可忽略），**不进入**常驻呼吸循环。 */
   transition: opacity 0.24s ease, transform 0.24s ease, color 0.24s ease;
-  /* will-change 常驻提升合成层：元素极小（≈17×66px，纹理约 5KB），代价可忽略；
+  /* will-change 常驻提升合成层：元素极小（≈17×73px，纹理约 5KB），代价可忽略；
      换来的是呼吸动画完全走合成器 —— 主线程零 layout / 零 paint
      （与 v0.4.5 空状态 Logo 的结论一致，见 .editor-empty-logo 注释）。 */
   will-change: opacity, transform;
 }
 
-/* 金属渐变文字：把静态渐变裁进字形（-webkit-text-fill-color:transparent 让
-   color 只作为 currentColor 的来源，不直接着色）。
+/* 静态浅色带裁进字形：单层 linear-gradient + background-clip:text，无径向层、
+   无多段金属色带、无 -webkit-text-fill-color 之外的装饰。
+   -webkit-text-fill-color:transparent 让 color 只作为 currentColor 来源、不直接着色。
 
-   ⚠️ 实测踩坑（headless Edge 155 逐像素对比 + 6 主题截图）：
+   ⚠️ 沿用上一版实测踩坑结论（仍然适用）：
    1) 药丸底**不能**用 ::before + z-index:-1。`background-clip:text` 让"字形"成为
       元素自身的背景，而元素背景绘制在负 z-index 后代**之前** → ::before 会盖在
-      金属渐变上，把色带冲成一片浅灰（实测对比度从 ~3:1 掉到 1.3:1）。
+      渐变上，把底色冲成一片浅灰（实测对比度从 ~3:1 掉到 1.3:1）。
       正确做法：把药丸底并进同一个 background 的**最后一层**，用 `padding-box`
-      裁剪（多层 background 可以逐层指定 clip），这样它既在字形之下、又在渐变之后。
-   2) text-shadow 与 background-clip:text 组合在本引擎下会**吃掉文字**：
-      同时给白色 + 深色两道阴影时字形几乎完全消失（ink 像素从 ~8000 掉到 ~240）。
-      所以这里**不用 text-shadow**，浮雕感改由金属色带自身的明暗带表达。
-   3) color-mix 的色标里不要再混 transparent：color 本身已是半透明，alpha 会相乘
+      裁剪 —— 它既在字形之下、又在渐变之后。
+   2) color-mix 的色标里不要再混 transparent：color 本身已是半透明，alpha 会相乘
       （0.72×0.68≈0.49）→ 肉眼看不见。色标一律与**不透明的 var(--bg-primary)**
-      相混（不用 #ffffff：深色主题下会越改越亮，详见 --label-metal 上方注释）。 */
+      相混（不用 #ffffff：深色主题下会越改越亮）。 */
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
   .split-divider-label {
-    /* 药丸底改由下面第 3 层 gradient 承载（裁 padding-box），
+    /* 药丸底改由下面第 2 层 gradient 承载（裁 padding-box），
        这里把兜底的 background-color 关掉，避免同色叠加两层 */
     background-color: transparent;
-    /* 第 1 层：金属色带（裁进字形）· 第 2 层：径向柔光（裁进字形）
-       · 第 3 层：药丸底（padding-box，不裁字形） */
-    background-image: var(--label-metal),
-      radial-gradient(
-        120% 60% at 50% 30%,
-        color-mix(in srgb, currentColor 55%, var(--bg-primary) 45%) 0%,
-        transparent 62%
-      ),
+    /* 第 1 层：极淡静态浅色带（裁进字形）· 第 2 层：药丸底（padding-box，不裁字形） */
+    background-image: var(--label-sheen),
       linear-gradient(
         color-mix(in srgb, var(--bg-primary) 88%, transparent),
         color-mix(in srgb, var(--bg-primary) 88%, transparent)
       );
-    -webkit-background-clip: text, text, padding-box;
-    background-clip: text, text, padding-box;
+    -webkit-background-clip: text, padding-box;
+    background-clip: text, padding-box;
     -webkit-text-fill-color: transparent;
   }
 }
 
 /* 悬停右屏 / 悬停分割条时浮现。
    `:has()` 在本项目已有先例（见 .ProseMirror p:has(> img) 等）。
-   颜色切到 --text-secondary → 金属渐变的 currentColor 变亮，呼吸时更像"金属反光"。 */
+   颜色切到 --text-secondary → 静态浅色带的 currentColor 随之变亮，只是底色微调。 */
 .editor-main-area:has(.split-preview-shell:hover) .split-divider-label,
 .split-divider:hover .split-divider-label,
 .split-divider-label:focus-visible {
@@ -2089,15 +2078,15 @@ body.format-painter-armed .source-editor {
   color: var(--accent-color);
 }
 
-/* 呼吸 + 金属明灭。
+/* 简单呼吸：只做 opacity 的明暗（叠加极轻微的 scale 0.97↔1，约 0.3px，肉眼几乎不可察，
+   但能让起伏更"活"一点）。
    ⚠️ 性能硬约束（v0.4.5 空状态 Logo 踩过的坑，见 .editor-empty-logo 注释）：
    关键帧内**只允许** opacity 与 transform —— 两者由合成器处理，不触发 layout / paint。
    禁止出现：
      · background-position（每帧重绘渐变 + 文字栅格化，正是 v0.4.5 的根因）
-     · color（每帧重算 currentColor 金属渐变）
+     · color（每帧重算 currentColor 渐变）
      · box-shadow / filter（额外 render surface，6 主题下开销不确定）
-   金属感 = 静态渐变（--label-metal）+ 动态透明度 / 极轻微缩放（0.97↔1，约 0.3px），
-   视觉上就是"金属在光下明灭"，而合成器只做一次矩阵/透明度插值。 */
+   渐变是静态的（--label-sheen 只画一次），所以每帧只有一次透明度/矩阵插值。 */
 @keyframes splitDividerLabelBreathe {
   0%, 100% {
     opacity: 0.55;

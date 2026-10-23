@@ -11,13 +11,52 @@
   position: relative;
   /* v0.8.1 需求6：无边框窗口的拖动依赖 data-tauri-drag-region 属性
      （-webkit-app-region 是 Electron 特性，WebView2 下不生效，已移除） */
+
+  /* ─── v0.14.0 第三批 需求6：标题栏（含下拉菜单）必须整体置顶 ──────────
+     根因实证（scripts/v0140-probe-titlebar-menu.mjs，WebView2 CDP）：
+       · 修复前 .titlebar 是 `position: relative; z-index: auto` —— 不创建 stacking
+         context，于是后出现的兄弟 .app-shell / .editor-main-area 与它同处 <body>
+         这个根上下文，按 DOM 顺序**画在它之后**。
+       · 下拉菜单自身 z-index:1000 也不救命：它被 `.titlebar-left { z-index: 1 }`
+         夹进那个 z-index=1 的小 stacking context 里（z-index 只在自己最近的
+         stacking context 内比较），所以"1000"根本没能和编辑区同场竞技，
+         整棵 .titlebar-left 子树被当作"一个 z-index:1 的层"参与根上下文排序。
+       · 新开软件时编辑区盖着一层 `.editor-empty-state`（absolute, z-index:10,
+         整块不透明白底, pointer-events:none）——它画在菜单之上，于是菜单只看得见
+         压在标题栏那 40px 里的一截，下探到编辑区就被白底吃掉。
+       实测数据（before）：窗口菜单矩形内 35 个采样点、菜单内暗色（文字）像素 = 0；
+       假设隐藏 .editor-empty-state 后同区域暗色像素 = 15867、变化 19343 像素。
+       而 elementFromPoint 报"全部命中菜单项"是**假阳性** —— 它跳过
+       pointer-events:none 的层，指针穿得过白底，但白底照样画在菜单上面。
+     修复（两件事缺一不可）：
+       a) 给 .titlebar 一个明确的层级，把它抬到所有内容区之上；
+       b) 同时把 .titlebar-left 的 z-index:1 换成 z-index:auto —— 否则它继续
+          创建小 stacking context，菜单仍被"夹"在里面（b 是真正的关键）。
+     为什么用 isolation:isolate 之外的普通 z-index：.titlebar 是 .app 的 flex 子项、
+     本身已是定位元素，z-index 直接参与 <body> 根上下文的排序，改动最小
+     （不引入 position:fixed，不影响拖拽/窗口缩放）。 */
+  z-index: var(--z-titlebar, 100);
+  /* 弹层溢出标题栏下沿时必须能画出去（overflow:visible 是默认值，这里显式声明，
+     防止未来有人给标题栏加 overflow:hidden 又把菜单裁掉 —— 那也是一种"被挡住"） */
+  overflow: visible;
 }
+
+/* v0.14.0 第三批 需求6：下拉菜单层。
+   z-index 值本身沿用 1000（菜单之间、菜单与标题栏内其他层的相对关系不变），
+   真正的修复是上面 a+b 两条 —— 让这棵子树**整体**处在标题栏那个高 z-index
+   上下文里，从而压过 .app-shell 及其内部所有内容。 */
 
 .titlebar-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* v0.9.2:压过绝对居中的文件名层,重叠时按钮可点击 */
+  /* v0.9.2:压过绝对居中的文件名层,重叠时按钮可点击。
+     v0.14.0 第三批 需求6 复验结论：这里的 z-index:1 **可以保留、也不影响修复**。
+     它确实创建了一个小 stacking context（把 .titlebar-dropdown 的 1000 夹在里面），
+     但修复后整个 .titlebar 自己就是一个 z-index:100 的 stacking context，
+     编辑区在它**外面**——菜单 "1000 压过编辑区" 由**标题栏这一整层**的层级负责，
+     不再需要下拉菜单的 z-index 去和编辑区同场比较。所以保留 z-index:1，
+     继续保证左侧按钮压过居中的文件名（点击不被文件名层抢走）。 */
   position: relative;
   z-index: 1;
 }

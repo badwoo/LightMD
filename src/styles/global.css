@@ -18,6 +18,17 @@
   --statusbar-height: 28px;
   --transition-fast: 150ms ease;
   --transition-normal: 250ms ease;
+  /* ─── v0.14.0 第三批 需求6：层级令牌 ────────────────────────────
+     标题栏（含其下拉菜单）必须压过所有内容层。此前 .titlebar 没有 z-index、
+     .app-shell 也没有 —— 两者同处 <body> 根上下文，编辑区按 DOM 顺序画在后面，
+     新开软件时的 .editor-empty-state（z-index:10 的不透明白底）就把下拉菜单盖住。
+     这里只给标题栏一个显式层级台阶；内容区（.app-shell / .editor-main-area /
+     .app-sidebar / .app-outline）**故意保持 z-index:auto** —— 一旦给它们加
+     z-index 就会创建 stacking context，把内部那些弹层（搜索面板 10000、
+     右键菜单 10000 等 position:fixed 元素）**关进小上下文**，反而被标题栏压住。
+     ⚠️ 数值要低于弹窗类（1000/1100/1200）和 Toast（10000）：标题栏只在内容区之上，
+     打开中的设置/导出等对话框仍然要能盖住标题栏。 */
+  --z-titlebar: 100;
 }
 
 * {
