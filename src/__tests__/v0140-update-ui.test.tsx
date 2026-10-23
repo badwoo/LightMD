@@ -161,6 +161,23 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
     expect(screen.queryByTestId("update-download-btn")).toBeNull();
   });
 
+  it("线上最新 tag 比当前版本旧（开发构建/未发布版本）→ 已是最新，且显示**当前**版本", async () => {
+    // 实况：GitHub 最新 release 可能落后于本地构建（例如本地 0.14.0、线上 0.13.2）。
+    // 此时 Rust 的 is_newer 为 false，UI 不应显示「已是最新版本 v0.13.2」造成困惑。
+    mocks.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "has_translate_key") return false;
+      if (cmd === "check_update")
+        return makeUpdateInfo({ isNewer: false, version: "0.13.2", current: pkg.version });
+      return undefined;
+    });
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("update-check-btn"));
+
+    const upToDate = await screen.findByTestId("update-uptodate");
+    expect(upToDate.textContent).toContain(pkg.version);
+    expect(upToDate.textContent).not.toContain("0.13.2");
+  });
+
   it("有新版 → 显示新版本号 + 下载按钮 + 更新说明", async () => {
     mocks.invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "has_translate_key") return false;

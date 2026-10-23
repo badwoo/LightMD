@@ -1278,10 +1278,14 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               </div>
             </div>
 
-            {/* 已是最新版本 */}
+            {/* 已是最新版本。注意这里显示**当前运行版本**而不是远端 tag：
+                开发构建/未发布版本的版本号可能高于线上最新 release，
+                显示远端 tag 会出现「已是最新版本 v0.13.2（但你装的是 0.14.0）」的困惑。 */}
             {updateState === "uptodate" && (
               <small className="settings-hint" data-testid="update-uptodate">
-                {t("settings.update.upToDate", { version: updateInfo?.version ?? __APP_VERSION__ })}
+                {t("settings.update.upToDate", {
+                  version: updateInfo?.current || __APP_VERSION__,
+                })}
               </small>
             )}
 
