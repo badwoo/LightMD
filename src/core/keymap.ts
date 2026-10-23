@@ -228,14 +228,97 @@ const swallowAtCellBoundary = (atStart: boolean): Command => (state) =>
  * 用户复测明确推翻了上一轮的「跨文档顺序撤销」：「不再跨文档，当前文档的编辑撤销和
  * 恢复只在当前文档生效，切换到其他文档进行撤销恢复也是在对应文档，互不干扰。」
  *
- * 因此回到 prosemirror-history 的原生 `undo` / `redo`：每个 EditorState 自带
- * 独立历史栈，切文档时 EditorContainer 负责把**离开文档**的历史快照存起来、
- * 回来时装回去（`services/docHistoryStore`），但撤销动作本身永不切换文档。
+ * 因此不做任何跨文档路由：每个 EditorState 自带独立历史栈，切文档时 EditorContainer
+ * 负责把**离开文档**的历史快照存起来、回来时装回去（`services/docHistoryStore`）。
  *
- * 保留动态键位表里的条目（用户改键后仍生效），只是不再做跨文档路由。
+ * v0.14.0 续修 需求1：`PM_COMMAND_BY_ID` 里 undo/redo 改为经宿主处理器（见
+ * `hostUndoCommand`），该处理器内部在阅读模式下仍调用 prosemirror-history 的
+ * undo/redo —— 「只在当前文档生效」的口径不变，只是多了一步「先看跨文件替换记录」。
  */
-const undoLocal = undo;
-const redoLocal = redo;
+
+/**
+ * v0.14.0 续修 需求1：撤销/恢复的**宿主处理器**（由 `EditorContainer` 挂载时注册）。
+ *
+ * 为什么用一个模块级 setter 而不是在 core 层直接 import store / 组件：
+ * - core 不能反依赖 components（否则 core → components → core 循环）；
+ * - 显式契约：宿主挂载即具备撤销能力（注册），卸载即收回（清空），
+ *   未注册时（独立 `createEditor`、组件未挂载、单测）退化为原生 history 命令；
+ * - 阅读模式的键盘 Ctrl+Z 在 PM 内部（`dynamicShortcutsPlugin`）触发，
+ *   只有这条注册通道能把它接回宿主的唯一撤销入口。
+ */
+let hostUndoRedo: { undo: () => void; redo: () => void } | null = null;
+
+/** 注册/清空撤销恢复的宿主处理器（EditorContainer 的挂载 effect 调用） */
+export function setHostUndoRedo(host: { undo: () => void; redo: () => void } | null): void {
+  hostUndoRedo = host;
+}
+
+/**
+ * v0.14.0 续修 需求1：窗口级 keydown 命中 `global-editor` 键位时，**焦点落在哪里**
+ * （决定由谁执行撤销，纯函数便于单测）。
+ *
+ * 三个落点必须互斥，否则一次 Ctrl+Z 会撤两步：
+ * - `"prosemirror"`：PM 内 → PM 动态键位（`dynamicShortcutsPlugin`）已经转交宿主，
+ *   窗口监听必须让行（PM 的 handleKeyDown 只 preventDefault、**不** stopPropagation）；
+ * - `"editable"`：搜索框/设置输入框等 → 交给控件原生撤销，不抢；
+ * - `"chrome"`：标签按钮 / 工具栏 / 空白区 → 交给宿主入口（`doLocalUndo/doLocalRedo`）。
+ *   旧实现一律 return，导致「点开 B 标签后按 Ctrl+Z」完全没人处理（用户实测撤销失效）；
+ * - `"textarea"`：源码编辑区 → 仍由窗口监听统一 dispatch（自定义文本撤销栈）。
+ */
+export type GlobalEditorKeyTarget = "textarea" | "prosemirror" | "editable" | "chrome";
+
+export function classifyGlobalEditorKeyTarget(target: Element | null): GlobalEditorKeyTarget {
+  if (!target) return "chrome";
+  const el = target as HTMLElement;
+  const tag = el.tagName ?? "";
+  if (tag === "TEXTAREA") return "textarea";
+  // 必须在 contenteditable 判定之前：`.ProseMirror` 根节点本身就是 contenteditable
+  if (typeof el.closest === "function" && el.closest(".ProseMirror")) return "prosemirror";
+  if (tag === "INPUT" || tag === "SELECT") return "editable";
+  if (
+    el.isContentEditable === true ||
+    (typeof el.hasAttribute === "function" && el.hasAttribute("contenteditable"))
+  ) {
+    return "editable";
+  }
+  return "chrome";
+}
+
+/**
+ * v0.14.0 续修 需求1：撤销 / 恢复**必须交回宿主的唯一入口**（`EditorContainer.doLocalUndo` /
+ * `doLocalRedo`），不能在 ProseMirror 侧直接执行 `prosemirror-history` 的 undo/redo。
+ *
+ * ─── 缺陷背景（用户原话）───
+ * 「在 a 文件中搜索内容并点击『查找所有打开文件』，在 b 文件中也查找到了内容，
+ *  然后替换内容，a 和 b 文件的内容都成功替换了，但执行撤销时候只有 a 文件能撤销，
+ *  我点击到 b 文件点击撤销就失效了。」
+ *
+ * ─── 根因：撤销有两条入口，只有一条认「跨文件替换记录」───
+ * - 菜单 / 右键 / 命令面板：命令总线 → App 的 `edit.undo` → store 的 `undoHandler`
+ *   → `EditorContainer.handleUndo` → `doLocalUndo`（先消费 `docHistoryStore.crossFileUndo`）；
+ * - **阅读模式下按 Ctrl+Z**：本文件的 `dynamicShortcutsPlugin` 接管（`scopeMatches` 的
+ *   editor 分支命中 global-editor）→ 直接调 `prosemirror-history` 的 `undo`。
+ * 用户实际用的是键盘，于是 B 文件那条「整篇文本级」记录永远轮不到消费；而 B 的 PM
+ * 撤销栈在换文档时被 `resetHistory` 重建过（按内容重建、历史为空）→ Ctrl+Z 毫无反应。
+ * 对照：A 是当前文档，替换本身走了 `addToHistory:true` 的 PM 事务，所以 A 的键盘
+ * 撤销"碰巧"生效——这正是用户观察到的「只有 A 能撤」。
+ *
+ * ─── 修复口径 ───
+ * 转交宿主注册的处理器（与菜单/右键/命令面板**完全同一条路径**，单一入口）；
+ * 宿主未注册时退化为原生历史命令 —— 与修复前行为一致，不制造回归。
+ *
+ * 安全性不受影响：跨文件记录的「逐字节护栏」仍在 `doLocalUndo` 里，
+ * 用户手改过 B 之后记录会被丢弃，绝不会整篇覆盖用户的手工编辑。
+ */
+function hostUndoCommand(kind: "undo" | "redo"): Command {
+  const native = kind === "undo" ? undo : redo;
+  return (state, dispatch, view) => {
+    const handler = hostUndoRedo?.[kind];
+    if (!handler) return native(state, dispatch, view);
+    handler();
+    return true;
+  };
+}
 
 /**
  * 可自定义键 → ProseMirror 命令映射（id 对齐 core/shortcuts.ts SHORTCUT_DEFS）。
@@ -243,9 +326,11 @@ const redoLocal = redo;
  * 因静态 keymap 不再登记 history 键）。
  */
 const PM_COMMAND_BY_ID: Record<string, Command> = {
-  "edit.undo": undoLocal,
-  "edit.redo": redoLocal,
-  "edit.redo2": redoLocal,
+  // v0.14.0 续修 需求1：必须经宿主（doLocalUndo/doLocalRedo）——
+  // 否则阅读模式键盘撤销看不到「跨文件替换记录」，见 hostUndoCommand 的注释。
+  "edit.undo": hostUndoCommand("undo"),
+  "edit.redo": hostUndoCommand("redo"),
+  "edit.redo2": hostUndoCommand("redo"),
 
   "format.bold": toggleMark(schema.marks.strong),
   "format.italic": toggleMark(schema.marks.em),

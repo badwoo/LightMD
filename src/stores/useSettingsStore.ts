@@ -406,29 +406,35 @@ export function migrateSettings(persisted: unknown, version: number): Partial<Se
     if (p.loadLastFolderOnStartup === false) p.loadLastFolderOnStartup = true;
     if (p.loadLastFolderCount === 1) p.loadLastFolderCount = 5;
   }
-  if (version < 5) {
-    // v0.14.0 需求4：文件夹栏默认可视条目 7 → 11（末尾多留一个条目位方便右键）。
+  if (version < 6) {
+    // v0.14.0 需求2（本轮口径修正）：文件夹栏默认高度 = 「总 11 个条目位」
+    // = 10 个文件栏位 + 1 个空白栏位 = 32 + 11×30 = 362px。
     //
     // 为什么必须在**设置迁移**里处理，而不是只改 FileTree 的默认值：
-    // `sizeOf()` 是 `sectionSizes[key] ?? defaultSectionHeight(key)` —— 用户第一次
-    // 拖拽分栏时，**所有**栏的高度都会被写进 `sidebarSectionSizes` 持久化
-    // （拖任何一栏都会把整张表存下来）。所以老用户的表里普遍带着 `folder:xxx: 250`
-    // （旧默认值），新的 392px 默认值对他们**完全不生效** —— 他们会继续看到 7 条，
-    // 而本次需求正是冲着这 7 条来的（用户报的就是这个现象）。
+    // `sizeOf()` 是 `sectionSizes[key] ?? defaultSectionHeight(key)` —— 用户拖拽
+    // **任何一栏**时，`sidebarSectionSizes` 整张表都会被持久化（见 FileTree 的
+    // persist effect），其中也包含文件夹栏当时的默认高度。所以老用户的表里普遍带着
+    // 「历史默认值」：7 条时代的 250px、以及上一轮误做成 12 行的 392px。
+    // 新的 362px 默认值对他们**完全不生效** —— 他们会继续看到 7 条 / 12 条，
+    // 而本轮需求正是冲着这个现象来的。
     //
-    // 迁移口径（只在"看起来还是旧默认值"时改，绝不覆盖用户自己调过的值）：
-    // 旧默认 250px；用户手动拖到 250 的可能性存在，但 250 同时是"从未调过"的
-    // 硬编码旧默认，二者无法区分 —— 与上面 version<1 的宽度迁移同一个取舍
-    // （那边也是"等于旧默认值才迁移"）。这里放宽到 `<= 250`：比旧默认更矮的
-    // 一定是被拖小的，也一并回到新默认（否则它们比 250 更糟）。
-    // 用户拖到 > 250 的一律保留 —— 那些是明确"我就要这么大"的表达。
+    // 迁移口径（只在"看起来还是历史默认值"时改，绝不覆盖用户自己调过的值）：
+    // - 250 / 392 都是**曾经写死在代码里的默认值**，精确相等才清（删键 → 回落新默认）；
+    // - 为什么不按 `<= 392` 一刀切：250~392 之间完全可能是用户自己拖出来的自定义高度
+    //   （如 300、340），那是"我就要这么大"的明确表达，清掉属于篡改用户设置；
+    // - version < 5 的老路径保留原语义（比旧默认 250 更矮的一定是被拖小的，一并回到
+    //   新默认，否则它们比 250 更糟）——与上面 version<1 的宽度迁移同一取舍。
+    // - 删键而不是写 362：保持"常量只有一处定义"，避免两处硬编码同一个数字而漂移。
+    const LEGACY_FOLDER_SECTION_DEFAULTS = [250, 392];
     if (p.sidebarSectionSizes && typeof p.sidebarSectionSizes === "object") {
       const sizes = { ...(p.sidebarSectionSizes as Record<string, number>) };
       let touched = false;
       for (const key of Object.keys(sizes)) {
-        if (key.startsWith("folder:") && Number.isFinite(sizes[key]) && sizes[key] <= 250) {
-          // 直接删键而不是写 392：删掉就回落到 FileTree 的 defaultSectionHeight，
-          // 保持"常量只有一处定义"（避免两处硬编码同一个数字而漂移）。
+        if (!key.startsWith("folder:") || !Number.isFinite(sizes[key])) continue;
+        const isLegacyDefault = LEGACY_FOLDER_SECTION_DEFAULTS.includes(sizes[key]);
+        // v0.14.0 第三批（version < 5）的旧口径：<= 250 一律视为"没调过/被拖小"
+        const isShrunkFromOldDefault = version < 5 && sizes[key] <= 250;
+        if (isLegacyDefault || isShrunkFromOldDefault) {
           delete sizes[key];
           touched = true;
         }
@@ -679,9 +685,10 @@ export const useSettingsStore = create<SettingsState>()(
       name: "lightmd-settings",
       // v0.8.1 需求4 / v0.8.2 需求7 / v0.8.4 需求7：persist version 一次性迁移（逻辑见 migrateSettings）
       // v0.9.0 升 4：新增 shortcuts（自定义快捷键覆盖表），缺字段由 merge 回退默认 {}，无需 migrate 特判
-      // v0.14.0 升 5：需求4 文件夹栏默认可视 7 → 11 条；老用户持久化的
-      // `sidebarSectionSizes` 里带着旧默认 250px，会盖掉新默认值 → 在 migrate 里清理
-      version: 5,
+      // v0.14.0 升 5：需求4 文件夹栏默认可视 7 → 11 条（清理旧默认 250）
+      // v0.14.0 再升 6：需求2 口径修正为「10 文件栏位 + 1 空白栏位 = 11 个条目位」（362px）；
+      // 清掉历史默认 250 / 上一版误做的 392，并保留用户自己拖过的高度
+      version: 6,
       migrate: (persisted, version) =>
         migrateSettings(persisted, version) as SettingsState,
       // v0.6.0：自定义合并——translate 嵌套对象做字段级回退，

@@ -113,19 +113,25 @@ describe("需求2：跨文件替换的记录与消费", () => {
 
   it("doLocalUndo 先消费跨文件记录，且校验内容逐字节一致", () => {
     const idx = containerSrc.indexOf("const doLocalUndo = useCallback");
-    const body = containerSrc.slice(idx, idx + 3000);
+    const body = containerSrc.slice(idx, idx + 3200);
     expect(body).toContain("peekCrossFileUndo(");
-    // 护栏：只有当前文本仍等于记录的 after 才应用
-    expect(body).toMatch(/ext\.after === getMarkdownFromDoc|ext\.after === sourceContentRef\.current/);
+    // 护栏：只有当前文本仍等于记录的 after 才应用。
+    // v0.14.0 续修 需求1：判定抽成纯函数 `crossFileEditMatches`（实现仍是严格 ===），
+    // 目的只是让「用户手改后不误覆盖」可以被单测直接覆盖；语义未放宽。
+    expect(body).toMatch(
+      /crossFileEditMatches\(ext\.after, getMarkdownFromDoc|crossFileEditMatches\(ext\.after, sourceContentRef\.current/,
+    );
     // 不一致时必须丢弃记录，落到常规撤销栈
     expect(body).toContain("dropCrossFileUndo(");
   });
 
   it("doLocalRedo 对称消费「恢复」记录", () => {
     const idx = containerSrc.indexOf("const doLocalRedo = useCallback");
-    const body = containerSrc.slice(idx, idx + 3000);
+    const body = containerSrc.slice(idx, idx + 3200);
     expect(body).toContain("peekCrossFileRedo(");
-    expect(body).toMatch(/ext\.before === getMarkdownFromDoc|ext\.before === sourceContentRef\.current/);
+    expect(body).toMatch(
+      /crossFileEditMatches\(ext\.before, getMarkdownFromDoc|crossFileEditMatches\(ext\.before, sourceContentRef\.current/,
+    );
   });
 
   it("撤销用 early-declared 的 undoDocKey（避开 TDZ），不是 later 的 currentDocKey", () => {

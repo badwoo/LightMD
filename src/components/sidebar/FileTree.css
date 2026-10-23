@@ -16,8 +16,13 @@
   flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
-  /* v0.8.1 需求1：滚动条样式已统一到 global.css 的 .app-sidebar 作用域规则
-     （2px 细线 / 浅色 / 悬停侧栏显形），此处不再单独定义，避免两套宽度并存 */
+  /* v0.14.0 需求3：始终预留竖向滚动条的槽位。
+     为什么：收藏/最近打开展开时各栏高度是过渡动画，动画中段内容总量会短暂越过
+     可视高 → 滚动条出现（内容宽度 254→252，实测见 _verify-out/v0140-probe-sidebar-anim.txt）；
+     随即又缩回 → 滚动条消失。这一出一没会让侧栏内容横向位移 2px 并重排，
+     用户感知就是"左侧栏在抖"。稳定槽位后有无滚动条都不改变内容宽度。
+     （v0.8.1 需求1：滚动条本身样式在 global.css 的 .app-sidebar 作用域，宽度 2px） */
+  scrollbar-gutter: stable;
 }
 
 .filetree-header {
@@ -235,8 +240,8 @@
 }
 
 /* ─── 根路径 ─────────────────────────────────────── */
-/* v0.14.0 需求4：本标题栏的实际高度被 FileTree.tsx 的 FOLDER_HEADER_HEIGHT 引用
-   （=DEFAULT_FOLDER_SECTION_HEIGHT 的加数，决定文件夹栏默认显示 11 条 + 末尾留白一行）。
+/* v0.14.0 需求2：本标题栏的实际高度被 FileTree.tsx 的 FOLDER_HEADER_HEIGHT 引用
+   （=DEFAULT_FOLDER_SECTION_HEIGHT 的加数，决定文件夹栏默认 = 10 文件栏位 + 1 空白栏位 = 11 个条目位）。
    实测 32px（打包产物 + WebView2，见 scripts/v0140-probe-recent.mjs）：
    padding 6+6 + line-height 17.6(≈18) + 上下各 1px border + 内嵌 12px 图标对齐。
    改这里的 padding / font-size 时必须同步 FOLDER_HEADER_HEIGHT，否则默认高度会偏。 */
@@ -342,6 +347,15 @@
   overflow-x: hidden;
   flex: 1;
   min-height: 0;
+}
+
+/* v0.14.0 需求2：列表下方**常驻**的空白栏位（高度由 FileTree.tsx 内联写入 = SIDEBAR_ITEM_HEIGHT）。
+   为什么独立成元素、不放进上面的滚动区：需求是「10 个文件栏位 + 1 条空白栏位」——
+   文件超过 10 个时滚动区只滚 10 行，最后这一个条目位始终留白给右键
+   （新建文件 / 新建文件夹 / 刷新 / 粘贴），不能被第 11 个文件行占掉。 */
+.filetree-folder-blank-slot {
+  flex-shrink: 0;
+  width: 100%;
 }
 
 /* ─── 状态消息 ─────────────────────────────────────── */

@@ -147,8 +147,20 @@ export const refreshDirInFlight = new Set<string>();
 /** v0.8.2 功能3：section 滑出动画时长（ms），与 FileTree.css 中 animation 时长保持一致。
  * v0.8.2 调整：动画放慢 50%，0.24s → 0.36s */
 const SECTION_SLIDE_OUT_MS = 360;
-/** v0.8.2 动画优化：滑入展开时长（ms），与 FileTree.css section-slide-in 0.33s 同步 */
+/** v0.8.2 动画优化：滑入展开时长（ms），与 FileTree.css section-slide-in 0.33s 同步
+ * （只描述**水平/透明度**滑入；高度动画单独用 SECTION_HEIGHT_ANIM_MS，见下） */
 const SECTION_SLIDE_IN_MS = 330;
+/**
+ * v0.14.0 需求3（根因②，本轮修正）：高度动画时长常量（ms），与 FileTree.css 里
+ * `.filetree-folder-section / .filetree-temp-section / .favorites-section / .recent-files`
+ * 的 `transition: height 0.3s ease` 严格一致。
+ *
+ * 用途：文件夹栏的 0→内容高 展开动画（SlideInWrap 用内联 height 过渡）。
+ * 收藏/最近打开**不再**用 wrapper 叠第二段高度动画，高度直接由 section 自己的
+ * 0.3s transition 承担（见 SlideWrap 的 animateHeight={false}）——这样面板展开与
+ * 「打开的文件」栏收缩是同一个过渡曲线、同一帧起止，总量单调、不回弹。
+ */
+export const SECTION_HEIGHT_ANIM_MS = 300;
 /**
  * v0.8.2 动画优化：section 关闭动画第二阶段（高度收起）时长（ms）。
  * 关闭动画串行化——先水平滑出（SECTION_SLIDE_OUT_MS），滑出完成后再收起高度
@@ -176,17 +188,24 @@ const ITEM_COLLAPSE_DELAY_MS = 120;
 export const SIDEBAR_ITEM_HEIGHT = 30;
 
 /**
- * v0.14.0 需求4：文件夹栏默认可视条目数。
+ * v0.14.0 需求2：文件夹栏**总条目位** = 10 个文件栏位 + 1 个常驻空白栏位 = 11。
  *
- * 用户原话：「在左侧栏打开的文件夹中点击打开某个文件，打开的文件夹窗口就只有 7 个
- * 文件条目的大小，请调整为 11 个条目的大小，其中最后一个条目留空白，方便鼠标右键
- * 功能操作。」
+ * 用户本轮原话：「左侧栏还没实现我要求的打开文件夹然后点击打开一个文件，文件夹范围为
+ * 11 个文件条目即 10 个文件栏位 + 1 条空白栏位的需求。」
  *
- * 因此默认高度 = 标题栏 + (11 个可见条目 + 1 个留空条目位) × 行高。
- * 末尾那一个空条目位是**刻意**留白：用户要在这片空白处右键唤出文件夹空白区菜单
- * （新建文件 / 新建文件夹 / 刷新 / 粘贴）。
+ * 与上一轮（v0.14.0 第三批）的差异：上一轮按「11 个可见文件 + 末尾再留 1 行」
+ * 做成 12 行（392px），实机量到完整可见 12 行文件；用户本轮明确纠正为**总共 11 个
+ * 条目位**，其中只有 10 个放文件，最后 1 个永远是空白（见 FOLDER_FILE_ROWS）。
  */
-export const FOLDER_VISIBLE_ROWS = 11;
+export const FOLDER_ITEM_SLOTS = 11;
+
+/**
+ * v0.14.0 需求2：文件夹栏的**文件栏位**数 = 总条目位 - 1 个空白栏位 = 10。
+ *
+ * 内容滚动区恰好高 10 行（300px）：第 11 个文件行必须落在滚动区之外，
+ * 不允许出现"半行被裁"的残行（见 FOLDER_BLANK_SLOT_HEIGHT 的常驻空白栏位）。
+ */
+export const FOLDER_FILE_ROWS = FOLDER_ITEM_SLOTS - 1;
 
 /**
  * v0.14.0 需求4：文件夹栏标题栏（`.filetree-root-path`）实测高度（px）。
@@ -198,14 +217,26 @@ export const FOLDER_VISIBLE_ROWS = 11;
 export const FOLDER_HEADER_HEIGHT = 32;
 
 /**
- * v0.14.0 需求4：文件夹栏默认高度（px）——「11 个可见条目 + 末尾 1 行留白」。
- * 32 + (11 + 1) × 30 = 392px。
+ * v0.14.0 需求2：列表下方**常驻**空白栏位高度（px）—— 正好一个条目位。
+ *
+ * 为什么是常驻元素而不是"列表撑不满时自然剩下的空白"：用户要的是
+ * 「10 个文件栏位 + 1 条空白栏位」，文件再多也只有 10 行文件，最后一个条目位
+ * 永远留白给鼠标右键（新建文件 / 新建文件夹 / 刷新 / 粘贴）。
+ * 若把空白交给列表剩余空间，20 个文件时滚动区就会显示第 11 行文件，空白消失。
+ */
+export const FOLDER_BLANK_SLOT_HEIGHT = SIDEBAR_ITEM_HEIGHT;
+
+/**
+ * v0.14.0 需求2：文件夹栏默认高度（px）——总 11 个条目位。
+ *
+ * 32 + 11 × 30 = 362px：内容区 330 = 10 行文件栏位（300）+ 1 行空白栏位（30）。
+ * （上一轮的 392px = 12 行，与用户"11 个条目位"口径不符，已按本轮口径修正。）
  *
  * 仅作**默认值**使用：用户拖拽过的高度（settings.sidebarSectionSizes 持久化）优先，
  * 见 sizeOf()。
  */
 export const DEFAULT_FOLDER_SECTION_HEIGHT =
-  FOLDER_HEADER_HEIGHT + (FOLDER_VISIBLE_ROWS + 1) * SIDEBAR_ITEM_HEIGHT;
+  FOLDER_HEADER_HEIGHT + FOLDER_ITEM_SLOTS * SIDEBAR_ITEM_HEIGHT;
 
 /** v0.14.0 需求4：非文件夹栏（「打开的文件」/ 收藏 / 最近打开）的默认高度（px）。 */
 export const DEFAULT_SECTION_HEIGHT = 200;
@@ -223,17 +254,21 @@ export function defaultSectionHeight(key: string): number {
 }
 
 /**
- * v0.14.0 需求3：展开「最近打开」后，把面板滚进侧栏可视区的**复查时刻表**（ms）。
+ * v0.14.0 需求3（根因③，本轮修正）：展开「收藏/最近打开」后，把面板滚进侧栏可视区。
  *
- * 为什么要复查多拍：侧栏各 section 有 `transition: height 0.3s ease`（FileTree.css），
- * 且 v0.9.5 的「打开的文件栏收缩」effect 会在展开后再改一次 temp 高度——
- * 双 rAF（约 32ms）那一刻量到的是过渡中间态，面板最终位置还要继续往下走。
- * 首轮实测正是栽在这里：scrollTop 只从 0 变成 0.5px，面板最终仍在视口外。
+ * 上一轮按 [0, 40, 160, 320, 560]ms 五拍各校正一次 scrollTop。时序采样
+ * （scripts/v0140-probe-sidebar-anim.mjs，_verify-out/v0140-probe-sidebar-anim.txt）
+ * 证明它本身就是"抖动"的直接来源：0.3s 高度过渡期间 scrollTop 被改写 4 次
+ * （0→14→21→155→217px），用户看到侧栏一格一格往上跳；而过渡中途量到的面板
+ * 位置本来就不是终态，越校越乱。
  *
- * 取值覆盖：0.3s 高度过渡结束（≈320ms）+ 一次后续高度改写（≈560ms 兜底）。
- * 每一拍都是**幂等**的：只在"面板没完整可见"时才动滚动，已可见则完全不动。
+ * 新口径：**布局稳定后最多校正一次**，不再用固定多拍。
+ *   - REVEAL_STABLE_FRAMES：连续 N 帧「面板 top + 滚动内容高度」都不再变化 → 布局稳定；
+ *   - REVEAL_SETTLE_MAX_MS：兜底截止（覆盖 0.3s 高度过渡 + 一次后续高度改写）；
+ *   - 已完整可见 → 一次都不滚（含"用户先手动滚过"的情况，直接放弃校正）。
  */
-export const REVEAL_CHECK_DELAYS = [0, 40, 160, 320, 560] as const;
+export const REVEAL_STABLE_FRAMES = 2;
+export const REVEAL_SETTLE_MAX_MS = 640;
 
 /** v0.8.2：section 关闭动画总时长（滑出 + 停顿 + 收起），到点后卸载 DOM */
 export const SECTION_OUT_TOTAL_MS =
@@ -467,26 +502,64 @@ function ItemSlideOut({ children }: { children: React.ReactNode }) {
  * 下方的栏被"平滑推下去"（与 CSS 水平滑入同步，产生平滑插销感）。
  * 结束后清除内联样式，高度恢复由 section 自身驱动。
  * （jsdom 无布局：scrollHeight 为 0 时自动跳过，不影响测试）
+ *
+ * v0.14.0 需求3（根因②，本轮修正）：**目标高度改到 rAF 里量/起动画**，不再在
+ * useLayoutEffect 里立刻起。原因：
+ *   - 子组件的 useLayoutEffect 先于父组件执行，此刻量到的是"父组件布局收敛前"
+ *     的高度（如新面板默认 200px），随后父组件把它改成 676px，wrapper 却被夹在
+ *     204px，到 330ms 末突然弹开（实机时序采样抓到过 204→720 的 516px 跳变）。
+ *   - rAF 排在父组件布局 effect 之后、首次绘制之前，量到的已是收敛后的高度。
+ *
+ * v0.14.0 需求3（根因②，第二轮修正）：实测 rAF 与 React 布局 effect 的**提交时机
+ * 仍会赛跑**（父组件的同步重渲染可能排到 rAF 之后才落地，实测 wrapper 目标仍是旧的
+ * 204px、371ms 处跳到 720px）。因此收藏/最近面板**不再用 wrapper 叠高度动画**
+ * （SlideWrap 传 animateHeight={false}）：高度直接由 section 自身的 0.3s transition
+ * 承担，与「打开的文件」栏的收缩同曲线同帧，总量单调、无回弹、无二次弹开。
+ * 本组件的高度动画仅保留给文件夹栏（v0.8.2 的"下方栏被平滑推下去"体验）。
  */
-export function SlideInWrap({ children }: { children: React.ReactNode }) {
+export function SlideInWrap({
+  children,
+  animateHeight = true,
+}: {
+  children: React.ReactNode;
+  animateHeight?: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
+    if (!animateHeight) return; // 收藏/最近：高度交给 section 自身的 CSS 过渡
     const el = ref.current;
     if (!el) return;
-    const target = el.scrollHeight;
-    if (target <= 0) return;
+    // 先压到 0 且禁用过渡：本帧内不会闪出"满高面板"
     el.style.overflow = "hidden";
     el.style.transition = "none";
     el.style.height = "0px";
-    void el.offsetHeight; // 强制 reflow，确保起始高度 0 生效后再开始过渡
-    el.style.transition = `height ${SECTION_SLIDE_IN_MS}ms ease`;
-    el.style.height = `${target}px`;
-    const timer = window.setTimeout(() => {
-      el.style.transition = "";
-      el.style.overflow = "";
-      el.style.height = "";
-    }, SECTION_SLIDE_IN_MS + 20);
-    return () => window.clearTimeout(timer);
+    let raf = 0;
+    let timer = 0;
+    let cancelled = false;
+    // 下一帧（父组件的布局收敛之后、首次绘制之前）量最终高度并起过渡
+    raf = requestAnimationFrame(() => {
+      if (cancelled) return;
+      const target = el.scrollHeight;
+      if (target <= 0) {
+        // 无布局环境（jsdom）：高度由内容自然撑开，不写内联样式
+        el.style.transition = "";
+        el.style.overflow = "";
+        el.style.height = "";
+        return;
+      }
+      el.style.transition = `height ${SECTION_HEIGHT_ANIM_MS}ms ease`;
+      el.style.height = `${target}px`;
+      timer = window.setTimeout(() => {
+        el.style.transition = "";
+        el.style.overflow = "";
+        el.style.height = "";
+      }, Math.max(SECTION_HEIGHT_ANIM_MS, SECTION_SLIDE_IN_MS) + 20);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
   }, []);
   return (
     <div ref={ref} className="section-slide">
@@ -540,13 +613,17 @@ export function SlideOutWrap({ children }: { children: React.ReactNode }) {
 export function SlideWrap({ visible, children }: { visible: boolean; children: React.ReactNode }) {
   const [mounted, setMounted] = useState(visible);
   const snapshotRef = useRef<React.ReactNode>(null);
+  // v0.14.0 需求3（根因②，本轮修正）：展开时**在渲染期同步挂载**（React 允许对
+  // 自身状态做渲染期更新，条件更新保证不会死循环）。
+  // 旧实现在 useEffect 里 setMounted(true)：面板要晚一个提交（且是 passive effect，
+  // 很可能已经过了一次绘制）才挂载，导致它的高度动画比「打开的文件」栏的收缩
+  // 晚 ~25ms 开始——正是时序采样里"总量先凹 ~33px 再补回"的另一半原因。
+  // 渲染期挂载后，面板与其它栏的高度改写落在同一提交、同一帧起过渡。
+  if (visible && !mounted) setMounted(true);
   if (visible) snapshotRef.current = children;
 
   useEffect(() => {
-    if (visible) {
-      setMounted(true);
-      return;
-    }
+    if (visible) return;
     // 从未显示过 → 无需播放退出动画
     if (!snapshotRef.current) return;
     // 延迟卸载：串行三拍（水平滑出 → 停顿 → 高度收起）播完后移除
@@ -559,10 +636,106 @@ export function SlideWrap({ visible, children }: { visible: boolean; children: R
 
   if (!mounted) return null;
   if (!visible) return <SlideOutWrap>{snapshotRef.current}</SlideOutWrap>;
-  return <SlideInWrap>{children}</SlideInWrap>;
+  // v0.14.0 需求3（根因②，第二轮修正）：收藏/最近面板**不做 wrapper 高度动画**。
+  // 面板高度由 section 自身 `transition: height 0.3s ease`（FileTree.css）承担，
+  // 与「打开的文件」栏的收缩同一曲线同一帧 → 两栏高度和单调、底边不弹、无二次跳变。
+  // （wrapper 叠第二段 0→高 动画时，目标高度会与父组件布局提交赛跑，实测夹在 204px
+  //  然后 371ms 处突然弹到 720px —— 这正是用户感知的"卡顿/抖动"之一。）
+  return <SlideInWrap animateHeight={false}>{children}</SlideInWrap>;
 }
 
 // ─── 组件 ────────────────────────────────────────────────
+
+/**
+ * v0.14.0 需求3（根因③，本轮修正）：面板展开后把**刚打开的那一栏**滚进侧栏可视区。
+ *
+ * 旧实现按 REVEAL_CHECK_DELAYS=[0,40,160,320,560]ms 各校正一次，时序采样
+ * （scripts/v0140-probe-sidebar-anim.mjs，_verify-out/v0140-probe-sidebar-anim.txt）
+ * 抓到它在 0.3s 高度过渡期间把 scrollTop 改了 4 次（0→14→21→155→217px）——
+ * 面板还在长高，过渡中途量到的位置每拍都不一样，用户看到的就是侧栏一格一格往上跳。
+ *
+ * 新口径：**等布局稳定后最多校正一次**。
+ * - 每帧只读「面板 top + 滚动内容高度」，连续 REVEAL_STABLE_FRAMES 帧不变 = 布局稳定；
+ * - 兜底 REVEAL_SETTLE_MAX_MS 到点也收尾（覆盖 0.3s 高度过渡 + 一次后续高度改写）；
+ * - 稳定后仍完整可见 → 一次都不滚（不抢用户自己的滚动）；
+ * - 用户在校正前自己滚/点过滚动区 → 直接放弃（wheel / pointerdown / touchstart 捕获监听）。
+ *
+ * @param scrollEl 侧栏滚动容器（.filetree-scroll）
+ * @param sectionKey 面板 section key（favorites / recent）
+ * @returns cancel：卸载、再次展开（effect 重跑）、面板收起时调用——只清理，不滚动
+ */
+export function revealSectionAfterLayoutSettled(
+  scrollEl: HTMLElement | null,
+  sectionKey: string,
+): () => void {
+  if (!scrollEl) return () => {};
+  const sc = scrollEl;
+  let raf = 0;
+  let deadline = 0;
+  let done = false;
+  let stableFrames = 0;
+  let lastSig = "";
+
+  function cleanup() {
+    window.cancelAnimationFrame(raf);
+    window.clearTimeout(deadline);
+    sc.removeEventListener("wheel", cancel, true);
+    sc.removeEventListener("pointerdown", cancel, true);
+    sc.removeEventListener("touchstart", cancel, true);
+  }
+  /** 用户自己动了滚动/点了侧栏 → 放弃本次校正（不打扰用户） */
+  function cancel() {
+    if (done) return;
+    done = true;
+    cleanup();
+  }
+  /** 布局稳定后这一拍：只在"没完整可见"时滚一次，然后收尾 */
+  function revealOnce() {
+    if (done) return;
+    done = true;
+    cleanup();
+    const panel = findSectionByKey(document, sectionKey);
+    if (!panel) return;
+    const scRect = sc.getBoundingClientRect();
+    const pRect = panel.getBoundingClientRect();
+    // 含 1px 容差：已完整可见 → 一次都不滚
+    if (pRect.top >= scRect.top - 1 && pRect.bottom <= scRect.bottom + 1) return;
+    // 面板顶边对齐滚动区顶部（面板常比可视区高，对齐顶部才能看到标题栏 + 前几条）
+    const delta = pRect.top - scRect.top;
+    const maxTop = Math.max(0, sc.scrollHeight - sc.clientHeight);
+    const nextTop = Math.min(maxTop, Math.max(0, sc.scrollTop + delta));
+    if (Math.abs(nextTop - sc.scrollTop) < 1) return;
+    // behavior: "auto" —— 与侧栏既有滚动箭头/定位行为一致，不播平滑滚动动画
+    sc.scrollTo({ top: nextTop, behavior: "auto" });
+  }
+  function tick() {
+    if (done) return;
+    const panel = findSectionByKey(document, sectionKey);
+    if (!panel) {
+      revealOnce();
+      return;
+    }
+    // 稳定判据：面板 top（展开动画会移动它）+ 滚动内容高度（末栏撑满会改它）
+    const sig = `${panel.getBoundingClientRect().top.toFixed(1)}|${sc.scrollHeight}`;
+    if (sig === lastSig) stableFrames++;
+    else {
+      lastSig = sig;
+      stableFrames = 0;
+    }
+    if (stableFrames >= REVEAL_STABLE_FRAMES) {
+      revealOnce();
+      return;
+    }
+    raf = window.requestAnimationFrame(tick);
+  }
+
+  sc.addEventListener("wheel", cancel, true);
+  sc.addEventListener("pointerdown", cancel, true);
+  sc.addEventListener("touchstart", cancel, true);
+  deadline = window.setTimeout(revealOnce, REVEAL_SETTLE_MAX_MS);
+  raf = window.requestAnimationFrame(tick);
+  return cancel;
+}
 
 export function FileTree() {
   const rootPath = useFileStore((s) => s.rootPath);
@@ -746,8 +919,8 @@ export function FileTree() {
   const prevTempSizeRef = useRef<number | null>(null);
 
   const sizeOf = useCallback(
-    // v0.14.0 需求4：文件夹栏默认高度改为「11 条可见 + 末尾 1 行留白」（392px，
-    // 见 DEFAULT_FOLDER_SECTION_HEIGHT）；用户拖拽过的持久化高度仍优先。
+    // v0.14.0 需求2：文件夹栏默认高度 = 「总 11 个条目位 = 10 文件栏位 + 1 空白栏位」
+    // （362px，见 DEFAULT_FOLDER_SECTION_HEIGHT）；用户拖拽过的持久化高度仍优先。
     (key: string) => sectionSizes[key] ?? defaultSectionHeight(key),
     [sectionSizes],
   );
@@ -882,7 +1055,18 @@ export function FileTree() {
   // autoFill 不会收缩,显式收缩保证任何状态下都成立。
   const sizeOfRef = useRef(sizeOf);
   sizeOfRef.current = sizeOf;
-  useEffect(() => {
+  /**
+   * v0.14.0 需求3（根因②，本轮修正）：两个高度自适应 effect 都改成
+   * **useLayoutEffect（同一提交内、绘制前同步跑完）**，不再走 useEffect + rAF 的异步两拍。
+   *
+   * 为什么：点开收藏/最近打开时同时发生三件高度变化——temp 栏收缩、末栏撑满、
+   * 新面板 SlideInWrap 的 0→目标高。SlideInWrap 已改为"父组件布局收敛后的那一帧"
+   * 起动画（见其注释），所以这里必须**在绘制前**把目标高度写进状态（React 会在
+   * 同一提交内同步重渲染），SlideInWrap 的 rAF 才能量到最终高度；
+   * 若这里晚一帧，wrapper 会夹住旧高度、末了再弹开，且 temp 与面板错帧——
+   * 时序采样实测总量中段凹 33px（_verify-out/v0140-probe-sidebar-anim.txt）。
+   */
+  useLayoutEffect(() => {
     if (!favRecentCompact) {
       // 关闭收藏/最近打开:恢复收缩前记忆高度(随后 autoFill 会按需重新撑满)
       const restore = prevTempSizeRef.current;
@@ -892,84 +1076,88 @@ export function FileTree() {
       }
       return;
     }
-    const raf = requestAnimationFrame(() => {
-      const tempEl = findSectionByKey(document, "temp");
-      const contentH = tempEl ? measureSectionContentHeight(tempEl) : null;
-      setSectionSizes((prev) => {
-        const next = { ...prev };
-        const cur = next.temp ?? sizeOfRef.current("temp");
-        if (prevTempSizeRef.current === null) prevTempSizeRef.current = cur;
-        const target =
-          contentH !== null
-            ? Math.max(MIN_SECTION_HEIGHT, contentH + SIDEBAR_ITEM_HEIGHT)
-            : cur;
-        next.temp = target;
-        return next;
-      });
+    const tempEl = findSectionByKey(document, "temp");
+    const contentH = tempEl ? measureSectionContentHeight(tempEl) : null;
+    setSectionSizes((prev) => {
+      const next = { ...prev };
+      const cur = next.temp ?? sizeOfRef.current("temp");
+      if (prevTempSizeRef.current === null) prevTempSizeRef.current = cur;
+      const target =
+        contentH !== null
+          ? Math.max(MIN_SECTION_HEIGHT, contentH + SIDEBAR_ITEM_HEIGHT)
+          : cur;
+      next.temp = target;
+      return next;
     });
-    return () => cancelAnimationFrame(raf);
   }, [favRecentCompact]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (skipAutoFillRef.current) {
       skipAutoFillRef.current = false;
       return;
     }
     const el = scrollRef.current;
     if (!el || ordered.length === 0) return;
-    const raf = requestAnimationFrame(() => {
-      const container = el.clientHeight;
-      if (container <= 0) return;
-      const resizerCount = Math.max(0, ordered.length - 1);
-      const lastKey = ordered[ordered.length - 1];
-      setSectionSizes((prev) => {
-        const next = { ...prev };
-        const heightOf = (k: string) => next[k] ?? sizeOf(k);
+    const container = el.clientHeight;
+    if (container <= 0) return;
+    const resizerCount = Math.max(0, ordered.length - 1);
+    const lastKey = ordered[ordered.length - 1];
+    setSectionSizes((prev) => {
+      const next = { ...prev };
+      const heightOf = (k: string) => next[k] ?? sizeOf(k);
 
-        // ① 之前被撑满的栏不再是末栏 → 还原它的原高度
-        const filled = autoFillRef.current;
-        if (filled && filled.key !== lastKey) {
-          // 用户已手动拖拽过则尊重用户设置（当前值 ≠ 撑满值时不还原）
-          if (heightOf(filled.key) === filled.filledHeight) {
-            // v0.8.2 功能5：还原时收缩到"内容自然高度"（不超过原高度），
-            // 让新打开的栏紧接在上一栏最后一条内容之后（如上一栏 5 个文档，
-            // 新栏标题栏出现在第 6 个文档位置），而不是顶着大片空白。
-            const contentH = measureSectionContentHeight(
-              findSectionByKey(document, filled.key),
-            );
+      // ① 之前被撑满的栏不再是末栏 → 还原它的原高度
+      const filled = autoFillRef.current;
+      if (filled && filled.key !== lastKey) {
+        // 用户已手动拖拽过则尊重用户设置（当前值 ≠ 撑满值时不还原）
+        if (heightOf(filled.key) === filled.filledHeight) {
+          // v0.8.2 功能5：还原时收缩到"内容自然高度"（不超过原高度），
+          // 让新打开的栏紧接在上一栏最后一条内容之后（如上一栏 5 个文档，
+          // 新栏标题栏出现在第 6 个文档位置），而不是顶着大片空白。
+          //
+          // v0.14.0 需求2：**文件夹栏例外**——文件夹栏的契约是"固定 11 个条目位"
+          // （10 文件栏位 + 1 常驻空白栏位），不能跟着文件数缩到内容高度。
+          // 实机取证（scripts/v0140-probe-folder-rows.mjs）：文件夹里只有 5 个文件时，
+          // 「打开文件夹 → 点开一个文件」后 folder 会被这条通用规则缩到 213px
+          // （= 5×30 内容 + 标题栏 + 空白位），用户看到的就是"窗口只有 N 个条目高"——
+          // 这正是本轮需求报的现象，且与默认高度（362）对不对无关。
+          // 文件夹还原到"被撑满之前的记忆高度"（默认 362 或用户自己拖的高度）。
+          if (filled.key.startsWith("folder:")) {
+            next[filled.key] = filled.prevHeight;
+          } else {
+            const contentH = measureSectionContentHeight(findSectionByKey(document, filled.key));
             next[filled.key] =
               contentH !== null
                 ? Math.max(MIN_SECTION_HEIGHT, Math.min(filled.prevHeight, contentH))
                 : filled.prevHeight;
           }
-          autoFillRef.current = null;
         }
+        autoFillRef.current = null;
+      }
 
-        // ② 末栏总高不足容器时撑满到底部（已溢出则保持现状，交给滚动条）
-        // v0.9.5 问题6 修订2：末栏**无条件**撑满——收藏/最近作为末尾栏时其列表
-        // 同样撑满至底部（需求：侧栏末尾栏的列表范围自动撑满到底部），向上拖拽
-        // 因此可吞掉剩余空间一直拖到底部。条目位空档由「打开的文件」栏高度承担，
-        // 与末栏是否撑满无关，故不再跳过收藏/最近。
-        const total =
-          ordered.reduce((sum, k) => sum + heightOf(k), 0) + RESIZER_HEIGHT * resizerCount;
-        if (total < container) {
-          const others = ordered.filter((k) => k !== lastKey).map(heightOf);
-          const target = computeMaxSelfHeight(
-            container,
-            others,
-            RESIZER_HEIGHT,
-            resizerCount,
-            MIN_SECTION_HEIGHT,
-          );
-          const current = heightOf(lastKey);
-          if (target > current) {
-            autoFillRef.current = { key: lastKey, prevHeight: current, filledHeight: target };
-            next[lastKey] = target;
-          }
+      // ② 末栏总高不足容器时撑满到底部（已溢出则保持现状，交给滚动条）
+      // v0.9.5 问题6 修订2：末栏**无条件**撑满——收藏/最近作为末尾栏时其列表
+      // 同样撑满至底部（需求：侧栏末尾栏的列表范围自动撑满到底部），向上拖拽
+      // 因此可吞掉剩余空间一直拖到底部。条目位空档由「打开的文件」栏高度承担，
+      // 与末栏是否撑满无关，故不再跳过收藏/最近。
+      const total =
+        ordered.reduce((sum, k) => sum + heightOf(k), 0) + RESIZER_HEIGHT * resizerCount;
+      if (total < container) {
+        const others = ordered.filter((k) => k !== lastKey).map(heightOf);
+        const target = computeMaxSelfHeight(
+          container,
+          others,
+          RESIZER_HEIGHT,
+          resizerCount,
+          MIN_SECTION_HEIGHT,
+        );
+        const current = heightOf(lastKey);
+        if (target > current) {
+          autoFillRef.current = { key: lastKey, prevHeight: current, filledHeight: target };
+          next[lastKey] = target;
         }
-        return next;
-      });
+      }
+      return next;
     });
-    return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderedKey]);
   // v0.8.0 修复 P9-1：context 额外提供 sizeOf（含默认高度），
@@ -977,62 +1165,27 @@ export function FileTree() {
   const sectionSplitCtx = { sizes: sectionSizes, sizeOf, setPair, minHeight: MIN_SECTION_HEIGHT };
 
   /**
-   * v0.14.0 需求3（根因②）：展开「最近打开」后把面板**滚进侧栏可视区**。
+   * v0.14.0 需求3（根因③，本轮修正）：面板展开后把**刚打开的那一栏**滚进侧栏可视区。
    *
-   * 实机证据（scripts/v0140-probe-recent.mjs 阶段2，_verify-out/v0140-probe-recent.txt）：
-   * 开文件夹（250px）+ 15 个已打开文件（temp 栏 481px）时点时钟图标，
-   * `.recent-files` 其实**已经挂载**且高度 200px、18 条数据也渲染了——
-   * 但它是末栏，top=860.5px，而侧栏滚动容器只有 121.5..824 的可视区，
-   * scrollTop 停在 0 → 面板 100% 在视口下方。用户视线里侧栏"什么都没变"，
-   * 于是报「点击窗口没有出来」。这是**纯可见性**问题，不是数据/渲染条件问题。
+   * 背景（上一轮修的是"面板根本看不见"）：开文件夹 + 15 个已打开文件时点时钟，
+   * `.recent-files` 已挂载、数据也渲染了，但它是末栏、top 落在滚动视口下方，
+   * scrollTop 停在 0 → 用户眼里侧栏"什么都没变"（scripts/v0140-probe-recent.mjs 阶段2）。
    *
-   * 修法：面板展开后，在动画/高度过渡的整个窗口期内**多次**校正滚动位置
-   * （只在"没完整可见"时才动，已可见绝不打扰用户自己的滚动）。
+   * 本轮修的是"看得见但抖"：旧实现用 5 个固定延时反复校正滚动，等于在 0.3s 高度
+   * 过渡期间连续抢滚动（实测 scrollTop 0→14→21→155→217px 四跳）。
+   * 现在改为：展开后等布局稳定，**至多校正一次**（实现见 revealSectionAfterLayoutSettled）。
    *
-   * 为什么不能只量一次：`.filetree-folder-section / .filetree-temp-section /
-   * .recent-files` 都有 `transition: height 0.3s ease`（FileTree.css），
-   * v0.9.5 的「打开的文件栏收缩」effect 又会在展开后改写 temp 高度——
-   * 双 rAF（约 32ms）那一刻量到的是**过渡中间态**，面板最终位置还要再往下走。
-   * 首轮实测就是栽在这里：scrollTop 只从 0 变成 0.5，面板最终仍在视口外。
-   * 因此按 REVEAL_CHECK_DELAYS 分几拍复查，覆盖 0.3s 过渡 + 后续一次高度改写。
+   * 两栏各自独立触发（依赖各自的 showX）：两栏同时可见时，点时钟不会把视口抢去收藏栏。
    */
   useEffect(() => {
-    if (!showRecent) return;
-    let cancelled = false;
-    const timers: number[] = [];
-    /** 面板当前是否完整落在侧栏滚动容器可视区内 */
-    const isFullyVisible = (): boolean => {
-      const sc = scrollRef.current;
-      const panel = findSectionByKey(document, "recent");
-      if (!sc || !panel) return true; // 量不到就不动（防御：不让滚动乱跳）
-      const scRect = sc.getBoundingClientRect();
-      const pRect = panel.getBoundingClientRect();
-      // 含 1px 容差
-      return pRect.top >= scRect.top - 1 && pRect.bottom <= scRect.bottom + 1;
-    };
-    /** 把面板顶边对齐到滚动区顶部（面板常比可视区高，对齐顶部才能看到标题栏 + 前几条） */
-    const revealRecent = () => {
-      if (cancelled || isFullyVisible()) return;
-      const sc = scrollRef.current;
-      const panel = findSectionByKey(document, "recent");
-      if (!sc || !panel) return;
-      const delta = panel.getBoundingClientRect().top - sc.getBoundingClientRect().top;
-      const maxTop = Math.max(0, sc.scrollHeight - sc.clientHeight);
-      const nextTop = Math.min(maxTop, Math.max(0, sc.scrollTop + delta));
-      if (Math.abs(nextTop - sc.scrollTop) < 1) return;
-      // behavior: "auto" —— 与侧栏既有滚动箭头/定位行为一致，不播平滑滚动动画
-      sc.scrollTo({ top: nextTop, behavior: "auto" });
-    };
-    for (const delay of REVEAL_CHECK_DELAYS) {
-      timers.push(window.setTimeout(revealRecent, delay));
-    }
-    return () => {
-      cancelled = true;
-      timers.forEach((t) => window.clearTimeout(t));
-    };
-    // 依赖 orderedKey：点开时钟时 ordered 新增 recent → 布局变化后才会挂载/量到位
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showRecent, orderedKey]);
+    if (!showFavorites) return;
+    return revealSectionAfterLayoutSettled(scrollRef.current, "favorites");
+  }, [showFavorites]);
+  useEffect(() => {
+    // 数据为空时该栏不渲染（与 RecentFiles / ordered 的口径一致），自然也不需要 reveal
+    if (!(showRecent && recentHasData)) return;
+    return revealSectionAfterLayoutSettled(scrollRef.current, "recent");
+  }, [showRecent, recentHasData]);
 
   // v0.8.4 需求7（C5）：排序模式按文件夹根记忆（settings persist），整树统一应用根的模式
   const fileTreeSort = useSettingsStore((s) => s.fileTreeSort);
@@ -3823,6 +3976,24 @@ function FolderSection(props: FolderSectionProps) {
             <div className="filetree-placeholder">{t("filetree.emptyFolder")}</div>
           )}
         </div>
+      )}
+      {/* v0.14.0 需求2：列表下方**常驻一个条目位的空白栏位**（不在滚动区内）。
+          - 总 11 个条目位 = 10 行文件栏位（上面 .filetree-folder-content）+ 这 1 行空白；
+          - 常驻而非"撑不满剩下的空白"：文件超过 10 个时滚动区只显示 10 行，
+            最后一个条目位永远留白，用户才能稳定地在这片空白上右键
+            （新建文件 / 新建文件夹 / 刷新 / 粘贴）；
+          - 高度用 SIDEBAR_ITEM_HEIGHT 内联写入，与行高常量同源（避免 CSS/TS 两处硬编码漂移）。 */}
+      {!collapsed && (
+        <div
+          className="filetree-folder-blank-slot"
+          style={{ height: FOLDER_BLANK_SLOT_HEIGHT }}
+          // 与列表空白区同一套右键菜单（落到本文件夹；文件项自身的右键会 stopPropagation）
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onFolderContextMenu?.(folder.path, e.clientX, e.clientY, e.nativeEvent);
+          }}
+        />
       )}
       {/* v0.8.4 需求7：排序下拉菜单 —— position: fixed 定位到按钮下方（不受栏高/overflow 裁剪）；
           3 组 6 项组间 divider，每项文字右侧放语义小图标（箭头 + 竖排徽标）；

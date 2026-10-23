@@ -66,15 +66,16 @@ describe("v0.8.1 需求4：侧栏默认宽度 +0.5cm", () => {
     expect(useSettingsStore.getState().outlineWidth).toBe(240);
   });
 
-  it("迁移后持久化版本号写回当前版本（v0.14.0 需求4 起 version=5）", async () => {
+  it("迁移后持久化版本号写回当前版本（v0.14.0 需求2 起 version=6）", async () => {
     setPersisted({ sidebarWidth: 260, outlineWidth: 240 }, 0);
     await (useSettingsStore as any).persist.rehydrate();
     // 触发一次写入，确认落盘版本号已升级（避免每次启动重复迁移）
     useSettingsStore.getState().setSidebarWidth(279);
     const saved = JSON.parse(mockStorage[STORAGE_KEY]);
-    // v0.9.0 自定义快捷键 → 4；v0.14.0 需求4（文件夹栏 7→11 条目，清掉旧默认
-    // 250px 的持久化高度）→ 5。这里锁"等于当前 persist version"，改版本号时同步改。
-    expect(saved.version).toBe(5);
+    // v0.9.0 自定义快捷键 → 4；v0.14.0 第三批（文件夹栏 7→11 条目，清旧默认 250）→ 5；
+    // v0.14.0 需求2 口径修正（10 文件栏位 + 1 空白栏位 = 11 个条目位 → 362px，清上一版 392）→ 6。
+    // 这里锁"等于当前 persist version"，改版本号时同步改。
+    expect(saved.version).toBe(6);
   });
 
   it("拖拽范围 180~480 覆盖新默认值（279/259 不被钳制）", () => {

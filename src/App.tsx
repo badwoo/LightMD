@@ -32,6 +32,8 @@ import {
   effectiveCombo,
   normalizeCombo,
 } from "./core/shortcuts";
+// v0.14.0 续修 需求1：global-editor（撤销/恢复）键位落点分类（PM / 输入控件 / 标签工具栏 / textarea）
+import { classifyGlobalEditorKeyTarget } from "./core/keymap";
 import { Outline } from "./components/editor/Outline";
 import { SyntaxHelper } from "./components/editor/SyntaxHelper";
 import { SettingsDialog } from "./components/dialogs/SettingsDialog";
@@ -3153,9 +3155,33 @@ function App() {
       ) {
         return;
       }
-      // 撤销/恢复（global-editor）：仅 textarea 内接管（自定义撤销栈）；
-      // ProseMirror 中由其 keymap 处理，不拦截
-      if (def.scope === "global-editor" && target.tagName !== "TEXTAREA") return;
+      // 撤销/恢复（global-editor）：三个落点必须**互斥**，否则一次 Ctrl+Z 会撤销两步。
+      //
+      // v0.14.0 续修 需求1 返修（用户：「我点击到 b 文件点击撤销就失效了」）：
+      // 旧实现只认 `target.tagName === "TEXTAREA"`，其余一律 return → 两条路径全断：
+      // ① 阅读模式按 Ctrl+Z：PM 内部由动态键位接管（`core/keymap.ts` → 宿主 doLocalUndo），
+      //    窗口监听必须让行（PM 的 handleKeyDown 只 preventDefault、**不** stopPropagation，
+      //    这里若也处理就会双撤销）；
+      // ② 点完标签/工具栏后焦点在按钮或 body 上：PM 没焦点、本处又 return →
+      //    **完全没人处理**。用户"点击到 B 再撤销失效"正是这一条（A 因为刚操作过、
+      //    焦点在文档里所以能撤）。
+      // 修复：焦点不在任何输入控件上时，统一交给宿主入口（与菜单/右键/命令面板同一条
+      // 路径 = doLocalUndo/doLocalRedo，其中含跨文件替换记录的消费与逐字节安全护栏）。
+      // 落点分类抽成纯函数 `classifyGlobalEditorKeyTarget`（core/keymap.ts），便于单测
+      // 覆盖「PM 内让行 / 输入控件不抢 / 标签工具栏接管 / textarea 走源码栈」四条契约。
+      if (def.scope === "global-editor") {
+        const where = classifyGlobalEditorKeyTarget(target);
+        if (where === "prosemirror") return; // ① 交给 PM 动态键位（它已转交宿主）
+        if (where === "editable") return; // 搜索框/设置输入框等：交给控件原生撤销
+        if (where === "chrome") {
+          // ② 焦点在标签 / 工具栏 / 空白区：接管
+          e.preventDefault();
+          if (def.id === "edit.undo") undoHandler?.();
+          else redoHandler?.();
+          return;
+        }
+        // "textarea"：落到下方统一 dispatch（源码模式自定义文本撤销栈）
+      }
       // AI 对话窗：输入法组合态（isComposing）时 Enter/字母用于选词，不能当快捷键
       if (def.id === "ai.chat" && e.isComposing) return;
 

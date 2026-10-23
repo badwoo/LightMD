@@ -231,6 +231,10 @@ import { computeTextareaCursorPosition } from "../../utils/cursorPosition";
 import { UNTITLED_PROGRESS_PREFIX } from "../../utils/tabKey";
 // v0.14.0 需求2：搜索面板的跨文件跳转（结果条幅点条目 → 切标签 → 本文档定位）
 import { SEARCH_JUMP_EVENT, type SearchJumpTarget } from "../../utils/searchJump";
+// v0.14.0 续修 需求1：阅读模式键盘 Ctrl+Z 由 PM 动态键位接管（core/keymap.ts），
+// 必须把宿主撤销入口注册过去 —— 否则它直接调 prosemirror-history 的 undo，
+// 「跨文件替换记录」永远轮不到 doLocalUndo 消费（用户实测 B 文件撤不回来）。
+import { setHostUndoRedo } from "../../core/keymap";
 import type { SearchableFile } from "./SearchReplace";
 import "../../styles/editor.css";
 
@@ -405,6 +409,24 @@ export function shouldReplacePmDoc(sourceMarkdown: string, pmMarkdown: string): 
  */
 export function shouldResetSourceUndoStack(prevText: string, syncedText: string): boolean {
   return prevText !== syncedText;
+}
+
+/**
+ * v0.14.0 续修 需求1：「跨文件替换记录」的**安全护栏**（逐字节一致），抽成纯函数便于单测。
+ *
+ * 为什么必须是逐字节相等，而不是"内容大致相同"：
+ * - 撤销动作是**整篇写回** `before`。若用户替换后又手改过该文件（哪怕只改一个词），
+ *   放行就会把用户的手工编辑整篇抹掉——比"少撤一步"严重得多（与 `loadDocHistory`
+ *   同一套数据安全纪律：位置/内容不一致时宁可丢弃历史）。
+ * - 实机取证（`scripts/v0140-probe-crossfile-undo-v2.mjs`）证明：真实 md（CRLF、
+ *   末尾无换行、列表、表格、行内代码）装载后 `getMarkdownFromDoc` 与替换结果
+ *   **逐字节一致**（序列化器对未改动块走原文切片快路径）。因此这道护栏不会误伤
+ *   正常流程——上一轮"切到 B 撤不回来"的根因是**撤销入口**没走到这里
+ *   （阅读模式键盘 Ctrl+Z 被 PM 键位直接交给 prosemirror-history，见 core/keymap.ts
+ *   的 `hostUndoCommand`），不是护栏判定太严。
+ */
+export function crossFileEditMatches(recordText: string, currentText: string): boolean {
+  return recordText === currentText;
 }
 
 // ─── v0.14.0 需求2：模式切换的滚动恢复「重试窗口」参数 ────────────────────
@@ -981,7 +1003,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (!view) return false;
       const key = undoDocKey();
       const ext = peekCrossFileUndo(key);
-      if (ext && ext.after === getMarkdownFromDoc(view.state.doc)) {
+      if (ext && crossFileEditMatches(ext.after, getMarkdownFromDoc(view.state.doc))) {
         // 内容与记录快照一致 → 安全：整篇写回替换前的文本
         dropCrossFileUndo(key);
         pushCrossFileRedo(key, ext);
@@ -1003,7 +1025,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     {
       const key = undoDocKey();
       const ext = peekCrossFileUndo(key);
-      if (ext && ext.after === sourceContentRef.current) {
+      if (ext && crossFileEditMatches(ext.after, sourceContentRef.current)) {
         dropCrossFileUndo(key);
         pushCrossFileRedo(key, ext);
         recordUndoEntry(sourceContentRef.current, ext.before, textarea.selectionStart, textarea.scrollTop);
@@ -1058,7 +1080,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (!view) return false;
       const key = undoDocKey();
       const ext = peekCrossFileRedo(key);
-      if (ext && ext.before === getMarkdownFromDoc(view.state.doc)) {
+      if (ext && crossFileEditMatches(ext.before, getMarkdownFromDoc(view.state.doc))) {
         dropCrossFileRedo(key);
         pushCrossFileUndo(key, ext);
         const newDoc = withTrailingParagraph(markdownToDoc(ext.after));
@@ -1078,7 +1100,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     {
       const key = undoDocKey();
       const ext = peekCrossFileRedo(key);
-      if (ext && ext.before === sourceContentRef.current) {
+      if (ext && crossFileEditMatches(ext.before, sourceContentRef.current)) {
         dropCrossFileRedo(key);
         pushCrossFileUndo(key, ext);
         recordUndoEntry(sourceContentRef.current, ext.after, textarea.selectionStart, textarea.scrollTop);
@@ -1140,9 +1162,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   useEffect(() => {
     setUndoHandler(handleUndo);
     setRedoHandler(handleRedo);
+    // v0.14.0 续修 需求1：同一条处理器再注册给 PM 动态键位表。
+    // 阅读模式按 Ctrl+Z 时 `core/keymap.ts` 的 `dynamicShortcutsPlugin` 先接管，
+    // 它必须把动作**交回这里**（doLocalUndo/doLocalRedo），否则会走原生
+    // prosemirror-history 的 undo —— 而那是「按内容重建、resetHistory 清空」的栈，
+    // 跨文件替换写下的记录（docHistoryStore.crossFileUndo）永远不会被消费。
+    setHostUndoRedo({ undo: handleUndo, redo: handleRedo });
     return () => {
       setUndoHandler(null);
       setRedoHandler(null);
+      setHostUndoRedo(null);
     };
   }, [handleUndo, handleRedo, setUndoHandler, setRedoHandler]);
 
