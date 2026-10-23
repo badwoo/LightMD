@@ -220,10 +220,25 @@ describe("v0.8.3 WP4：App / EditorContainer 源码接线", () => {
     expect(appSrc).toContain("clearLastActiveTab()");
   });
 
-  it("需求6：会话恢复期守卫阻止 openFile 处理里的 clear 清掉刚注入的进度", () => {
-    expect(appSrc).toContain("!alreadyOpen && !sessionRestoringRef.current");
+  it("需求6：会话恢复期不再需要「重新打开就清进度」的守卫（v0.14.0 需求3 语义反转）", () => {
+    // v0.14.0 需求3：用户明确反馈「关闭文档重新打开文档阅读进度重置了」并列为缺陷
+    // → 期望"关闭再打开仍保留进度"。因此 App 里 4 处 fileScrollProgress.clear(...)
+    // （openFile 重新打开分支 / closeFile / handleTabClose / handleCloseMany）已删除，
+    // 连带 v0.8.3 需求6 为"恢复期别被 clear 清掉"而设的 `!alreadyOpen &&
+    // !sessionRestoringRef.current` 判断也一并消失（没有 clear 就不需要守卫）。
+    //
+    // 按 v0.13.0 §10 教训 18：交互模型变更时**改写**既有用例，而不是删或 skip。
+    // 这里锁的是新契约：不再有该 clear。
+    expect(appSrc).not.toContain("!alreadyOpen && !sessionRestoringRef.current");
+    // sessionRestoringRef 本身仍在用（恢复期语义：不弹冲突、不重复恢复），不能一起删掉
     expect(appSrc).toContain("const sessionRestoringRef = useRef(true);");
     expect(appSrc).toContain("sessionRestoringRef.current = false;");
+    // 关键的反向断言：这三条"关闭即丢弃进度"的老写法必须都不存在了
+    expect(appSrc).not.toContain("fileScrollProgress.clear(detail.path)");
+    expect(appSrc).not.toContain("fileScrollProgress.clear(tab.path)");
+    expect(appSrc).not.toContain("fileScrollProgress.clear(closedKey)");
+    // 但清除全部（关闭"载入上次文件"开关 / 会话恢复失败）必须保留
+    expect(appSrc).toContain("fileScrollProgress.clearAll();");
   });
 
   it("需求6：启动注入快照 + 开关关闭时清理 + 5s 心跳落盘", () => {
@@ -234,15 +249,18 @@ describe("v0.8.3 WP4：App / EditorContainer 源码接线", () => {
     expect(appSrc).toContain("fileScrollProgress.hasUnsavedChanges()");
   });
 
-  it("需求6：关闭临时标签 / 另存为晋升 分别清理与迁移进度键", () => {
-    expect(appSrc).toContain("fileScrollProgress.clear(untitledProgressKey(tab.id))");
-    // 关闭标签的清理：v0.13.2 把键提成具名变量 `closedKey`（同处还要按同一键清理
-    // 大纲滚动记忆与撤销历史快照），行为不变。这里锁**意图**：用
-    // `path || untitledProgressKey(id)` 这个复合键去 clear，而不是锁单行写法。
+  it("需求6：关闭标签 / 另存为晋升 —— 进度键的清理语义在 v0.14.0 反转（保留而非清除）", () => {
+    // v0.14.0 需求3：关闭标签**不再**清除浏览进度（用户要求"关闭重开保留"）。
+    // 原用例断言的三条 clear 全部已删除；`closedKey` 变量仍保留（它还用于清理
+    // 大纲滚动位置与撤销历史快照 —— 这两项语义未变）。
+    expect(appSrc).not.toContain("fileScrollProgress.clear(untitledProgressKey(tab.id))");
     expect(appSrc).toContain(
       "const closedKey = closedTab.path || untitledProgressKey(closedTab.id)",
     );
-    expect(appSrc).toContain("fileScrollProgress.clear(closedKey)");
+    // 同键的大纲/撤销清理必须还在（它们是另一回事，跨关闭保留有位置敏感风险）
+    expect(appSrc).toContain("clearOutlineScroll(closedKey)");
+    expect(appSrc).toContain("forgetDocHistory(closedKey)");
+    // 另存为晋升仍要**迁移**进度键（untitled:<id> → path），否则"刚保存就跳回顶部"
     expect(appSrc).toContain("fileScrollProgress.move(untitledProgressKey(oldTab?.id), selected)");
   });
 

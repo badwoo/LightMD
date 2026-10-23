@@ -195,9 +195,15 @@ describe("P11-7 切换文件保留未保存内容", () => {
   it("切回已打开文件时保留脏标记，且不清除浏览进度", () => {
     const src = read("../App.tsx");
     expect(src).toContain("const wasDirty = alreadyOpen ? !!st0.openTabs[existingIdx].isDirty : false");
-    // v0.8.3 WP4 需求6：追加"会话恢复期"守卫（恢复期间跳过 clear，
-    // 否则刚注入的跨会话阅读位置会被当场清掉）；「已打开文件不清进度」语义不变
-    expect(src).toContain("if (detail.path && !alreadyOpen && !sessionRestoringRef.current)");
+    // v0.8.3 WP4 需求6 曾追加「会话恢复期」守卫 `!alreadyOpen && !sessionRestoringRef.current`
+    // 来跳过「重新打开就清进度」的 clear。
+    // v0.14.0 需求3 起语义反转：用户反馈「关闭文档重新打开文档阅读进度重置了」并要求保留
+    // → 那条 clear 已整体删除，守卫也随之不需要（没有 clear 就没有要守的东西）。
+    // 按 v0.13.0 §10 教训 18，这里改写为**新契约**：重新打开也不清进度。
+    expect(src).not.toContain("!alreadyOpen && !sessionRestoringRef.current");
+    expect(src).not.toContain("fileScrollProgress.clear(detail.path)");
+    // 「已打开文件不清进度」这条原始语义仍然成立（现在对所有情况都成立）
+    expect(src).toContain("const alreadyOpen = existingIdx !== -1;");
   });
 });
 
