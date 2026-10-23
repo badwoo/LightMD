@@ -324,6 +324,27 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
     expect(downloadCalls).toBe(2);
   });
 
+  it("下载成功但启动安装失败 → 错误里说明「已下载到 <路径>」，用户可手动安装", async () => {
+    mocks.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "has_translate_key") return false;
+      if (cmd === "check_update") return makeUpdateInfo();
+      if (cmd === "download_update") return "C:\\cache\\updates\\LightMD_0.15.0_x64-setup.exe";
+      if (cmd === "launch_installer") throw "启动安装程序失败：拒绝访问";
+      return undefined;
+    });
+
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("update-check-btn"));
+    fireEvent.click(await screen.findByTestId("update-download-btn"));
+
+    const error = await screen.findByTestId("update-error");
+    expect(error.textContent).toContain("安装包已下载到");
+    expect(error.textContent).toContain("LightMD_0.15.0_x64-setup.exe");
+    expect(error.textContent).toContain("拒绝访问");
+    // 不应显示「下载安装包失败」——下载本身是成功的
+    expect(error.textContent).not.toContain("下载安装包失败");
+  });
+
   it("有新版但没有可用安装包 → 提示 noAsset，仍给发布页入口", async () => {
     mocks.invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "has_translate_key") return false;
