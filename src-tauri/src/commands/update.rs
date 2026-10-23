@@ -588,4 +588,76 @@ mod tests {
             "LightMD_0.15.0_x64_en-US.msi"
         );
     }
+
+    // ─── 真实 GitHub 响应形状（离线 fixture，验证字段映射） ──────────
+
+    /// 摘自 `GET /repos/badwoo/LightMD/releases/latest` 的真实响应（裁剪到用到的字段，
+    /// 保留 GitHub 的 snake_case 命名与 assets 顺序：exe → msi → SHA256SUMS.txt）。
+    /// 必须用 r###"…"###：body 里的 Markdown 标题写作 `"## 更新内容`，
+    /// 其中 `"##` 恰好是 r##"…"## 的终止符，会用提前截断原始字符串。
+    const REAL_SHAPED_RELEASE: &str = r###"{
+        "url": "https://api.github.com/repos/badwoo/LightMD/releases/418100619",
+        "html_url": "https://github.com/badwoo/LightMD/releases/tag/v0.13.2",
+        "id": 418100619,
+        "tag_name": "v0.13.2",
+        "name": "LightMD v0.13.2",
+        "draft": false,
+        "prerelease": false,
+        "body": "## 更新内容\n- 修复竖排开关\n- 搜索增强",
+        "assets": [
+            {
+                "url": "https://api.github.com/repos/badwoo/LightMD/releases/assets/1",
+                "name": "LightMD_0.13.2_x64-setup.exe",
+                "size": 7803775,
+                "browser_download_url": "https://github.com/badwoo/LightMD/releases/download/v0.13.2/LightMD_0.13.2_x64-setup.exe"
+            },
+            {
+                "url": "https://api.github.com/repos/badwoo/LightMD/releases/assets/2",
+                "name": "LightMD_0.13.2_x64_en-US.msi",
+                "size": 11235328,
+                "browser_download_url": "https://github.com/badwoo/LightMD/releases/download/v0.13.2/LightMD_0.13.2_x64_en-US.msi"
+            },
+            {
+                "url": "https://api.github.com/repos/badwoo/LightMD/releases/assets/3",
+                "name": "SHA256SUMS.txt",
+                "size": 190,
+                "browser_download_url": "https://github.com/badwoo/LightMD/releases/download/v0.13.2/SHA256SUMS.txt"
+            }
+        ]
+    }"###;
+
+    #[test]
+    fn parses_real_github_release_shape() {
+        let release: GhRelease = serde_json::from_str(REAL_SHAPED_RELEASE).expect("应能解析真实响应");
+        assert_eq!(release.tag_name, "v0.13.2");
+        assert_eq!(release.assets.len(), 3);
+        assert!(release.body.unwrap_or_default().contains("更新内容"));
+
+        let version = release
+            .tag_name
+            .trim()
+            .trim_start_matches('v')
+            .trim_start_matches('V')
+            .to_string();
+        assert_eq!(version, "0.13.2");
+
+        let picked = pick_installer_asset(&release.assets).expect("应选中 NSIS 安装包");
+        assert_eq!(picked.name, "LightMD_0.13.2_x64-setup.exe");
+        assert_eq!(picked.size, 7803775);
+
+        // 0.14.0 本地构建 vs 线上 0.13.2 → 不算新（这是当前仓库的真实状态）
+        assert!(!is_newer_version("0.14.0", &version));
+    }
+
+    #[test]
+    fn parses_release_with_minimal_fields() {
+        // GitHub 的 body/html_url 可能为 null；assets 可能为空
+        let release: GhRelease =
+            serde_json::from_str(r#"{"tag_name":"v1.0.0","body":null,"assets":[]}"#)
+                .expect("最小字段也应能解析");
+        assert_eq!(release.tag_name, "v1.0.0");
+        assert!(release.body.is_none());
+        assert!(release.html_url.is_none());
+        assert!(pick_installer_asset(&release.assets).is_none());
+    }
 }
