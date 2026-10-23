@@ -213,7 +213,18 @@ import { notifyWarning, notifySuccess } from "../../services/notificationService
 // v0.7.0 bug修复：按文件记录浏览进度（切换标签保留，重新打开重置）
 import { fileScrollProgress } from "../../services/fileScrollProgress";
 // v0.13.2 需求5（返修后口径）：撤销历史按文档保管，**不跨文档路由**
-import { saveDocHistory, loadDocHistory } from "../../services/docHistoryStore";
+import {
+  saveDocHistory,
+  loadDocHistory,
+  // v0.14.0 需求2：跨文件替换的撤销/恢复记录
+  recordCrossFileEdit,
+  peekCrossFileUndo,
+  dropCrossFileUndo,
+  peekCrossFileRedo,
+  pushCrossFileRedo,
+  pushCrossFileUndo,
+  dropCrossFileRedo,
+} from "../../services/docHistoryStore";
 // v0.8.3 需求3：源码模式光标行列/选中字符数纯函数
 import { computeTextareaCursorPosition } from "../../utils/cursorPosition";
 // v0.8.3 WP4 需求6：进度键前缀（临时标签 = untitled:<id>，与 utils/tabKey.ts 单源）
@@ -760,6 +771,22 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const redoStackRef = useRef<HistoryEntry[]>([]);
   const isUndoRedoRef = useRef(false);
   /**
+   * v0.14.0 需求2：撤销/恢复专用的「当前文档键」读取器。
+   *
+   * 必须在这里**提前声明**：`doLocalUndo` / `doLocalRedo` 要用它去查跨文件替换记录，
+   * 而组件里那两个同口径的 `currentDocKey()` / `currentDocKeyFromStore()` 定义在
+   * 2700 行之后（引用会踩 TDZ：tsc 报 "used before declaration"）。
+   * 直接读 store 而不是 React 派生值，也顺带避开切标签时"新 key + 旧闭包"的错配。
+   */
+  const undoDocKey = useCallback((): string | null => {
+    const st = useEditorStore.getState();
+    const tab = st.openTabs[st.activeTabIdx];
+    if (!tab) return null;
+    return tab.isUntitled
+      ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? st.activeTabIdx}`
+      : tab.path || null;
+  }, []);
+  /**
    * v0.13.2 需求5：撤销历史按**文档**保管（跨标签保留）。
    * - `docKeyRef`：当前活动文档键（真实文件 = 路径 / 临时标签 = untitled:<id>）。
    *   必须用 ref：换文档 effect 与撤销处理器都要读它，而它由 store 计算得出。
@@ -868,11 +895,83 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, [pushUndoEntry]);
 
   /**
+   * v0.14.0 需求1+2：**整篇文本写回的单一入口**（搜索替换 / 跨文件替换复用）。
+   *
+   * ## 为什么必须收口成一处（两个用户报的缺陷同源）
+   *
+   * 用户原话：
+   * ① 「阅读模式下进行搜索和替换，文本没有立即生效。」
+   * ② 「通过搜索替换也要进入到撤销栈中，当前没有生效，而且跨文件搜索和替换，
+   *     切换到对应文件后也能使用撤销或恢复。」
+   *
+   * 实机取证（`scripts/v0140-probe-req1-crossfile-preview.mjs`，T1 vs T3）：
+   * - 条幅**收起**时点「全部替换」→ SearchReplace 走自己的 PM 分支 → 阅读视图立即变 ✔
+   * - 条幅**展开**时点「全部替换（所有文件）」→ `replaceAllAcrossFiles` 对**当前文档**
+   *   也走 `onSourceContentChange`（源码态写回通道）→ 只改了 `sourceContent` 这个隐藏
+   *   textarea 的状态和 localStorage，**ProseMirror 一个字都没动**
+   *   → 用户眼前的阅读视图完全没反应（需求1），且这条路径没有记录任何撤销步骤（需求2）。
+   *   更糟的是下一次切模式/换文档会用 store 内容重建 PM，替换结果可能被冲掉。
+   *
+   * ## 分支规则（与「用户在哪儿看」严格对应）
+   * - **编辑（源码）模式**：写 textarea 状态 + 记一条 diff 撤销记录（与格式工具栏、
+   *   斜杠命令同一套 `recordUndoEntry` 口径 → Ctrl+Z 可撤）。
+   * - **阅读模式 + md 文件**：dispatch 一条 PM 事务（`addToHistory: true`）→
+   *   阅读视图立即更新 **且** 进 PM 撤销栈；`onDocChange` 会顺带完成
+   *   序列化 / 标签内容 / 脏标记 / 基线更新，不需要在这里重复。
+   * - **阅读模式 + 非 md 文件**：可见的是 `.plaintext-preview`（由 `sourceContent`
+   *   派生渲染），所以写 state + 记撤销记录即可。
+   *
+   * ⚠️ 不要把这里改成"只改 state 再靠 effect 同步 PM"：那条路是异步的（rAF + 解析
+   * 全文），阅读模式下用户会先看到旧文字，正是本次要修的"没有立即生效"。
+   */
+  const writeBackCurrentDoc = useCallback((newText: string) => {
+    const view = viewRef.current;
+    const liveMd = viewMode === "preview" && isMdFile;
+    if (liveMd) {
+      if (!view) return;
+      try {
+        const newDoc = withTrailingParagraph(markdownToDoc(newText));
+        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
+        // 进撤销栈：用户要求「搜索替换也要能 Ctrl+Z 撤回」
+        tr.setMeta("addToHistory", true);
+        // 注意**不要**设 fileSwitch（那会让 onDocChange 跳过序列化与脏标记）
+        view.dispatch(tr);
+      } catch (e) {
+        console.error("[EditorContainer] 阅读模式整篇写回失败:", e);
+      }
+      return;
+    }
+    // 源码模式 / 非 md 阅读模式：走 textarea 状态通道，并记撤销记录
+    const textarea = sourceTextareaRef.current;
+    recordUndoEntry(
+      sourceContentRef.current,
+      newText,
+      textarea?.selectionStart ?? 0,
+      textarea?.scrollTop ?? 0,
+    );
+    setSourceContent(newText);
+    sourceContentRef.current = newText;
+    onContentChangeRef.current?.(newText);
+    setDirtyRef.current(true);
+    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+    lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
+  }, [viewMode, isMdFile, recordUndoEntry]);
+
+  /**
    * v0.13.2 需求5（返修后口径）：执行一次**当前文档**的撤销。
    *
    * 用户复测明确要求：「不再跨文档；当前文档的编辑撤销和恢复只在当前文档生效，
    * 切换到其他文档进行撤销恢复也是在对应文档，互不干扰。」
    * 因此这里只操作当前文档的栈（PM history / 源码 diff 栈），不做任何切换文档的路由。
+   *
+   * v0.14.0 需求2：**先**尝试消费「跨文件替换」记录。
+   * 用户要求「跨文件搜索和替换，切换到对应文件后也能使用撤销或恢复」——
+   * 那个文件被替换时并没有打开在编辑器里，它的 PM/源码撤销栈里不可能有这一步。
+   * 所以这里在常规撤销之前检查 `peekCrossFileUndo`：
+   * - 记录存在 **且** 当前文本仍等于记录的 `after`（逐字节一致护栏）→ 整篇写回 `before`，
+   *   并登记对称的可恢复记录，`return true`；
+   * - 记录存在但内容已被用户手工改过 → **丢弃记录**，落到常规撤销栈
+   *   （绝不能整篇覆盖回去抹掉用户的手工编辑）。
    *
    * @returns 是否真的撤销了一步（false = 当前文档撤销栈已空）
    */
@@ -880,12 +979,43 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (viewMode === "preview") {
       const view = viewRef.current;
       if (!view) return false;
+      const key = undoDocKey();
+      const ext = peekCrossFileUndo(key);
+      if (ext && ext.after === getMarkdownFromDoc(view.state.doc)) {
+        // 内容与记录快照一致 → 安全：整篇写回替换前的文本
+        dropCrossFileUndo(key);
+        pushCrossFileRedo(key, ext);
+        const newDoc = withTrailingParagraph(markdownToDoc(ext.before));
+        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
+        // 这条撤销动作本身要进撤销栈，这样紧接着的 Ctrl+Y 能恢复
+        tr.setMeta("addToHistory", true);
+        view.dispatch(tr);
+        return true;
+      }
+      if (ext) dropCrossFileUndo(key);
       const before = view.state.doc;
       undo(view.state, view.dispatch);
       return view.state.doc !== before;
     }
     const textarea = sourceTextareaRef.current;
     if (!textarea) return false;
+    // v0.14.0 需求2：源码模式同样先看跨文件替换记录
+    {
+      const key = undoDocKey();
+      const ext = peekCrossFileUndo(key);
+      if (ext && ext.after === sourceContentRef.current) {
+        dropCrossFileUndo(key);
+        pushCrossFileRedo(key, ext);
+        recordUndoEntry(sourceContentRef.current, ext.before, textarea.selectionStart, textarea.scrollTop);
+        setSourceContent(ext.before);
+        sourceContentRef.current = ext.before;
+        onContentChangeRef.current?.(ext.before);
+        setDirtyRef.current(true);
+        lastContentRef.current = unmaskBase64Images(ext.before, base64TokensRef.current);
+        return true;
+      }
+      if (ext) dropCrossFileUndo(key);
+    }
     if (undoStackRef.current.length === 0) return false;
     // 将当前状态推入恢复栈（记录差异，正向：当前→撤销目标）
     const currentContent = sourceContentRef.current;
@@ -914,19 +1044,54 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       isUndoRedoRef.current = false;
     });
     return true;
-  }, [viewMode]);
+  }, [viewMode, undoDocKey]);
 
-  /** v0.13.2 需求5（返修后口径）：执行一次**当前文档**的恢复（不跨文档） */
+  /**
+   * v0.13.2 需求5（返修后口径）：执行一次**当前文档**的恢复（不跨文档）。
+   *
+   * v0.14.0 需求2：与 `doLocalUndo` 对称——先看有没有「跨文件替换」的待恢复记录
+   * （用户刚撤销掉一次批量替换，接着按 Ctrl+Y 要能把它恢复回来）。
+   */
   const doLocalRedo = useCallback((): boolean => {
     if (viewMode === "preview") {
       const view = viewRef.current;
       if (!view) return false;
+      const key = undoDocKey();
+      const ext = peekCrossFileRedo(key);
+      if (ext && ext.before === getMarkdownFromDoc(view.state.doc)) {
+        dropCrossFileRedo(key);
+        pushCrossFileUndo(key, ext);
+        const newDoc = withTrailingParagraph(markdownToDoc(ext.after));
+        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
+        tr.setMeta("addToHistory", true);
+        view.dispatch(tr);
+        return true;
+      }
+      if (ext) dropCrossFileRedo(key);
       const before = view.state.doc;
       redo(view.state, view.dispatch);
       return view.state.doc !== before;
     }
     const textarea = sourceTextareaRef.current;
-    if (!textarea || redoStackRef.current.length === 0) return false;
+    if (!textarea) return false;
+    // v0.14.0 需求2：源码模式同样先看跨文件「恢复」记录
+    {
+      const key = undoDocKey();
+      const ext = peekCrossFileRedo(key);
+      if (ext && ext.before === sourceContentRef.current) {
+        dropCrossFileRedo(key);
+        pushCrossFileUndo(key, ext);
+        recordUndoEntry(sourceContentRef.current, ext.after, textarea.selectionStart, textarea.scrollTop);
+        setSourceContent(ext.after);
+        sourceContentRef.current = ext.after;
+        onContentChangeRef.current?.(ext.after);
+        setDirtyRef.current(true);
+        lastContentRef.current = unmaskBase64Images(ext.after, base64TokensRef.current);
+        return true;
+      }
+      if (ext) dropCrossFileRedo(key);
+    }
+    if (redoStackRef.current.length === 0) return false;
     const currentContent = sourceContentRef.current;
     const redoEntry = redoStackRef.current.pop()!;
     const redoneContent = applyDiff(currentContent, redoEntry, false);
@@ -952,7 +1117,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       isUndoRedoRef.current = false;
     });
     return true;
-  }, [viewMode]);
+  }, [viewMode, undoDocKey]);
 
   /**
    * v0.13.2 需求5（返修后口径）：**撤销/恢复总入口**（Ctrl+Z / Ctrl+Y / 菜单 / 工具栏共用）。
@@ -2681,12 +2846,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const applyFileText = useCallback((fileKey: string, newText: string) => {
     const curKey = currentDocKey();
     if (curKey && fileKey === curKey) {
-      setSourceContent(newText);
-      sourceContentRef.current = newText;
-      onContentChangeRef.current?.(newText);
-      setDirtyRef.current(true);
-      // 与 onSourceContentChange 同口径：lastContentRef 是**真实坐标**（unmask 后）
-      lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
+      // v0.14.0 需求1+2：当前文档必须走**统一写回入口**——它会按当前视图模式分别
+      // dispatch 到 ProseMirror（阅读模式立即生效 + 进 PM 撤销栈）或写 textarea 状态
+      // （源码模式 + 记 diff 撤销记录）。旧实现只改 state，阅读模式下用户看不到任何变化。
+      writeBackCurrentDoc(newText);
       return;
     }
     const st = useEditorStore.getState();
@@ -2696,9 +2859,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         : (tab.path || "") === fileKey,
     );
     if (idx < 0) return;
+    // v0.14.0 需求2：「跨文件替换后切到对应文件也能撤销/恢复」。
+    // 未激活标签此刻没有 EditorView / textarea 撤销栈（内容只在 store 里），
+    // 所以按文档键单独记一条「整篇文本级」的 before→after 记录，
+    // 等用户切过去按 Ctrl+Z 时由 doLocalUndo 消费（带逐字节一致护栏）。
+    recordCrossFileEdit(fileKey, st.openTabs[idx].content ?? "", newText);
     st.updateTabContent(idx, newText);
     st.updateTabDirty(idx, true);
-  }, [currentDocKey]);
+  }, [currentDocKey, writeBackCurrentDoc]);
 
   /**
    * v0.14.0 需求5（补充说明）：搜索结果条幅的「跳到别的文件」由 App 层切标签
@@ -7165,6 +7333,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         sourceTextareaRef={sourceTextareaRef}
         sourceContent={sourceContent}
         onSourceContentChange={(newContent) => {
+          // v0.14.0 需求2：「搜索/替换也要进撤销栈」。
+          // 这条 prop 只在**源码（编辑）模式**被 SearchReplace 调用（阅读模式它走自己
+          // 的 PM transaction 分支），所以这里只需补一条 diff 撤销记录，写回逻辑
+          // 保持原样（不整篇重建 PM，避免编辑时视图重置）。
+          const ta = sourceTextareaRef.current;
+          recordUndoEntry(
+            sourceContentRef.current,
+            newContent,
+            ta?.selectionStart ?? 0,
+            ta?.scrollTop ?? 0,
+          );
           setSourceContent(newContent);
           onContentChangeRef.current?.(newContent);
           setDirtyRef.current(true);
