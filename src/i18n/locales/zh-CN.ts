@@ -953,6 +953,9 @@ export const zhCN: Record<string, string> = {
   "search.resultsEmpty": "无匹配结果",
   "search.tooManyResults": "结果过多，仅显示前 {count} 条",
   "search.jumpFailed": "无法跳转到该位置",
+  // v0.14.0 需求4：条幅展开时的「全部替换」= 跨所有打开文件
+  "search.replaceAllAcrossFiles": "全部替换（所有文件）",
+  "search.replaceAllAcrossFilesDone": "已替换 {files} 个文件",
   // ─── 语法辅助 ────────────────────────────────────
   "syntax.title": "语法辅助",
   "syntax.clickToInsert": "点击插入: {code}",

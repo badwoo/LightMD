@@ -98,6 +98,36 @@ interface SearchReplaceProps {
    * 用途：右侧没有预览面板时条幅可以给更高（不存在「遮住预览」的顾虑）。
    */
   splitPreviewOpen?: boolean;
+  /**
+   * v0.14.0 需求4：把**任意标签**的新内容写回（跨文件批量替换用）。
+   *
+   * 为什么需要它：`onSourceContentChange` 只能改**当前**文档（它直连编辑区状态）。
+   * 「查找所有打开文件 → 全部替换」要改的是**所有命中的文件**，其中大部分是
+   * 未激活的标签 —— 它们的内容只存在于 `openTabs[i].content` 里，必须由宿主
+   * （EditorContainer / App）统一写回并置脏，面板拿不到 store 写权限。
+   *
+   * 约定（宿主必须遵守）：
+   * - `fileKey` 与 `collectFiles()` 给出的 fileKey **同一口径**（真实文件 = 路径、
+   *   临时标签 = `untitled:<id>`）；
+   * - 若 fileKey 是当前文档 → 必须走与 `onSourceContentChange` 同一条写回路径
+   *   （否则编辑区 state 与标签内容会分叉）；
+   * - 非当前文档 → 写回该标签 content 并置脏（不要静默丢改动）。
+   *
+   * 缺省时「全部替换」退化为只替换当前文档（保证面板可独立测试、未接线不崩）。
+   */
+  applyFileText?: (fileKey: string, newText: string) => void;
+  /**
+   * v0.14.0 需求5：内容版本号（宿主传 `forceUpdateKey`）。
+   *
+   * 作用：搜索面板打开期间切换文档时，**立即**在新文档上重跑一次搜索。
+   *
+   * 为什么不能只靠 `sourceContent` 变化触发：阅读模式下换文档时 PM 的
+   * `editorView` 是**同一个对象**、`sourceContent`（源码侧 state）也不会变
+   * （它只在编辑/切模式时同步），所以 `performSearch` 的依赖全都没变 →
+   * 搜索永远停在旧文档上（用户看到「切了文档但搜索没跟过去」）。
+   * 这个版本号每次换文档 +1，是唯一可靠的「文档已换」信号。
+   */
+  contentVersion?: number;
 }
 
 // ─── 块级偏移映射（v0.14.0：实现已抽到 utils/searchEngine.ts）──────────
@@ -232,6 +262,8 @@ export function SearchReplaceDialog({
   collectFiles,
   onJumpToFile,
   splitPreviewOpen,
+  applyFileText,
+  contentVersion,
 }: SearchReplaceProps) {
   const t = useT();
   const viewMode = useEditorStore((s) => s.viewMode);
@@ -469,6 +501,13 @@ export function SearchReplaceDialog({
     }
   }, [currentDocKey, inSelection]);
 
+  /**
+   * v0.14.0 需求4：跨文件批量替换的结果提示（「已替换 N 个文件」）。
+   *
+   * 为什么需要提示：跨文件替换改的是**未激活的标签**，用户在当前文档里可能
+   * 一处命中都看不到（他的命中都在别的文件），没有提示就会以为"点了没反应"。
+   */
+  const [crossFileReplaceHint, setCrossFileReplaceHint] = useState("");
   // 就地跳转失败的一次性提示（条幅点击落到无法定位的位置时给出可见反馈，而不是静默无反应）
   const [jumpFailed, setJumpFailed] = useState(false);
   const jumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -718,77 +757,6 @@ export function SearchReplaceDialog({
     setTimeout(() => performSearch(), 50);
   }, [isSourceMode, sourceTextareaRef, sourceContent, onSourceContentChange, currentMatch, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, performSearch, editorView]);
 
-  // 全部替换
-  const replaceAll = useCallback(() => {
-    if (!searchText || matchesRef.current.length === 0) return;
-
-    const regex = buildSearchRegexEx(searchText, { caseSensitive, useRegex, wholeWord });
-    if (!regex) return;
-    const matches = matchesRef.current;
-    /** 计算第 i 个命中的替换文本（逐 match 展开捕获组；字面量模式原样替换） */
-    const expandedOf = (i: number, sourceText: string): string =>
-      expandReplacement(sourceText.substring(matches[i].start, matches[i].end), regex, replaceText, useRegex);
-
-    if (isSourceMode && sourceContent !== undefined && onSourceContentChange) {
-      const raw = sourceContent;
-      const normalized = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-      const rawMap = buildRawOffsetMap(raw);
-      // v0.14.0：只替换 matchesRef 里的命中（已按范围/全词过滤），不再用 String.replace 全文替换。
-      // 逆序拼接：从后往前改，前面的偏移量不受影响。
-      let next = raw;
-      for (let i = matches.length - 1; i >= 0; i--) {
-        const expanded = expandedOf(i, normalized);
-        const rawStart = rawMap ? rawMap[Math.min(matches[i].start, rawMap.length - 1)] : matches[i].start;
-        const rawEnd = rawMap ? rawMap[Math.min(matches[i].end, rawMap.length - 1)] : matches[i].end;
-        next = next.substring(0, rawStart) + expanded + next.substring(rawEnd);
-      }
-      onSourceContentChange(next);
-    } else if (editorView) {
-      // 阅读模式：从后往前替换，避免位置偏移（v0.14.0：同样只替换过滤后的命中）
-      try {
-        const offsetMap = offsetMapRef.current;
-        if (!offsetMap) return;
-
-        let tr = editorView.state.tr;
-        // 从后往前替换，这样前面的偏移量不会受影响
-        for (let i = matches.length - 1; i >= 0; i--) {
-          const range = matches[i];
-          const pmStart = lookupPmPos(offsetMap.blocks, range.start);
-          const pmEnd = lookupPmPos(offsetMap.blocks, range.end - 1);
-          if (pmStart !== undefined && pmEnd !== undefined) {
-            const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
-            // R4：逐 match 展开捕获组（字面量模式原样替换）
-            tr = tr.insertText(expandedOf(i, offsetMap.text), pmStart, endPos);
-          }
-        }
-        tr.setMeta("addToHistory", true);
-        editorView.dispatch(tr);
-      } catch {
-        // 忽略替换错误
-      }
-    }
-
-    // v0.14.0：范围快照随「全部替换」平移。
-    // 按命中升序逐次套用 applyReplacementToRange（相当于把 N 次替换依次施加到范围上），
-    // 因为范围只罩住这些命中，所以起点不动、终点按累计增量伸缩。
-    if (inSelection && selectionRange) {
-      const normalized = isSourceMode ? (sourceContent ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n") : offsetMapRef.current?.text ?? "";
-      let shifted = selectionRange;
-      let acc = 0; // 已处理命中造成的累计位移
-      for (let i = 0; i < matches.length; i++) {
-        const inserted = expandedOf(i, normalized).length;
-        const removed = matches[i].end - matches[i].start;
-        shifted = applyReplacementToRange(shifted, matches[i].start + acc, removed, inserted);
-        acc += inserted - removed;
-      }
-      setSelectionRange(shifted);
-    }
-
-    setTimeout(() => performSearch(), 50);
-  }, [isSourceMode, sourceContent, onSourceContentChange, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, performSearch, editorView]);
-
-  // ─── v0.14.0：「查找所有打开文件」结果条幅 ─────────────────────
-
   /**
    * 取某个文件的「本轮搜索选项」。
    *
@@ -874,11 +842,234 @@ export function SearchReplaceDialog({
     setResultsTruncated(truncated);
   }, [searchText, optionsForFile, docKey, readCurrentText]);
 
+  /**
+   * v0.14.0 需求4：把「查找所有打开文件」的结果**批量替换到所有命中的文件**。
+   *
+   * 用户原话：「点击『查找所有打开文件』查找到多个文件上的内容然后进行内容替换，
+   * 那么所有查找到的文件的内容都应该可以被替换。」
+   *
+   * 实现要点（每条都是踩坑点）：
+   * 1. **不能只替换当前文档**：条幅里大部分命中在未激活的标签上，它们的内容只存在于
+   *    `openTabs[i].content`，必须经宿主提供的 `applyFileText(fileKey, newText)` 写回；
+   * 2. **每个文件按自己的文本重算命中**（不复用条幅里的 `ranges`）：条幅是"上次重建
+   *    条幅时"的快照，期间用户可能改过字；而且条幅的 ranges 是**行内**偏移，不是全文偏移；
+   * 3. **「选取范围内」只作用于当前文档**：其他文件没有选区坐标，范围恒为 null
+   *    （与 rebuildResults / optionsForFile 同一口径，否则别的文件会被全部误杀）；
+   * 4. **逆序替换**：从后往前拼，前面的偏移不受影响（与 replaceAll 同一手法）；
+   * 5. **CRLF 保真**：命中偏移是归一化文本坐标，写回前用 `buildRawOffsetMap` 换算回原文；
+   * 6. 替换完成后**重建条幅**（命中应消失），并刷新当前文档的搜索计数。
+   *
+   * @returns 实际被改写的文件数（0 表示没有可替换内容）
+   */
+  const replaceAllAcrossFiles = useCallback((): number => {
+    if (!searchText) return 0;
+    const regex = buildSearchRegexEx(searchText, { caseSensitive, useRegex, wholeWord });
+    if (!regex) return 0;
+
+    const currentKey = docKey ?? FALLBACK_FILE_KEY;
+    const provided = collectFilesRef.current ? collectFilesRef.current() : null;
+    // 没有 collectFiles（未接线 / 独立测试）：退化为只替换当前文档
+    const files: SearchableFile[] = provided && provided.length > 0
+      ? provided
+      : [
+          {
+            fileKey: currentKey,
+            filePath: "",
+            fileName: docKey ? docKey.split(/[\\/]/).pop() ?? docKey : "",
+            getText: () => readCurrentText().text,
+          },
+        ];
+
+    let changedFiles = 0;
+    for (const f of files) {
+      const isCurrentDoc = f.fileKey === currentKey;
+      // 「选取范围内」只属于当前文档 → 其他文件跳过（与查找口径一致）
+      if (inSelection && !isCurrentDoc) continue;
+
+      const raw = isCurrentDoc ? (readCurrentText().raw ?? f.getText()) : f.getText();
+      const normalized = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const opts: SearchOptions = {
+        caseSensitive,
+        useRegex,
+        wholeWord,
+        range: inSelection ? (isCurrentDoc ? selectionRange ?? EMPTY_RANGE : null) : null,
+      };
+      const ranges = findMatchRangesEx(normalized, searchText, opts);
+      if (!ranges || ranges.length === 0) continue;
+
+      const rawMap = buildRawOffsetMap(raw);
+      let next = raw;
+      // 逆序拼接：从后往前改，前面的偏移不受影响
+      for (let i = ranges.length - 1; i >= 0; i--) {
+        const m = ranges[i];
+        const expanded = expandReplacement(
+          normalized.substring(m.start, m.end),
+          regex,
+          replaceText,
+          useRegex,
+        );
+        const rawStart = rawMap ? rawMap[Math.min(m.start, rawMap.length - 1)] : m.start;
+        const rawEnd = rawMap ? rawMap[Math.min(m.end, rawMap.length - 1)] : m.end;
+        next = next.substring(0, rawStart) + expanded + next.substring(rawEnd);
+      }
+      if (next === raw) continue;
+
+      if (isCurrentDoc) {
+        // 当前文档走与「全部替换」同一条写回路径（编辑区 state + 标签内容 + 脏标记）
+        onSourceContentChange?.(next);
+      } else {
+        // 其他标签：只能经宿主写回（面板没有 store 写权限）
+        applyFileText?.(f.fileKey, next);
+      }
+      changedFiles++;
+    }
+
+    // 当前文档的匹配计数 / 条幅都需要重算（条幅是同步纯计算，直接刷）
+    setTimeout(() => {
+      performSearch();
+      if (showResults) rebuildResults();
+    }, 50);
+    return changedFiles;
+  }, [
+    searchText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange,
+    docKey, readCurrentText, onSourceContentChange, applyFileText, replaceText,
+    performSearch, showResults, rebuildResults,
+  ]);
+
+  // 全部替换
+  //
+  // v0.14.0 需求4：**条幅展开时**，本按钮改为「替换所有命中的文件」——
+  // 用户点「查找所有打开文件」看到多文件命中后，期望一次替换就把这些文件全改掉；
+  // 若此时仍只替换当前文档，其余文件的内容与条幅显示的命中就会不一致（用户明确报了这个）。
+  // 条幅收起时保持旧的「只替换当前文档」语义，避免误改未展示的文件。
+  const replaceAll = useCallback(() => {
+    if (!searchText) return;
+    if (showResults && collectFilesRef.current) {
+      const n = replaceAllAcrossFiles();
+      setCrossFileReplaceHint(
+        n > 0 ? t("search.replaceAllAcrossFilesDone", { files: n }) : t("search.resultsEmpty"),
+      );
+      if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
+      jumpTimerRef.current = setTimeout(() => setCrossFileReplaceHint(""), 3000);
+      return;
+    }
+    if (matchesRef.current.length === 0) return;
+
+    const regex = buildSearchRegexEx(searchText, { caseSensitive, useRegex, wholeWord });
+    if (!regex) return;
+    const matches = matchesRef.current;
+    /** 计算第 i 个命中的替换文本（逐 match 展开捕获组；字面量模式原样替换） */
+    const expandedOf = (i: number, sourceText: string): string =>
+      expandReplacement(sourceText.substring(matches[i].start, matches[i].end), regex, replaceText, useRegex);
+
+    if (isSourceMode && sourceContent !== undefined && onSourceContentChange) {
+      const raw = sourceContent;
+      const normalized = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const rawMap = buildRawOffsetMap(raw);
+      // v0.14.0：只替换 matchesRef 里的命中（已按范围/全词过滤），不再用 String.replace 全文替换。
+      // 逆序拼接：从后往前改，前面的偏移量不受影响。
+      let next = raw;
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const expanded = expandedOf(i, normalized);
+        const rawStart = rawMap ? rawMap[Math.min(matches[i].start, rawMap.length - 1)] : matches[i].start;
+        const rawEnd = rawMap ? rawMap[Math.min(matches[i].end, rawMap.length - 1)] : matches[i].end;
+        next = next.substring(0, rawStart) + expanded + next.substring(rawEnd);
+      }
+      onSourceContentChange(next);
+    } else if (editorView) {
+      // 阅读模式：从后往前替换，避免位置偏移（v0.14.0：同样只替换过滤后的命中）
+      try {
+        const offsetMap = offsetMapRef.current;
+        if (!offsetMap) return;
+
+        let tr = editorView.state.tr;
+        // 从后往前替换，这样前面的偏移量不会受影响
+        for (let i = matches.length - 1; i >= 0; i--) {
+          const range = matches[i];
+          const pmStart = lookupPmPos(offsetMap.blocks, range.start);
+          const pmEnd = lookupPmPos(offsetMap.blocks, range.end - 1);
+          if (pmStart !== undefined && pmEnd !== undefined) {
+            const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
+            // R4：逐 match 展开捕获组（字面量模式原样替换）
+            tr = tr.insertText(expandedOf(i, offsetMap.text), pmStart, endPos);
+          }
+        }
+        tr.setMeta("addToHistory", true);
+        editorView.dispatch(tr);
+      } catch {
+        // 忽略替换错误
+      }
+    }
+
+    // v0.14.0：范围快照随「全部替换」平移。
+    // 按命中升序逐次套用 applyReplacementToRange（相当于把 N 次替换依次施加到范围上），
+    // 因为范围只罩住这些命中，所以起点不动、终点按累计增量伸缩。
+    if (inSelection && selectionRange) {
+      const normalized = isSourceMode ? (sourceContent ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n") : offsetMapRef.current?.text ?? "";
+      let shifted = selectionRange;
+      let acc = 0; // 已处理命中造成的累计位移
+      for (let i = 0; i < matches.length; i++) {
+        const inserted = expandedOf(i, normalized).length;
+        const removed = matches[i].end - matches[i].start;
+        shifted = applyReplacementToRange(shifted, matches[i].start + acc, removed, inserted);
+        acc += inserted - removed;
+      }
+      setSelectionRange(shifted);
+    }
+
+    setTimeout(() => performSearch(), 50);
+  }, [isSourceMode, sourceContent, onSourceContentChange, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, performSearch, editorView, showResults, replaceAllAcrossFiles, t]);
+
+  // ─── v0.14.0：「查找所有打开文件」结果条幅 ─────────────────────
+
+
   /** 搜索词/选项/范围变化时，条幅已展开就自动刷新（跟着查找走，不需要再点一次按钮） */
   useEffect(() => {
     if (!showResults) return;
     rebuildResults();
   }, [showResults, rebuildResults]);
+
+  /**
+   * v0.14.0 需求5：**换文档后立即在新文档上重新搜索**。
+   *
+   * 用户原话：「我在 a 文档开启了搜索框，点击内容搜索没搜到，我没关闭搜索框而是切换到
+   * 另一个文档，那么这个搜索的内容应该立即激活并作用到切换的文档上进行搜索。」
+   *
+   * 为什么必须显式监听 `docKey` / `contentVersion`：
+   * - 阅读模式下换文档，`editorView` 是**同一个对象**（不重建），`sourceContent`
+   *   在阅读模式也不会变 → `performSearch` 的所有依赖都没变，effect 不会重跑；
+   * - 而 `docKey` 每次换文档必变、`contentVersion`（宿主传的 forceUpdateKey）必 +1。
+   *
+   * 用 `contentVersion` 而不是只靠 docKey：同一文件被外部改过 / 切回同一标签
+   * 但内容变了，docKey 不变而 contentVersion 变了，也应该重新搜索。
+   *
+   * ⚠️ 时序：换文档后 PM doc 的替换是在 EditorContainer 的 effect 里做的，本 effect
+   * 可能先跑（读到旧 doc）→ 所以延迟到下一帧再搜（rAF），必要时再来一次。
+   */
+  useEffect(() => {
+    if (!searchText) return;
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      performSearch();
+    };
+    // 双 rAF：第一帧等 React 提交完成、第二帧等 EditorContainer 把新 doc 灌进 view
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(run);
+      // raf2 的取消挂在下面的 cleanup 里不方便，直接用 setTimeout 兜底取消
+      if (cancelled) cancelAnimationFrame(raf2);
+    });
+    // 兜底：某些环境下 doc 替换在 effect 之后一拍才稳定，再补一次
+    const timer = setTimeout(run, 120);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      clearTimeout(timer);
+    };
+    // 只依赖「文档身份 / 内容版本」与搜索词：选项变化由 performSearch 自己的依赖处理
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docKey, contentVersion, searchText]);
+
 
   /** 「查找所有打开文件」按钮：展开 ↔ 收起 */
   const toggleResults = useCallback(() => {
@@ -1093,6 +1284,12 @@ export function SearchReplaceDialog({
           {t("search.jumpFailed")}
         </div>
       )}
+      {/* v0.14.0 需求4：跨文件批量替换的结果提示 */}
+      {crossFileReplaceHint && (
+        <div className="search-hint" data-testid="search-crossfile-hint">
+          {crossFileReplaceHint}
+        </div>
+      )}
       {showReplace && (
         <div className="replace-row">
           <input
@@ -1105,8 +1302,15 @@ export function SearchReplaceDialog({
           <button className="replace-btn" title={t("search.replaceCurrent")} onClick={replaceCurrent} disabled={matchCount === 0}>
             {t("search.replace")}
           </button>
-          <button className="replace-btn" title={t("search.replaceAll")} onClick={replaceAll} disabled={matchCount === 0}>
-            {t("search.replaceAll")}
+          {/* v0.14.0 需求4：条幅展开时本按钮改文案 → 明确告知"会替换所有文件" */}
+          <button
+            className="replace-btn"
+            data-testid="search-replace-all"
+            title={showResults && collectFiles ? t("search.replaceAllAcrossFiles") : t("search.replaceAll")}
+            onClick={replaceAll}
+            disabled={showResults && collectFiles ? resultMatchTotal === 0 : matchCount === 0}
+          >
+            {showResults && collectFiles ? t("search.replaceAllAcrossFiles") : t("search.replaceAll")}
           </button>
         </div>
       )}

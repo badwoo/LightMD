@@ -2607,8 +2607,45 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, [currentDocKey, isSourceMode]);
 
   /**
-   * v0.14.0 需求2：结果条幅点「别的文件」的命中时，面板派发 `lightmd:search-jump`，
-   * **由 App 层切标签**（见 App.tsx 的 SEARCH_JUMP_EVENT 监听）。
+   * v0.14.0 需求4：把某次「跨文件全部替换」的结果写回指定文件。
+   *
+   * 两条分支（缺一不可）：
+   * - **当前文档**：必须走与 `onSourceContentChange` 完全相同的写回路径
+   *   （编辑区 state + ref + onContentChange + 脏标记 + lastContentRef 基线）。
+   *   若这里直接改 store 的 tab.content，编辑区 state 会与标签内容分叉，
+   *   下一次击键就会把替换结果冲掉。
+   * - **其他标签**：它们的内容只存在于 `openTabs[i].content`，只能经 store 写回。
+   *   ⚠️ 必须同时置脏 —— 否则这些文件看起来"没改过"，关闭窗口时不会提示保存，
+   *   用户以为替换成功、实际磁盘上还是旧内容。
+   *
+   * fileKey 口径与 `collectSearchFiles()` 严格一致（真实文件 = path、
+   * 临时标签 = `untitled:<id>`），否则会把别的文件当当前文档、写错地方。
+   */
+  const applyFileText = useCallback((fileKey: string, newText: string) => {
+    const curKey = currentDocKey();
+    if (curKey && fileKey === curKey) {
+      setSourceContent(newText);
+      sourceContentRef.current = newText;
+      onContentChangeRef.current?.(newText);
+      setDirtyRef.current(true);
+      // 与 onSourceContentChange 同口径：lastContentRef 是**真实坐标**（unmask 后）
+      lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
+      return;
+    }
+    const st = useEditorStore.getState();
+    const idx = st.openTabs.findIndex((tab, i) =>
+      tab.isUntitled
+        ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? i}` === fileKey
+        : (tab.path || "") === fileKey,
+    );
+    if (idx < 0) return;
+    st.updateTabContent(idx, newText);
+    st.updateTabDirty(idx, true);
+  }, [currentDocKey]);
+
+  /**
+   * v0.14.0 需求5（补充说明）：搜索结果条幅的「跳到别的文件」由 App 层切标签
+   * （见 App.tsx 的 SEARCH_JUMP_EVENT 监听）。
    *
    * 为什么不在本组件里切：切标签要同步 filePath / content / 语言 / forceUpdateKey
    * / 撤销历史，这些逻辑只在 App.handleTabSwitch 一处维护；在这里重复实现必然漏项。
@@ -7008,6 +7045,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         docKey={currentDocKey() ?? undefined}
         // v0.14.0 需求2：「查找所有打开文件」的数据源（实时取文本，不传快照）
         collectFiles={collectSearchFiles}
+        // v0.14.0 需求4：跨文件批量替换的写回通道（未激活标签只能经宿主写）
+        applyFileText={applyFileText}
+        // v0.14.0 需求5：换文档/换内容时让搜索立即在新文档上重跑
+        // （阅读模式下 editorView 与 sourceContent 都不变，只有这个版本号会变）
+        contentVersion={forceUpdateKey}
         // v0.14.0 需求2：编辑模式关掉右侧预览时，结果条幅可用更高空间
         splitPreviewOpen={previewShown}
       />

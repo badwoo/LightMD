@@ -945,6 +945,9 @@ export const enUS: Record<string, string> = {
   "search.resultsEmpty": "No matches",
   "search.tooManyResults": "Too many results, showing the first {count}",
   "search.jumpFailed": "Could not jump to that location",
+  // v0.14.0 req 4: "Replace all" while the results banner is open covers every open file
+  "search.replaceAllAcrossFiles": "Replace all (all files)",
+  "search.replaceAllAcrossFilesDone": "Replaced in {files} file(s)",
   // ─── Syntax helper ───────────────────────────────────
   "syntax.title": "Syntax Helper",
   "syntax.clickToInsert": "Click to insert: {code}",
