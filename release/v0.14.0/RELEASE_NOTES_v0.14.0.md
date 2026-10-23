@@ -319,3 +319,179 @@ a8b8275afb2de7b576405080f1a22e4a7a5f5a8ed0ae107cdf6f272889aec6ed  LightMD_0.14.0
    在 LightMD 的 Read 模式下不可见。
 4. **搜索/替换写回不进源码撤销栈**（v0.4.2 起的既有语义）：`Ctrl+Z` 撤不回替换结果，
    需用反向替换；跨文件批量替换同理。
+
+---
+
+# v0.14.0 第三批（2026-10-23，同一版本号再次打包）
+
+> 定位：**问题修复 5 条 + 观感/布局调整 1 条**。6 条需求全部在**打包产物 +
+> WebView2 真实鼠标键盘手势**下逐条实测通过。
+
+## 一、安装包（本批重新打包）
+
+| 文件 | 大小 |
+|---|---|
+| `LightMD_0.14.0_x64-setup.exe` | 7,831,375 B |
+| `LightMD_0.14.0_x64_en-US.msi` | 11,300,864 B |
+
+```
+918c6e4d3415d544d090e68c631c822eb494d61ebafa6a8e75273d116ff1808d  LightMD_0.14.0_x64-setup.exe
+d02b2c0b404c55a905a4fe6a791b2096a84c530b86c0ea4d5e47613760dee638  LightMD_0.14.0_x64_en-US.msi
+```
+
+> `lightmd.exe` 的 `FileVersion` / `ProductVersion` 实测仍为 `0.14.0`（版本号不变，内容更新）。
+
+## 二、6 条需求逐条落地
+
+### 需求1：阅读模式下搜索/替换没有立即生效
+
+实机定位到**两层**根因（`scripts/v0140-probe-req1-crossfile-preview.mjs`，T1/T2/T3）：
+
+1. 条幅**展开**时点「全部替换（所有文件）」→ `replaceAllAcrossFiles` 对**当前文档**
+   也调用 `onSourceContentChange`，而那是**源码态**写回通道 → 只更新了隐藏 textarea
+   的 state 与 localStorage，**ProseMirror 一个字都没动** → 阅读视图毫无反应。
+2. 更糟：下一次切模式会用 PM 内容反序列化回写，**把替换结果冲掉**
+   （实测：替换后切到编辑模式，源码又变回 `cat`）。
+
+修法：新增**统一写回入口** `writeBackCurrentDoc(newText)`，按视图模式分流：
+- **阅读模式 + md** → dispatch `replaceWith(0, size, newDoc)` 事务（阅读视图立即更新），
+  序列化/标签内容/脏标记由 `onDocChange` 顺带完成；
+- **源码模式 / 非 md 阅读模式** → 写 textarea 状态（+ 记撤销，见需求2）。
+
+两个调用方（面板自己的替换、跨文件替换的当前文档写回）都归口到它。
+
+实测：T1-a 阅读视图立即变 PASS；T2 切编辑后源码仍是 `DOG` PASS；T3 对照组 PASS。
+
+### 需求2：搜索替换进撤销栈；跨文件替换后切过去也能撤销/恢复
+
+未激活标签此刻**没有** EditorView、也没有 textarea 撤销栈（内容只在 store 的
+`openTabs[i].content`），且切过去时 PM state 是按内容**重建**的 → 天然没有"替换"这一步。
+
+修法：`services/docHistoryStore.ts` 新增按文档键的**整篇文本级**记录：
+- `recordCrossFileEdit(key, before, after)`：未激活标签写回时登记；
+  同一文档连续替换**合并**为「最早的 before + 最新的 after」（用户心智是
+  "撤回那轮批量替换"，不是逐处撤）；
+- `doLocalUndo` / `doLocalRedo` **先**消费它，再落回常规 PM/diff 撤销栈；
+- **位置敏感护栏**：只有当前文本仍与记录逐字节一致才应用，否则**丢弃记录**
+  并落到常规撤销栈 —— 宁可少撤一步，也绝不整篇覆盖回去抹掉用户的手工编辑
+  （与 `loadDocHistory` 同一套安全纪律）。
+- 源码态替换通道（`onSourceContentChange`）补 `recordUndoEntry`，编辑模式下也能 Ctrl+Z。
+
+实机验收（`scripts/v0140-probe-crossfile-undo.mjs`，每轮全新临时目录+独立 profile，
+阅读模式与源码模式各一轮）全部 PASS：
+- 未激活的 B 被跨文件替换成 DOG ✔
+- 切到 B（从未激活过）后**能撤销**（DOG → cat）✔
+- 撤销后**能恢复**（cat → DOG）✔
+- 当前文档 A 也能撤销该替换 ✔
+- 磁盘文件仍为原始内容（跨文件替换不自动写盘，需用户保存）✔
+
+### 需求3：最近打开点时钟不出面板
+
+**两个独立根因**（均在真实应用复现，`scripts/v0140-probe-recent.mjs`）：
+
+1. **渲染条件口径不一致**：`RecentFiles` 自 v0.8.5 需求8 起是「文件+文件夹」混排、
+   任一类有记录即渲染，但布局层三处判定（`favRecentCompact` / `ordered` /
+   `SlideWrap visible`）还停在旧的「只看 `recentFiles`」→ 只开过文件夹时
+   `recentFiles=[]` → **按钮已 active，但面板一次都不挂载**（`panelExists=false`）。
+2. **面板挂在滚动视口之外**：侧栏溢出时面板已挂载、高 200px、16 条数据全渲染，
+   但 `top=860.5px` 而滚动容器可视区只有 `121.5..824`、`scrollTop=0`
+   → 面板 100% 在视口下方，用户视线里"什么都没变"。
+
+修法：抽出 `recentHasData = files>0 || folders>0` 统一三处口径（与 `RecentFiles`
+的空判定严格对齐）；新增多拍复查 effect（`REVEAL_CHECK_DELAYS=[0,40,160,320,560]ms`，
+**只在"未完整可见"时才 scrollTo**，已可见绝不动）。
+> 踩坑：第一版用双 rAF（≈32ms）量一次无效——侧栏 section 有 `transition: height 0.3s`
+> 且「打开的文件栏收缩」effect 会再改一次 temp 高度，那一刻量到的是过渡中间态。
+
+实测：干净态 `panelExists=true`；溢出态 `panelFullyVisible=true`（`scrollTop` 0→236）；
+只有文件夹历史态 `panelExists=true` 高 343px。
+
+### 需求4：文件夹栏只有 7 个条目 → 11 条 + 末尾留空
+
+实测（不是估算）：标题栏 `.filetree-root-path` = **32px**
+（`padding 6+6` + `font-size 11px` 行高 17.6 + 上下各 1px border），
+条目行高 `.filetree-node` = **30px**，旧默认 250px → 内容区 218px → **完整可视 7 条**
+（与用户"只有7个条目"完全吻合）。
+
+新默认 **392px** = `32 + (11 + 1) × 30` → 内容区 360px → 可视 **12 条**，
+比 11 行多出**恰好 30px = 1 个条目位留白**（方便右键：新建文件/新建文件夹/刷新/粘贴）。
+
+导出常量（可读表达式，不写死魔法数字）：
+```ts
+export const FOLDER_VISIBLE_ROWS = 11;
+export const FOLDER_HEADER_HEIGHT = 32;                 // 实测值
+export const DEFAULT_FOLDER_SECTION_HEIGHT =
+  FOLDER_HEADER_HEIGHT + (FOLDER_VISIBLE_ROWS + 1) * SIDEBAR_ITEM_HEIGHT;  // = 392
+export function defaultSectionHeight(key)               // sizeOf 的默认值来源
+```
+
+⚠️ **老用户迁移（重要）**：`sizeOf()` 是 `sectionSizes[key] ?? defaultSectionHeight(key)`，
+而用户**拖拽过任何一栏**时整张 `sidebarSectionSizes` 都会持久化（含 `folder:` 的旧默认
+250）→ 只改默认值对老用户**完全不生效**，他们升级后仍是 7 条。
+因此新增 persist version **4→5** 迁移：清掉 `folder:` 中 `<= 250` 的项，让其回落到
+392px；**用户明确拖大过（> 250）的一律保留**。直接删键而非写 392 —— 保持常量只有一处定义。
+
+### 需求5：竖排小字换字体风格，简单呼吸渐变、不要金属光泽
+
+从「衬线艺术字 + 七段金属色带 + 径向柔光」换成**等宽 / 几何「轻线条」**：
+- **字体**：`Cascadia Code / Cascadia Mono / Consolas / ui-monospace` + 中文**无衬线**
+  （微软雅黑 / PingFang SC，**不回退宋体**——宋体就是被否掉的衬线观感）。
+  全部系统自带：零字体文件、零网络、无首屏字体抖动。
+- 配套：`font-weight: 400`（原 500，细字重=轻线条）、`letter-spacing: 3px`（原 2px）、
+  `font-variant: full-width`（原 small-caps）。
+- **金属光泽全部删除**：`--label-metal` 七段色带、radial 柔光层都没了；
+  只留**一层静态极淡线性渐变** `--label-sheen`（180deg、2 色标、只画一次、**不参与动画**），
+  `background-clip` 从 `text,text,padding-box` 三层降为 `text,padding-box` 两层。
+- **呼吸**：关键帧**只** `opacity`（0.55 ↔ 1）+ 极小 `scale`（0.97 ↔ 1）。
+
+实机量测：`font-weight=400`、`letter-spacing=3px`、`font-variant=full-width`、
+`text-shadow/filter=none`、关键帧属性 `["transform","opacity"]`、
+关闭态标签宽 **16.75px ≤ 18px**、呼吸采样 0.58→0.85→1.00→0.83→0.57（动画 `running`）。
+
+### 需求6：标题栏菜单被编辑区挡住
+
+**真根因不是"缺个 z-index"**，而是 stacking context **三层**失效：
+1. `.titlebar` 是 `position:relative; z-index:auto` → **不创建 SC**，与后出现的
+   `.app-shell`/编辑区同处 `<body>` 根上下文，按 DOM 顺序**被后绘制的编辑区覆盖**；
+2. 下拉菜单自己的 `z-index:1000` **救不了** —— 它被 `.titlebar-left{z-index:1}`
+   夹在那个 z-index=1 的小 SC 里（z-index 只在最近 SC 内比较）；
+3. 新开软件时编辑区盖着 `.editor-empty-state`（absolute / `z-index:10` /
+   整块不透明白底 / `pointer-events:none`），画在菜单之上把下探那截吃掉。
+
+> **⚠️ 取证陷阱（非常重要）**：`elementFromPoint` 全程报"35/35 命中菜单项"——
+> **假阳性**。因为它跳过 `pointer-events:none` 的层：指针确实穿得过白底，
+> 但白底**照样画在菜单上面**。必须用**像素 diff** 才能证伪。
+
+修法：`.titlebar` 加 `z-index: var(--z-titlebar, 100)` + `overflow: visible`；
+`:root` 新增 `--z-titlebar: 100`（低于弹窗 1000/1100/1200、Toast 10000）。
+**不给** `.app-shell` / `.app-sidebar` / `.app-outline` / `.editor-main-area` 加 z-index
+—— 那会创建 SC，把内部 `position:fixed` 弹层（搜索面板等）关进低上下文，反被标题栏压住。
+未改 DOM/JSX，**未用 `position:fixed`**。
+
+A/B 实机对照（同 exe，仅切 `.titlebar` 的 z-index）：
+- 修复前：菜单内文字暗色像素 = **0**（完全看不见）；隐藏空状态后像素变化
+  **17243/221520 (7.8%)** → 空状态画在菜单之上。
+- 修复后：文字暗色像素 = **3425**（完整可读）；隐藏空状态后变化 **0** → 空状态在菜单之下。
+
+## 三、质量验证
+
+| 项 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | **exit 0** |
+| 全量单元测试 | **313 文件 / 5453 用例全部通过** |
+| 本批新增测试 | `v0140-search-replace-undo`(18) · `v0140-sidebar-recent`(30) · `v0140-divider-style-v2`(25) · `v0140-titlebar-zindex`(15) |
+| 实机验收脚本 | `v0140-probe-req1-crossfile-preview` · `v0140-probe-crossfile-undo` · `v0140-probe-recent` · `v0140-probe-titlebar-menu` · `v0140-probe-divider-style-v2` —— 全部 PASS |
+| 版本号一致性 | `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock` = **0.14.0** |
+
+## 四、已知取舍
+
+1. **跨文件撤销是「整篇文本级」**：一次 `Ctrl+Z` 撤回"那轮批量替换"（而不是逐处撤），
+   且只在该文件本轮**未被手工编辑过**时生效（护栏，宁可少撤一步也不抹掉手改）。
+2. **老用户文件夹栏**：若以前把文件夹栏**拖大过**（> 250px），会保留自己的值，
+   需手动拖一次或用默认值重置才看到 392px。
+3. **字体**全部系统自带（零字体文件/零网络）；不同 Windows 版本的等宽字体可用性
+   略有差异，回退栈已兜底到通用 `monospace`。
+4. **`--z-titlebar: 100`** 让整个标题栏高于内容区：目前所有弹窗层级都 ≥ 1000，无冲突；
+   若将来有内容区元素需要盖住标题栏，需复核该变量。
+5. **标题栏菜单**的修复依赖 stacking context 秩序，后续新增内容区样式时
+   **不要**给 `.app-shell` 等容器加 z-index（会把内部 fixed 弹层关进低层级）。
