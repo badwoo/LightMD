@@ -139,6 +139,13 @@ const mk = (cdp) => {
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
     await sleep(120);
   };
+  /** 真实左键单击（用于"点击保持展开"把菜单钉住，不依赖 hover 存活） */
+  const cdpClick = async (x, y) => {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, buttons: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, buttons: 0 });
+    await sleep(160);
+  };
   /** 截取页面某矩形（CSS 像素）。返回 {base64, width, height}（宽高已是设备像素） */
   const shootRect = async (rect) => {
     const r = await cdp.send("Page.captureScreenshot", {
@@ -154,7 +161,7 @@ const mk = (cdp) => {
     fs.writeFileSync(p, Buffer.from(b64, "base64"));
     return p;
   };
-  return { ev, mouseMove, shootRect, saveBase64 };
+  return { ev, mouseMove, cdpClick, shootRect, saveBase64 };
 };
 
 /** 菜单打开后，测量几何 + stacking-context 链 + 绘制顺序 */
@@ -334,9 +341,46 @@ const main = async () => {
   log("");
 
   const session = await launch(profile);
-  const { ev, mouseMove, shootRect, saveBase64 } = mk(session.cdp);
+  const { ev, mouseMove, cdpClick, shootRect, saveBase64 } = mk(session.cdp);
 
-  /** 真实手势打开菜单：先移到旁边再移到按钮（onMouseEnter） */
+  /**
+   * 把菜单"钉住"（**只在探针运行期间生效，不改应用源码**）。
+   *
+   * 为什么必须这样做：TitleBar 的下拉菜单是 hover 展开（onMouseEnter）、
+   * `onMouseLeave` 收起；而 WebView2 在 `Page.captureScreenshot` 期间会丢 hover，
+   * React 收到 mouseout 就把菜单收起了 → 截到的是"菜单根本没打开"的空白图。
+   * 这会让"被编辑区挡住"与"菜单没打开"无法区分（实测既产生过假 FAIL 也产生过假 PASS）。
+   *
+   * 做法：React 17+ 把 onMouseLeave 委托为原生 `mouseout`（冒泡到 root 容器），
+   * 因此在 root 的**捕获阶段**拦掉源自 `.titlebar-new-menu` 子树的
+   * mouseout/mouseleave，不让它们到达 React 的委托监听器 → 菜单稳定保持展开。
+   * 探针结束前 unpin 恢复真实行为，并用"移开鼠标菜单能收起"验证未破坏原逻辑。
+   */
+  const pinMenu = async () =>
+    ev(`
+      if (window.__menuPinned) return true;
+      const root = document.getElementById("root") || document.body;
+      window.__pinHandler = (e) => {
+        const t = e.target;
+        if (t && t.closest && t.closest(".titlebar-new-menu")) e.stopPropagation();
+      };
+      for (const type of ["mouseout", "mouseleave"]) root.addEventListener(type, window.__pinHandler, true);
+      window.__menuPinned = true;
+      return true;
+    `);
+  const unpinMenu = async () =>
+    ev(`
+      if (!window.__menuPinned) return true;
+      const root = document.getElementById("root") || document.body;
+      for (const type of ["mouseout", "mouseleave"]) root.removeEventListener(type, window.__pinHandler, true);
+      delete window.__pinHandler;
+      window.__menuPinned = false;
+      return true;
+    `);
+
+  /**
+   * 打开菜单（hover 进入 + 点击保持展开，双保险；配合 pinMenu 后截图稳定）。
+   */
   const openMenu = async (which) => {
     const info = await ev(`
       const btns = [...document.querySelectorAll(".titlebar-menu-btn")];
@@ -350,9 +394,32 @@ const main = async () => {
     if (!info) throw new Error(`找不到菜单按钮：${which}`);
     await mouseMove(info.x - 40, info.y);
     await mouseMove(info.x, info.y);
-    await sleep(350);
+    await cdpClick(info.x, info.y);
+    await sleep(320);
     return info;
   };
+
+  /**
+   * 「修复前」状态的等价构造（**只改运行时内联样式，不动源码、不动产物**）：
+   * 修复前 .titlebar 是 `position:relative; z-index:auto` ——
+   * 这里用 `z-index:auto !important` 精确复原那一刻的层叠条件，
+   * 于是同一个 exe 上就能做出「修复前 vs 修复后」的 A/B 对比。
+   * 这正是根因验证：唯一的差异就是标题栏是否建立高层级 stacking context。
+   */
+  const setFixState = async (on) =>
+    ev(`
+      const on = ${on ? "true" : "false"};
+      const tb = document.querySelector(".titlebar");
+      if (!tb) return null;
+      if (on) {
+        tb.style.removeProperty("z-index");
+        tb.removeAttribute("data-probe-before");
+      } else {
+        tb.style.setProperty("z-index", "auto", "important");
+        tb.setAttribute("data-probe-before", "1");
+      }
+      return getComputedStyle(tb).zIndex;
+    `);
 
   /**
    * 像素证明：假设隐藏 selector 指向的层，看菜单矩形内像素有没有变化。
@@ -361,10 +428,13 @@ const main = async () => {
    *
    * ⚠️ 用 visibility:hidden 而不是 display:none —— 后者会移除盒子、可能触发重排，
    *    布局一动像素对比就没有意义了（候选层都是脱流 absolute/fixed，visibility 只影响绘制）。
+   *    前提：调用方已 pinMenu()，否则截图期间 WebView2 丢 hover 会截到空白图。
    */
   const pixelProof = async (rect, hideSelector, tag) => {
     const before = await shootRect(rect);
+    const openA = await ev(`return !!document.querySelector(".titlebar-dropdown");`);
     const pathBefore = saveBase64(`${tag}-A-before`, before.base64);
+
     const hidden = await ev(`
       const el = document.querySelector(${JSON.stringify(hideSelector)});
       if (!el) return { ok: false };
@@ -372,10 +442,11 @@ const main = async () => {
       el.style.setProperty("visibility", "hidden", "important");
       return { ok: true };
     `);
-    await sleep(320);
-    const menuStillOpen = await ev(`return !!document.querySelector(".titlebar-dropdown");`);
+    await sleep(280);
     const after = await shootRect(rect);
+    const openB = await ev(`return !!document.querySelector(".titlebar-dropdown");`);
     const pathAfter = saveBase64(`${tag}-B-${hideSelector.replace(/[^\w]/g, "").slice(1, 24)}`, after.base64);
+
     await ev(`
       const el = document.querySelector(${JSON.stringify(hideSelector)});
       if (!el) return 0;
@@ -387,7 +458,7 @@ const main = async () => {
     `);
     await sleep(200);
     const diff = await ev(PIXDIFF_JS(`data:image/png;base64,${before.base64}`, `data:image/png;base64,${after.base64}`));
-    return { hidden, menuStillOpen, diff, pathBefore, pathAfter };
+    return { hidden, openA, openB, diff, pathBefore, pathAfter, trustworthy: openA && openB };
   };
 
   const probe = async (which, stateTag) => {
@@ -434,20 +505,25 @@ const main = async () => {
         log(`    · ${t.label.padEnd(34)} 像素对比失败：${JSON.stringify(p.diff)}`);
         continue;
       }
+      if (!p.trustworthy) {
+        log(`    · ${t.label.padEnd(34)} 对比不可信（截图期间菜单被收起），丢弃该样本`);
+        continue;
+      }
       const verdict = p.diff.diff === 0 ? "✔ 在菜单之下（隐藏后像素无变化）" : `✘ 画在菜单之上（${p.diff.diff} 像素改变，占比 ${(p.diff.diffRatio * 100).toFixed(1)}%）`;
       log(`    · ${t.label.padEnd(34)} 差异=${String(p.diff.diff).padStart(6)}/${p.diff.total} 暗色像素(可见/A-B)=${p.diff.darkA}/${p.diff.darkB} → ${verdict}`);
       if (p.diff.diff > 0) log(`        首差异像素：${JSON.stringify(p.diff.firstDiffs)}`);
-      proofs.push({ target: t.label, ...p.diff, verdict });
+      proofs.push({ target: t.label, ...p.diff, verdict, trustworthy: true });
     }
     // 清掉为实验加的标记属性，避免污染后续状态
     await ev(`document.querySelectorAll("[data-probe-cand]").forEach((e) => e.removeAttribute("data-probe-cand")); return 1;`);
 
     // ② 基线：不隐藏任何东西连拍两张，验证截图确定性（差异必须 0）
     const b1 = await shootRect(diag.rect);
-    await sleep(200);
+    await sleep(220);
     const b2 = await shootRect(diag.rect);
+    const b1open = await ev(`return !!document.querySelector(".titlebar-dropdown");`);
     const baseline = await ev(PIXDIFF_JS(`data:image/png;base64,${b1.base64}`, `data:image/png;base64,${b2.base64}`));
-    log(`  ── 基线：同状态连拍两张差异=${baseline.diff}（应 0，证明对比可信）；菜单内暗色像素=${baseline.darkA}（文字是否真的画出来）`);
+    log(`  ── 基线：连拍两张差异=${baseline.diff}（应 0，证明对比可信）；菜单内暗色像素=${baseline.darkA}（文字是否真的画出来）；截后菜单仍在=${b1open}`);
     saveBase64(`${stateTag}-${which}-menu-area`, b1.base64);
 
     const full = await cdp_screenshotFull();
@@ -481,23 +557,63 @@ const main = async () => {
     log(`  .titlebar：position=${st.titlebar?.position} z-index=${st.titlebar?.zIndex} overflow=${st.titlebar?.overflow}`);
     log(`  .app-shell：position=${st.appShell?.position} z-index=${st.appShell?.zIndex}`);
     log(`  .editor-main-area：position=${st.editorMainArea?.position} z-index=${st.editorMainArea?.zIndex} isolation=${st.editorMainArea?.isolation}`);
+    log(`  （对照：.editor-empty-state 的 z-index=${st.emptyState?.zIndex}，是"菜单被挡住"的嫌疑层）`);
 
-    await probe("new", "A-fresh");
-    await probe("window", "A-fresh");
+    // 钉住下拉菜单（只影响探针期间，不动源码）
+    await pinMenu();
+    log("  已 pinMenu()：拦截 root 捕获阶段的 mouseout，避免截图时 hover 丢失把菜单收起");
 
-    log("\n═══ 状态 B：已打开文档 ═══");
+    log("\n★★★ A/B 对照实验：同一个 exe，只切换 .titlebar 的 z-index ★★★");
+    const ab = {};
+    for (const [phase, fixOn] of [["BEFORE（修复前等价：.titlebar z-index:auto）", false], ["AFTER（修复后：.titlebar z-index:100）", true]]) {
+      log(`\n════════ ${phase} ════════`);
+      const actualZ = await setFixState(fixOn);
+      log(`  .titlebar 实际 z-index = ${actualZ}`);
+      for (const which of ["new", "window"]) {
+        const r = await probe(which, fixOn ? "AFTER" : "BEFORE");
+        if (r) ab[`${fixOn ? "after" : "before"}_${which}`] = r;
+      }
+    }
+    // 恢复真实状态（去掉内联覆盖，让 CSS 生效）
+    const restoredZ = await setFixState(true);
+    log(`\n恢复真实样式后 .titlebar z-index = ${restoredZ}`);
+
+    log("\n══════════ A/B 结论（判据：菜单区域内「菜单文字暗色像素」与「隐藏空状态后的像素变化」）══════════");
+    const summarize = (which, name) => {
+      const before = ab[`before_${which}`];
+      const after = ab[`after_${which}`];
+      if (!before || !after) return log(`  ${name}：缺少数据`);
+      const b = before.baseline, a = after.baseline;
+      const bProof = before.proofs.find((p) => /editor-empty-state/.test(p.target));
+      const aProof = after.proofs.find((p) => /editor-empty-state/.test(p.target));
+      log(`  ${name}：`);
+      log(`    · 修复前：菜单内文字暗色像素=${b?.darkA}，隐藏空状态后像素变化=${bProof ? bProof.diff : "n/a"}（>0 表示空状态画在菜单之上）→ ${b?.darkA === 0 && bProof && bProof.diff > 0 ? "缺陷复现 ✔" : "未复现"}`);
+      log(`    · 修复后：菜单内文字暗色像素=${a?.darkA}，隐藏空状态后像素变化=${aProof ? aProof.diff : "n/a"} → ${a?.darkA > 0 && aProof && aProof.diff === 0 ? "缺陷消失 ✔" : "仍有问题 ✘"}`);
+    };
+    summarize("new", "新建菜单");
+    summarize("window", "窗口菜单");
+
+    log("\n═══ 状态 B：已打开文档（验证修复不依赖空状态）═══");
+    await unpinMenu();
     await ev(`window.dispatchEvent(new CustomEvent("lightmd:open-path",{detail:{path:${JSON.stringify(fDoc)}}})); return 1;`);
     await sleep(2200);
     const hasEmptyB = await ev(`return !!document.querySelector(".editor-empty-state");`);
-    log(`  .editor-empty-state 存在=${hasEmptyB}`);
+    log(`  .editor-empty-state 存在=${hasEmptyB}（已打开文档时应为 false）`);
+    await pinMenu();
     await probe("new", "B-doc");
     await probe("window", "B-doc");
 
-    // 收尾：确认菜单仍能正常收起
+    // 收尾 1：unpin 后确认菜单仍能正常收起（证明探针没有破坏真实 hover 逻辑）
+    await unpinMenu();
     await mouseMove(5, 5);
+    await ev(`document.body.click(); return 1;`);
     await sleep(400);
     const stillOpen = await ev(`return !!document.querySelector(".titlebar-dropdown");`);
-    log(`\n移开鼠标后菜单收起：${!stillOpen}`);
+    log(`\n解除钉住 + 移开鼠标后菜单收起：${!stillOpen}`);
+    const leftoverPin = await ev(`return !!(window.__menuPinned);`);
+    log(`探针未留下任何钉住标记：${!leftoverPin}`);
+    const leftoverStyle = await ev(`return document.querySelector(".titlebar")?.getAttribute("style") || "";`);
+    log(`探针未在 .titlebar 留下内联样式残留：${!leftoverStyle || !/z-index/.test(leftoverStyle)}（style="${leftoverStyle}"）`);
   } finally {
     try {
       session.cdp.close();
