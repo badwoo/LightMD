@@ -222,6 +222,19 @@ export function defaultSectionHeight(key: string): number {
   return key.startsWith("folder:") ? DEFAULT_FOLDER_SECTION_HEIGHT : DEFAULT_SECTION_HEIGHT;
 }
 
+/**
+ * v0.14.0 需求3：展开「最近打开」后，把面板滚进侧栏可视区的**复查时刻表**（ms）。
+ *
+ * 为什么要复查多拍：侧栏各 section 有 `transition: height 0.3s ease`（FileTree.css），
+ * 且 v0.9.5 的「打开的文件栏收缩」effect 会在展开后再改一次 temp 高度——
+ * 双 rAF（约 32ms）那一刻量到的是过渡中间态，面板最终位置还要继续往下走。
+ * 首轮实测正是栽在这里：scrollTop 只从 0 变成 0.5px，面板最终仍在视口外。
+ *
+ * 取值覆盖：0.3s 高度过渡结束（≈320ms）+ 一次后续高度改写（≈560ms 兜底）。
+ * 每一拍都是**幂等**的：只在"面板没完整可见"时才动滚动，已可见则完全不动。
+ */
+export const REVEAL_CHECK_DELAYS = [0, 40, 160, 320, 560] as const;
+
 /** v0.8.2：section 关闭动画总时长（滑出 + 停顿 + 收起），到点后卸载 DOM */
 export const SECTION_OUT_TOTAL_MS =
   SECTION_SLIDE_OUT_MS + SECTION_COLLAPSE_DELAY_MS + SECTION_COLLAPSE_MS;
@@ -973,40 +986,51 @@ export function FileTree() {
    * scrollTop 停在 0 → 面板 100% 在视口下方。用户视线里侧栏"什么都没变"，
    * 于是报「点击窗口没有出来」。这是**纯可见性**问题，不是数据/渲染条件问题。
    *
-   * 修法：展开的同一个 tick 之后（等 section 完成挂载与高度落定，双 rAF），
-   * 若面板没有完整落在滚动容器可视区内 → 把它滚到可视区顶端附近。
-   * 只在"Our 亲自点了时钟"这一时刻做一次，不做持续跟随（否则会和用户
-   * 自己的滚动打架）。
+   * 修法：面板展开后，在动画/高度过渡的整个窗口期内**多次**校正滚动位置
+   * （只在"没完整可见"时才动，已可见绝不打扰用户自己的滚动）。
+   *
+   * 为什么不能只量一次：`.filetree-folder-section / .filetree-temp-section /
+   * .recent-files` 都有 `transition: height 0.3s ease`（FileTree.css），
+   * v0.9.5 的「打开的文件栏收缩」effect 又会在展开后改写 temp 高度——
+   * 双 rAF（约 32ms）那一刻量到的是**过渡中间态**，面板最终位置还要再往下走。
+   * 首轮实测就是栽在这里：scrollTop 只从 0 变成 0.5，面板最终仍在视口外。
+   * 因此按 REVEAL_CHECK_DELAYS 分几拍复查，覆盖 0.3s 过渡 + 后续一次高度改写。
    */
   useEffect(() => {
     if (!showRecent) return;
     let cancelled = false;
+    const timers: number[] = [];
+    /** 面板当前是否完整落在侧栏滚动容器可视区内 */
+    const isFullyVisible = (): boolean => {
+      const sc = scrollRef.current;
+      const panel = findSectionByKey(document, "recent");
+      if (!sc || !panel) return true; // 量不到就不动（防御：不让滚动乱跳）
+      const scRect = sc.getBoundingClientRect();
+      const pRect = panel.getBoundingClientRect();
+      // 含 1px 容差
+      return pRect.top >= scRect.top - 1 && pRect.bottom <= scRect.bottom + 1;
+    };
+    /** 把面板顶边对齐到滚动区顶部（面板常比可视区高，对齐顶部才能看到标题栏 + 前几条） */
     const revealRecent = () => {
-      if (cancelled) return;
+      if (cancelled || isFullyVisible()) return;
       const sc = scrollRef.current;
       const panel = findSectionByKey(document, "recent");
       if (!sc || !panel) return;
-      const scRect = sc.getBoundingClientRect();
-      const pRect = panel.getBoundingClientRect();
-      // 已经完整可见（含 1px 容差）→ 不动滚动位置，避免无谓跳动
-      if (pRect.top >= scRect.top - 1 && pRect.bottom <= scRect.bottom + 1) return;
-      // 目标：把面板顶边对齐到滚动区顶部（面板往往比可视区还高，对齐顶部才能看到标题栏+前几条）
-      const delta = pRect.top - scRect.top;
-      const nextTop = Math.max(0, sc.scrollTop + delta);
-      // behavior: "auto" —— 与侧栏既有滚动箭头/定位行为一致，不做平滑滚动动画
+      const delta = panel.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+      const maxTop = Math.max(0, sc.scrollHeight - sc.clientHeight);
+      const nextTop = Math.min(maxTop, Math.max(0, sc.scrollTop + delta));
+      if (Math.abs(nextTop - sc.scrollTop) < 1) return;
+      // behavior: "auto" —— 与侧栏既有滚动箭头/定位行为一致，不播平滑滚动动画
       sc.scrollTo({ top: nextTop, behavior: "auto" });
     };
-    // 双 rAF：第一帧等 React 提交 DOM，第二帧等 section 高度/动画包装器完成首次布局
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(revealRecent);
-    });
+    for (const delay of REVEAL_CHECK_DELAYS) {
+      timers.push(window.setTimeout(revealRecent, delay));
+    }
     return () => {
       cancelled = true;
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
+      timers.forEach((t) => window.clearTimeout(t));
     };
-    // 依赖 orderedKey：点开时钟时 ordered 新增 recent → 布局变化后再量才准
+    // 依赖 orderedKey：点开时钟时 ordered 新增 recent → 布局变化后才会挂载/量到位
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showRecent, orderedKey]);
 

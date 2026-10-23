@@ -498,13 +498,21 @@ const main = async () => {
   log("【需求4】文件夹栏高度");
   log(`  实测：标题栏 .filetree-root-path = ${headerH}px（padding 6px 上下 + font-size 11px）`);
   log(`  实测：条目行高 .filetree-node = ${rowH}px（SIDEBAR_ITEM_HEIGHT）`);
-  log(`  当前 section 高 = ${p1.geo?.sectionH}px → 完整可视条目 = ${p1.geo?.fullyVisibleRows} 条（用户看到 7 条，吻合）`);
+  log(`  当前 section 高 = ${p1.geo?.sectionH}px → 内容区 ${p1.geo?.contentClientH}px → 完整可视条目 = ${p1.geo?.fullyVisibleRows} 条（旧产物 250px 时是 7 条，与用户反馈吻合）`);
   const expected = headerH + 12 * rowH;
   log(`  目标 = 标题栏 + (11 可见 + 1 留空) × 行高 = ${headerH} + 12×${rowH} = ${expected}px`);
-  const req4ok = Math.abs((p1.geo?.fullyVisibleRows ?? -1) - 11) <= 0.5 &&
-    (p1.geo?.emptySpaceBelowRows ?? 0) >= rowH * 0.9 &&
-    Math.abs((p1.geo?.sectionH ?? 0) - expected) <= 2;
-  log(`  ⇒ 当前产物 ${req4ok ? "PASS" : "FAIL"}（修复目标 ${expected}px）`);
+  // 判定口径（用户诉求的精确形式）：
+  //  ① section 高 == 标题栏 + 12 行（不多不少，避免"能显示 20 条"变成另一种偏差）
+  //  ② 可视区恰好能容纳 ≥11 条完整条目（11 个内容是底线）
+  //  ③ 内容区末尾剩出的空白 ≥ 1 个行高（即"最后一个条目位留空"，可直接右键）
+  const req4ok =
+    Math.abs((p1.geo?.sectionH ?? 0) - expected) <= 1 &&
+    (p1.geo?.fullyVisibleRows ?? 0) >= 11 &&
+    (p1.geo?.contentClientH ?? 0) - 11 * rowH >= rowH - 1;
+  log(`  ①section 高 == ${expected}px：${Math.abs((p1.geo?.sectionH ?? 0) - expected) <= 1 ? "✓" : "✗"}（实测 ${p1.geo?.sectionH}）`);
+  log(`  ②可视完整条目 ≥ 11：${(p1.geo?.fullyVisibleRows ?? 0) >= 11 ? "✓" : "✗"}（实测 ${p1.geo?.fullyVisibleRows}）`);
+  log(`  ③末尾留白 ≥ 1 行(${rowH}px)：${(p1.geo?.contentClientH ?? 0) - 11 * rowH >= rowH - 1 ? "✓" : "✗"}（内容区 ${p1.geo?.contentClientH} - 11×${rowH} = ${+((p1.geo?.contentClientH ?? 0) - 11 * rowH).toFixed(1)}px）`);
+  log(`  ⇒ ${req4ok ? "PASS" : "FAIL"}`);
 
   log("");
   log("【需求3】最近打开面板");
