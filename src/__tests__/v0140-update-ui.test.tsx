@@ -50,58 +50,26 @@ vi.mock("../utils/openExternal", () => ({
 }));
 
 /**
- * i18n 桩：只覆盖「软件更新」相关 key，其余全部透传真实字典。
- * 这样本用例的成败不依赖并行队友补 locales 的时机（Lead 负责 locales），
- * 同时又验证了组件确实按约定的 key + 参数调用 t()。
+ * i18n 不设桩：直接用真实字典（Lead 已在 zh-CN / en-US 补齐 13 个
+ * settings.update.* 键）。这样本用例同时充当「i18n key 齐全」的回归——
+ * 缺键时 t() 会回退成 key 本身，断言立刻失败。
  */
-const { I18N_UPDATE_KEYS } = vi.hoisted(() => ({
-  I18N_UPDATE_KEYS: {
-    "settings.update": "软件更新",
-    "settings.update.check": "检查更新",
-    "settings.update.checking": "正在检查…",
-    "settings.update.upToDate": "已是最新版本 v{version}",
-    "settings.update.available": "发现新版本 v{version}（当前 v{current}）",
-    "settings.update.download": "下载并安装",
-    "settings.update.downloading": "正在下载 {percent}%",
-    "settings.update.downloaded": "下载完成，即将启动安装",
-    "settings.update.failed": "检查更新失败：{msg}",
-    "settings.update.noAsset": "该版本未提供可用的安装包",
-    "settings.update.retry": "重试",
-    "settings.update.notes": "更新说明",
-    "settings.update.openRelease": "打开发布页",
-  } as Record<string, string>,
-}));
-
-vi.mock("../i18n", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../i18n")>();
-  return {
-    ...orig,
-    useT: () => (key: string, params?: Record<string, string | number>) => {
-      const template = I18N_UPDATE_KEYS[key];
-      if (template === undefined) return orig.t(key, params);
-      let value = template;
-      if (params) {
-        for (const [k, v] of Object.entries(params)) {
-          value = value.replace(new RegExp(`\\{${k}\\}`, "g"), String(v));
-        }
-      }
-      return value;
-    },
-  };
-});
-
 import { SettingsDialog } from "../components/dialogs/SettingsDialog";
+import { t } from "../i18n/state";
+import { zhCN } from "../i18n/locales/zh-CN";
+import { enUS } from "../i18n/locales/en-US";
 import pkg from "../../package.json";
 
-/** 文案断言统一走本地 key 表（与组件实际渲染一致） */
+/** 文案断言统一走 t()：与组件渲染出的字符串同源 */
 const L = {
-  update: I18N_UPDATE_KEYS["settings.update"],
-  check: I18N_UPDATE_KEYS["settings.update.check"],
-  notes: I18N_UPDATE_KEYS["settings.update.notes"],
-  downloaded: I18N_UPDATE_KEYS["settings.update.downloaded"],
-  failed: (msg: string) => `检查更新失败：${msg}`,
+  update: t("settings.update"),
+  check: t("settings.update.check"),
+  notes: t("settings.update.notes"),
+  downloaded: t("settings.update.downloaded"),
+  failed: (msg: string) => t("settings.update.failed", { msg }),
+  upToDate: (version: string) => t("settings.update.upToDate", { version }),
   available: (version: string, current: string) =>
-    `发现新版本 v${version}（当前 v${current}）`,
+    t("settings.update.available", { version, current }),
 };
 
 /** 构造一次「有新版本」的 check_update 返回值（字段与 Rust UpdateInfo 一致，camelCase） */
@@ -176,6 +144,37 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
     const upToDate = await screen.findByTestId("update-uptodate");
     expect(upToDate.textContent).toContain(pkg.version);
     expect(upToDate.textContent).not.toContain("0.13.2");
+  });
+
+  it("i18n：zh-CN / en-US 均有 13 个 settings.update.* 键，且占位符一致", () => {
+    const keys = [
+      "settings.update",
+      "settings.update.check",
+      "settings.update.checking",
+      "settings.update.upToDate",
+      "settings.update.available",
+      "settings.update.download",
+      "settings.update.downloading",
+      "settings.update.downloaded",
+      "settings.update.failed",
+      "settings.update.noAsset",
+      "settings.update.retry",
+      "settings.update.notes",
+      "settings.update.openRelease",
+    ] as const;
+    for (const key of keys) {
+      expect(zhCN[key], `zh-CN 缺 ${key}`).toBeTruthy();
+      expect(enUS[key], `en-US 缺 ${key}`).toBeTruthy();
+      // 占位符必须中英一致，否则某语言会残留 {version}/{msg} 字面量
+      const ph = (s: string) => (s.match(/\{[a-zA-Z_]+\}/g) ?? []).sort().join(",");
+      expect(ph(zhCN[key]), `占位符不一致: ${key}`).toBe(ph(enUS[key]));
+    }
+    // 关键占位符存在
+    expect(zhCN["settings.update.upToDate"]).toContain("{version}");
+    expect(zhCN["settings.update.available"]).toContain("{version}");
+    expect(zhCN["settings.update.available"]).toContain("{current}");
+    expect(zhCN["settings.update.downloading"]).toContain("{percent}");
+    expect(zhCN["settings.update.failed"]).toContain("{msg}");
   });
 
   it("有新版 → 显示新版本号 + 下载按钮 + 更新说明", async () => {
