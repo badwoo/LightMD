@@ -149,6 +149,20 @@ export const zhCN: Record<string, string> = {
   "settings.customCss.hint": "保存后立即生效，作用于编辑器与阅读视图。",
   // v0.12.0 需求8：设置底部「关于 LightMD」
   "settings.about": "关于 LightMD",
+  // ─── v0.14.0 需求1：软件更新（设置在面板最后）───
+  "settings.update": "软件更新",
+  "settings.update.check": "检查更新",
+  "settings.update.checking": "正在检查…",
+  "settings.update.upToDate": "已是最新版本 v{version}",
+  "settings.update.available": "发现新版本 v{version}（当前 v{current}）",
+  "settings.update.download": "下载并安装",
+  "settings.update.downloading": "正在下载 {percent}%",
+  "settings.update.downloaded": "下载完成，即将启动安装程序",
+  "settings.update.failed": "检查更新失败：{msg}",
+  "settings.update.noAsset": "该版本未提供可用的安装包",
+  "settings.update.retry": "重试",
+  "settings.update.notes": "更新说明",
+  "settings.update.openRelease": "打开发布页",
   "settings.about.version": "版本 {version}",
   // v0.12.0 需求5：文档缩放尺
   "zoomRuler.label": "文档缩放（Ctrl+滚轮，向上放大）",

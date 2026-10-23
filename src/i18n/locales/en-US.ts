@@ -148,6 +148,20 @@ export const enUS: Record<string, string> = {
   "settings.customCss.hint": "Takes effect immediately after saving; applies to both editor and reading views.",
   // v0.12.0 feature 8: "About LightMD" section at settings bottom
   "settings.about": "About LightMD",
+  // ─── v0.14.0 req 1: software update (last section in Settings) ───
+  "settings.update": "Software Update",
+  "settings.update.check": "Check for updates",
+  "settings.update.checking": "Checking…",
+  "settings.update.upToDate": "You are on the latest version v{version}",
+  "settings.update.available": "Version v{version} is available (current v{current})",
+  "settings.update.download": "Download and install",
+  "settings.update.downloading": "Downloading {percent}%",
+  "settings.update.downloaded": "Download complete, launching the installer",
+  "settings.update.failed": "Update check failed: {msg}",
+  "settings.update.noAsset": "This release has no installable package",
+  "settings.update.retry": "Retry",
+  "settings.update.notes": "Release notes",
+  "settings.update.openRelease": "Open release page",
   "settings.about.version": "Version {version}",
   // v0.12.0 feature 5: document zoom ruler
   "zoomRuler.label": "Document zoom (Ctrl+wheel, scroll up to zoom in)",
