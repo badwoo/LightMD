@@ -290,6 +290,11 @@ pub fn run() {
             window_cmds::merge_tab_drop_target,
             // v0.9.0：显式退出（v0.9.0 第四轮起只写主窗口条目 → 下次启动不恢复其他窗口）
             window_cmds::quit_app,
+            // ─── v0.14.0 需求1：软件更新 ───
+            // CSP 的 connect-src 不含 https，GitHub API 请求必须由 Rust 侧发出
+            commands::update::check_update,
+            commands::update::download_update,
+            commands::update::launch_installer,
         ])
         .build(tauri::generate_context!())
         .expect("error while running LightMD");
