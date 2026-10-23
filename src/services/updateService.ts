@@ -191,7 +191,10 @@ export async function downloadAndInstall(
       throw new Error("下载完成但未返回安装包路径");
     }
     onProgress?.(100);
-    // 启动安装向导；用户按提示完成安装（不静默覆盖正在运行的程序）
+    // 启动安装向导；用户按提示完成安装（不静默覆盖正在运行的程序）。
+    // 安全：Rust 侧 launch_installer 只接受「已下载到 app_cache_dir()/updates/ 下
+    // 且扩展名为 .exe/.msi」的路径 —— 这里传的 path 就是 download_update 刚返回的
+    // 缓存路径；远端 JSON 的 asset_url 永远不会直接成为被执行的目标。
     await invoke("launch_installer", { path });
     return path;
   } catch (err) {

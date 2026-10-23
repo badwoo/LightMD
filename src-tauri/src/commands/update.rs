@@ -275,39 +275,30 @@ pub async fn check_update(current_version: String) -> Result<UpdateInfo, String>
     })
 }
 
-/// 流式下载安装包到应用缓存目录，返回本地绝对路径。
+/// 是否该发一帧进度事件（纯函数，可单测）。
 ///
-/// 关键点：
-/// - 用 `Response::chunk()` 边读边写（不把整个安装包读进内存）；
-/// - 每 256KB（以及最后一帧）发一次 `lightmd://update-progress`，
-///   载荷 `{ downloaded, total }`（total 为 0 表示服务器没给 Content-Length）；
-/// - 先写 `.part` 临时文件，完整校验后再 rename 成正式文件；
-/// - 任何失败路径都清理半成品，避免用户拿到损坏的 exe。
-#[tauri::command]
-pub async fn download_update(
-    asset_url: String,
-    asset_name: String,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
-    let url = asset_url.trim();
-    if url.is_empty() || !url.starts_with("https://") {
-        return Err("安装包下载地址无效（必须为 https 地址）".to_string());
-    }
-    let file_name = sanitize_asset_name(&asset_name)?;
+/// 规则：距上次发帧累计 ≥ `step` 字节，或已下满 `total`（保证前端一定能收到 100%）。
+/// `total == 0`（服务器没给 Content-Length）时只按 step 节流。
+fn should_emit_progress(downloaded: u64, last_emitted: u64, total: u64, step: u64) -> bool {
+    let reached_end = total > 0 && downloaded >= total;
+    downloaded.saturating_sub(last_emitted) >= step || reached_end
+}
 
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| format!("无法定位应用缓存目录：{}", e))?
-        .join("updates");
-    std::fs::create_dir_all(&cache_dir)
-        .map_err(|e| format!("创建更新缓存目录失败（{}）：{}", cache_dir.display(), e))?;
-
-    let dest = cache_dir.join(&file_name);
-    let tmp = cache_dir.join(format!("{}.part", file_name));
-
-    // 上一次失败残留的临时文件先清掉（否则 create 会覆盖，但语义上先清更明确）
-    let _ = std::fs::remove_file(&tmp);
+/// 下载核心（不含 Tauri 依赖，便于单测/离线探针直接调用）：
+/// 流式把 `url` 写到 `tmp`，成功后 rename 到 `dest`，返回字节数。
+///
+/// `on_progress(downloaded, total)` 在节流点与末尾各回调一次（total=0 表示未知）。
+/// 任何失败都会删除 `tmp` 半成品。
+pub(crate) async fn download_to_file<F>(
+    url: &str,
+    dest: &std::path::Path,
+    tmp: &std::path::Path,
+    mut on_progress: F,
+) -> Result<u64, String>
+where
+    F: FnMut(u64, u64),
+{
+    use std::io::Write;
 
     let client = build_client(600)?;
     let mut resp = client
@@ -325,10 +316,9 @@ pub async fn download_update(
     }
 
     let total = resp.content_length().unwrap_or(0);
-    let mut file = std::fs::File::create(&tmp)
+    let mut file = std::fs::File::create(tmp)
         .map_err(|e| format!("创建临时文件失败（{}）：{}", tmp.display(), e))?;
 
-    use std::io::Write;
     let mut downloaded: u64 = 0;
     let mut last_emitted: u64 = 0;
     // 每 256KB 发一次进度，避免小分片把 IPC 事件刷爆
@@ -339,23 +329,19 @@ pub async fn download_update(
             Ok(Some(chunk)) => {
                 if let Err(e) = file.write_all(&chunk) {
                     drop(file);
-                    let _ = std::fs::remove_file(&tmp);
+                    let _ = std::fs::remove_file(tmp);
                     return Err(format!("写入安装包失败：{}", e));
                 }
                 downloaded += chunk.len() as u64;
-                let reached_end = total > 0 && downloaded >= total;
-                if downloaded - last_emitted >= EMIT_STEP || reached_end {
+                if should_emit_progress(downloaded, last_emitted, total, EMIT_STEP) {
                     last_emitted = downloaded;
-                    let _ = app.emit(
-                        UPDATE_PROGRESS_EVENT,
-                        serde_json::json!({ "downloaded": downloaded, "total": total }),
-                    );
+                    on_progress(downloaded, total);
                 }
             }
             Ok(None) => break,
             Err(e) => {
                 drop(file);
-                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(tmp);
                 return Err(format!("下载安装包中断：{}", e));
             }
         }
@@ -364,17 +350,17 @@ pub async fn download_update(
     // 显式 flush + 关闭，确保 rename 前数据已落盘
     if let Err(e) = file.flush() {
         drop(file);
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
         return Err(format!("写入安装包失败：{}", e));
     }
     drop(file);
 
     if downloaded == 0 {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
         return Err("下载安装包失败：服务器返回了空文件".to_string());
     }
     if total > 0 && downloaded != total {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
         return Err(format!(
             "下载不完整（{}/{} 字节），请重试",
             downloaded, total
@@ -383,55 +369,166 @@ pub async fn download_update(
 
     // Windows 上目标文件若被占用（上次下载后用户没安装），先尝试删除旧文件
     if dest.exists() {
-        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(dest);
     }
-    if let Err(e) = std::fs::rename(&tmp, &dest) {
+    if let Err(e) = std::fs::rename(tmp, dest) {
         // 跨盘/权限等场景 rename 可能失败，退化为复制后删临时文件
-        if let Err(e2) = std::fs::copy(&tmp, &dest) {
-            let _ = std::fs::remove_file(&tmp);
+        if let Err(e2) = std::fs::copy(tmp, dest) {
+            let _ = std::fs::remove_file(tmp);
             return Err(format!("保存安装包失败：{}（备用方式也失败：{}）", e, e2));
         }
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
     }
 
-    // 收尾进度帧：保证前端一定能看到 100%
+    Ok(downloaded)
+}
+
+/// 流式下载安装包到应用缓存目录，返回本地绝对路径。
+///
+/// 关键点：
+/// - 用 `Response::chunk()` 边读边写（不把整个安装包读进内存）；
+/// - 每 256KB（以及最后一帧）发一次 `lightmd://update-progress`，
+///   载荷 `{ downloaded, total }`（total 为 0 表示服务器没给 Content-Length）；
+/// - 先写 `.part` 临时文件，完整校验后再 rename 成正式文件；
+/// - 任何失败路径都清理半成品，避免用户拿到损坏的 exe；
+/// - **成功后文件保留**（不删）：后续 `launch_installer` 还要用它启动安装向导。
+#[tauri::command]
+pub async fn download_update(
+    asset_url: String,
+    asset_name: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let url = asset_url.trim();
+    if url.is_empty() || !url.starts_with("https://") {
+        return Err("安装包下载地址无效（必须为 https 地址）".to_string());
+    }
+    let file_name = sanitize_asset_name(&asset_name)?;
+
+    let cache_dir = updates_dir(&app)?;
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("创建更新缓存目录失败（{}）：{}", cache_dir.display(), e))?;
+
+    let dest = cache_dir.join(&file_name);
+    let tmp = cache_dir.join(format!("{}.part", file_name));
+
+    // 上一次失败残留的临时文件先清掉（否则 create 会覆盖，但语义上先清更明确）
+    let _ = std::fs::remove_file(&tmp);
+
+    let app_for_progress = app.clone();
+    let downloaded = download_to_file(&url.to_string(), &dest, &tmp, move |downloaded, total| {
+        let _ = app_for_progress.emit(
+            UPDATE_PROGRESS_EVENT,
+            serde_json::json!({ "downloaded": downloaded, "total": total }),
+        );
+    })
+    .await?;
+
+    // 收尾进度帧：保证前端一定能看到 100%（total 未知时用实际字节数补齐）
     let _ = app.emit(
         UPDATE_PROGRESS_EVENT,
-        serde_json::json!({ "downloaded": downloaded, "total": if total == 0 { downloaded } else { total } }),
+        serde_json::json!({ "downloaded": downloaded, "total": downloaded }),
     );
 
     Ok(dest.to_string_lossy().to_string())
 }
 
-/// 启动已下载的安装包（交给系统安装向导，用户手动完成安装）。
-///
-/// 安全约束：只允许启动**已存在**的 `.exe` / `.msi` 文件，防止该命令被构造成
-/// 「启动任意程序」的通用执行入口。
-#[tauri::command]
-pub fn launch_installer(path: String) -> Result<(), String> {
-    let file = std::path::Path::new(path.trim());
-    if !file.is_file() {
-        return Err("安装包文件不存在，请重新下载".to_string());
-    }
-    let ext = file
+/// 安装包扩展名白名单（.exe / .msi，大小写不敏感）。
+fn is_allowed_installer_ext(name: &str) -> bool {
+    let ext = std::path::Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if ext != "exe" && ext != "msi" {
+    ext == "exe" || ext == "msi"
+}
+
+/// `child` 是否位于 `dir` 之下（按路径组件比较，避免 `/updates-evil` 前缀绕过）。
+fn is_within_dir(child: &std::path::Path, dir: &std::path::Path) -> bool {
+    child.starts_with(dir)
+}
+
+/// 更新缓存目录：`app_cache_dir()/updates`。
+fn updates_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_cache_dir()
+        .map(|d| d.join("updates"))
+        .map_err(|e| format!("无法定位应用缓存目录：{}", e))
+}
+
+/// 校验「待启动的安装包」路径，返回规范化后的绝对路径（纯函数，可单测）。
+///
+/// 安全模型（重要，勿放宽）：
+/// 1. 路径必须**已存在**且是文件；
+/// 2. 扩展名只能是 `.exe` / `.msi`；
+/// 3. 规范化（canonicalize）后必须位于 `allowed_dir` 之下 ——
+///    也就是说**只允许执行我们自己下载的安装包**，远端 JSON 里的 asset_url /
+///    任意本地路径都不能成为执行目标（防把本命令当通用「启动任意程序」入口）。
+fn validate_installer_in_dir(
+    raw: &str,
+    allowed_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("安装包路径为空".to_string());
+    }
+    let file = std::path::Path::new(raw);
+    if !file.is_file() {
+        return Err("安装包文件不存在，请重新下载".to_string());
+    }
+    if !is_allowed_installer_ext(raw) {
         return Err("不支持的安装包类型（仅支持 .exe / .msi）".to_string());
     }
 
+    // 规范化两侧路径：解析 `..`、符号链接与 Windows 短路径，再做前缀判定
+    let real = std::fs::canonicalize(file)
+        .map_err(|e| format!("无法解析安装包路径（{}）：{}", file.display(), e))?;
+    // 缓存目录可能还不存在（从未下载过）：此时任何路径都不可能是「我们下载的」
+    let Ok(dir_real) = std::fs::canonicalize(allowed_dir) else {
+        return Err("更新缓存目录不存在，请先在设置里下载安装包".to_string());
+    };
+
+    if !is_within_dir(&real, &dir_real) {
+        return Err(format!(
+            "出于安全考虑，只能启动已下载到更新缓存目录的安装包（{}）",
+            dir_real.display()
+        ));
+    }
+    Ok(real)
+}
+
+/// 命令侧包装：先解析出 `app_cache_dir()/updates`，再走纯函数校验。
+fn validate_installer_path(
+    app: &tauri::AppHandle,
+    raw: &str,
+) -> Result<std::path::PathBuf, String> {
+    let dir = updates_dir(app)?;
+    validate_installer_in_dir(raw, &dir)
+}
+
+/// 启动已下载的安装包（交给系统安装向导，用户手动完成安装）。
+///
+/// 安全约束见 [`validate_installer_path`]：**只启动我们下载到
+/// `app_cache_dir()/updates/` 下的 .exe / .msi**，不接受任意本地路径，
+/// 更不接受远端 JSON 直接指定可执行文件。
+#[tauri::command]
+pub fn launch_installer(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let file = validate_installer_path(&app, &path)?;
+    let is_msi = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("msi"))
+        .unwrap_or(false);
+
     #[cfg(windows)]
     {
-        let spawned = if ext == "msi" {
+        let spawned = if is_msi {
             // MSI 需经 msiexec 安装
             std::process::Command::new("msiexec")
                 .arg("/i")
-                .arg(file)
+                .arg(&file)
                 .spawn()
         } else {
-            std::process::Command::new(file).spawn()
+            std::process::Command::new(&file).spawn()
         };
         spawned.map_err(|e| format!("启动安装程序失败：{}", e))?;
         Ok(())
@@ -439,6 +536,7 @@ pub fn launch_installer(path: String) -> Result<(), String> {
 
     #[cfg(not(windows))]
     {
+        let _ = is_msi;
         Err("当前平台暂不支持自动启动安装包（本项目仅发布 Windows 安装包）".to_string())
     }
 }
@@ -647,6 +745,146 @@ mod tests {
 
         // 0.14.0 本地构建 vs 线上 0.13.2 → 不算新（这是当前仓库的真实状态）
         assert!(!is_newer_version("0.14.0", &version));
+    }
+
+    #[test]
+    fn installer_ext_whitelist() {
+        assert!(is_allowed_installer_ext("LightMD_0.15.0_x64-setup.exe"));
+        assert!(is_allowed_installer_ext("LightMD_0.15.0_x64_en-US.msi"));
+        assert!(is_allowed_installer_ext("SETUP.EXE"));
+        assert!(is_allowed_installer_ext("a.MSI"));
+        assert!(!is_allowed_installer_ext("payload.bat"));
+        assert!(!is_allowed_installer_ext("setup.exe.bat"));
+        assert!(!is_allowed_installer_ext("noext"));
+        assert!(!is_allowed_installer_ext(""));
+    }
+
+    #[test]
+    fn within_dir_uses_path_components_not_string_prefix() {
+        let dir = std::path::Path::new("C:\\cache\\com.lightmd.app\\updates");
+        assert!(is_within_dir(
+            std::path::Path::new("C:\\cache\\com.lightmd.app\\updates\\a.exe"),
+            dir
+        ));
+        // 前缀相同但不在目录内（/updates-evil）必须判 false
+        assert!(!is_within_dir(
+            std::path::Path::new("C:\\cache\\com.lightmd.app\\updates-evil\\a.exe"),
+            dir
+        ));
+        // 目录自身算在内
+        assert!(is_within_dir(dir, dir));
+        // 上级目录不算
+        assert!(!is_within_dir(
+            std::path::Path::new("C:\\cache\\com.lightmd.app\\a.exe"),
+            dir
+        ));
+    }
+
+    /// `validate_installer_in_dir` 的端到端校验（真实临时目录 + 真实文件）。
+    #[test]
+    fn validate_installer_accepts_only_files_inside_updates_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "lightmd-update-validate-{}",
+            std::process::id()
+        ));
+        let updates = root.join("updates");
+        let outside = root.join("elsewhere");
+        std::fs::create_dir_all(&updates).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let ok_exe = updates.join("LightMD_0.15.0_x64-setup.exe");
+        let ok_msi = updates.join("LightMD_0.15.0_x64_en-US.msi");
+        let bad_ext = updates.join("payload.bat");
+        let outside_exe = outside.join("evil.exe");
+        for p in [&ok_exe, &ok_msi, &bad_ext, &outside_exe] {
+            std::fs::write(p, b"stub").unwrap();
+        }
+
+        // 1. 缓存目录内的 .exe / .msi → 通过
+        assert!(validate_installer_in_dir(ok_exe.to_str().unwrap(), &updates).is_ok());
+        assert!(validate_installer_in_dir(ok_msi.to_str().unwrap(), &updates).is_ok());
+        // 2. 扩展名不在白名单 → 拒绝
+        let err = validate_installer_in_dir(bad_ext.to_str().unwrap(), &updates).unwrap_err();
+        assert!(err.contains("不支持的安装包类型"), "实际: {err}");
+        // 3. 目录外（即使扩展名合法）→ 拒绝：这是「不执行任意本地程序」的关键约束
+        let err = validate_installer_in_dir(outside_exe.to_str().unwrap(), &updates).unwrap_err();
+        assert!(err.contains("更新缓存目录"), "实际: {err}");
+        // 4. 不存在的文件 → 拒绝
+        let missing = updates.join("nope.exe");
+        let err = validate_installer_in_dir(missing.to_str().unwrap(), &updates).unwrap_err();
+        assert!(err.contains("不存在"), "实际: {err}");
+        // 5. 空路径 → 拒绝
+        assert!(validate_installer_in_dir("  ", &updates).is_err());
+        // 6. 缓存目录不存在 → 拒绝（未下载过安装包）
+        let err =
+            validate_installer_in_dir(ok_exe.to_str().unwrap(), &root.join("never-created"))
+                .unwrap_err();
+        assert!(err.contains("更新缓存目录不存在"), "实际: {err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn progress_throttle_rules() {
+        const STEP: u64 = 256 * 1024;
+        // 距上次不足 step 且未到末尾 → 不发
+        assert!(!should_emit_progress(1000, 0, 10_000_000, STEP));
+        // 累计达到 step → 发
+        assert!(should_emit_progress(STEP, 0, 10_000_000, STEP));
+        // 已下满 total → 一定发（保证 100%）
+        assert!(should_emit_progress(10_000_000, 9_999_000, 10_000_000, STEP));
+        // total 未知（0）：只按 step 节流
+        assert!(!should_emit_progress(1000, 0, 0, STEP));
+        assert!(should_emit_progress(STEP, 0, 0, STEP));
+    }
+
+    /// 真实网络下载验证（默认 `#[ignore]`，不参与 CI / `cargo test` 全量）。
+    ///
+    /// 手动跑：
+    /// ```text
+    /// cargo test download_real_asset_from_github -- --ignored --nocapture
+    /// ```
+    /// 会真的从 GitHub 下载当前最新 release 的 NSIS 安装包到临时目录，
+    /// 校验字节数与 asset_size 一致、进度回调被调用、文件保留。
+    #[test]
+    #[ignore = "需要外网；用 --ignored 手动跑"]
+    fn download_real_asset_from_github() {
+        let info = tauri::async_runtime::block_on(check_update("0.13.0".to_string()))
+            .expect("check_update 应成功（需要能访问 GitHub）");
+        assert!(!info.asset_url.is_empty(), "最新 release 应有 NSIS 安装包");
+
+        let dir = std::env::temp_dir().join("lightmd-update-probe");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join(&info.asset_name);
+        let tmp = dir.join(format!("{}.part", info.asset_name));
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut progress_calls: Vec<(u64, u64)> = Vec::new();
+        let downloaded = tauri::async_runtime::block_on(download_to_file(
+            &info.asset_url,
+            &dest,
+            &tmp,
+            |d, t| progress_calls.push((d, t)),
+        ))
+        .expect("下载应成功");
+
+        println!(
+            "downloaded={} asset_size={} progress_frames={} dest={}",
+            downloaded,
+            info.asset_size,
+            progress_calls.len(),
+            dest.display()
+        );
+        assert!(downloaded > 0);
+        assert_eq!(downloaded, info.asset_size, "下载字节数应与 GitHub 声明的 size 一致");
+        assert!(dest.is_file(), "成功后安装包必须保留（launch_installer 要用）");
+        assert!(!tmp.exists(), "临时 .part 文件应已 rename 掉");
+        assert!(!progress_calls.is_empty(), "至少应收到一帧进度");
+        let last = *progress_calls.last().unwrap();
+        assert_eq!(last.0, downloaded, "最后一帧进度应等于总字节数");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
