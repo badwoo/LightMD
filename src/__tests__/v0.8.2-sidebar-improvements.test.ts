@@ -403,8 +403,10 @@ describe("v0.8.2 功能7：migrateSettings 一次性迁移", () => {
     expect(() => migrateSettings({}, 2)).not.toThrow();
   });
 
-  it("persist options version 已升到 4（v0.9.0 新增自定义快捷键）", () => {
-    expect((useSettingsStore.persist as unknown as { getOptions: () => { version: number } }).getOptions().version).toBe(4);
+  it("persist options version 已升到 5（v0.14.0 需求4：文件夹栏 7→11 条目迁移）", () => {
+    // v0.9.0 自定义快捷键 → 4；v0.14.0 需求4 需要清掉老用户持久化里的旧默认
+    // 文件夹栏高度（250px），否则新默认 392px 对他们不生效 → 升 5。
+    expect((useSettingsStore.persist as unknown as { getOptions: () => { version: number } }).getOptions().version).toBe(5);
   });
 });
 

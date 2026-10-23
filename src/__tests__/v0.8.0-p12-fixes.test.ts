@@ -147,9 +147,18 @@ describe("P12-4 关闭末栏后上一栏自动填充", () => {
   });
 
   it("最近打开栏为空时不参与布局（与实际渲染保持一致）", () => {
-    expect(read("../components/sidebar/FileTree.tsx")).toContain(
-      'if (showRecent && recentFiles.length > 0) ordered.push("recent");',
+    const src = read("../components/sidebar/FileTree.tsx");
+    // v0.14.0 需求3 修正：原断言锁的是 `recentFiles.length > 0`，但 RecentFiles
+    // 自 v0.8.5 需求8 起是「文件 + 文件夹」混排、任一类有记录即渲染。
+    // 布局层还只看 recentFiles 会导致「只开过文件夹时点时钟面板不出现」
+    // （正是用户报的"最近打开不起作用了"的根因①）。
+    // 现在三处口径统一为 `recentHasData`（= files>0 || folders>0），与渲染严判一致。
+    expect(src).toContain(
+      "const recentHasData = recentFiles.length > 0 || recentFolders.length > 0;",
     );
+    expect(src).toContain('if (showRecent && recentHasData) ordered.push("recent");');
+    // 反向断言：旧的不一致口径不得残留
+    expect(src).not.toContain('if (showRecent && recentFiles.length > 0) ordered.push("recent");');
   });
 
   it("RecentFiles 的拖拽 hook 先于空状态 return（否则 hook 数量变化会抛错）", () => {

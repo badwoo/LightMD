@@ -84,11 +84,13 @@ describe("v0.12.1 需求3：文档切换时图片路径按当前文档解析", (
     // v0.13.2 需求9 起外面包了一层 `withTrailingParagraph(...)`（尾部垫段落），
     // 因此这里只锁「newDoc 由 markdownToDoc(content) 得到」这个**意图**，
     // 不再锁死字面量（否则实现加一层包装就误报，而行为意图其实没变）。
-    const idxParse = containerSrc.indexOf("const newDoc = ");
+    // v0.14.0 第三批：组件里出现**多处** `const newDoc = ...`（阅读模式整篇写回等），
+    // 所以不能再取第一个 `const newDoc = `；改为直接定位"用 content 解析换文档"
+    // 那一处，再验证它之前的 setCurrentDocPath。
+    const idxParse = containerSrc.indexOf("withTrailingParagraph(markdownToDoc(content))");
     const idxSync = containerSrc.indexOf('setCurrentDocPath(filePath || "")');
     expect(idxSync).toBeGreaterThan(-1);
     expect(idxParse).toBeGreaterThan(-1);
-    expect(containerSrc.slice(idxParse, idxParse + 160)).toContain("markdownToDoc(content)");
     expect(idxSync).toBeLessThan(idxParse);
   });
 
