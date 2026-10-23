@@ -21,6 +21,12 @@ import { useT } from "../../i18n";
 import { ShortcutSettingsDialog } from "./ShortcutSettingsDialog";
 // v0.12.0 需求8：关于 LightMD 的 GitHub 链接经 shell 外部打开
 import { openExternalHref } from "../../utils/openExternal";
+// v0.14.0 需求1：软件更新（检查 GitHub 最新 release / 下载安装包 / 启动安装）
+import {
+  checkForUpdate,
+  downloadAndInstall,
+  type UpdateCheckResult,
+} from "../../services/updateService";
 import "./SettingsDialog.css";
 
 /** v0.6.0：翻译服务商预设（切换时自动填充 baseUrl/默认模型；models 供模型角色下拉选择） */
@@ -151,6 +157,21 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   // 拉取成功后改用完整候选浮层展示全部模型，点击选择；datalist 仅保留给手动输入联想
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
 
+  // ─── v0.14.0 需求1：软件更新 ──────────────────────────
+  /**
+   * 更新流程状态机（一次性 UI 状态，**不进 zustand**：关闭设置弹窗即应丢弃）。
+   * idle → checking → uptodate / available → downloading → downloaded
+   * 任意阶段失败 → error（保留 error 文案供重试）
+   */
+  const [updateState, setUpdateState] = useState<
+    "idle" | "checking" | "uptodate" | "available" | "downloading" | "downloaded" | "error"
+  >("idle");
+  /** 检查结果（available / downloading / downloaded 阶段用于展示版本号与说明） */
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  /** 下载进度 0-100（服务器未给 Content-Length 时保持 0，UI 显示"正在下载"） */
+  const [updateProgress, setUpdateProgress] = useState(0);
+  const [updateError, setUpdateError] = useState("");
+
   const providerPreset = settings.translate.translateProviderPreset;
 
   // v0.7.2 修复：切换厂商或修改 baseUrl 后，旧动态列表不再适用，重置回静态预设
@@ -235,6 +256,44 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const setTranslate = (patch: Partial<TranslateSettings>) => {
     settings.setTranslateConfig(patch);
   };
+
+  // ─── v0.14.0 需求1：软件更新 ──────────────────────────
+  /**
+   * 检查更新：Rust 侧请求 GitHub latest release（CSP 不允许前端直连 https）。
+   * 后端已做权威版本比较（isNewer），前端不重复判定。
+   */
+  const handleCheckUpdate = useCallback(async () => {
+    setUpdateState("checking");
+    setUpdateError("");
+    setUpdateInfo(null);
+    setUpdateProgress(0);
+    try {
+      const result = await checkForUpdate(__APP_VERSION__);
+      setUpdateInfo(result);
+      setUpdateState(result.isNewer ? "available" : "uptodate");
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : String(e));
+      setUpdateState("error");
+    }
+  }, []);
+
+  /** 下载并启动安装向导（下载完成后由 Rust 启动 exe/msi，用户手动完成安装） */
+  const handleDownloadUpdate = useCallback(async () => {
+    if (!updateInfo || !updateInfo.assetUrl || !updateInfo.assetName) return;
+    setUpdateState("downloading");
+    setUpdateProgress(0);
+    setUpdateError("");
+    try {
+      await downloadAndInstall(updateInfo.assetUrl, updateInfo.assetName, (pct) => {
+        setUpdateProgress(pct);
+      });
+      setUpdateProgress(100);
+      setUpdateState("downloaded");
+    } catch (e) {
+      setUpdateError(e instanceof Error ? e.message : String(e));
+      setUpdateState("error");
+    }
+  }, [updateInfo]);
 
   /** v0.7.0 修复1/2：全局 AI 总开关（实时生效） */
   const setAiEnabled = (v: boolean) => {
@@ -1184,6 +1243,137 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 https://github.com/badwoo/LightMD
               </a>
             </div>
+          </section>
+
+          {/* v0.14.0 需求1：软件更新 —— 用户要求「放在设置里最后」，
+              因此固定在「关于 LightMD」之后，是弹窗内最后一个 section。
+              数据流：点击检查 → Rust 请求 GitHub latest release → 有新版则下载
+              NSIS/MSI 安装包到应用缓存目录 → Rust 启动安装向导，用户手动完成安装。
+              （不做静默覆盖：Windows 无法覆盖正在运行的程序） */}
+          <section className="settings-section" data-testid="settings-update-section">
+            <h3>{t("settings.update")}</h3>
+
+            <div className="settings-field">
+              <div className="settings-update-row">
+                <span className="settings-update-current" data-testid="update-current-version">
+                  v{__APP_VERSION__}
+                </span>
+                <button
+                  type="button"
+                  className="settings-btn secondary"
+                  onClick={() => void handleCheckUpdate()}
+                  disabled={updateState === "checking" || updateState === "downloading"}
+                  data-testid="update-check-btn"
+                >
+                  {updateState === "checking"
+                    ? t("settings.update.checking")
+                    : t("settings.update.check")}
+                </button>
+              </div>
+            </div>
+
+            {/* 已是最新版本 */}
+            {updateState === "uptodate" && (
+              <small className="settings-hint" data-testid="update-uptodate">
+                {t("settings.update.upToDate", { version: updateInfo?.version ?? __APP_VERSION__ })}
+              </small>
+            )}
+
+            {/* 发现新版本：版本号 + 更新说明（折叠）+ 下载按钮 + 发布页入口 */}
+            {(updateState === "available" ||
+              updateState === "downloading" ||
+              updateState === "downloaded") &&
+              updateInfo && (
+                <div className="settings-update-result" data-testid="update-available">
+                  <div className="settings-update-title">
+                    {t("settings.update.available", {
+                      version: updateInfo.version,
+                      current: updateInfo.current || __APP_VERSION__,
+                    })}
+                  </div>
+
+                  {updateInfo.notes && (
+                    <details className="settings-update-notes">
+                      <summary>{t("settings.update.notes")}</summary>
+                      <pre className="settings-update-notes-body">
+                        {updateInfo.notes.length > 2000
+                          ? `${updateInfo.notes.slice(0, 2000)}…`
+                          : updateInfo.notes}
+                      </pre>
+                    </details>
+                  )}
+
+                  {/* 下载进度：role=progressbar 便于无障碍与测试断言 */}
+                  {updateState === "downloading" && (
+                    <div
+                      className="settings-update-progress"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={updateProgress}
+                      data-testid="update-progress"
+                    >
+                      <div
+                        className="settings-update-progress-bar"
+                        style={{ width: `${Math.max(2, updateProgress)}%` }}
+                      />
+                      <span className="settings-update-progress-text">
+                        {t("settings.update.downloading", { percent: updateProgress })}
+                      </span>
+                    </div>
+                  )}
+
+                  {updateState === "downloaded" && (
+                    <small className="settings-hint" data-testid="update-downloaded">
+                      {t("settings.update.downloaded")}
+                    </small>
+                  )}
+
+                  {updateState === "available" && (
+                    <div className="settings-update-actions">
+                      {updateInfo.assetUrl ? (
+                        <button
+                          type="button"
+                          className="settings-btn primary"
+                          onClick={() => void handleDownloadUpdate()}
+                          data-testid="update-download-btn"
+                        >
+                          {t("settings.update.download")}
+                        </button>
+                      ) : (
+                        <small className="settings-hint" data-testid="update-no-asset">
+                          {t("settings.update.noAsset")}
+                        </small>
+                      )}
+                      <button
+                        type="button"
+                        className="settings-btn secondary"
+                        onClick={() => void openExternalHref(updateInfo.htmlUrl)}
+                        data-testid="update-open-release-btn"
+                      >
+                        {t("settings.update.openRelease")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+            {/* 失败：可读错误 + 重试 */}
+            {updateState === "error" && (
+              <div className="settings-update-error" data-testid="update-error">
+                <small className="settings-hint settings-hint-warning">
+                  {t("settings.update.failed", { msg: updateError })}
+                </small>
+                <button
+                  type="button"
+                  className="settings-btn secondary"
+                  onClick={() => void handleCheckUpdate()}
+                  data-testid="update-retry-btn"
+                >
+                  {t("settings.update.retry")}
+                </button>
+              </div>
+            )}
           </section>
         </div>
 
