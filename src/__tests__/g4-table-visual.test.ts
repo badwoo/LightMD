@@ -416,21 +416,33 @@ describe("行列操作同步 columnWidths", () => {
   });
 });
 
-// ─── 列宽不影响 markdown 输出测试 ────────────────────────────
+// ─── 列宽/行高的 markdown 持久化（v0.14.0 需求7 起语义变更） ──────────────
+//
+// ⚠️ 语义变更：v0.4.x 时列宽只影响编辑器显示，**不写进 markdown**；用户实测
+// 「拖拽调整行高/列宽后，关闭文档重新打开会失效」——根因就是 markdown 里没有
+// 尺寸信息。v0.14.0 需求7 改为用旁路注释指令持久化（见 tableSizeDirective.ts），
+// 因此本节断言从「输出不变」改为「无尺寸时零 diff、有尺寸时带指令且稳定」。
 
-describe("列宽不影响 markdown 输出", () => {
-  it("设置 columnWidths 后 markdown 输出与未设置时一致", () => {
+describe("列宽/行高持久化（v0.14.0 需求7）", () => {
+  it("未设置 columnWidths 时 markdown 输出不含尺寸指令（零 diff）", () => {
     const docNoWidths = makeDoc(buildStandardTable(null));
-    const docWithWidths = makeDoc(buildStandardTable([100, 200]));
-    expect(docToMarkdown(docNoWidths)).toBe(docToMarkdown(docWithWidths));
+    const md = docToMarkdown(docNoWidths);
+    expect(md).not.toContain("lightmd-table-size");
   });
 
-  it("调整列宽后 markdown 输出不变", () => {
+  it("设置 columnWidths 后 markdown 输出带尺寸指令（重开可还原）", () => {
+    const docWithWidths = makeDoc(buildStandardTable([100, 200]));
+    const md = docToMarkdown(docWithWidths);
+    expect(md).toContain('<!-- lightmd-table-size: {"columnWidths":[100,200]} -->');
+  });
+
+  it("调整列宽后 markdown 输出带新宽度，且与初始未调整时不同", () => {
     const doc = makeDoc(buildStandardTable());
     const docResized = applyOp(doc, 0, (tr, $pos) => updateColumnWidth(tr, $pos, 0, 500));
-    // 重新构造未调整的 doc
     const docOriginal = makeDoc(buildStandardTable());
-    expect(docToMarkdown(docResized)).toBe(docToMarkdown(docOriginal));
+    const mdResized = docToMarkdown(docResized);
+    expect(mdResized).toContain('"columnWidths":[500,100]');
+    expect(mdResized).not.toBe(docToMarkdown(docOriginal));
   });
 });
 

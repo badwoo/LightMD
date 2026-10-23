@@ -4,7 +4,15 @@
 import type { Node, Mark } from "prosemirror-model";
 import { getBlockSource, type BlockSourceInfo } from "./blockSourceMap";
 // v0.13.0 需求12：表格合并/拆分（逻辑列网格）
-import { buildTableGridFromTable, gridColumnCount, tableHasSpan, type TableGrid } from "../tableGrid";
+import {
+  buildTableGridFromTable,
+  gridColumnCount,
+  tableHasSpan,
+  tableLogicalColumnCount,
+  type TableGrid,
+} from "../tableGrid";
+// v0.14.0 需求7：表格列宽/行高持久化（旁路注释指令）
+import { encodeTableSizeDirective, sanitizeSizeArray } from "./tableSizeDirective";
 
 /**
  * v0.13.0 需求1：把**单个块节点**序列化为 Markdown（块级复制/剪切用）。
@@ -370,9 +378,18 @@ function listToMarkdown(
         if (child.type.name === "paragraph") lines.push("");
         const indent = "    ";
         const trimmed = childMd.trimEnd();
+        // v0.14.0 需求7：**表格必须保留块内空行**。
+        //
+        // 表格的列宽/行高注释指令与表格之间必须有空行（否则注释行被 GFM 表格
+        // 规则吞成数据行，见 tableSizeDirective.ts 文件头实测）。而列表续行
+        // 这里原本 `if (line)` 会丢掉所有空行 → 指令被贴回表格尾部 → 表格
+        // 凭空多一行、指令变成单元格内容（实测）。故对表格保留空行。
+        const keepBlankLines = child.type.name === "table";
         trimmed.split("\n").forEach((line) => {
           if (line) {
             lines.push(`${indent}${line}`);
+          } else if (keepBlankLines) {
+            lines.push("");
           }
         });
         isFirstChild = false;
@@ -457,8 +474,63 @@ function taskListToMarkdown(node: Node): string {
  */
 function tableToMarkdown(node: Node): string {
   const hasSpan = tableHasSpan(node);
-  if (!hasSpan) return tableToMarkdownPlain(node);
-  return tableToMarkdownMerged(node);
+  const body = hasSpan ? tableToMarkdownMerged(node) : tableToMarkdownPlain(node);
+  return appendTableSizeDirective(node, body);
+}
+
+/**
+ * v0.14.0 需求7：在表格 markdown 之后追加列宽/行高注释指令。
+ *
+ * 格式与位置（实测结论见 `tableSizeDirective.ts` 文件头）：
+ *
+ * ```markdown
+ * | A | B |
+ * | --- | --- |
+ * | 1 | 2 |
+ *
+ * <!-- lightmd-table-size: {"columnWidths":[120,240],"rowHeights":[40,40,60]} -->
+ * ```
+ *
+ * **表格与指令之间必须空一行**：紧贴表格下一行时 GFM 表格规则会把注释行当成
+ * 数据行（lazy continuation），表格凭空多一行且指令被塞进单元格 —— 实测确认。
+ *
+ * 两个 attrs 都为空 → 返回 `body` 原样，**一个字节都不加**（纯管道表格零 diff）。
+ *
+ * ⚠️ **写出前必须按实际列/行数做长度归一化**（与 parser 读取端完全同口径：
+ * 超长截断、不足补默认值 列 100px / 行 30px）。为什么必须归一化：parser 读回时
+ * 一定会补齐/截断到实际行列数；若这里按原数组写出，就会出现
+ * `md → doc → md` 第一次写 `[48,48,72]`、读回变 `[48,48]`、第二次写 `[48,48]`
+ * 的**不收敛**（每次保存都改写文件，用户看到尺寸"自己变了"）。
+ * 归一化后第一次写出的就是终态，两次序列化逐字节相同。
+ *
+ * ⚠️ B6 原文切片快路径与指令的关系（重要，勿删）：
+ * `docToMarkdown` 对命中 `getBlockSource` 的表格**直接返回原文切片**，不会走到这里。
+ * 这没问题——因为指令本来就写在原文里，而 parser 在记录表格块原文行区间时
+ * **把紧随其后的指令行也纳入区间**（`ParseResult.sourceEndLine`），所以切片自带指令。
+ * 用户拖拽改了尺寸的表格是新节点（`setNodeMarkup` 造的新 Node，WeakMap 不命中）
+ * → 走逐块路径 → 到这里 → 按**当前 attrs** 重新输出指令。
+ * 两条路径都恰好输出一份指令，因此「改尺寸后存盘 → 重开 → 尺寸仍在」且不会重复。
+ */
+function appendTableSizeDirective(node: Node, body: string): string {
+  const colCount = tableLogicalColumnCount(node);
+  let rowCount = 0;
+  node.forEach((section) => {
+    if (section.type.name === "table_head" || section.type.name === "table_body") {
+      section.forEach(() => {
+        rowCount++;
+      });
+    }
+  });
+  const directive = encodeTableSizeDirective(
+    // 列默认 100px、行默认 30px —— 与 table-editor 的 updateColumnWidth /
+    // updateRowHeight 初始化值、以及 parser 读取端完全同源
+    sanitizeSizeArray(node.attrs.columnWidths, colCount > 0 ? colCount : undefined, 100),
+    sanitizeSizeArray(node.attrs.rowHeights, rowCount > 0 ? rowCount : undefined, 30),
+  );
+  if (!directive) return body;
+  // body 恒以单个 "\n" 结尾（表格最后一行）；补一个空行再输出指令行
+  const base = body.endsWith("\n") ? body : body + "\n";
+  return base + "\n" + directive + "\n";
 }
 
 /** 原实现（纯管道表格零 diff 路径）——v0.13.0 需求12 起更名保留 */

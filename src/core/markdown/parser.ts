@@ -17,7 +17,13 @@ import { headingAnchorPlugin, collectHeadings, type TocHeading } from "./heading
 import { tocPlugin } from "./toc-plugin";
 import { setBlockSource } from "./blockSourceMap";
 // v0.13.0 需求12：表格合并单元格形态识别（`<td colspan>` 包裹）
-import { extractTdWrapper, trimTablePlaceholderCells } from "../tableGrid";
+import {
+  extractTdWrapper,
+  tableLogicalColumnCount,
+  trimTablePlaceholderCells,
+} from "../tableGrid";
+// v0.14.0 需求7：表格列宽/行高旁路注释指令（详见 tableSizeDirective.ts 文件头）
+import { isTableSizeDirectiveLine, parseTableSizeDirective, sanitizeSizeArray } from "./tableSizeDirective";
 // E14(v0.9.2):段内换行语义默认值取自设置(与 auto-pair 同款 getState 先例)
 import { useSettingsStore } from "../../stores/useSettingsStore";
 
@@ -372,12 +378,18 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
       } else {
         nodes.push(result.node);
       }
-      if (anchorMap) recordBlock(result.node, token.map![0], anchorMap[1]); // B6：内容块记录
+      // v0.14.0 需求7：表格的尺寸指令行被 parseTable 吞掉，它占的源码行必须
+      // 计入该块的原文区间（否则①未编辑表格切片丢指令；②该行会被当成块间
+      // 空行还原成幻影空段落）。sourceEndLine 优先于 markdown-it 的 map[1]。
+      if (anchorMap) {
+        recordBlock(result.node, token.map![0], result.sourceEndLine ?? anchorMap[1]);
+      }
       i = result.nextIndex;
+      if (anchorMap) prevEndLine = result.sourceEndLine ?? anchorMap[1];
     } else {
       i++;
+      if (anchorMap) prevEndLine = anchorMap[1];
     }
-    if (anchorMap) prevEndLine = anchorMap[1];
   }
 
   // 尾部/全空白文档的空行还原
@@ -410,6 +422,15 @@ interface ParseResult {
   node: Node;
   extraNodes?: Node[]; // 额外的节点（在 node 之后）
   nextIndex: number;
+  /**
+   * v0.14.0 需求7：该块在源文本中**实际占用的结束行**（0 基、排他）。
+   *
+   * 只用于表格：表格的列宽/行高注释指令写在**表格之后空一行**的位置，
+   * 它被 `parseTable` 一并吞掉（不产生节点）。若 B6 原文区间仍按 markdown-it 的
+   * `token.map[1]`（表格最后一行）记录，未编辑表格走原文切片时**指令会丢**。
+   * 这里把区间终点扩展到指令行之后，切片自带指令。
+   */
+  sourceEndLine?: number;
 }
 
 function parseBlockToken(tokens: Token[], index: number, end: number, headings?: TocHeading[]): ParseResult | null {
@@ -757,6 +778,38 @@ function parseMathBlock(tokens: Token[], index: number): ParseResult {
 
 // ─── 表格 ────────────────────────────────────────────────
 
+/**
+ * v0.14.0 需求7：识别「只含一行表格尺寸指令」的段落 token 组。
+ *
+ * 指令行在 markdown-it 里的形态（实测，`html_block` 已禁用）：
+ * `paragraph_open` → `inline`（content 即整行注释）→ `paragraph_close`。
+ * 只有**恰好三个 token** 且 inline 内容整行就是指令时才认——
+ * 避免把「正文里顺带提了一句指令格式」的段落误吞。
+ *
+ * @returns 该段落组的结束下标（排他）；不是指令段落时返回 null
+ */
+function directiveParagraphEnd(tokens: Token[], index: number): number | null {
+  const open = tokens[index];
+  if (!open || open.type !== "paragraph_open") return null;
+  const inline = tokens[index + 1];
+  if (!inline || inline.type !== "inline") return null;
+  const close = tokens[index + 2];
+  if (!close || close.type !== "paragraph_close") return null;
+  if (!isTableSizeDirectiveLine(inline.content || "")) return null;
+  return index + 3;
+}
+
+/** 表格总行数（thead + tbody，文档顺序）—— 与 applyRowHeights 的 tr 顺序一致 */
+function countTableRows(table: Node): number {
+  let n = 0;
+  table.forEach((section) => {
+    if (section.type.name === "table_head" || section.type.name === "table_body") {
+      section.forEach(() => n++);
+    }
+  });
+  return n;
+}
+
 function parseTable(tokens: Token[], index: number): ParseResult {
   let depth = 0;
   const headRows: Node[] = [];
@@ -851,8 +904,54 @@ function parseTable(tokens: Token[], index: number): ParseResult {
   // 合并序列化又刻意跳过被占位的空洞 → 回读时这些补齐格会变成**真实节点**，
   // 表现为"合并的那一行多出一个单元格"。这里按与网格同一套布点规则裁掉行尾占位格。
   // 纯管道表格（无 span）直接返回原节点，零 diff。
-  const tableNode = schema.nodes.table.create(null, tableChildren);
-  return { node: trimTablePlaceholderCells(tableNode), nextIndex: i };
+  const tableNode = trimTablePlaceholderCells(schema.nodes.table.create(null, tableChildren));
+
+  // ─── v0.14.0 需求7：读取紧随其后的尺寸指令并写入 attrs ───
+  //
+  // 位置实测（见 tableSizeDirective.ts 文件头）：指令是**表格后空一行**的独立段落。
+  // 这里做三件事：
+  // ① 吞掉该段落（不产生节点 → 正文里没有这行注释）；
+  // ② JSON 合法则写入 columnWidths / rowHeights（坏 JSON 静默忽略，表格照常）；
+  // ③ 返回 sourceEndLine 让 B6 原文区间覆盖指令行（未编辑表格切片自带指令）。
+  let nextIndex = i;
+  let sourceEndLine: number | undefined;
+  const directiveEnd = directiveParagraphEnd(tokens, i + 1);
+  if (directiveEnd !== null) {
+    // inline token = paragraph_open 的下一项
+    const directiveLine = tokens[i + 2].content || "";
+    const size = parseTableSizeDirective(directiveLine);
+    nextIndex = directiveEnd;
+    // B6：指令行 = paragraph token 的 map[0]；区间终点取该行 +1
+    const map = tokens[i + 1].map;
+    if (map) sourceEndLine = map[1];
+    if (size) {
+      const colCount = tableLogicalColumnCount(tableNode);
+      const rowCount = countTableRows(tableNode);
+      // 长度校正口径（与 serialize 端一致）：
+      // · 超长截断（多出来的尺寸会把表格撑宽）；
+      // · 不足补编辑器默认值（列 100px / 行 30px，与 updateColumnWidth/RowHeight 初始化同源），
+      //   保证 attrs 长度恒等于实际列/行数，往返稳定、下游无 undefined 歧义。
+      const columnWidths = size.columnWidths
+        ? sanitizeSizeArray(size.columnWidths, colCount, 100)
+        : null;
+      const rowHeights = size.rowHeights
+        ? sanitizeSizeArray(size.rowHeights, rowCount, 30)
+        : null;
+      if (columnWidths || rowHeights) {
+        return {
+          node: tableNode.type.create(
+            { ...tableNode.attrs, columnWidths, rowHeights },
+            tableNode.content,
+            tableNode.marks,
+          ),
+          nextIndex,
+          sourceEndLine,
+        };
+      }
+    }
+  }
+
+  return { node: tableNode, nextIndex, sourceEndLine };
 }
 
 function buildTableRow(

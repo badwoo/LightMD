@@ -10,7 +10,12 @@
  * 设计要点：
  * - table 节点 attrs.columnWidths: number[] | null（null 表示等宽，默认）
  * - table_cell/table_header attrs.align: 'left' | 'center' | 'right'（默认 'left'）
- * - 列宽仅影响编辑器内显示，不影响 markdown 输出（markdown 表格无列宽概念）
+ * - v0.14.0 需求7：列宽/行高**随 markdown 持久化**。GFM 管道表格语法无法表达
+ *   尺寸，故 serializer 在表格后（空一行）追加旁路注释指令
+ *   `<!-- lightmd-table-size: {"columnWidths":[…],"rowHeights":[…]} -->`，
+ *   parser 的 parseTable 读取并写回这两个 attrs、同时吞掉指令行。
+ *   NodeView 无需改动：初始化与 update() 都会调用 applyColumnWidths/applyRowHeights，
+ *   因此「重开文档 → attrs 有值 → 尺寸自动应用」。
  * - 行列增删时同步更新 columnWidths 数组，保持长度与列数一致
  */
 import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view";
