@@ -281,27 +281,53 @@ const main = async () => {
       return { dark, total: d.length/4, size: [cv.width, cv.height] };
     `);
     log(`  截图（可见性已钉住）：非白像素=${dark.dark}/${dark.total}（${dark.size[0]}×${dark.size[1]}）→ ${dark.dark > 20 ? "文字已画出 ✔" : "仍是空白 ✘"}`);
+    // 还原钉住效果。
+    // ⚠️ 三个坑（实测踩过，都会让"呼吸"假 FAIL）：
+    //  ① 这行内联 `animation: none !important` 会把动画**禁掉**；只 removeProperty
+    //     不够稳——同时必须把 previous priority 也考虑进去，所以直接 clear 整条内联样式；
+    //  ② 还原后 hover 可能已经丢了（截图过���中鼠标未动）→ label 回到 opacity:0 且
+    //     **不挂动画**（`.split-divider-closed .split-divider-label` 只在显形时有 animation）；
+    //  ③ 所以还原之后**必须重新 poke 一次 hover**，等它真的浮起来再采样。
     await ev(`
       const lb = document.querySelector(".split-divider-label");
-      lb.style.removeProperty("opacity");
-      lb.style.removeProperty("animation");
-      const prev = lb.getAttribute("data-probe-prev-opacity");
-      if (prev) lb.style.setProperty("opacity", prev);
+      lb.removeAttribute("style");           // 清掉探针加的所有内联覆盖
       lb.removeAttribute("data-probe-prev-opacity");
       return 1;
     `);
-    await sleep(200);
+    if (shell) { await hoverPoke(); await sleep(400); }
+    // 确认它真的重新浮起来（opacity 回到 >0.3）再开始采样，否则采到的是"未悬停"的 0
+    for (let i = 0; i < 20; i++) {
+      const o = await ev(`return Number(getComputedStyle(document.querySelector(".split-divider-label")).opacity);`);
+      if (o > 0.2) break;
+      await hoverPoke();
+      await sleep(250);
+    }
 
-    // ── 呼吸：隔 600ms 再量一次 opacity，确认真的在动 ──
+    // ── 呼吸：隔 500ms 再量 opacity，确认真的在动 ──
+    //
+    // ⚠️ 采样时机（实测踩坑）：上面刚把钉住用的内联 opacity/animation 移除，
+    // 动画会**重新起算**（currentTime 归零）。若立刻连采 5 次、每次间隔 500ms，
+    // 恰好可能落在动画重启后的相位过渡里（实测出现过 5 个相同值 → 假 FAIL）。
+    // 所以先等一拍让动画真正跑起来，再连续采样；并额外确认
+    // `getAnimations()` 存在且 playState=running（这才是"动画在跑"的硬证据）。
+    await sleep(900);
+    const animInfo = await ev(`
+      const lb=document.querySelector(".split-divider-label");
+      if(!lb||!lb.getAnimations) return null;
+      const a=lb.getAnimations()[0];
+      return a ? {name:a.animationName, state:a.playState, t:a.currentTime} : null;
+    `);
+    log(`  动画状态：${JSON.stringify(animInfo)}`);
     const samples = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 8; i++) {
       samples.push(await ev(`return Number(getComputedStyle(document.querySelector(".split-divider-label")).opacity);`));
-      await sleep(500);
+      await sleep(300);
     }
     log(`\n─── 呼吸采样（每 500ms 一次 opacity）───`);
     log(`  ${samples.map((v) => v.toFixed(2)).join(" → ")}`);
-    const varies = new Set(samples.map((v) => v.toFixed(2))).size > 1;
-    log(`  opacity 是否真的在变化（呼吸生效）：${varies}`);
+    const varies = new Set(samples.map((v) => v.toFixed(3))).size > 1;
+    const running = !!animInfo && animInfo.state === "running" && /Breathe/.test(animInfo.name);
+    log(`  opacity 是否真的在变化（呼吸生效）：${varies}（动画运行中=${running}）`);
 
     log(`\n─── 截图 ───`);
     log(`  关闭态 18px：${openShot}`);
