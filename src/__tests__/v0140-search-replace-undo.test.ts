@@ -92,11 +92,23 @@ describe("需求2：跨文件替换的记录与消费", () => {
     expect(head).toContain("recordCrossFileEdit(fileKey,");
   });
 
-  it("onSourceContentChange 补撤销记录（源码态替换也要能 Ctrl+Z）", () => {
+  it("onSourceContentChange 必须走统一写回入口（两个调用方都要正确）", () => {
+    // 这个 prop 有两个调用方：① 面板自己在源码模式的替换；② replaceAllAcrossFiles
+    // 对**当前文档**的写回（这条在**阅读模式**下也会发生）。
+    // 后者正是需求1 的根因：旧实现无条件只写 state → 阅读视图不动、且切模式后被冲掉。
+    // 因此它必须走按视图模式分流的 `writeBackCurrentDoc`，而不是自己拼一份写回逻辑。
     const idx = containerSrc.indexOf("onSourceContentChange={(newContent) =>");
     expect(idx).toBeGreaterThan(0);
-    const body = containerSrc.slice(idx, idx + 900);
-    expect(body).toContain("recordUndoEntry(");
+    const body = containerSrc.slice(idx, idx + 1600);
+    expect(body).toContain("writeBackCurrentDoc(newContent)");
+    // 反向断言：不能在 prop 里再出现「只改 state」的旧写法
+    // （注释里提到 setSourceContent 是允许的，只查代码行）
+    const codeLines = body
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"));
+    expect(codeLines.join("\n")).not.toContain("setSourceContent(newContent)");
+    // 撤销记录由 writeBackCurrentDoc 的源码模式分支负责，这里不重复实现
+    expect(body).not.toContain("recordUndoEntry(");
   });
 
   it("doLocalUndo 先消费跨文件记录，且校验内容逐字节一致", () => {

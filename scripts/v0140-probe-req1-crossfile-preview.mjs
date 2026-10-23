@@ -218,7 +218,11 @@ const main = async () => {
     log(`替换后三层: ${JSON.stringify(after)}`);
     log(`${after.visible.dog >= before.visible.cat && after.visible.cat === 0 ? "PASS" : "FAIL"}  T1-a: **阅读视图**里的文字立即生效`);
     log(`${after.storage.dog >= before.storage.cat && after.storage.cat === 0 ? "PASS" : "FAIL"}  T1-b: 底层内容生效`);
-    log(`${after.textarea.dog >= before.textarea.cat && after.textarea.cat === 0 ? "PASS" : "FAIL"}  T1-c: 隐藏 textarea 同步（源码态）`);
+    // ⚠️ 阅读模式下**不要求**隐藏 textarea 同步：修复后阅读模式的写回走 PM 事务，
+    // textarea 的 value 是 React 受控值（由 content prop 派生），只在切到编辑模式时
+    // 重新同步。因此这条**不是**缺陷判据，只作观察项 —— 真正的判据是 T2
+    //（切到编辑模式后源码必须已是 DOG，否则说明替换没落到内容层）。
+    log(`INFO  T1-c: 隐藏 textarea（阅读模式下不同步属正常，判据看 T2） cat=${after.textarea.cat} dog=${after.textarea.dog}`);
 
     // ═══ T2：切到编辑模式看源码 ═══
     log("");

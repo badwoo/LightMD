@@ -301,7 +301,7 @@ const main = async () => {
       const bUndo = await ev(`
         const ta = document.querySelector("textarea.source-editor");
         const v = ta?.value || "";
-        return { zebra: (v.match(/ZEBRA/g)||[]).length, dog: (v.match(/DOG/g)||[]).length, tail: v.split("\n").slice(0,6) };
+        return { zebra: (v.match(/ZEBRA/g)||[]).length, dog: (v.match(/DOG/g)||[]).length, tail: v.split("\\n").slice(0,6) };
       `);
       log(`撤销前 ZEBRA=${bBefore.zebra} DOG=${bBefore.dog} → 撤销后 ZEBRA=${bUndo.zebra} DOG=${bUndo.dog}`);
       log(`${bUndo.dog > bBefore.dog || bUndo.zebra < bBefore.zebra ? "PASS" : "FAIL"}  P5: 跨文件替换后切过去能撤销（期望 ZEBRA 减少 / DOG 回来）`);

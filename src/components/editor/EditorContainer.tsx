@@ -7333,22 +7333,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         sourceTextareaRef={sourceTextareaRef}
         sourceContent={sourceContent}
         onSourceContentChange={(newContent) => {
-          // v0.14.0 需求2：「搜索/替换也要进撤销栈」。
-          // 这条 prop 只在**源码（编辑）模式**被 SearchReplace 调用（阅读模式它走自己
-          // 的 PM transaction 分支），所以这里只需补一条 diff 撤销记录，写回逻辑
-          // 保持原样（不整篇重建 PM，避免编辑时视图重置）。
-          const ta = sourceTextareaRef.current;
-          recordUndoEntry(
-            sourceContentRef.current,
-            newContent,
-            ta?.selectionStart ?? 0,
-            ta?.scrollTop ?? 0,
-          );
-          setSourceContent(newContent);
-          onContentChangeRef.current?.(newContent);
-          setDirtyRef.current(true);
-          // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
-          lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
+          // v0.14.0 需求1+2：统一走 `writeBackCurrentDoc`。
+          //
+          // 这个 prop 有**两个**调用方，必须都能正确处理：
+          // ① SearchReplace 自己的「替换 / 全部替换」在**源码模式**下调用 →
+          //    它要的正是「写 textarea 状态 + 记撤销记录」；
+          // ② `replaceAllAcrossFiles`（条幅展开时的「全部替换（所有文件）」）对
+          //    **当前文档**也调用它 —— 而这条路径**在阅读模式下也会发生**！
+          //    旧实现无条件只写 state（隐藏的 textarea），阅读视图由 ProseMirror
+          //    渲染 → 用户眼前一个字都不变（这就是需求1「没有立即生效」）。
+          //    更糟：之后切模式会用 PM 内容反序列化回写，把替换结果**冲掉**
+          //    （实机 T2 实测：替换后切编辑模式源码又变回 cat）。
+          // `writeBackCurrentDoc` 按视图模式分流，两个调用方都正确。
+          writeBackCurrentDoc(newContent);
         }}
         initialShowReplace={showSearchReplace}
         isMdFile={isMdFile}

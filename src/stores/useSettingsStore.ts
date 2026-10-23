@@ -406,6 +406,36 @@ export function migrateSettings(persisted: unknown, version: number): Partial<Se
     if (p.loadLastFolderOnStartup === false) p.loadLastFolderOnStartup = true;
     if (p.loadLastFolderCount === 1) p.loadLastFolderCount = 5;
   }
+  if (version < 5) {
+    // v0.14.0 需求4：文件夹栏默认可视条目 7 → 11（末尾多留一个条目位方便右键）。
+    //
+    // 为什么必须在**设置迁移**里处理，而不是只改 FileTree 的默认值：
+    // `sizeOf()` 是 `sectionSizes[key] ?? defaultSectionHeight(key)` —— 用户第一次
+    // 拖拽分栏时，**所有**栏的高度都会被写进 `sidebarSectionSizes` 持久化
+    // （拖任何一栏都会把整张表存下来）。所以老用户的表里普遍带着 `folder:xxx: 250`
+    // （旧默认值），新的 392px 默认值对他们**完全不生效** —— 他们会继续看到 7 条，
+    // 而本次需求正是冲着这 7 条来的（用户报的就是这个现象）。
+    //
+    // 迁移口径（只在"看起来还是旧默认值"时改，绝不覆盖用户自己调过的值）：
+    // 旧默认 250px；用户手动拖到 250 的可能性存在，但 250 同时是"从未调过"的
+    // 硬编码旧默认，二者无法区分 —— 与上面 version<1 的宽度迁移同一个取舍
+    // （那边也是"等于旧默认值才迁移"）。这里放宽到 `<= 250`：比旧默认更矮的
+    // 一定是被拖小的，也一并回到新默认（否则它们比 250 更糟）。
+    // 用户拖到 > 250 的一律保留 —— 那些是明确"我就要这么大"的表达。
+    if (p.sidebarSectionSizes && typeof p.sidebarSectionSizes === "object") {
+      const sizes = { ...(p.sidebarSectionSizes as Record<string, number>) };
+      let touched = false;
+      for (const key of Object.keys(sizes)) {
+        if (key.startsWith("folder:") && Number.isFinite(sizes[key]) && sizes[key] <= 250) {
+          // 直接删键而不是写 392：删掉就回落到 FileTree 的 defaultSectionHeight，
+          // 保持"常量只有一处定义"（避免两处硬编码同一个数字而漂移）。
+          delete sizes[key];
+          touched = true;
+        }
+      }
+      if (touched) p.sidebarSectionSizes = sizes;
+    }
+  }
   // v0.9.0（version < 4）：自定义快捷键覆盖表。缺字段/非法类型一律归一为 {}；
   // 其余脏数据（未登记 id、非法键位、保留占用、互相冲突、与默认值相同的冗余覆盖）
   // 统一交给 sanitizeShortcutOverrides 清洗——见 core/shortcuts.ts
@@ -649,7 +679,9 @@ export const useSettingsStore = create<SettingsState>()(
       name: "lightmd-settings",
       // v0.8.1 需求4 / v0.8.2 需求7 / v0.8.4 需求7：persist version 一次性迁移（逻辑见 migrateSettings）
       // v0.9.0 升 4：新增 shortcuts（自定义快捷键覆盖表），缺字段由 merge 回退默认 {}，无需 migrate 特判
-      version: 4,
+      // v0.14.0 升 5：需求4 文件夹栏默认可视 7 → 11 条；老用户持久化的
+      // `sidebarSectionSizes` 里带着旧默认 250px，会盖掉新默认值 → 在 migrate 里清理
+      version: 5,
       migrate: (persisted, version) =>
         migrateSettings(persisted, version) as SettingsState,
       // v0.6.0：自定义合并——translate 嵌套对象做字段级回退，

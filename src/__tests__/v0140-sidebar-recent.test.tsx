@@ -51,6 +51,8 @@ afterEach(() => {
 // ══════════════════════════════════════════════════════════════
 // 需求4：文件夹栏高度 = 11 条目 + 末尾留空一行
 // ══════════════════════════════════════════════════════════════
+import { migrateSettings } from "../stores/useSettingsStore";
+
 describe("v0.14.0 需求4：文件夹栏默认高度（11 条 + 末尾留白）", () => {
   it("SIDEBAR_ITEM_HEIGHT 与 .filetree-node 行高一致，为 30px", () => {
     expect(SIDEBAR_ITEM_HEIGHT).toBe(30);
@@ -321,3 +323,52 @@ describe("v0.14.0 需求4：CSS 与常量对齐（防止只改常量不改样式
 
 // React 在测试文件内用到的 import（放在末尾避免影响上面的 describe 顺序）
 import React from "react";
+
+// ─── v0.14.0 需求4：老用户持久化高度迁移 ─────────────────────────
+//
+// 背景（sidebar-fix 报告的风险3，Lead 补的口子）：
+// `sizeOf()` 是 `sectionSizes[key] ?? defaultSectionHeight(key)`，而用户**拖拽过
+// 任何一栏**时整张 `sidebarSectionSizes` 都会被持久化（含 `folder:` 的旧默认 250）。
+// 因此只改默认值对老用户无效 —— 他们升级后仍看到 7 条，而需求4 正是冲着这 7 条来的。
+// 所以加了 persist version 4→5 的迁移：清掉"看起来还是旧默认值"的 folder 键。
+describe("需求4：settings 迁移清掉旧默认文件夹栏高度（否则老用户仍是 7 条）", () => {
+  it("folder 高度 = 旧默认 250 → 删除该键（回落到新默认 392）", () => {
+    const out = migrateSettings(
+      { sidebarSectionSizes: { "folder:C:/ws": 250, temp: 900 } },
+      4,
+    );
+    expect(out.sidebarSectionSizes).toEqual({ temp: 900 });
+  });
+
+  it("folder 高度比旧默认更矮（被拖小过）→ 也删除，回到新默认", () => {
+    const out = migrateSettings({ sidebarSectionSizes: { "folder:C:/ws": 180 } }, 4);
+    expect(out.sidebarSectionSizes).toEqual({});
+  });
+
+  it("用户明确拖大过（> 250）→ **保留不动**（尊重用户意图）", () => {
+    const out = migrateSettings(
+      { sidebarSectionSizes: { "folder:C:/ws": 500, "folder:D:/other": 333 } },
+      4,
+    );
+    expect(out.sidebarSectionSizes).toEqual({
+      "folder:C:/ws": 500,
+      "folder:D:/other": 333,
+    });
+  });
+
+  it("非 folder 栏的旧默认 200 不受影响（那是别的栏的约定值）", () => {
+    const out = migrateSettings({ sidebarSectionSizes: { temp: 200, recent: 200 } }, 4);
+    expect(out.sidebarSectionSizes).toEqual({ temp: 200, recent: 200 });
+  });
+
+  it("已是 version 5 → 不再重复迁移（用户之后可自由拖小）", () => {
+    const out = migrateSettings({ sidebarSectionSizes: { "folder:C:/ws": 250 } }, 5);
+    expect(out.sidebarSectionSizes).toEqual({ "folder:C:/ws": 250 });
+  });
+
+  it("没有该字段 / 字段是脏数据时不崩", () => {
+    expect(() => migrateSettings({}, 4)).not.toThrow();
+    expect(() => migrateSettings({ sidebarSectionSizes: null }, 4)).not.toThrow();
+    expect(migrateSettings({ sidebarSectionSizes: null }, 4).sidebarSectionSizes).toBeNull();
+  });
+});
