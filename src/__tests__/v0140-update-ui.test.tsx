@@ -280,6 +280,34 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
     expect(screen.queryByTestId("update-error")).toBeNull();
   });
 
+  it("下载失败 → 显示下载错误（不重复套「检查更新失败」前缀）+ 重试可重新下载", async () => {
+    let downloadCalls = 0;
+    mocks.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "has_translate_key") return false;
+      if (cmd === "check_update") return makeUpdateInfo();
+      if (cmd === "download_update") {
+        downloadCalls += 1;
+        if (downloadCalls === 1) throw "下载安装包失败：下载服务器返回 HTTP 404";
+        return "C:\\tmp\\LightMD_0.15.0_x64-setup.exe";
+      }
+      if (cmd === "launch_installer") return undefined;
+      return undefined;
+    });
+
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("update-check-btn"));
+    fireEvent.click(await screen.findByTestId("update-download-btn"));
+
+    const error = await screen.findByTestId("update-error");
+    expect(error.textContent).toContain("下载安装包失败");
+    expect(error.textContent).not.toContain("检查更新失败");
+
+    // 重试 → 走重新下载（不是重新检查）
+    fireEvent.click(screen.getByTestId("update-retry-btn"));
+    expect(await screen.findByTestId("update-downloaded")).toBeTruthy();
+    expect(downloadCalls).toBe(2);
+  });
+
   it("有新版但没有可用安装包 → 提示 noAsset，仍给发布页入口", async () => {
     mocks.invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "has_translate_key") return false;

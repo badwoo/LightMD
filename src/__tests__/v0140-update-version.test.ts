@@ -100,4 +100,17 @@ describe("v0.14.0 pickInstallerAsset：安装包优先级", () => {
   it("忽略缺 url 的 asset", () => {
     expect(pickInstallerAsset([{ name: "LightMD_x64-setup.exe", url: "", size: 0 }])).toBeNull();
   });
+
+  it("排除签名/校验文件（xxx-setup.exe.sig 名里也含 setup.exe）", () => {
+    const picked = pickInstallerAsset([
+      asset("LightMD_0.15.0_x64-setup.exe.sig"),
+      asset("SHA256SUMS.txt"),
+      asset("LightMD_0.15.0_x64-setup.exe"),
+    ]);
+    expect(picked?.name).toBe("LightMD_0.15.0_x64-setup.exe");
+    // 只有签名/校验文件时不应选中任何东西
+    expect(
+      pickInstallerAsset([asset("LightMD_0.15.0_x64-setup.exe.sig"), asset("SHA256SUMS.txt")]),
+    ).toBeNull();
+  });
 });

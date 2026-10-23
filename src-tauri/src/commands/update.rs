@@ -121,13 +121,24 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
 }
 
 /// 安装包候选优先级：`x64-setup.exe` > `setup.exe` > `.msi`；其余返回 None。
+///
+/// 注意先排除签名/校验文件：`xxx-setup.exe.sig`、`SHA256SUMS.txt` 这类文件名里
+/// 也含 `setup.exe`，若不排除会被误当成安装包下载。
 fn asset_rank(name: &str) -> Option<u8> {
     let lower = name.to_ascii_lowercase();
-    if lower.contains("x64-setup.exe") {
+    if lower.ends_with(".sig")
+        || lower.ends_with(".sha256")
+        || lower.contains("sha256sums")
+        || lower.ends_with(".txt")
+        || lower.ends_with(".json")
+    {
+        return None;
+    }
+    if lower.ends_with("x64-setup.exe") {
         Some(0)
-    } else if lower.contains("setup.exe") {
+    } else if lower.ends_with("setup.exe") {
         Some(1)
-    } else if lower.ends_with(".msi") || lower.contains(".msi") {
+    } else if lower.ends_with(".msi") {
         Some(2)
     } else {
         None
@@ -511,6 +522,16 @@ mod tests {
         assert_eq!(picked.name, "LightMD_0.15.0_x64-setup.exe");
         assert_eq!(picked.browser_download_url, "https://e/setup");
         assert_eq!(picked.size, 20);
+    }
+
+    #[test]
+    fn ignores_signature_and_checksum_files() {
+        // .sig / SHA256SUMS 文件名里也含 setup.exe，必须排除
+        let assets = vec![
+            asset("LightMD_0.15.0_x64-setup.exe.sig", "https://e/sig", 1),
+            asset("SHA256SUMS.txt", "https://e/sums", 2),
+        ];
+        assert!(pick_installer_asset(&assets).is_none());
     }
 
     #[test]

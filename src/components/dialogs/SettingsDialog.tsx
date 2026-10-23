@@ -171,6 +171,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   /** 下载进度 0-100（服务器未给 Content-Length 时保持 0，UI 显示"正在下载"） */
   const [updateProgress, setUpdateProgress] = useState(0);
   const [updateError, setUpdateError] = useState("");
+  /** 出错阶段：check → 套 settings.update.failed 模板；download → 文案自带前缀直接展示 */
+  const [updateErrorKind, setUpdateErrorKind] = useState<"check" | "download">("check");
 
   const providerPreset = settings.translate.translateProviderPreset;
 
@@ -273,6 +275,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setUpdateState(result.isNewer ? "available" : "uptodate");
     } catch (e) {
       setUpdateError(e instanceof Error ? e.message : String(e));
+      setUpdateErrorKind("check");
       setUpdateState("error");
     }
   }, []);
@@ -290,7 +293,10 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setUpdateProgress(100);
       setUpdateState("downloaded");
     } catch (e) {
+      // 下载阶段的错误文案已自带「下载安装包失败：」前缀，直接展示，
+      // 不再套 settings.update.failed（否则会变成"检查更新失败：下载安装包失败：…"）
       setUpdateError(e instanceof Error ? e.message : String(e));
+      setUpdateErrorKind("download");
       setUpdateState("error");
     }
   }, [updateInfo]);
@@ -1362,12 +1368,18 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             {updateState === "error" && (
               <div className="settings-update-error" data-testid="update-error">
                 <small className="settings-hint settings-hint-warning">
-                  {t("settings.update.failed", { msg: updateError })}
+                  {updateErrorKind === "check"
+                    ? t("settings.update.failed", { msg: updateError })
+                    : updateError}
                 </small>
                 <button
                   type="button"
                   className="settings-btn secondary"
-                  onClick={() => void handleCheckUpdate()}
+                  onClick={() =>
+                    void (updateErrorKind === "download" && updateInfo
+                      ? handleDownloadUpdate()
+                      : handleCheckUpdate())
+                  }
                   data-testid="update-retry-btn"
                 >
                   {t("settings.update.retry")}

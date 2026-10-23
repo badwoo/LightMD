@@ -73,12 +73,26 @@ export function compareVersions(current: string, latest: string): number {
   return 0;
 }
 
-/** 安装包优先级：x64-setup.exe > setup.exe > .msi；其余返回 null */
+/**
+ * 安装包优先级：`x64-setup.exe` > `setup.exe` > `.msi`；其余返回 null。
+ *
+ * 先排除签名/校验文件（`xxx-setup.exe.sig`、`SHA256SUMS.txt` 等）——
+ * 它们文件名里也含 `setup.exe`，不排除会被误当成安装包。
+ */
 function assetRank(name: string): number | null {
   const lower = name.toLowerCase();
-  if (lower.includes("x64-setup.exe")) return 0;
-  if (lower.includes("setup.exe")) return 1;
-  if (lower.includes(".msi")) return 2;
+  if (
+    lower.endsWith(".sig") ||
+    lower.endsWith(".sha256") ||
+    lower.includes("sha256sums") ||
+    lower.endsWith(".txt") ||
+    lower.endsWith(".json")
+  ) {
+    return null;
+  }
+  if (lower.endsWith("x64-setup.exe")) return 0;
+  if (lower.endsWith("setup.exe")) return 1;
+  if (lower.endsWith(".msi")) return 2;
   return null;
 }
 
@@ -114,10 +128,11 @@ const NOT_TAURI_MESSAGE = "当前环境不支持检查更新（请使用 LightMD
 /**
  * 检查更新。
  *
- * 非 Tauri 环境返回一个明确的结果（isNewer=false + 空版本），
- * 而不是抛错——设置弹窗在浏览器 dev 下仍能正常渲染，只是点了没反应。
- * 但为了让 UI 能提示"不可用"，这里抛出一个可读错误更合适：
- * 调用方（SettingsDialog）会把它显示在失败文案里。
+ * 非 Tauri 环境（浏览器 dev / 单测）抛一个明确的可读错误，
+ * 由调用方显示在失败文案里（设置弹窗在浏览器 dev 下仍能正常渲染）。
+ *
+ * 注意：错误信息**不带**「检查更新失败：」前缀 —— 该前缀由 UI 的
+ * `settings.update.failed` 模板统一添加，避免出现两层前缀。
  */
 export async function checkForUpdate(currentVersion: string): Promise<UpdateCheckResult> {
   if (!isTauri()) {
@@ -126,7 +141,7 @@ export async function checkForUpdate(currentVersion: string): Promise<UpdateChec
   try {
     return await invoke<UpdateCheckResult>("check_update", { currentVersion });
   } catch (err) {
-    throw new Error(`检查更新失败：${toReadableError(err)}`);
+    throw new Error(toReadableError(err));
   }
 }
 
