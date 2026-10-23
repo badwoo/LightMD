@@ -583,6 +583,33 @@ export function SearchReplaceDialog({
     performSearch();
   }, [performSearch]);
 
+  /**
+   * v0.14.0 需求5：「换文档后立即在新文档上重新搜索」的**最新闭包引用**。
+   *
+   * 为什么必须有这个 ref（实测踩到的坑，务必保留注释）：
+   * 下面的换文档 effect 只依赖 `[docKey, contentVersion, searchText]`，而换文档时
+   * `sourceContent` / `editorView.state.doc` 这些**真正装着文本**的东西是在
+   * EditorContainer 的 effect 里后一步才更新的。于是：
+   * - 首次渲染（docKey 已变、文本还是旧的）里创建的定时器会捕获**旧的**
+   *   `performSearch`（搜旧文本 → 无结果）；
+   * - 等文本更新后 `performSearch` 换了新身份，但换文档 effect 的依赖没变
+   *   → **不会重跑、也不会 cleanup** → 那个旧定时器照常在 120ms 后触发，
+   *   把刚算对的匹配数**覆盖回"无结果"**。
+   * 实机复现：文档 A 搜「李四」无结果 → 切到含「李四」的表格文档 → 仍显示"无结果"。
+   *
+   * 解法：所有延迟执行一律走 `performSearchRef.current()`，永远用**最新**闭包。
+   */
+  const performSearchRef = useRef(performSearch);
+  performSearchRef.current = performSearch;
+  /**
+   * v0.14.0 需求5：换文档重搜的「世代序号」。
+   *
+   * 连续快速切多个标签时，每次换文档都会排一组 rAF/定时器。用单调序号让
+   * **只有最后一次**生效（过期的回调直接 return），避免"最后一个标签的结果
+   * 被前一个标签的迟到回调覆盖"（与 ② 的旧闭包问题同源，但这条防的是抖动）。
+   */
+  const docChangeSeqRef = useRef(0);
+
   // 高亮匹配位置
   const highlightMatch = useCallback((index: number) => {
     if (matchesRef.current.length === 0) return;
@@ -1043,27 +1070,35 @@ export function SearchReplaceDialog({
    * 用 `contentVersion` 而不是只靠 docKey：同一文件被外部改过 / 切回同一标签
    * 但内容变了，docKey 不变而 contentVersion 变了，也应该重新搜索。
    *
-   * ⚠️ 时序：换文档后 PM doc 的替换是在 EditorContainer 的 effect 里做的，本 effect
-   * 可能先跑（读到旧 doc）→ 所以延迟到下一帧再搜（rAF），必要时再来一次。
+   * ⚠️ 时序（两处坑，都已用实机验证过）：
+   * ① 换文档后 PM doc 的替换是在 EditorContainer 的 effect 里**后一步**做的，
+   *    本 effect 可能先跑（读到旧 doc）→ 延迟到下一帧再搜；
+   * ② **所有延迟执行必须走 `performSearchRef.current()`**，不能直接调 `performSearch`。
+   *    原因：换文档瞬间 `sourceContent` 还是旧文本，此刻创建的定时器会捕获旧闭包；
+   *    等文本更新后 `performSearch` 换了新身份，但本 effect 依赖
+   *    `[docKey, contentVersion, searchText]` 没变 → 不重跑、不 cleanup →
+   *    旧定时器照常触发，把刚算对的匹配数覆盖回"无结果"（实机复现过）。
+   * ③ 用 `contentVersion` 而不是只靠 docKey：同一文件被外部改过 / 切回同一标签
+   *    但内容变了，docKey 不变而 contentVersion 变了，也应该重新搜索。
    */
   useEffect(() => {
     if (!searchText) return;
-    let cancelled = false;
+    // 连续换文档时只保留最后一次的结果：用序号丢弃过期回调
+    const seq = ++docChangeSeqRef.current;
     const run = () => {
-      if (cancelled) return;
-      performSearch();
+      if (docChangeSeqRef.current !== seq) return;
+      performSearchRef.current();
     };
     // 双 rAF：第一帧等 React 提交完成、第二帧等 EditorContainer 把新 doc 灌进 view
+    let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
-      const raf2 = requestAnimationFrame(run);
-      // raf2 的取消挂在下面的 cleanup 里不方便，直接用 setTimeout 兜底取消
-      if (cancelled) cancelAnimationFrame(raf2);
+      raf2 = requestAnimationFrame(run);
     });
     // 兜底：某些环境下 doc 替换在 effect 之后一拍才稳定，再补一次
-    const timer = setTimeout(run, 120);
+    const timer = setTimeout(run, 160);
     return () => {
-      cancelled = true;
       cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
       clearTimeout(timer);
     };
     // 只依赖「文档身份 / 内容版本」与搜索词：选项变化由 performSearch 自己的依赖处理
