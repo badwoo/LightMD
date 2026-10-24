@@ -129,6 +129,11 @@ import {
   mapSourceLineToPreviewScroll,
   mapPreviewScrollToSourceLine,
   mapSourceLineToScrollTop,
+  // v0.14.0 需求4：软换行感知的按行轴实测 + 正文元素过滤（见 tagPreviewSourceLines）
+  measureSourceLineAxis,
+  isAnchorablePreviewChild,
+  // v0.14.0 需求4：滚到最底时**视口顶所在行**（末尾锚点用，见 collectAnchors）
+  lineAtMaxScroll,
   type PreviewAnchorSet,
 } from "../../utils/blockScrollAlign";
 // v0.13.2 需求8（返修）：分屏双向联动的**方向锁**（异步 scroll 回声防拉扯）
@@ -6413,9 +6418,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         for (const el of children) {
           if (el.dataset.srcLine !== undefined) delete el.dataset.srcLine;
         }
+        // v0.14.0 需求4：数量自校验的**右侧基数**必须是"正文内容元素"。
+        // 旧实现直接数 body.children —— 而分屏 iframe 的 HTML 会把 mermaid / katex
+        // 的 `<script>` 写在 </body> 前，mermaid 还会挂 `div.mermaidTooltip` 工具层，
+        // 于是"块数 ≠ 子元素数" → shouldTagPreview 判假 → **整份文档放弃贴标**，
+        // 实测含 mermaid 的文档 `[data-src-line]` 数量为 0，只能退回百分比映射
+        // （正是用户反馈的"含图表时左右篇幅/滚动对不上"）。
+        // 过滤掉非内容标签后，顺序与 markdown-it 顶层块仍然一一对应，
+        // 因此贴标时用的是**过滤后**的同一个数组（下标 i 必须与 lines[i] 对齐）。
+        const contentEls = children.filter((el) =>
+          isAnchorablePreviewChild(el.tagName, el.className),
+        );
         const lines = topLevelBlockStartLines(markdownSource);
-        if (!shouldTagPreview(lines.length, children.length)) return false;
-        children.forEach((el, i) => {
+        if (!shouldTagPreview(lines.length, contentEls.length)) return false;
+        contentEls.forEach((el, i) => {
           el.dataset.srcLine = String(lines[i]);
         });
         return true;
@@ -6589,7 +6605,27 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       </body></html>`);
       doc.close();
       // v0.13.1 需求13：贴"源码起始行"标签，供左→右按块对齐滚动使用
-      tagPreviewSourceLines(doc.body, previewSourceMarkdown);
+      // v0.14.0 需求4（实测修正）：`doc.close()` 返回时 `doc.body` **可能还是 null** ——
+      // 整篇重写注入的 `<head>` 里有非 async 的 mermaid/katex 脚本，解析器会停在那里
+      // 等脚本，`<body>` 尚未解析。旧代码直接 `doc.body.children` 会抛 TypeError，
+      // 被 catch 静默吞掉 → **含 mermaid 的文档一个 data-src-line 都贴不上**
+      // （实测 `[data-src-line]` 数量为 0，只能退回百分比映射，这正是"含图表文档
+      //  左右滚动对不齐"的直接原因）。
+      // 现在等到 body 真的就绪再贴；三种触发都留着（同步/load/rAF/兜底定时器），
+      // 贴标本身幂等（先清旧标签再贴），重复调用无副作用。
+      const tagWhenBodyReady = () => {
+        const b = doc.body;
+        if (b) tagPreviewSourceLines(b, previewSourceMarkdown);
+      };
+      if (doc.body) {
+        tagWhenBodyReady();
+      } else {
+        try {
+          doc.defaultView?.addEventListener("load", tagWhenBodyReady, { once: true });
+        } catch { /* 跨源/已卸载：忽略，后面还有 rAF 与定时器兜底 */ }
+        requestAnimationFrame(tagWhenBodyReady);
+        setTimeout(tagWhenBodyReady, 120);
+      }
       // 记录已加载的脚本状态与主题（供下次增量更新比对是否需重写）
       previewIframeInitRef.current = { mermaid: hasMermaid, math: hasMath, theme };
     } else if (typoChanged && !htmlChanged) {
@@ -6799,11 +6835,86 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         tops.push(rect.top + preview.scrollTop);
         heights.push(rect.height);
       }
-      return { lines, tops, heights, totalHeight: preview.scrollHeight };
+      // v0.14.0 需求4：把**源码总行数**交给纯函数层 → 它据此追加"末尾锚点"
+      // 没有这一项时，源码尾部那堆被 markdown 渲染吞掉的空行无法映射，
+      // 右屏会停在最后一个块上，于是"右屏到底了左屏还要滚很长"（用户报的主症状）。
+      // 传 0/缺省时纯函数层保持 v0.13.x 行为。
+      //
+      // ⚠️ v0.14.0 需求4（实测修正 B）：`maxScrollLine` 必须是"滚到最底时**视口顶**
+      // 所在的行"，而不是最后一行 —— 滚到底时最后一行只出现在视口**下半部**。
+      // 实测（真机）：文档① maxScroll 6489 → 视口顶在第 223.79 行（全篇 266 行）；
+      // 旧实现把末尾锚点当作"最后一行 ↔ 右屏 max"，于是左屏到底只映射到右屏 98.6%
+      // （差 26px）。改用 maxScrollLine 后两方向都精确 100%。
+      return {
+        lines,
+        tops,
+        heights,
+        totalHeight: preview.scrollHeight,
+        totalSourceLines: totalSourceLines(),
+        maxScrollLine: lineAtMaxScroll(getSourceLineAxis(), maxSourceScroll()) ?? undefined,
+      };
     };
 
-    const totalSourceLines = (): number =>
-      previewSourceMarkdown === "" ? 0 : previewSourceMarkdown.split("\n").length;
+    /** 左屏可滚动上限（末尾锚点要用它算"滚到底时视口顶所在行"） */
+    const maxSourceScroll = (): number =>
+      Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+
+    // v0.14.0 需求4：用**函数声明**（而非 const 箭头函数）以靠提升免疫 TDZ ——
+    // 上面的 collectAnchors 会调用它，若哪天有人在它定义之前调用 collectAnchors，
+    // const 版本会抛 ReferenceError，函数声明不会。
+    function totalSourceLines(): number {
+      return previewSourceMarkdown === "" ? 0 : previewSourceMarkdown.split("\n").length;
+    }
+
+    /**
+     * v0.14.0 需求4：左屏的**实测按行轴**（软换行感知）。
+     *
+     * ## 为什么必须有
+     * `estimateTopSourceLine` 原先假设"textarea 每行等高、行号与滚动线性"。
+     * 但 `.source-editor` 是 `white-space: pre-wrap` —— 长行会**软换行**，
+     * 视觉行数 ≠ 逻辑行数（按 `\n` 数）。于是线性公式在长行文档上系统性偏后，
+     * 实测偏差可达 10 个块，表现为"左右看到的内容对不上"。
+     * 改为实测每个顶层块起始行的真实 Y（mirror div，见 utils/blockScrollAlign），
+     * 再按行补全成密集轴 → 段内线性插值即软换行感知。
+     *
+     * ## 为什么必须缓存
+     * 实测要创建 mirror div 并逐块测量（强制布局）。滚动是每帧回调，
+     * 每次滚动都测会直接拖垮滚动性能。因此按
+     * 「文本长度 + textarea 布局宽高 + scrollHeight」做键缓存：内容变（effect 重跑）
+     * 或拖分割条/开关预览导致宽度变，才重测一次。
+     *
+     * ⚠️ `scrollHeight` 必须在键里（v0.14.0 需求4 复查抓到的真 bug）：
+     * 轴依赖字号 / 行高 / 字族 / `--doc-zoom`，这四项都能在设置里**运行时**改。
+     * 改完软换行位置全变、`scrollHeight` 变，但 `previewSourceMarkdown.length` 与
+     * `clientWidth/clientHeight` **都不变**（textarea 是 flex:1，高度由容器决定）→
+     * 只按前三项做键会命中旧缓存，用**旧字号量出来的轴**去映射，偏差反而更大。
+     * 而 `measureSourceLineAxis` 内部本就用 `scrollHeight - clientHeight` 做归一化上限，
+     * 所以 scrollHeight 变了轴必然该重算 —— 语义上也最贴切。
+     *
+     * 测量失败（隐藏 / 空文本 / 超大文档 / 无有效点）返回 null →
+     * `estimateTopSourceLine` 自动退回旧的线性公式，行为与 v0.13.x 一致。
+     */
+    let axisCache: { key: string; axis: number[] | null } | null = null;
+    const getSourceLineAxis = (): number[] | null => {
+      const total = totalSourceLines();
+      if (total <= 1) return null;
+      // 键：内容长度 + 布局宽高（拖分割条）+ scrollHeight（字号/行高/字族/zoom/内容变化）
+      const key = `${previewSourceMarkdown.length}|${textarea.clientWidth}|${textarea.clientHeight}|${textarea.scrollHeight}`;
+      if (axisCache && axisCache.key === key) return axisCache.axis;
+      let axis: number[] | null = null;
+      try {
+        const measured = measureSourceLineAxis({
+          textarea,
+          blockLines: topLevelBlockStartLines(previewSourceMarkdown),
+        });
+        // 长度必须与"当前逻辑行数"严格一致，否则是过期测量（内容刚变、DOM 未更新）→ 丢弃
+        if (measured && measured.totalLines === total) axis = measured.axis;
+      } catch {
+        axis = null;
+      }
+      axisCache = { key, axis };
+      return axis;
+    };
 
     /** 左屏视口顶对应的源码行（浮点） */
     const currentTopSourceLine = (): number =>
@@ -6812,6 +6923,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         scrollHeight: textarea.scrollHeight,
         clientHeight: textarea.clientHeight,
         totalSourceLines: totalSourceLines(),
+        // v0.14.0 需求4：软换行感知（null 时纯函数层自动退回线性公式）
+        lineTops: getSourceLineAxis() ?? undefined,
       });
 
     /**
@@ -6868,7 +6981,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       try {
         const anchors = collectAnchors();
         let line: number | null = null;
-        if (anchors) line = mapPreviewScrollToSourceLine(anchors, preview.scrollTop);
+        // v0.14.0 需求4：**必须传 preview.clientHeight**，否则纯函数层拿不到可滚动上限，
+        // 无法生成"末尾锚点"，右屏滚到底时反算不出最后一行 → 左屏到底后还剩一截
+        // （用户报的"右屏到底了左屏还要滚很长"的反向症状）。
+        if (anchors) line = mapPreviewScrollToSourceLine(anchors, preview.scrollTop, preview.clientHeight);
         if (line === null) {
           const pct = computeSyncScrollTop(
             preview.scrollTop, preview.scrollHeight, preview.clientHeight,
@@ -6883,6 +6999,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               scrollHeight: textarea.scrollHeight,
               clientHeight: textarea.clientHeight,
               totalSourceLines: totalSourceLines(),
+              // v0.14.0 需求4：与左→右用**同一根**实测轴，保证两向往返互逆
+              lineTops: getSourceLineAxis() ?? undefined,
             },
             line,
           );

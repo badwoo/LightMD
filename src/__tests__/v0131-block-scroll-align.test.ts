@@ -285,7 +285,15 @@ describe("需求13 · 分屏接线：先试块对齐、失败退回百分比", (
   });
 
   it("贴标签走数量自校验，且异常被吞掉（不影响预览）", () => {
-    expect(src).toContain("if (!shouldTagPreview(lines.length, children.length)) return false;");
+    // v0.14.0 需求4：数量自校验的**右侧基数**从 `body.children` 改为"正文内容元素"
+    // （先 isAnchorablePreviewChild 过滤掉 mermaid/katex 注入的 <script> 与
+    //  div.mermaidTooltip 工具层）。原因：含 mermaid 的文档旧实现数量永远不等，
+    // 于是整份文档放弃贴标 → 只能退回百分比映射（用户报的"含图表时对不齐"）。
+    // 断言随之更新为新契约：过滤后仍必须走 shouldTagPreview 严格相等校验。
+    expect(src).toContain("isAnchorablePreviewChild");
+    expect(src).toContain("if (!shouldTagPreview(lines.length, contentEls.length)) return false;");
+    // 旧的"直接数 body.children"写法必须已被替换掉（否则 mermaid 文档仍会失效）
+    expect(src).not.toContain("if (!shouldTagPreview(lines.length, children.length)) return false;");
     expect(src).toContain("tagPreviewSourceLines(doc.body, previewSourceMarkdown);");
   });
 
