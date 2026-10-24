@@ -249,6 +249,15 @@ export function findMatches(text: string, searchText: string, caseSensitive = fa
 const EMPTY_RANGE: MatchRange = { start: 0, end: 0 };
 /** collectFiles 缺省（仅当前文档）时使用的 fileKey */
 const FALLBACK_FILE_KEY = "__search_current_doc__";
+/**
+ * 「阅读模式下 doc 变化 → 重算搜索」的防抖时长。
+ *
+ * 为什么需要：连续打字每一击都是一个新 doc 对象，若每帧全量重扫整篇文档，
+ * 长文档（几 MB）会变成稳定的每帧数 ms 开销 → 输入卡顿。
+ * 150ms 是「用户停手后立刻看到计数更新」与「不占输入帧」的折中：
+ * 慢于人的连续击键间隔（~100ms 内），快于人的感知阈值（~200ms）。
+ */
+const CONTENT_RESYNC_DEBOUNCE_MS = 150;
 
 export function SearchReplaceDialog({
   onClose,
@@ -610,6 +619,85 @@ export function SearchReplaceDialog({
    */
   const docChangeSeqRef = useRef(0);
 
+  /**
+   * v0.14.0 需求2（续修）：**阅读模式下「内容本身」变化时也要重新搜索**。
+   *
+   * ## 缺陷（实测取证见 src/__tests__/v0140-search-undo-refresh.test.tsx）
+   * 用户动作链：搜索 → 替换 → Ctrl+Z。内容确实恢复了，但搜索框停在替换后的结果上
+   * （`cat dog cat` 替换掉第一处 cat 后是 1/1，撤销回来应该是 1/2，实测一直显示 1/1；
+   *  高亮 Decoration 也被映射到错位的词上，点「下一个」定位到错误位置）。
+   *
+   * ## 根因
+   * `performSearch` 的依赖是
+   * `[searchText, searchOptions, isSourceMode, sourceContent, editorView, isMdFile, viewMode]`，
+   * 而阅读模式下的替换与撤销**只改 `editorView.state.doc`**：
+   * - `editorView` 永远是同一个对象（视图从不重建）；
+   * - `sourceContent`（源码侧 state）在阅读模式**不同步**（只在编辑模式/换文档时更新）；
+   * → 依赖一个都没变 → effect 不重跑 → `matchesRef` / `offsetMapRef` 仍是**旧文档的坐标**，
+   *   于是匹配数、高亮位置、上下跳转全部错位。
+   * 宿主传的 `contentVersion`（forceUpdateKey）只在**换文档**时 +1，撤销不会让它变，
+   * 所以靠它也不成立（见上面「换文档重搜」effect 的注释，那是另一件事）。
+   *
+   * ## 为什么用 MutationObserver，而不是包 `editorView.dispatch`
+   * Outline.tsx 已经在包 `editorView.dispatch`，并在卸载时把 `originalDispatch` 装回去；
+   * 两处互相覆盖会让「面板开着时侧边栏开关一次」就静默丢掉监听（撤销后搜索框再次失效）。
+   * 观察 DOM 与其它组件完全解耦。**用 doc 身份做闸门**是关键：我们自己的高亮 Decoration
+   * 事务只改 meta 不改 doc，因此不会自激成环（每次 DOM 抖动都会进 check，但只在
+   * doc 换了对象时才真的重算）。
+   *
+   * ## 性能：doc 变化触发的重搜要**短防抖**（150ms），不能每帧全量重扫
+   * 阅读模式下用户连续打字，每一击都是一个新 doc 对象；若每次都立刻跑 `performSearch`
+   * （O(全文) 正则扫描，几 MB 文档每帧数 ms），就会变成稳定的输入卡顿。
+   * 因此观察器只负责「排一个 150ms 防抖」，连续输入被合并成一次；
+   * 用户停手 150ms 后计数/高亮刷新一次 —— 肉眼无感，且不再占输入帧。
+   * 替换/全部替换这类**离散操作**不走这条防抖（它们各自 50ms 后直接重算，
+   * 见 `runContentResync`），撤销/恢复则走防抖（150ms 后刷新，同样无感）。
+   *
+   * 延迟执行一律走 `performSearchRef.current()`：永远用最新闭包（搜索词/选项可能刚变过）。
+   */
+  const lastSeenDocRef = useRef<PMNode | null>(null);
+  /** doc 变化重搜的防抖定时器（连续输入合并用；与替换路径的 50ms 定时器互不干扰） */
+  const docResyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * 立刻按当前内容重算一次搜索，并把「已见 doc」闸门推到最新。
+   *
+   * 为什么闸门要在这里推：替换路径自己也会重算（50ms 后），若不同步闸门，
+   * 观察器的防抖定时器还会再触发一次重复搜索。推完闸门后那次触发会命中
+   * `doc === lastSeenDocRef` 而直接 return。
+   */
+  const runContentResync = useCallback(() => {
+    const view = editorView;
+    if (view) lastSeenDocRef.current = view.state.doc;
+    performSearchRef.current();
+  }, [editorView]);
+
+  useEffect(() => {
+    const view = editorView;
+    if (!view || isSourceMode) return;
+    lastSeenDocRef.current = view.state.doc;
+    const check = () => {
+      docResyncTimerRef.current = null;
+      if (view.state.doc === lastSeenDocRef.current) return;
+      lastSeenDocRef.current = view.state.doc;
+      performSearchRef.current();
+    };
+    // MutationObserver 回调本身是微任务；这里再防抖 150ms 把连续输入合并成一次重扫。
+    const schedule = () => {
+      if (docResyncTimerRef.current) clearTimeout(docResyncTimerRef.current);
+      docResyncTimerRef.current = setTimeout(check, CONTENT_RESYNC_DEBOUNCE_MS);
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(view.dom, { childList: true, subtree: true, characterData: true });
+    return () => {
+      observer.disconnect();
+      if (docResyncTimerRef.current) {
+        clearTimeout(docResyncTimerRef.current);
+        docResyncTimerRef.current = null;
+      }
+    };
+  }, [editorView, isSourceMode]);
+
   // 高亮匹配位置
   const highlightMatch = useCallback((index: number) => {
     if (matchesRef.current.length === 0) return;
@@ -781,8 +869,16 @@ export function SearchReplaceDialog({
     }
 
     // 替换后重新搜索
-    setTimeout(() => performSearch(), 50);
-  }, [isSourceMode, sourceTextareaRef, sourceContent, onSourceContentChange, currentMatch, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, performSearch, editorView]);
+    // v0.14.0 需求2（续修）：**必须走 performSearchRef.current()**，不能用闭包里的
+    // `performSearch`。实测（源码模式）：替换 → 宿主 setSourceContent(新内容) → 新的
+    // performSearch 先算出 1/1，随后这个 50ms 定时器用**旧闭包**（旧 sourceContent）
+    // 再算一次，把结果覆盖回替换前的 1/2（实测替换后 700ms 仍显示 1/2）。
+    // 阅读模式之所以侥幸没暴露，只因闭包里读的是 editorView.state.doc 这个活对象；
+    // 同一处代码仍是隐患，一并收口。
+    // 走 runContentResync 而不是裸 performSearchRef：它顺带把「已见 doc」闸门推到最新，
+    // 免得观察器的 150ms 防抖再补一次重复的全量扫描（替换是离散操作，要立刻出结果）。
+    setTimeout(() => runContentResync(), 50);
+  }, [isSourceMode, sourceTextareaRef, sourceContent, onSourceContentChange, currentMatch, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, editorView, runContentResync]);
 
   /**
    * 取某个文件的「本轮搜索选项」。
@@ -952,15 +1048,17 @@ export function SearchReplaceDialog({
     }
 
     // 当前文档的匹配计数 / 条幅都需要重算（条幅是同步纯计算，直接刷）
+    // v0.14.0 需求2（续修）：同 replaceCurrent/replaceAll —— 延迟重搜必须用**最新**闭包，
+    // 否则批量替换后 50ms 的旧闭包会用替换前的 sourceContent 覆盖掉正确结果。
     setTimeout(() => {
-      performSearch();
+      runContentResync();
       if (showResults) rebuildResults();
     }, 50);
     return changedFiles;
   }, [
     searchText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange,
     docKey, readCurrentText, onSourceContentChange, applyFileText, replaceText,
-    performSearch, showResults, rebuildResults,
+    showResults, rebuildResults, runContentResync,
   ]);
 
   // 全部替换
@@ -1044,8 +1142,10 @@ export function SearchReplaceDialog({
       setSelectionRange(shifted);
     }
 
-    setTimeout(() => performSearch(), 50);
-  }, [isSourceMode, sourceContent, onSourceContentChange, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, performSearch, editorView, showResults, replaceAllAcrossFiles, t]);
+    // v0.14.0 需求2（续修）：同 replaceCurrent —— 延迟重搜必须用最新闭包，
+    // 否则「全部替换」后 50ms 的旧闭包会把刚算对的结果覆盖回替换前。
+    setTimeout(() => runContentResync(), 50);
+  }, [isSourceMode, sourceContent, onSourceContentChange, searchText, replaceText, caseSensitive, useRegex, wholeWord, inSelection, selectionRange, editorView, showResults, replaceAllAcrossFiles, t, runContentResync]);
 
   // ─── v0.14.0：「查找所有打开文件」结果条幅 ─────────────────────
 
