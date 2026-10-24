@@ -1,12 +1,15 @@
 # LightMD v0.14.0 发布说明
 
-> 发布日期：2026-10-23 ｜ 基线：v0.13.2 ｜ 定位：**交互收敛（三模式 → 二模式）+ 搜索能力增强 + 实机缺陷修复**
+> 发布日期：2026-10-23（第五批重新打包：2026-10-24） ｜ 基线：v0.13.2 ｜ 定位：**交互收敛（三模式 → 二模式）+ 搜索能力增强 + 实机缺陷修复**
 >
 > 本版不再推进 CodeMirror 6 迁移（0.14.0 原 CM6 实施方案作废），改为按用户重新评估后的三条需求重做：
 > ① 三模式合并为二模式（编辑与分屏合并，右屏可滑出/滑回）；② 搜索替换增强（全词 / 大小写 / 选取范围内 / 查找所有打开文件）；
 > ③ 修复分屏分割线单向拖拽缺陷。
 >
 > 全部 45 项验收在**打包产物 + WebView2 CDP 真实鼠标键盘手势**下逐条实测通过（`scripts/real-machine-v0140.mjs`）。
+>
+> **本安装包为第五批重新打包**（2026-10-24）：包含 4 条问题修复（检查更新连通性、搜索撤销后失效、
+> 预览开关动画、左右屏篇幅与滚动对齐）。详见文末「附：第五批问题修复」。
 
 ## 一、安装包
 
@@ -16,8 +19,8 @@
 | `LightMD_0.14.0_x64_en-US.msi` | MSI 安装包（企业分发） |
 
 ```
-0e53494c63d3ccf227437a76b19f37861faee4db83d62b219ce8b1d4b6bb6e12  LightMD_0.14.0_x64-setup.exe
-a6e746af10d6fb2e8d5aee31fa9bb1f4f95ac05b27c06feff19b6510f2775a40  LightMD_0.14.0_x64_en-US.msi
+54b18cd03d7817d1e2842490aa333246f17eba5f31f78ce03c2b49dfb34694ee  LightMD_0.14.0_x64-setup.exe
+6228684977e18010efc3f668a58c001a56d96708eff9f5b7116793f4fe594bac  LightMD_0.14.0_x64_en-US.msi
 ```
 
 > `lightmd.exe` 的 `FileVersion` / `ProductVersion` 实测均为 `0.14.0`。
@@ -626,3 +629,132 @@ wrapper 无内联高度（371ms 的 204→720 跳变消失）、scrollTop 改写
    想回到新默认（362），手动拖回默认附近或双击标题栏折叠/展开一次即可。
 4. **文件夹栏第 11 行亚像素残行**：列表盒高 300.67px（header 实测 31.33 与常量 32 的
    亚像素差），第 11 行只露 0.667px 且无背景/边框，8× 截图不可见；不为它改布局（避免引入回归）。
+
+---
+
+# 附：第五批问题修复（2026-10-24，同一版本号重新打包）
+
+> 本批 4 条，全部在**打包产物 + WebView2 真实鼠标键盘手势 / CDP 帧采样**下实测通过。
+> 质量验证：`tsc --noEmit` exit 0；全量 **317 文件 / 5570 用例**全绿（基线 314/5482）；
+> Rust `cargo test` **192 passed / 3 ignored**；版本号三处仍为 **0.14.0**。
+
+## 需求 1：点「检查更新」报「无法连接 GitHub」
+
+**症状**：设置 → 软件更新 → 检查更新，报
+`检查更新失败：无法连接 GitHub（请检查网络或代理）：error sending request for url (https://api.github.com/...)`。
+用户预期：能正常检查；若确实没有新版本，应显示「已是最新版本」。
+
+**根因（TLS / 代理配置，不在业务层）**
+- `reqwest` 原先 features 用 `rustls-tls`（≡ `rustls-tls-webpki-roots`）：只信任**编译进二进制的
+  Mozilla 根证书**，**不读 Windows 证书库**；
+- 同时 `default-features = false` 把 default 里的 `system-proxy` 也关掉了 → **完全忽略系统代理**。
+- 本机 GitHub 被本地 FastGithub 代理 MITM：hosts/DNS 把 `api.github.com` 指到 `127.0.0.1:443`，
+  TLS 用自签 CA「CN=FastGithub」（该 CA **已装入 Windows 根证书库**）→ webpki 内置根不认它，必然失败。
+- 实测三方对照：`curl -sk` 通（跳过校验）、PowerShell `Invoke-WebRequest` 通（走 Schannel + 系统库）、
+  node `tls.connect` 报 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`（与 webpki 行为一致）。
+
+**修复**
+1. `reqwest` features 改为 `rustls-tls-native-roots` + `system-proxy`（走系统证书库/Schannel），
+   并**移除 `rustls-tls`** 避免 webpki 与 native 两套根共存产生来源歧义（`Cargo.lock` 中 `webpki-roots` 已归零）。
+2. **错误分层**：Rust 侧把网络层失败（连接/DNS/TLS/超时）编码为
+   `LIGHTMD_UPDATE_NETWORK|<scope>|<detail>`；前端 `parseUpdateFailure` 解析后抛 `UpdateNetworkError`，
+   UI 进入独立 `offline` 态显示「暂时无法检查更新（网络不可用），请检查网络或代理后重试」，
+   **绝不再谎报「已是最新版本」**。HTTP 403/404 等业务失败仍走原文案 + 重试。
+
+**实机验证**（新 exe，FastGithub 仍在运行、MITM CA 仍在证书库）：终态 `uptodate`，文案「已是最新版本 v0.14.0」。
+
+## 需求 2：搜索/替换后按 Ctrl+Z 撤销，搜索框失效
+
+**症状**：搜索到内容并替换，按 `Ctrl+Z` 撤销后内容确实恢复了，但搜索框失效（匹配数/定位/高亮不再跟随）。
+
+**根因（两个独立失效点）**
+1. **阅读模式**：`performSearch` 的依赖是
+   `[searchText, searchOptions, isSourceMode, sourceContent, editorView, isMdFile, viewMode]`，
+   而替换走 PM 事务、撤销走 PM history —— 两者都**只改 `editorView.state.doc`**，
+   `editorView` 对象不变、`sourceContent` 在阅读模式不同步 → 依赖一个都没变 → effect 不重跑 →
+   `matchesRef`/`offsetMapRef` 冻结在旧 doc 坐标（匹配数停在替换后的值、高亮 Decoration 被映射到**错位**的词、
+   上下跳转失效）。实测 `cat dog cat` 搜 `cat` → 替换 → 撤销：全程停在 1/1（应回到 1/2）。
+2. **两种模式共用**：替换后 50ms 的 `setTimeout(() => performSearch(), 50)` 捕获**旧闭包** ——
+   源码模式实测 +20ms 算出正确的 1/1，+60ms 被旧 `sourceContent` 覆盖回 1/2 并永久保持。
+
+**修复**（仅 `SearchReplace.tsx`，未动宿主）
+- `MutationObserver` 观察 PM DOM + **doc 对象身份闸门**（自身高亮事务只改 meta 不改 doc，不会自激成环）；
+  **不包 `dispatch`**，因为 `Outline.tsx` 已在包且卸载时还原，两处互相覆盖会让监听静默丢失。
+- **150ms 短防抖**（连续打字不每帧全量重扫）；替换类离散操作走 `runContentResync()` 立即重算。
+- 三处延迟重搜收口到 `performSearchRef.current()`。
+- 搜索词与四个勾选项在撤销后**完整保留**（不重建面板、不丢焦点）。
+
+## 需求 3：预览开关动画放慢 50% 并提升顺滑度
+
+**时长**：`0.28s → 0.42s`（精确 +50%），两栏 + 分割条**同曲线同时长**。
+**曲线**：`cubic-bezier(0.22,0.61,0.36,1)` → 对称 smoothstep `cubic-bezier(0.33,0,0.67,1)`。
+
+**先逐帧实测再改**（真机 CDP rAF 采样，90 帧/趟），推翻了「iframe reflow 掉帧」的直觉 ——
+全程 **0 长帧**（最长 17.9ms）、longtask 0 个。真凶两条：
+1. **曲线起步过猛**：起点斜率 **2.77**（首帧就走 166px、25% 时间走完 57.4% 位移、尾部发涩）。
+2. **左栏内联 `width` 在 `auto` ↔ `calc()` 之间不可插值** → 打开方向首帧直接跳到终态
+   （实测 **-996px**，只有右屏在动）。**这条与 duration 无关，调时长治不好。**
+3. 附带：分割条 6↔18px 瞬间跳 12px。
+
+**修复**：左栏宽度**始终由 flex 派生**（`:has()` 一条规则覆盖内联，组件零改动；
+`flex:1` 派生宽 ≡ `calc(ratio*100%-3px)`，五比例实测差 ≤0.01px）；
+分割条 `width`/`min-width` 也加过渡（`min-width` 必须一起，否则被 18px 钳住仍瞬间跳完）。
+**明确不加** `contain` / `will-change:width` / `translateZ`（实测零收益，不堆属性；原 `will-change:width` 已删）。
+
+| 指标 | 改前 | 改后 |
+|---|---|---|
+| 时长（关闭/打开） | 283 / 278 ms | **433 / 427 ms** |
+| jerk（峰值/均值） | 2.78 | **1.54** |
+| 最大单帧位移 | 162~167 px | **59.7 px**（降 64%） |
+| 打开首帧跳变 | −996 px | **0 px** |
+| 分割条宽度变化 | 1 帧跳完 | **27 帧逐帧** |
+| 两栏+分割条起止帧 | 不同步 | **完全同帧** |
+
+硬约束回归 6/6 PASS：拖拽期间 `transition:none`、关闭后宽度 0 不占位、重开内容现成、
+`prefers-reduced-motion` 完全禁用、阅读模式布局不变、真实鼠标拖拽双向正确。
+
+## 需求 4：左右屏篇幅差异与滚动对齐
+
+**用户决定：不改渲染，只改滚动联动。** 原因：Markdown 规范下块之间空行不产生任何块级元素，
+右屏天然更短（实测篇幅比 0.30~0.81），这是既定事实；为「看起来一样长」去伪造空行间距
+会让渲染/导出与其它 Markdown 工具不一致。
+
+**定位到四个缺陷**
+1. **长行软换行**：`textarea` 是 `white-space: pre-wrap`，视觉行数 ≠ 逻辑行数（按 `\n` 计数）。
+   原「`scrollTop / 可滚动高 × (总行数-1)`」线性估算在长行文档上实测偏 **10 个块**。
+   → 新增 `measureSourceLineAxis`（mirror div + 行首零宽 `U+200B` 撑出行盒；
+   ⚠️ 空行的 `Range` 矩形全为 0，不能用）实测每块真实 Y，补全成密集轴后二分插值。
+2. **无末尾锚点**：最后一个块之后的源码尾部（正是用户加的那堆空行）无法映射
+   → 实测右屏到底时左屏只到 **78.7%**。→ 增 `totalSourceLines` 追加末尾锚点。
+3. **末尾锚点用错了行**：滚到底时最后一行只在视口**下半部**，视口顶其实是更靠前的行
+   （实测文档① `maxScroll=6489` → 视口顶在第 **223.79** 行 / 全篇 266 行）。
+   旧实现按「最后一行 ↔ 右屏 max」→ 左屏到底只映射到右屏 **98.6%**（差 26px）。
+   → 新增 `lineAtMaxScroll`/`maxScrollLine`，并剔除 `line > maxScrollLine` 的锚点
+   （否则端点表乱序、顺序查找提前 break —— 这正是 98.6% 的直接原因）。
+4. **含 mermaid 文档贴标数为 0**（两个叠加因）：
+   a) 数量自校验数 `body.children`，而 mermaid/katex 会注入 `<script>` 与 `div.mermaidTooltip`
+      → 数量永远不等 → **整份文档放弃贴标**；→ 新增 `isAnchorablePreviewChild` 过滤
+      （贴标必须用过滤后的**同一个数组**，下标与 `lines[i]` 对齐）。
+   b) **`doc.close()` 返回时 `doc.body` 可能仍是 `null`**（`<head>` 里非 async 的 mermaid 脚本
+      让解析器停住），旧代码直接 `doc.body.children` 抛 TypeError 被 `catch` 静默吞掉；
+      → 改为「body 就绪再贴」（同步 / `load` / rAF / 120ms 定时器四重触发，贴标幂等）。
+
+**实机端到端（三份文档：① 分割线+大量空行 ② 长行软换行 ③ 表格+mermaid）**
+
+| 指标 | 改前 | 改后 |
+|---|---|---|
+| 贴标数 | 5 / 91 / **0** | **73 / 91 / 63** |
+| 块对齐 Δ块 | 文档② 0.5 处 **+8**、0.75 处 **+11**；文档③ 无锚点只能百分比 | **全部 0** |
+| 左屏到底 → 右屏 | 78.7% | **100.0%** |
+| 右屏到底 → 左屏 | 79.4% | **100.0%** |
+| 单调性 / 拉扯 | — | 单调 OK、无拉扯 |
+
+既有防线全部保留：方向锁（防异步 scroll 回声拉扯）、`isSyncingScrollRef` 重入守卫、
+块锚点数量自校验（不符即退回百分比映射）、内容不足一屏不写坏 `scrollTop`。
+
+## 构建陷阱（本批踩到并修正，发版必看）
+
+`cargo build --release` 打出的是 **dev 二进制**：不带 `custom-protocol` feature → **不内联 `dist/`**，
+产物会带 `devUrl`（`localhost:1420`）、体积偏小（23.9MB → 21.3MB）、双击启动「拒绝连接」。
+**发版必须用 `npx tauri build`**（或 `pnpm tauri build`）。
+验证方法：`grep -c "localhost:1420" lightmd.exe` 应为 1，且能 `grep` 到 `dist/assets/` 的真实哈希名。
