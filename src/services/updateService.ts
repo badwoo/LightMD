@@ -111,14 +111,84 @@ export function pickInstallerAsset(assets: InstallerAsset[]): InstallerAsset | n
   return best ? best.asset : null;
 }
 
-/** 把任意错误收敛成可读中文（不把原始 JSON / 异常对象丢给用户） */
+/** 把任意错误收敛成可读字符串（不把原始 JSON / 异常对象丢给用户） */
 function toReadableError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
+  // 注意 JSON.stringify(undefined) 返回 undefined（不是字符串），必须兜底，
+  // 否则后续 .startsWith 会抛 TypeError（IPC 抛 undefined 时真会走到这里）。
+  if (err === undefined || err === null) return "";
   try {
-    return JSON.stringify(err);
+    return JSON.stringify(err) ?? String(err);
   } catch {
     return String(err);
+  }
+}
+
+// ─── v0.14.0 需求1 修复：网络层失败 vs 业务失败 ─────────────────────
+/**
+ * 网络层失败的稳定错误码（与 Rust `update.rs` 的 `UPDATE_NETWORK_ERROR_CODE` 逐字一致）。
+ *
+ * 背景：Tauri 的 `Err(String)` 只有一段文本，前端无法从 reqwest 的英文原始串里
+ * 可靠区分「网络不可达」与「GitHub 返回 404」。而这两者对用户的意义完全不同：
+ * 前者必须显示「暂时无法检查更新（网络不可用）」，**绝不能**显示「已是最新版本」
+ * （那是在谎报版本状态）。因此 Rust 侧把网络层失败编码成
+ * `LIGHTMD_UPDATE_NETWORK|<scope>|<detail>`，这里解析后抛专用错误类型。
+ */
+export const UPDATE_NETWORK_ERROR_CODE = "LIGHTMD_UPDATE_NETWORK";
+
+/** 失败发生在哪个阶段（决定 UI 文案与「重试」按钮重跑什么） */
+export type UpdateErrorScope = "check" | "download";
+
+/** 解析后的失败信息（纯数据，便于单测） */
+export interface UpdateFailure {
+  /** network = 连接/DNS/TLS/超时（用户侧「断网」）；server = HTTP 4xx/5xx、解析失败等 */
+  kind: "network" | "server";
+  scope: UpdateErrorScope;
+  /** 原始细节（只用于排查，UI 展示走 i18n 文案） */
+  detail: string;
+}
+
+/**
+ * 把 IPC 抛出的错误解析成结构化失败信息（**纯函数**，可单测）。
+ *
+ * 只有以 `LIGHTMD_UPDATE_NETWORK|` 开头且带作用域分隔符的错误才算网络层；
+ * 其余（HTTP 403/404、JSON 解析失败、缺 tag_name、空串……）一律算业务失败，
+ * 保持既有可读文案。
+ */
+export function parseUpdateFailure(raw: unknown): UpdateFailure {
+  const text = toReadableError(raw);
+  const prefix = `${UPDATE_NETWORK_ERROR_CODE}|`;
+  if (text.startsWith(prefix)) {
+    const rest = text.slice(prefix.length);
+    const sep = rest.indexOf("|");
+    const scopeRaw = sep === -1 ? rest : rest.slice(0, sep);
+    const detail = sep === -1 ? "" : rest.slice(sep + 1);
+    return {
+      kind: "network",
+      scope: scopeRaw === "download" ? "download" : "check",
+      detail,
+    };
+  }
+  return { kind: "server", scope: "check", detail: text };
+}
+
+/**
+ * 网络不可达专用错误（连接 / DNS / TLS 握手 / 超时）。
+ *
+ * 调用方（SettingsDialog）用 `instanceof` 区分它与普通错误：前者进入独立的
+ * 「暂时无法检查更新（网络不可用）」状态，**不显示任何版本结论**；后者沿用
+ * `settings.update.failed` 文案 + 重试。
+ */
+export class UpdateNetworkError extends Error {
+  readonly scope: UpdateErrorScope;
+  readonly detail: string;
+
+  constructor(scope: UpdateErrorScope, detail: string) {
+    super(detail || "network unavailable");
+    this.name = "UpdateNetworkError";
+    this.scope = scope;
+    this.detail = detail;
   }
 }
 
@@ -131,6 +201,9 @@ const NOT_TAURI_MESSAGE = "当前环境不支持检查更新（请使用 LightMD
  * 非 Tauri 环境（浏览器 dev / 单测）抛一个明确的可读错误，
  * 由调用方显示在失败文案里（设置弹窗在浏览器 dev 下仍能正常渲染）。
  *
+ * 网络不可达 → 抛 `UpdateNetworkError`（scope="check"），由 UI 显示
+ * 「暂时无法检查更新（网络不可用）」；其它错误 → 普通 Error，沿用既有文案。
+ *
  * 注意：错误信息**不带**「检查更新失败：」前缀 —— 该前缀由 UI 的
  * `settings.update.failed` 模板统一添加，避免出现两层前缀。
  */
@@ -141,7 +214,11 @@ export async function checkForUpdate(currentVersion: string): Promise<UpdateChec
   try {
     return await invoke<UpdateCheckResult>("check_update", { currentVersion });
   } catch (err) {
-    throw new Error(toReadableError(err));
+    const failure = parseUpdateFailure(err);
+    if (failure.kind === "network") {
+      throw new UpdateNetworkError(failure.scope, failure.detail);
+    }
+    throw new Error(failure.detail);
   }
 }
 
@@ -190,7 +267,13 @@ export async function downloadAndInstall(
     try {
       path = await invoke<string>("download_update", { assetUrl, assetName });
     } catch (err) {
-      throw new Error(`下载安装包失败：${toReadableError(err)}`);
+      // 下载阶段的网络层失败同样要能被 UI 识别（→「暂时无法下载更新（网络不可用）」），
+      // 不能只是把英文原始串拼进「下载安装包失败：」后面。
+      const failure = parseUpdateFailure(err);
+      if (failure.kind === "network") {
+        throw new UpdateNetworkError("download", failure.detail);
+      }
+      throw new Error(`下载安装包失败：${failure.detail}`);
     }
     if (!path) {
       throw new Error("下载安装包失败：未返回安装包路径");

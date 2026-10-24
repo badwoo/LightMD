@@ -3,8 +3,14 @@
 //! 为什么网络请求必须放在 Rust 侧：
 //! `src-tauri/tauri.conf.json` 的 CSP `connect-src` 只允许 `'self' ipc: ...`（不含 https），
 //! 前端 `fetch("https://api.github.com/...")` 会被 WebView2 直接拦截。reqwest 已在
-//! Cargo.toml 依赖里（json / stream / rustls-tls），因此把「查最新 release + 下载安装包」
-//! 全部放在这里，前端只经 IPC 调用。
+//! Cargo.toml 依赖里（json / stream / rustls-tls-native-roots / system-proxy），因此把
+//! 「查最新 release + 下载安装包」全部放在这里，前端只经 IPC 调用。
+//!
+//! v0.14.0 需求1 修复：**错误分层**。网络层失败（连接 / DNS / TLS 握手 / 超时）与业务
+//! 失败（HTTP 403/404、JSON 解析、缺 tag_name）必须能被前端区分开——前者要显示
+//! 「暂时无法检查更新（网络不可用）」，**绝不能**退化成「已是最新版本」（那是在谎报
+//! 版本状态）。为此网络层失败统一带上稳定错误码前缀 [`UPDATE_NETWORK_ERROR_CODE`]，
+//! 前端 `updateService.ts` 据此抛 `UpdateNetworkError`，UI 进入独立的 offline 状态。
 //!
 //! 命令清单：
 //! - check_update：查询 `badwoo/LightMD` 最新 release，返回版本/说明/安装包信息
@@ -28,6 +34,72 @@ const MAX_NOTES_CHARS: usize = 4000;
 
 /// 进度事件名（与前端 updateService.ts 约定一致）
 pub const UPDATE_PROGRESS_EVENT: &str = "lightmd://update-progress";
+
+// ─── v0.14.0 需求1 修复：网络层失败的错误码 ───────────────────────────
+/// 网络层失败的稳定错误码前缀（与前端 `updateService.ts` 的
+/// `UPDATE_NETWORK_ERROR_CODE` 必须逐字一致）。
+///
+/// 为什么需要它：Tauri 的 `Err(String)` 只能带一段文本，前端无法可靠地区分
+/// 「网络不可达」与「GitHub 返回 404」——而这两者对用户的意义完全不同：
+/// 前者应显示「暂时无法检查更新（网络不可用）」，**绝不能**显示「已是最新版本」。
+/// 因此网络层失败统一返回 `LIGHTMD_UPDATE_NETWORK|<scope>|<原始错误>`，
+/// 前端按前缀识别后抛 `UpdateNetworkError`，UI 进入独立的 offline 状态。
+pub const UPDATE_NETWORK_ERROR_CODE: &str = "LIGHTMD_UPDATE_NETWORK";
+
+/// 错误码里的作用域：检查更新（前端据此选「检查」还是「下载」的文案与重试动作）
+pub const UPDATE_SCOPE_CHECK: &str = "check";
+/// 错误码里的作用域：下载安装包
+pub const UPDATE_SCOPE_DOWNLOAD: &str = "download";
+
+/// 网络层失败的分类结果（纯数据，不依赖 reqwest 类型，便于离线单测）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateFailureKind {
+    /// 网络不可达：连接被拒 / DNS 失败 / TLS 握手失败 / 超时 / 请求根本没发出去
+    Network,
+    /// 业务失败：HTTP 非 2xx、JSON 解析失败、缺字段等（服务端有响应）
+    Server,
+}
+
+/// 把「请求发送失败」的若干特征位归为网络层 / 业务层（**纯函数**，可离线单测）。
+///
+/// 入参来自 `reqwest::Error` 的三个判定，避免让单测依赖真实网络：
+/// - `is_connect`：连接阶段失败（DNS / TCP / **TLS 握手**，本机 FastGithub MITM 就是这一类）
+/// - `is_timeout`：超时（连接超时、整体超时、读超时）
+/// - `is_request`：请求整体发送失败（`error sending request for url (...)` 这个顶层形态）
+///
+/// 三者任一为真即视为「网络不可达」——这类错误绝不能映射成「已是最新版本」。
+pub fn classify_send_failure(
+    is_connect: bool,
+    is_timeout: bool,
+    is_request: bool,
+) -> UpdateFailureKind {
+    if is_connect || is_timeout || is_request {
+        UpdateFailureKind::Network
+    } else {
+        UpdateFailureKind::Server
+    }
+}
+
+/// 组装网络层失败的 IPC 错误串：`LIGHTMD_UPDATE_NETWORK|<scope>|<detail>`。
+///
+/// `detail` 只用于日志/排查，前端**不直接展示**（用户看到的是 i18n 文案）。
+pub fn network_failure_message(scope: &str, detail: &str) -> String {
+    format!("{}|{}|{}", UPDATE_NETWORK_ERROR_CODE, scope, detail)
+}
+
+/// 该错误串是否属于「网络不可达」（纯函数，供前端契约的回归测试使用）。
+pub fn is_network_failure_message(msg: &str) -> bool {
+    msg.starts_with(UPDATE_NETWORK_ERROR_CODE)
+        && msg[UPDATE_NETWORK_ERROR_CODE.len()..].starts_with('|')
+}
+
+/// 把 `reqwest::Error` 收敛成「分类 + 可读细节」（非纯函数，只做特征位提取）。
+fn classify_reqwest_error(err: &reqwest::Error) -> (UpdateFailureKind, String) {
+    (
+        classify_send_failure(err.is_connect(), err.is_timeout(), err.is_request()),
+        err.to_string(),
+    )
+}
 
 /// 检查更新的返回值（前端 UpdateCheckResult 与之对应）。
 ///
@@ -218,7 +290,17 @@ pub async fn check_update(current_version: String) -> Result<UpdateInfo, String>
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .await
-        .map_err(|e| format!("无法连接 GitHub（请检查网络或代理）：{}", e))?;
+        .map_err(|e| match classify_reqwest_error(&e) {
+            // 网络层失败：带稳定错误码，前端据此显示「暂时无法检查更新（网络不可用）」
+            // ——**绝不**降级成「已是最新版本」（那是在谎报版本状态）。
+            (UpdateFailureKind::Network, detail) => {
+                network_failure_message(UPDATE_SCOPE_CHECK, &detail)
+            }
+            // 业务层失败（极少见）：保持原有可读文案
+            (UpdateFailureKind::Server, detail) => {
+                format!("无法连接 GitHub（请检查网络或代理）：{}", detail)
+            }
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
@@ -306,7 +388,16 @@ where
         .header("Accept", "application/octet-stream")
         .send()
         .await
-        .map_err(|e| format!("下载安装包失败（无法连接下载服务器）：{}", e))?;
+        .map_err(|e| match classify_reqwest_error(&e) {
+            // 与 check_update 同一套分层：网络层失败带稳定错误码，
+            // 前端映射成「暂时无法下载更新（网络不可用）」而不是甩英文原始串。
+            (UpdateFailureKind::Network, detail) => {
+                network_failure_message(UPDATE_SCOPE_DOWNLOAD, &detail)
+            }
+            (UpdateFailureKind::Server, detail) => {
+                format!("下载安装包失败（无法连接下载服务器）：{}", detail)
+            }
+        })?;
 
     if !resp.status().is_success() {
         return Err(format!(
@@ -342,7 +433,16 @@ where
             Err(e) => {
                 drop(file);
                 let _ = std::fs::remove_file(tmp);
-                return Err(format!("下载安装包中断：{}", e));
+                // 传输中断同样可能是网络层失败（连接被重置/超时）：走同一套分层，
+                // 避免把「网络断了」显示成含糊的下载错误。
+                return Err(match classify_reqwest_error(&e) {
+                    (UpdateFailureKind::Network, detail) => {
+                        network_failure_message(UPDATE_SCOPE_DOWNLOAD, &detail)
+                    }
+                    (UpdateFailureKind::Server, detail) => {
+                        format!("下载安装包中断：{}", detail)
+                    }
+                });
             }
         }
     }
@@ -606,6 +706,104 @@ mod tests {
         assert!(is_newer_version("abc", "0.0.1"));
     }
 
+    // ─── v0.14.0 需求1 修复：网络错误分类（离线，不触网） ────────────
+
+    #[test]
+    fn classify_connect_failure_is_network() {
+        // TLS 握手失败（本机 FastGithub MITM 自签 CA 不被 webpki 内置根信任）
+        // 在 reqwest 里体现为 is_connect = true
+        assert_eq!(
+            classify_send_failure(true, false, false),
+            UpdateFailureKind::Network
+        );
+    }
+
+    #[test]
+    fn classify_timeout_is_network() {
+        assert_eq!(
+            classify_send_failure(false, true, false),
+            UpdateFailureKind::Network
+        );
+    }
+
+    #[test]
+    fn classify_request_failure_is_network() {
+        // 顶层形态 "error sending request for url (...)"（用户看到的那条报错）
+        assert_eq!(
+            classify_send_failure(false, false, true),
+            UpdateFailureKind::Network
+        );
+    }
+
+    #[test]
+    fn classify_no_network_flag_is_server() {
+        // 三个特征位都 false：服务端有响应（HTTP 4xx/5xx、解析失败等）→ 业务失败
+        assert_eq!(
+            classify_send_failure(false, false, false),
+            UpdateFailureKind::Server
+        );
+    }
+
+    #[test]
+    fn classify_any_flag_dominates() {
+        // 任一特征位为真即判网络层（不允许「部分命中」被当成业务失败）
+        for (c, t, r) in [
+            (true, true, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                classify_send_failure(c, t, r),
+                UpdateFailureKind::Network,
+                "flags=({c},{t},{r}) 应判为网络层"
+            );
+        }
+    }
+
+    #[test]
+    fn network_message_carries_stable_code_and_scope() {
+        let msg = network_failure_message(UPDATE_SCOPE_CHECK, "error sending request for url (...)");
+        // 前缀 + 作用域必须能被前端逐字识别（契约）
+        assert!(msg.starts_with("LIGHTMD_UPDATE_NETWORK|check|"), "实际: {msg}");
+        assert!(msg.ends_with("error sending request for url (...)"));
+        assert!(is_network_failure_message(&msg));
+
+        let dl = network_failure_message(UPDATE_SCOPE_DOWNLOAD, "connection reset");
+        assert!(dl.starts_with("LIGHTMD_UPDATE_NETWORK|download|"), "实际: {dl}");
+        assert!(is_network_failure_message(&dl));
+    }
+
+    #[test]
+    fn business_failures_are_not_marked_as_network() {
+        // HTTP 403/404、解析失败、缺 tag_name 这类业务错误**不能**带网络码，
+        // 否则 UI 会把「仓库没有 release」误报成「网络不可用」。
+        for msg in [
+            "GitHub 返回 HTTP 403（GitHub API 访问受限，可能触发了速率限制，请稍后再试）",
+            "GitHub 返回 HTTP 404（未找到发布版本，仓库可能尚未发布 release）",
+            "解析 GitHub 发布信息失败：expected value at line 1 column 1",
+            "未找到有效的版本号（release 缺少 tag_name）",
+            "初始化网络客户端失败：builder error",
+            "",
+            "LIGHTMD_UPDATE_NETWORK",      // 只有码没有分隔符 → 不算
+            "XLIGHTMD_UPDATE_NETWORK|check|x", // 前缀不匹配 → 不算
+        ] {
+            assert!(
+                !is_network_failure_message(msg),
+                "不应判为网络层: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn network_code_constant_matches_frontend_contract() {
+        // 前端 updateService.ts 里的 UPDATE_NETWORK_ERROR_CODE 必须与此逐字一致。
+        // 这里锁死字面量，任何一侧改动都会让本测试或前端测试失败。
+        assert_eq!(UPDATE_NETWORK_ERROR_CODE, "LIGHTMD_UPDATE_NETWORK");
+        assert_eq!(UPDATE_SCOPE_CHECK, "check");
+        assert_eq!(UPDATE_SCOPE_DOWNLOAD, "download");
+    }
+
     // ─── 安装包选择 ──────────────────────────────────────
 
     fn asset(name: &str, url: &str, size: u64) -> GhAsset {
@@ -843,6 +1041,77 @@ mod tests {
         // total 未知（0）：只按 step 节流
         assert!(!should_emit_progress(1000, 0, 0, STEP));
         assert!(should_emit_progress(STEP, 0, 0, STEP));
+    }
+
+    /// 反向探针：**真的连不上时**必须被分类成网络层（而不是业务失败）。
+    ///
+    /// 只连一个保留给文档示例、必然无法解析/连接的主机，不发任何真实业务请求。
+    /// 默认 `#[ignore]`（要等 DNS 超时，约数秒）：
+    /// ```text
+    /// cargo test unreachable_host_is_classified_as_network -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "需要等 DNS/连接超时；用 --ignored 手动跑"]
+    fn unreachable_host_is_classified_as_network() {
+        // 下载路径（不依赖 GitHub API 的 JSON 结构），目标是必然不可达的主机。
+        let client = build_client(5).expect("客户端应能构建");
+        let err = tauri::async_runtime::block_on(async {
+            client
+                .get("https://this-host-must-not-exist.invalid/LightMD.exe")
+                .send()
+                .await
+        })
+        .expect_err("不可达主机必须返回错误");
+
+        let (kind, detail) = classify_reqwest_error(&err);
+        println!(
+            "is_connect={} is_timeout={} is_request={} kind={:?} detail={}",
+            err.is_connect(),
+            err.is_timeout(),
+            err.is_request(),
+            kind,
+            detail
+        );
+        assert_eq!(
+            kind,
+            UpdateFailureKind::Network,
+            "不可达主机必须判为网络层（否则 UI 会把断网显示成业务错误）"
+        );
+        // 并且编出来的 IPC 串确实能被前端识别
+        let msg = network_failure_message(UPDATE_SCOPE_DOWNLOAD, &detail);
+        assert!(is_network_failure_message(&msg));
+    }
+
+    /// v0.14.0 需求1 修复的真机探针：验证 reqwest 现在**真的**能连通 GitHub。
+    ///
+    /// 这是本次修复的核心验收——改 features 前这里必然失败
+    /// （webpki 内置根不认本机 FastGithub 的 MITM CA → `error sending request`）。
+    /// 默认 `#[ignore]`，不参与 CI：
+    /// ```text
+    /// cargo test check_update_real_network_probe -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "需要外网；用 --ignored 手动跑（验证 rustls-tls-native-roots 是否生效）"]
+    fn check_update_real_network_probe() {
+        let result = tauri::async_runtime::block_on(check_update("0.14.0".to_string()));
+        match result {
+            Ok(info) => {
+                println!(
+                    "OK: latest={} current={} is_newer={} asset={} size={}",
+                    info.version, info.current, info.is_newer, info.asset_name, info.asset_size
+                );
+                assert!(!info.version.is_empty(), "应解析出远端版本号");
+                assert!(!info.html_url.is_empty());
+                // 连上了就必须给出**确定的**版本结论（不能是「不知道」）
+                assert!(!info.version.is_empty());
+            }
+            Err(e) => {
+                panic!(
+                    "check_update 应能连通 GitHub（若报 LIGHTMD_UPDATE_NETWORK|check|… \
+                     说明证书/代理仍未生效）：{e}"
+                );
+            }
+        }
     }
 
     /// 真实网络下载验证（默认 `#[ignore]`，不参与 CI / `cargo test` 全量）。

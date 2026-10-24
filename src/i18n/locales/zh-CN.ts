@@ -163,6 +163,9 @@ export const zhCN: Record<string, string> = {
   "settings.update.retry": "重试",
   "settings.update.notes": "更新说明",
   "settings.update.openRelease": "打开发布页",
+  // v0.14.0 需求1 修复：网络不可达时**不得**谎报版本状态（不能说「已是最新版本」）
+  "settings.update.offline": "暂时无法检查更新（网络不可用），请检查网络或代理后重试",
+  "settings.update.offlineDownload": "暂时无法下载更新（网络不可用），请检查网络或代理后重试",
   "settings.about.version": "版本 {version}",
   // v0.12.0 需求5：文档缩放尺
   "zoomRuler.label": "文档缩放（Ctrl+滚轮，向上放大）",

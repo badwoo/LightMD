@@ -33,7 +33,28 @@ base64 = "0.22"
 ico = "0.3"
 # ─── v0.6.0 AI 翻译 ───
 # OpenAI 兼容 HTTP 客户端（rustls 避免 OpenSSL，特性裁剪控制体积）
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+#
+# v0.14.0 需求1 修复：原先 features 里的 `rustls-tls` 等价于 `rustls-tls-webpki-roots`
+# ——只信任**编译进二进制的 Mozilla 根证书**，完全不读操作系统证书库；同时
+# `default-features = false` 也把 default 里的 `system-proxy` 关掉了，于是 reqwest
+# 既不认系统代理、也不认系统根证书。实测本机 GitHub 流量被本地 FastGithub 代理
+# 劫持（TLS 用自签 CA「CN=FastGithub」，该 CA 已装入 Windows 根证书库
+# LocalMachine\Root 与 CurrentUser\Root），webpki 内置根里没有它 → 每次「检查更新」
+# 都报 `error sending request for url (...)`。
+#
+# 因此改为：
+#   - `rustls-tls-native-roots`：改用 rustls-native-certs 读取**系统证书库**
+#     （Windows 走 cert store / schannel，能信任企业或本地代理注入的 CA）；
+#     该特性自带 `__rustls-ring`（crypto provider），无需额外声明；
+#   - `system-proxy`：恢复读取系统代理设置（Windows WinHTTP 代理 / HTTP_PROXY）；
+#   - **不再保留 `rustls-tls`**：两者叠加会让 webpki 与 native 两套根证书同时编进
+#     二进制、根证书来源产生歧义；只留 native-roots，语义单一。
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls-native-roots",
+    "system-proxy",
+] }
 # API Key 安全存储（Windows 凭据管理器）
 keyring = { version = "3", features = ["windows-native"] }
 # ─── v0.8.4 需求10：目录实时刷新 ───

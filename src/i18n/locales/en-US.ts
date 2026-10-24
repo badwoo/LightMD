@@ -162,6 +162,9 @@ export const enUS: Record<string, string> = {
   "settings.update.retry": "Retry",
   "settings.update.notes": "Release notes",
   "settings.update.openRelease": "Open release page",
+  // v0.14.0 req 1 fix: network unreachable must never be reported as "up to date"
+  "settings.update.offline": "Unable to check for updates right now (network unavailable). Check your network or proxy and retry.",
+  "settings.update.offlineDownload": "Unable to download the update right now (network unavailable). Check your network or proxy and retry.",
   "settings.about.version": "Version {version}",
   // v0.12.0 feature 5: document zoom ruler
   "zoomRuler.label": "Document zoom (Ctrl+wheel, scroll up to zoom in)",

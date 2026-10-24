@@ -70,7 +70,17 @@ const L = {
   upToDate: (version: string) => t("settings.update.upToDate", { version }),
   available: (version: string, current: string) =>
     t("settings.update.available", { version, current }),
+  offline: () => t("settings.update.offline"),
+  offlineDownload: () => t("settings.update.offlineDownload"),
 };
+
+/**
+ * 构造一条「网络不可达」的 IPC 错误串（与 Rust update.rs 的
+ * network_failure_message 完全同形：`LIGHTMD_UPDATE_NETWORK|<scope>|<detail>`）。
+ */
+function networkError(scope: "check" | "download" = "check"): string {
+  return `LIGHTMD_UPDATE_NETWORK|${scope}|error sending request for url (https://api.github.com/repos/badwoo/LightMD/releases/latest)`;
+}
 
 /** 构造一次「有新版本」的 check_update 返回值（字段与 Rust UpdateInfo 一致，camelCase） */
 function makeUpdateInfo(overrides: Record<string, unknown> = {}) {
@@ -146,7 +156,7 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
     expect(upToDate.textContent).not.toContain("0.13.2");
   });
 
-  it("i18n：zh-CN / en-US 均有 13 个 settings.update.* 键，且占位符一致", () => {
+  it("i18n：zh-CN / en-US 均有全部 settings.update.* 键，且占位符一致", () => {
     const keys = [
       "settings.update",
       "settings.update.check",
@@ -161,6 +171,9 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
       "settings.update.retry",
       "settings.update.notes",
       "settings.update.openRelease",
+      // v0.14.0 需求1 修复：网络不可达的两条独立文案（检查 / 下载）
+      "settings.update.offline",
+      "settings.update.offlineDownload",
     ] as const;
     for (const key of keys) {
       expect(zhCN[key], `zh-CN 缺 ${key}`).toBeTruthy();
@@ -175,6 +188,11 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
     expect(zhCN["settings.update.available"]).toContain("{current}");
     expect(zhCN["settings.update.downloading"]).toContain("{percent}");
     expect(zhCN["settings.update.failed"]).toContain("{msg}");
+    // 中英文案都不能是空串（空串会让 UI 出现空白提示区）
+    for (const key of ["settings.update.offline", "settings.update.offlineDownload"] as const) {
+      expect(zhCN[key].trim().length).toBeGreaterThan(0);
+      expect(enUS[key].trim().length).toBeGreaterThan(0);
+    }
   });
 
   it("有新版 → 显示新版本号 + 下载按钮 + 更新说明", async () => {
@@ -269,13 +287,13 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
     });
   });
 
-  it("检查失败 → 错误文案 + 重试按钮；重试成功后显示结果", async () => {
+  it("检查失败（业务错误：HTTP 403）→ 错误文案 + 重试按钮；重试成功后显示结果", async () => {
     let call = 0;
     mocks.invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "has_translate_key") return false;
       if (cmd === "check_update") {
         call += 1;
-        if (call === 1) throw "无法连接 GitHub（请检查网络或代理）：连接超时";
+        if (call === 1) throw "GitHub 返回 HTTP 403（GitHub API 访问受限，可能触发了速率限制，请稍后再试）";
         return makeUpdateInfo({ isNewer: false, version: pkg.version });
       }
       return undefined;
@@ -286,13 +304,104 @@ describe("v0.14.0 需求1：设置里「软件更新」区", () => {
 
     const error = await screen.findByTestId("update-error");
     expect(error.textContent).toContain(L.failed(""));
-    expect(error.textContent).toContain("连接超时");
+    expect(error.textContent).toContain("HTTP 403");
     const retry = screen.getByTestId("update-retry-btn");
     expect(retry).toBeTruthy();
 
     // 重试 → 这次成功
     fireEvent.click(retry);
     expect(await screen.findByTestId("update-uptodate")).toBeTruthy();
+    expect(screen.queryByTestId("update-error")).toBeNull();
+  });
+
+  // ─── v0.14.0 需求1 修复：网络不可达 → 独立 offline 状态 ──────────────
+
+  it("网络不可达 → 显示「暂时无法检查更新（网络不可用）」，且**不**显示「已是最新版本」", async () => {
+    mocks.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "has_translate_key") return false;
+      if (cmd === "check_update") throw networkError("check");
+      return undefined;
+    });
+
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("update-check-btn"));
+
+    const offline = await screen.findByTestId("update-offline");
+    expect(offline.textContent).toContain(L.offline());
+    // 关键约束：断网时绝不能谎报版本状态
+    expect(screen.queryByTestId("update-uptodate")).toBeNull();
+    expect(screen.queryByTestId("update-available")).toBeNull();
+    // 也不该退化成「检查更新失败：<reqwest 英文原文>」
+    expect(screen.queryByTestId("update-error")).toBeNull();
+    expect(offline.textContent).not.toContain("error sending request");
+    // 提供重试入口
+    expect(screen.getByTestId("update-offline-retry-btn")).toBeTruthy();
+  });
+
+  it("网络不可达后恢复 → 重试成功进入「已是最新版本」", async () => {
+    let call = 0;
+    mocks.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "has_translate_key") return false;
+      if (cmd === "check_update") {
+        call += 1;
+        if (call === 1) throw networkError("check");
+        return makeUpdateInfo({ isNewer: false, version: pkg.version });
+      }
+      return undefined;
+    });
+
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("update-check-btn"));
+    await screen.findByTestId("update-offline");
+
+    fireEvent.click(screen.getByTestId("update-offline-retry-btn"));
+    const upToDate = await screen.findByTestId("update-uptodate");
+    expect(upToDate.textContent).toContain(pkg.version);
+    expect(screen.queryByTestId("update-offline")).toBeNull();
+  });
+
+  it("下载阶段网络不可达 → 显示「暂时无法下载更新」并提示网络，重试走重新下载", async () => {
+    let downloadCalls = 0;
+    mocks.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "has_translate_key") return false;
+      if (cmd === "check_update") return makeUpdateInfo();
+      if (cmd === "download_update") {
+        downloadCalls += 1;
+        if (downloadCalls === 1) throw networkError("download");
+        return "C:\\tmp\\LightMD_0.15.0_x64-setup.exe";
+      }
+      if (cmd === "launch_installer") return undefined;
+      return undefined;
+    });
+
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("update-check-btn"));
+    fireEvent.click(await screen.findByTestId("update-download-btn"));
+
+    const offline = await screen.findByTestId("update-offline");
+    expect(offline.textContent).toContain(L.offlineDownload());
+    expect(offline.textContent).not.toContain("error sending request");
+    expect(screen.queryByTestId("update-uptodate")).toBeNull();
+
+    // 重试 → 重新下载（而不是重新检查）
+    fireEvent.click(screen.getByTestId("update-offline-retry-btn"));
+    expect(await screen.findByTestId("update-downloaded")).toBeTruthy();
+    expect(downloadCalls).toBe(2);
+  });
+
+  it("连通且无新版（真实成功路径）→ 显示「已是最新版本」，不出现 offline", async () => {
+    mocks.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "has_translate_key") return false;
+      if (cmd === "check_update") return makeUpdateInfo({ isNewer: false, version: pkg.version });
+      return undefined;
+    });
+
+    render(<SettingsDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("update-check-btn"));
+
+    const upToDate = await screen.findByTestId("update-uptodate");
+    expect(upToDate.textContent).toContain(L.upToDate(pkg.version));
+    expect(screen.queryByTestId("update-offline")).toBeNull();
     expect(screen.queryByTestId("update-error")).toBeNull();
   });
 

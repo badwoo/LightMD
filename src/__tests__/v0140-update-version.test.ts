@@ -6,15 +6,31 @@
  *    - 0.9.0 vs 0.14.0（字典序会误判的经典用例）
  *    - 相等 / patch 递增 / `v` 前缀 / 预发布后缀 / 段数不同
  * 2. pickInstallerAsset 优先级：x64-setup.exe > setup.exe > .msi > 无
+ * 3. v0.14.0 修复：parseUpdateFailure —— 网络层失败 vs 业务失败的分层解析
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // updateService 顶层 import 了 @tauri-apps/api/core 与 fileService（后者会拉进
 // zustand store / localStorage 等浏览器侧依赖），纯函数测试里全部替换为轻量桩。
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("../services/fileService", () => ({ isTauri: () => false }));
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  /** 是否把当前环境伪装成 Tauri（checkForUpdate 的前置判定） */
+  tauri: { value: false },
+}));
 
-import { compareVersions, pickInstallerAsset } from "../services/updateService";
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+}));
+vi.mock("../services/fileService", () => ({ isTauri: () => mocks.tauri.value }));
+
+import {
+  compareVersions,
+  pickInstallerAsset,
+  parseUpdateFailure,
+  checkForUpdate,
+  UpdateNetworkError,
+  UPDATE_NETWORK_ERROR_CODE,
+} from "../services/updateService";
 
 describe("v0.14.0 compareVersions：版本比较（与 Rust 侧同语义）", () => {
   it("0.9.0 vs 0.14.0：按数字段比较，不是字符串字典序", () => {
@@ -112,5 +128,117 @@ describe("v0.14.0 pickInstallerAsset：安装包优先级", () => {
     expect(
       pickInstallerAsset([asset("LightMD_0.15.0_x64-setup.exe.sig"), asset("SHA256SUMS.txt")]),
     ).toBeNull();
+  });
+});
+
+// ─── v0.14.0 需求1 修复：网络层失败 vs 业务失败 ────────────────────────
+
+/** 与 Rust update.rs 的 network_failure_message 同形的错误串 */
+const netMsg = (scope: "check" | "download", detail: string) =>
+  `${UPDATE_NETWORK_ERROR_CODE}|${scope}|${detail}`;
+
+describe("v0.14.0 修复：parseUpdateFailure 错误分层", () => {
+  it("错误码常量与 Rust 侧逐字一致（跨语言契约）", () => {
+    // 改动任何一侧都会让这里或 Rust 的 network_code_constant_matches_frontend_contract 失败
+    expect(UPDATE_NETWORK_ERROR_CODE).toBe("LIGHTMD_UPDATE_NETWORK");
+  });
+
+  it("网络码 + check → kind=network, scope=check", () => {
+    const f = parseUpdateFailure(netMsg("check", "error sending request for url (x)"));
+    expect(f.kind).toBe("network");
+    expect(f.scope).toBe("check");
+    expect(f.detail).toBe("error sending request for url (x)");
+  });
+
+  it("网络码 + download → kind=network, scope=download", () => {
+    const f = parseUpdateFailure(netMsg("download", "connection reset by peer"));
+    expect(f.kind).toBe("network");
+    expect(f.scope).toBe("download");
+    expect(f.detail).toBe("connection reset by peer");
+  });
+
+  it("Error 实例包装的网络码同样能识别（Tauri 有时以 Error 抛出）", () => {
+    const f = parseUpdateFailure(new Error(netMsg("check", "dns error")));
+    expect(f.kind).toBe("network");
+    expect(f.detail).toBe("dns error");
+  });
+
+  it("业务错误（HTTP 403/404、解析失败、缺 tag_name、非 Tauri 提示）→ kind=server", () => {
+    const cases = [
+      "GitHub 返回 HTTP 403（GitHub API 访问受限，可能触发了速率限制，请稍后再试）",
+      "GitHub 返回 HTTP 404（未找到发布版本，仓库可能尚未发布 release）",
+      "解析 GitHub 发布信息失败：expected value at line 1 column 1",
+      "未找到有效的版本号（release 缺少 tag_name）",
+      "当前环境不支持检查更新（请使用 LightMD 桌面客户端）",
+      "下载安装包失败：下载服务器返回 HTTP 500",
+    ];
+    for (const msg of cases) {
+      const f = parseUpdateFailure(msg);
+      expect(f.kind, `应判为业务失败: ${msg}`).toBe("server");
+      expect(f.detail).toBe(msg);
+    }
+  });
+
+  it("形似但不符合契约的串不会被误判为网络层", () => {
+    const notNetwork = [
+      // 只有码没有分隔符
+      UPDATE_NETWORK_ERROR_CODE,
+      // 前缀不匹配（前面多了字符）
+      `X${UPDATE_NETWORK_ERROR_CODE}|check|x`,
+      // 小写变体
+      "lightmd_update_network|check|x",
+      // 空串 / 非字符串
+      "",
+    ];
+    for (const msg of notNetwork) {
+      expect(parseUpdateFailure(msg).kind, `不应判为网络层: ${msg}`).toBe("server");
+    }
+    expect(parseUpdateFailure(null).kind).toBe("server");
+    expect(parseUpdateFailure(undefined).kind).toBe("server");
+    expect(parseUpdateFailure({ foo: 1 }).kind).toBe("server");
+  });
+
+  it("作用域缺失/非法 → 回落 check（保守：重试=重新检查）", () => {
+    expect(parseUpdateFailure(`${UPDATE_NETWORK_ERROR_CODE}|check`).scope).toBe("check");
+    expect(parseUpdateFailure(`${UPDATE_NETWORK_ERROR_CODE}|weird|x`).scope).toBe("check");
+    expect(parseUpdateFailure(`${UPDATE_NETWORK_ERROR_CODE}|`).scope).toBe("check");
+  });
+});
+
+describe("v0.14.0 修复：checkForUpdate 抛出 UpdateNetworkError", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+    mocks.tauri.value = true;
+  });
+
+  it("网络码 → 抛 UpdateNetworkError（带 scope），不是普通 Error", async () => {
+    mocks.invoke.mockRejectedValue(netMsg("check", "error sending request for url (x)"));
+    await expect(checkForUpdate("0.14.0")).rejects.toBeInstanceOf(UpdateNetworkError);
+    try {
+      await checkForUpdate("0.14.0");
+    } catch (e) {
+      const err = e as UpdateNetworkError;
+      expect(err.scope).toBe("check");
+      expect(err.detail).toContain("error sending request");
+    }
+  });
+
+  it("业务错误 → 抛普通 Error（保留可读文案，便于 UI 套 failed 模板）", async () => {
+    mocks.invoke.mockRejectedValue("GitHub 返回 HTTP 404（未找到发布版本，仓库可能尚未发布 release）");
+    let caught: unknown = null;
+    try {
+      await checkForUpdate("0.14.0");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(UpdateNetworkError);
+    expect((caught as Error).message).toContain("HTTP 404");
+  });
+
+  it("成功路径不受影响：返回后端结果", async () => {
+    const info = { version: "0.14.0", current: "0.14.0", isNewer: false };
+    mocks.invoke.mockResolvedValue(info);
+    await expect(checkForUpdate("0.14.0")).resolves.toEqual(info);
   });
 });

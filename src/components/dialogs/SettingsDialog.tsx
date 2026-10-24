@@ -25,6 +25,7 @@ import { openExternalHref } from "../../utils/openExternal";
 import {
   checkForUpdate,
   downloadAndInstall,
+  UpdateNetworkError,
   type UpdateCheckResult,
 } from "../../services/updateService";
 import "./SettingsDialog.css";
@@ -162,9 +163,18 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
    * 更新流程状态机（一次性 UI 状态，**不进 zustand**：关闭设置弹窗即应丢弃）。
    * idle → checking → uptodate / available → downloading → downloaded
    * 任意阶段失败 → error（保留 error 文案供重试）
+   * v0.14.0 需求1 修复：网络不可达 → **独立的 offline 状态**（不与 error 混用），
+   * 这样 UI 能明确「只是暂时连不上」，而**不会**顺手渲染成「已是最新版本」。
    */
   const [updateState, setUpdateState] = useState<
-    "idle" | "checking" | "uptodate" | "available" | "downloading" | "downloaded" | "error"
+    | "idle"
+    | "checking"
+    | "uptodate"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "offline"
+    | "error"
   >("idle");
   /** 检查结果（available / downloading / downloaded 阶段用于展示版本号与说明） */
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
@@ -173,6 +183,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [updateError, setUpdateError] = useState("");
   /** 出错阶段：check → 套 settings.update.failed 模板；download → 文案自带前缀直接展示 */
   const [updateErrorKind, setUpdateErrorKind] = useState<"check" | "download">("check");
+  /**
+   * v0.14.0 需求1 修复：网络不可达发生在哪个阶段（check / download）。
+   * offline 状态据此选文案与「重试」动作——检查阶段重试重新检查，
+   * 下载阶段重试重新下载。
+   */
+  const [updateOfflineScope, setUpdateOfflineScope] = useState<"check" | "download">("check");
 
   const providerPreset = settings.translate.translateProviderPreset;
 
@@ -263,6 +279,11 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   /**
    * 检查更新：Rust 侧请求 GitHub latest release（CSP 不允许前端直连 https）。
    * 后端已做权威版本比较（isNewer），前端不重复判定。
+   *
+   * v0.14.0 修复的错误分层：
+   * - 网络不可达（UpdateNetworkError）→ offline 状态，显示「暂时无法检查更新（网络不可用）」，
+   *   **不显示任何版本结论**（尤其不能显示「已是最新版本」）；
+   * - 其它错误（HTTP 403/404、解析失败等）→ error 状态，沿用 settings.update.failed + 重试。
    */
   const handleCheckUpdate = useCallback(async () => {
     setUpdateState("checking");
@@ -274,6 +295,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setUpdateInfo(result);
       setUpdateState(result.isNewer ? "available" : "uptodate");
     } catch (e) {
+      if (e instanceof UpdateNetworkError) {
+        setUpdateOfflineScope("check");
+        setUpdateError(e.detail);
+        setUpdateState("offline");
+        return;
+      }
       setUpdateError(e instanceof Error ? e.message : String(e));
       setUpdateErrorKind("check");
       setUpdateState("error");
@@ -293,6 +320,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       setUpdateProgress(100);
       setUpdateState("downloaded");
     } catch (e) {
+      // 下载阶段网络不可达 → 同样进 offline 状态（但重试动作是「重新下载」）
+      if (e instanceof UpdateNetworkError) {
+        setUpdateOfflineScope("download");
+        setUpdateError(e.detail);
+        setUpdateState("offline");
+        return;
+      }
       // 下载阶段的错误文案已自带「下载安装包失败：」前缀，直接展示，
       // 不再套 settings.update.failed（否则会变成"检查更新失败：下载安装包失败：…"）
       setUpdateError(e instanceof Error ? e.message : String(e));
@@ -1367,6 +1401,35 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   )}
                 </div>
               )}
+
+            {/* v0.14.0 需求1 修复：网络不可达 —— 独立状态，明确「暂时无法检查」，
+                **不**显示任何版本结论（既不说有新版本，也绝不说「已是最新版本」）。 */}
+            {updateState === "offline" && (
+              <div className="settings-update-error" data-testid="update-offline">
+                {/* title 里挂原始技术细节（reqwest 英文串），仅用于排查；
+                    正文永远是用户可读的 i18n 文案。 */}
+                <small
+                  className="settings-hint settings-hint-warning"
+                  title={updateError || undefined}
+                >
+                  {updateOfflineScope === "download"
+                    ? t("settings.update.offlineDownload")
+                    : t("settings.update.offline")}
+                </small>
+                <button
+                  type="button"
+                  className="settings-btn secondary"
+                  onClick={() =>
+                    void (updateOfflineScope === "download" && updateInfo
+                      ? handleDownloadUpdate()
+                      : handleCheckUpdate())
+                  }
+                  data-testid="update-offline-retry-btn"
+                >
+                  {t("settings.update.retry")}
+                </button>
+              </div>
+            )}
 
             {/* 失败：可读错误 + 重试 */}
             {updateState === "error" && (
