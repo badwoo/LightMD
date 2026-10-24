@@ -1896,14 +1896,24 @@ body.format-painter-armed .source-editor {
 .split-divider {
   /* v0.4.0：可拖拽分割条，6px 宽，hover 时显示背景色
      v0.14.0 需求1：它同时是「关闭预览 / 打开预览」竖排小字的挂载点；
-     预览关闭后仍保留（作为编辑区右缘的窄 rail），但不再可拖拽。 */
+     预览关闭后仍保留（作为编辑区右缘的窄 rail），但不再可拖拽。
+     v0.14.0 需求3：宽度/最小宽度也做过渡 —— 展开态 6px ↔ 关闭态 18px，
+     原来这一下是**瞬间**跳 12px，而两栏在跑 0.42s，于是过渡起始那一帧边界上
+     会"啪"地多出 12px，是肉眼可见的第二处不顺滑（实机采样：修前分割条宽度
+     变化 1 次 = 一次跳完，修后 27 次 = 逐帧平滑）。
+     曲线/时长与两栏严格一致，否则又会"一处先动"。
+     ⚠️ min-width 必须一起过渡：`.split-divider-closed` 把 min-width 也设成 18px，
+     只过渡 width 时会被 min-width 钳住、依旧瞬间跳完。 */
   position: relative;
   width: 6px;
   min-width: 6px;
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
-  transition: background var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    width 0.42s cubic-bezier(0.33, 0, 0.67, 1),
+    min-width 0.42s cubic-bezier(0.33, 0, 0.67, 1);
   align-self: stretch;
 }
 
@@ -2117,14 +2127,49 @@ body.format-painter-armed .source-editor {
    · 关闭 → 宽度收到 0，右屏"往右滑到语法辅助栏左侧"（视觉上是滑出编辑区）；
    · 打开 → 从 0 展开，右屏"从右往左滑出"恢复分屏。
    为什么外壳要 overflow:hidden：iframe 有最小内容宽度，不加裁剪时
-   宽度过渡期间 iframe 会先"溢出"再被压缩，出现横向闪跳。 */
+   宽度过渡期间 iframe 会先"溢出"再被压缩，出现横向闪跳。
+
+   ─── v0.14.0 需求3（本批）：放慢 50% + 顺滑化 ─────────────────────
+   用户原话：「关闭/打开预览的动画太快，放慢 50%；而且还不够顺滑。」
+
+   时长：0.28s → **0.42s**（精确 +50%）。两栏 + 分割条**同一曲线同一时长**，
+   否则会出现"一栏先动"。实机 CDP 逐帧采样（scripts/v0140-probe-preview-anim.mjs）
+   验证三者首帧/末帧变化时刻完全一致。
+
+   曲线：cubic-bezier(0.22, 0.61, 0.36, 1) → **cubic-bezier(0.33, 0, 0.67, 1)**
+   （对称 smoothstep）。这不是随手换一条，而是实测选出来的，判据是"逐帧位移"：
+     老曲线起点切线斜率 = 0.61/0.22 ≈ 2.77 → 第一帧就弹出去 166.86px（占全程 16.6%），
+       随后迅速衰减：**25% 的时间就走完 57.4% 的位移，75% 时已到 96.7%**，
+       最后 1/4 时间几乎不动 —— 肉眼感受就是"猛地弹开 + 尾部发涩"。
+       逐帧位移标准差 54.47px，峰值/均值比（jerk）2.81。
+     新曲线首尾切线斜率都为 0（起步与收尾都缓），峰值斜率 ≈1.5：
+       第一帧只走 4.84px；25%/50%/75% 进度 = 14.5% / 52.4% / 84.8%（中段近线性、
+       两端对称减速）；逐帧位移标准差 18.76px，jerk **1.55**，最大单帧位移
+       166.86 → **60.3px**（降 64%）。
+   同时验证过的对照曲线：Material standard (0.4,0,0.2,1) 起点慢但中段很陡，
+     jerk 仍 2.74、最大帧位移 106px —— 明显不如对称曲线，故不采用。
+
+   ⚠️ 试过但**实测无收益，故不加**（避免堆属性）：
+     · `contain: layout paint`：jerk / 最大帧位移 / 掉帧数与不加时**完全一致**
+       （1.54 vs 1.54；59.79 vs 59.79px），LayoutDuration 差异在噪声内（6.5 vs 7.5ms）。
+     · `will-change: width`：原来那条**已删除**。width 是布局属性，will-change 只能
+       提升合成层、无法避免每帧重排；实测有无它帧数据无差别（jerk 1.57 vs 1.56），
+       留着只是白占一层合成层内存。
+     · `translateZ(0)` / `backface-visibility`：对布局驱动的宽度动画无效，未采用。
+
+   ⚠️ 本机实测的**真正掉帧源不是 CSS**：全程 90 帧无一个长帧（最长 17.7ms）、
+   longtask 0 个 —— 也就是说"卡"不是主线程阻塞。真正的观感问题来自上面两条
+   （起步过猛 + 左栏瞬间 snap，见下一条规则），以及 iframe 内部在宽度过渡期间
+   逐帧重排（实测 scrollHeight 变化 9 次，那是宽度变窄导致文字重新换行，属预期
+   且不可避免 —— 只要宽度在变，iframe 内文档就必须重排；未采用"iframe 固定终态宽度
+   由外壳裁剪"的方案，因为那会让右屏内容在过渡期间"被切掉一半"而不是"跟着变窄"，
+   观感更差，且会破坏"重开时内容现成"的既有约定）。 */
 .split-preview-shell {
   flex-shrink: 0;
   overflow: hidden;
   display: block;
   background: var(--bg-primary);
-  transition: width 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
-  will-change: width;
+  transition: width 0.42s cubic-bezier(0.33, 0, 0.67, 1);
 }
 
 /* 外壳内的 iframe 跟随外壳宽度，自身不再做宽度过渡 */
@@ -2135,16 +2180,47 @@ body.format-painter-armed .source-editor {
   border: none;
 }
 
-/* 左侧源码栏同步做宽度过渡，保证两栏"一起动"而不是一栏先跳 */
+/* 左侧源码栏同步做宽度过渡，保证两栏"一起动"而不是一栏先跳。
+   曲线/时长与 `.split-preview-shell` **逐字符一致**（同一常量，见上），
+   否则两栏会出现相位差（一栏先动）。 */
 .editor-main-area > .source-editor-wrapper {
-  transition: width 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: width 0.42s cubic-bezier(0.33, 0, 0.67, 1);
 }
+
+/* ─── v0.14.0 需求3：左栏宽度改由 flex **派生**，不再用内联 calc ───────────
+   实机采样抓到的第二个真问题（与时长无关）：
+     · 关闭方向：组件把左栏内联 width 从 `calc(ratio*100% - 3px)` 改成 undefined
+       （= auto）→ 宽度改由 flex:1 派生 → 每帧跟随外壳，与右屏同步（正常）。
+     · 打开方向：内联 width 从 undefined 变成 `calc(...)`，而 **auto 与 calc() 之间
+       不可插值** → 第一帧就直接跳到终态。实测首帧跳变 **-996px**（左栏/分割条
+       在第一帧就跳到打开后的位置），只有右屏在动 —— 这正是用户说的"不顺滑"，
+       而且无论把时长调多长都治不好（跳变与 duration 无关）。
+   修法：让左栏宽度**始终**由 flex 派生。`flex:1` 的派生宽度 =
+     容器宽 - 外壳宽 - 分割条宽，而 ratio 本就是外壳占比，
+     即 `calc(ratio*100% - 3px)` —— 两者**数学上完全等价**。
+   实机几何等价校验（0.3/0.42/0.5/0.58/0.7 五个比例）：差 ≤ **0.01px**。
+   改后打开方向首帧跳变 -996px → **0px**，两栏 + 分割条同帧起止。
+
+   为什么用 `!important` 覆盖内联样式而不是改组件：内联 `width` 只在"预览展开"
+   这一种状态下才与 flex 派生冲突，故用 `:has()` 精确限定到该状态；
+   组件（EditorContainer.tsx）无需任何改动，避免跨文件耦合。
+   （`:has()` 在本文件已有先例，见 .editor-main-area:has(.split-preview-shell:hover)。）
+   ⚠️ `width: auto` 必须一起写：只写 flex:1 时，内联的 `width: calc(...)`
+   仍然生效（内联优先于普通样式），实测仍会跳变。 */
+.editor-main-area:has(.split-preview-shell.split-preview-open) > .source-editor-wrapper {
+  width: auto !important;
+  flex: 1 1 0% !important;
+}
+
+/* 分割条自身的宽度过渡见上方 `.split-divider` 主规则（v0.14.0 需求3）。
+   这里只保留「拖拽期间全部禁用」这一条。 */
 
 /* 拖拽分割条期间禁用过渡（否则拖拽会滞后一帧、手感发飘）。
    注意 class 名是 EditorContainer 专有的 `split-resizing`，
    不要复用 AppShell 的 `resizing`（两者各管一套，共用会互相清掉标记）。 */
 body.split-resizing .editor-main-area > .source-editor-wrapper,
-body.split-resizing .split-preview-shell {
+body.split-resizing .split-preview-shell,
+body.split-resizing .split-divider {
   transition: none;
 }
 
@@ -2158,9 +2234,13 @@ body.split-resizing iframe.split-preview {
   pointer-events: none;
 }
 
+/* 降级：系统开启"减少动态效果"时**彻底关掉**这三处过渡（需求3 硬约束，勿删）。 */
 @media (prefers-reduced-motion: reduce) {
   .split-preview-shell,
-  .editor-main-area > .source-editor-wrapper { transition: none; }
+  .editor-main-area > .source-editor-wrapper,
+  .split-divider {
+    transition: none;
+  }
 }
 
 .split-preview {
