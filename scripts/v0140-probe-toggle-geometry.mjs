@@ -15,7 +15,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-const EXE = "D:\\AI\\markdown view\\lightmd\\src-tauri\\target\\release\\lightmd.exe";
+const EXE = process.env.V0140_EXE || "D:\\AI\\markdown view\\lightmd\\src-tauri\\target\\release\\lightmd.exe";
 const PORT = Number(process.env.V0140_GEO_PORT || 9288);
 const OUT_DIR = "D:\\AI\\markdown view\\_verify-out";
 const OUT_TXT = path.join(OUT_DIR, "v0140-probe-toggle-geometry.txt");
