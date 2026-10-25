@@ -6446,13 +6446,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
      * 收尾：最后再还原一次并**关闭窗口**。整个窗口期间（到此刻为止）
      * `isScrollFrozen()` 一直为真，联动同步与 RO 补偿都不会改写左屏。
      *
-     * 时间点为什么取 `PREVIEW_TOGGLE_FREEZE_MS + 700`（1320ms）：
-     * 实测 iframe 内容重写让左栏 `scrollHeight` 在 ~470ms 才跳到最终值，
-     * mermaid/katex 异步渲染还会更晚；再用「连续 3 帧 + 4 个定时器」覆盖到 1.3s，
-     * 保证最后一次还原一定发生在布局稳定之后（贴底场景每次取最新 max，天然收敛）。
+     * ⚠️ 关闭时机不能只看固定时长：实测发现 f≈1427ms（比 1320ms 更晚）还有一次
+     * iframe 异步渲染（mermaid/katex → 字体/尺寸回填）引起的同步写入，把左屏又带走了
+     * 7.33px。所以这里除了固定兜底定时器，还用 **ResizeObserver 盯 `scrollHeight`**：
+     * 只要它在变，就把窗口继续往后推（每次 +200ms，上限 PREVIEW_TOGGLE_MAX_MS），
+     * 连续 PREVIEW_TOGGLE_SETTLE_MS 没变化才真正关窗。这样"窗口结束"等价于
+     * "布局已经稳定"，最后一次还原一定是最后一次写入。
      */
     const finalize = () => {
       if (cancelled) return;
+      // 记录"应该停在哪"：贴底时是**当前最新** max（宽度/内容重排后 max 可能变），
+      // 否则是开合前记下的原像素值。关窗后的裁决校验也以它为准。
+      const frozen = scrollFreezeRef.current;
+      const expected = frozen ? frozen.scrollTop : 0;
+      const wasAtBottom = frozen ? frozen.atBottom : false;
       restore();
       const cur = scrollFreezeRef.current;
       if (cur && cur.until === until) scrollFreezeRef.current = null;
@@ -6487,12 +6494,43 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           }
         }
       }
+      // 关窗后的最终裁决：开合流程若还在关窗之后写左屏，这里把它拉回来
+      verifyAfterFinalize(expected, wasAtBottom, 4);
     };
     const restores: Array<() => void> = [];
     const timerAt = (ms: number, fn: () => void) => {
       const t = setTimeout(fn, ms);
       restores.push(() => clearTimeout(t));
     };
+
+    /**
+     * v0.14.0 第六批：**关窗后的最终裁决校验**。
+     *
+     * 实测（`scripts/v0140-probe-open-writer.mjs` 抓调用栈）发现：打开预览时
+     * `syncToSource`（右屏→左屏的块锚点映射）会在关窗**之后**再写一次左屏
+     * （hook 记为 `7582 → 7553.2`，正是有损映射的 28.67px 缺口），若不管它，
+     * 用户看到的仍是"开一次预览就上移一截"。
+     * 既然**开关预览不改变左屏内容与可滚动范围**，左屏位置任何时候被开合流程写走
+     * 都是错的 —— 所以关窗后再看几眼，写走了就拉回"贴底 / 原像素值"。
+     *
+     * @param expected 期望停留的位置：贴底时为当前 `max`，否则为开合前的原像素值
+     */
+    const verifyAfterFinalize = (expected: number, atBottom: boolean, tries = 4) => {
+      if (cancelled) return;
+      const ta = sourceTextareaRef.current;
+      if (!ta) return;
+      const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+      const want = atBottom ? max : Math.min(Math.max(0, expected), max);
+      if (Math.abs(ta.scrollTop - want) > 0.5) {
+        isFrozenRestoreRef.current = true;
+        ta.scrollTop = want;
+        isFrozenRestoreRef.current = false;
+      }
+      if (tries > 1) {
+        timerAt(140, () => verifyAfterFinalize(expected, atBottom, tries - 1));
+      }
+    };
+
     // rAF 链：连续 3 帧各还原一次（覆盖内容重写的中间态，窗口保持打开）
     let rafId = 0;
     const rafChain = (n: number) => {
@@ -6507,8 +6545,60 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     timerAt(260, restore);
     timerAt(PREVIEW_TOGGLE_FREEZE_MS, restore);
     timerAt(PREVIEW_TOGGLE_FREEZE_MS + 400, restore);
-    // 最后一步：还原 + 关闭冻结窗口（必须在这里清，不能在 restore 里清）
-    timerAt(PREVIEW_TOGGLE_FREEZE_MS + 700, finalize);
+
+    /**
+     * 关窗时机：**等布局真正稳定**，而不是死等一个固定时长。
+     *
+     * 实测：f≈1427ms 仍有 iframe 异步渲染（mermaid/katex 字体回填）触发的同步写入，
+     * 它比固定 1320ms 更晚，于是窗口刚关就被写走 7.33px。
+     * 做法：用 ResizeObserver 盯 textarea 的 `scrollHeight`——每次变化就还原一次并把
+     * 关窗时间往后推 `PREVIEW_TOGGLE_SETTLE_MS`；连续这么久没变化才真正 finalize。
+     * 上限 `PREVIEW_TOGGLE_MAX_MS` 兜底（避免极端情况下窗口长期不关、用户滚动被拖住）。
+     */
+    const PREVIEW_TOGGLE_SETTLE_MS = 320;
+    const PREVIEW_TOGGLE_MAX_MS = 4000;
+    let lastScrollHeight = -1;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    let ro: ResizeObserver | null = null;
+    const armSettle = () => {
+      if (cancelled) return;
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        finalize();
+        ro?.disconnect();
+      }, PREVIEW_TOGGLE_SETTLE_MS);
+    };
+    const teardown = () => {
+      if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+      ro?.disconnect();
+      ro = null;
+    };
+    restores.push(teardown);
+    {
+      const ta = sourceTextareaRef.current;
+      lastScrollHeight = ta ? ta.scrollHeight : -1;
+      if (ta && typeof ResizeObserver !== "undefined") {
+        ro = new ResizeObserver(() => {
+          const cur = scrollFreezeRef.current;
+          if (!cur || cur.until !== until) return;
+          const sh = ta.scrollHeight;
+          // 只有"内容高度真的变了"才续期（宽度变化只会改 clientWidth，不改内容高度）
+          if (Math.abs(sh - lastScrollHeight) < 0.5) return;
+          lastScrollHeight = sh;
+          restore();
+          if (performance.now() - (until - PREVIEW_TOGGLE_FREEZE_MS) > PREVIEW_TOGGLE_MAX_MS) {
+            finalize();
+            teardown();
+            return;
+          }
+          armSettle();
+        });
+        ro.observe(ta);
+      }
+      // 首次等待：固定窗口走完后再给一个"静默期"
+      armSettle();
+    }
     return () => {
       cancelled = true;
       restores.forEach((f) => f());
