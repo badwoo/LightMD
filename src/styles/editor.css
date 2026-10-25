@@ -1709,6 +1709,17 @@ body.format-painter-armed .source-editor {
     60px,
     calc((100% - var(--editor-content-max-width, 960px)) / 2 + 60px)
   );
+  /* v0.14.0 第六批：**内边距必须跟宽度一起过渡**，否则开合预览时正文列宽突变。
+     缺陷（用户实测：文档拉到底，反复双击 Shift 开合预览，每轮上漂 ~28.67px）：
+     `padding-inline` 里带 `100%`，宽度一变就**瞬时重算**（实测 582px → 30px），
+     正文列宽度瞬间跳变 → 软换行行数突变 → `scrollHeight` 从 8833 掉到 5954
+     → 浏览器把 `scrollTop` 钳到临时 max（7582 → 4702），等内容高度恢复后
+     滚动位置已无法回到原位，表现为"每次开关都往上滚一点、阅读焦点乱跳"。
+     加上与两栏同一条曲线/时长的过渡后，正文列宽连续变化，`scrollHeight` 全程单调
+     平滑，`scrollTop` 不再被钳位（组件侧另有冻结窗口兜底，见 EditorContainer 的
+     scrollFreezeRef）。 */
+  transition:
+    padding-inline 0.42s cubic-bezier(0.33, 0, 0.67, 1);
   border: none;
   outline: none;
   resize: none;

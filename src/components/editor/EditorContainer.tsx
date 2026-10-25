@@ -5722,6 +5722,23 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       lastWidth = w;
       const suppressed = performance.now() < anchorSuppressUntilRef.current;
       requestAnimationFrame(() => {
+        // v0.14.0 第六批：**预览开关过渡期间不做锚点补偿**。
+        //
+        // 缺陷（用户实测：反复双击 Shift 开合预览，左屏每轮上漂 ~28.67px）：
+        // 预览开合会让左栏宽度`1002 ↔ 1998` 过渡 → RO 每帧回调；
+        // 宽度变化时 `restoreTextAnchor` 用"视口顶部字符偏移"补偿 scrollTop。
+        // 但**开关预览并不改变文档内容**（实测 scrollHeight 两态都是 8833，
+        // 因为 `.source-editor` 是 flex 布局：宽度变、内容高度不变）→
+        // 补偿本不该发生，而 `measureOffsetViewportY` 的 mirror 测量在过渡中间帧
+        // （宽度逐帧变化、软换行正在重排）必然带亚像素误差 → 每帧补一点，
+        // 累积成"持续上漂、阅读焦点乱动"。
+        // 冻结窗口内只允许「重新捕获锚点」，不允许补偿。
+        if (scrollFreezeRef.current || isFrozenRestoreRef.current) {
+          if (widthChanged) formatGhostHandlersRef.current.render();
+          if (captureTimer) clearTimeout(captureTimer);
+          captureTimer = setTimeout(() => { textAnchorRef.current = captureTextAnchor(ta); }, 150);
+          return;
+        }
         if (!suppressed && widthChanged) restoreTextAnchor(ta, textAnchorRef.current);
         // 还原后重新捕获（延迟，避免与后续 RO 抢跑）
         if (captureTimer) clearTimeout(captureTimer);
@@ -6195,6 +6212,67 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * 右屏会先空白 300ms 再出现。
    */
   const prevPreviewShownRef = useRef(false);
+  /**
+   * v0.14.0 第六批（用户实测缺陷）：**预览开关期间的滚动位置冻结**。
+   *
+   * ## 缺陷（用户原话）
+   * 「文档拉到底，在编辑模式不断重复关闭预览和打开预览（不断双击 Shift），
+   *  结果发现文档进度每一次会细微的往上滚动，这样文档不断在滚动就造成了阅读焦点不断变化。」
+   *
+   * ## 实测根因（`scripts/v0140-probe-toggle-geometry.mjs` / `-scrollwriter.mjs`）
+   * 文档在底部时：关闭态 `scrollTop=7582`（gap=1px，到底）；打开预览后变成
+   * `scrollTop=7553.198`（gap=29.667px）—— 每轮净丢 **28.67px**，且值是带循环小数的
+   * 浮点，证明是 **JS 计算写回** 而非原生滚动（hook `Element.prototype.scrollTop`
+   * 抓到调用者是联动同步 `syncToSource`）。
+   *
+   * 关键事实：开关预览**不改变 textarea 的 scrollHeight**（实测两态都是 8833，
+   * `max` 都是 7583 —— 因为 `.source-editor` 是 flex 布局，宽度变但内容高度不变）。
+   * 既然内容和可滚动空间都没变，**任何**对左屏 scrollTop 的写入都是多余的，
+   * 而左右块锚点映射是**有损往返**（底部 ↔ 底部映射回来少 28.67px），
+   * 于是每开合一次就丢一点 → 累积上漂。
+   *
+   * ## 修法
+   * 预览开关（`previewShown` 边沿）触发的这一小段窗口内：
+   * 1. **冻结左屏滚动位置**：进入窗口前记下 `textarea.scrollTop`；
+   * 2. 窗口内左右联动同步一律不写左屏（见 `syncToSource` 的 `isScrollFrozen` 守卫），
+   *    也不让宽度过渡期的 ResizeObserver 锚点补偿改写它；
+   * 3. 窗口结束（宽度过渡 420ms + 一帧布局稳定后）**精确还原**到记下的值。
+   *
+   * 为什么不是"修好映射往返"：映射往返在**中间位置**本来就有损（两个锚点之间的
+   * 真实块高与插值必然有亚像素/结构差），要求它对所有位置恒等既不现实也没必要 ——
+   * 用户抱怨的是「开关预览会动滚动位置」，而开关预览**根本不应该动它**。
+   */
+  const scrollFreezeRef = useRef<{
+    scrollTop: number;
+    /** 冻结窗口截止时间（performance.now() 口径） */
+    until: number;
+    /**
+     * v0.14.0 第六批：冻结时刻是否**处于底部**（`scrollTop` 距 `max` 不足 2px）。
+     *
+     * 为什么需要：实测（`scripts/v0140-probe-toggle-geometry.mjs`）发现真正的漂移机制
+     * 不是"联动同步写错"，而是 **iframe 内容在开关过程中被重写**（`doc.open()/write()`），
+     * 左栏 `scrollHeight` 随之从 5954 跳到 8833 —— 浏览器把 `scrollTop` 钳/对齐到新高度，
+     * 于是"到底"的 7582 变成 7553.333（差 28.67px）。文档在底部时用户的期望是
+     * **保持贴底**，所以还原时若原本在底部，应当对齐到**新的 max**，而不是硬写旧像素值。
+     */
+    atBottom: boolean;
+    /**
+     * 我们上一次写入后的**真实** scrollTop 读数（浏览器会取整/钳位，所以不能直接用目标值）。
+     * 用于判断"当前位置是不是被外部（用户滚轮/拖动）改过"——改过就放弃还原。
+     */
+    programTop: number;
+  } | null>(null);
+  /**
+   * v0.14.0 第六批：**本帧的 scrollTop 写入是"冻结还原"而非用户滚动**。
+   *
+   * 用途：`syncToPreview`（左→右）监听 textarea 的 scroll 事件。冻结还原也会派发
+   * scroll 事件，若不加标记会被当成用户滚动 → 又把右屏推一次（右屏本来就不该动）。
+   * 置位 → 同步 → 立刻清位（同步派发的 scroll 事件是异步的，故不能用同步标志；
+   * 这里改用"时间戳 + 还原后跳过下一次 scroll"的方式，见 syncToPreview 的守卫）。
+   */
+  const isFrozenRestoreRef = useRef(false);
+  /** 预览开关过渡总时长（与 editor.css 的 `transition: width 0.42s` 对齐，留一点余量） */
+  const PREVIEW_TOGGLE_FREEZE_MS = 620;
   // iframe 引用，用于分屏预览（隔离 DOM，减少主文档节点数）
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   // iframe 初始化状态追踪：首次进入分屏完整加载脚本，后续只更新 body
@@ -6291,6 +6369,155 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       previewIframeInitRef.current = { mermaid: false, math: false, theme: "" };
     }
     prevPreviewShownRef.current = previewShown;
+  }, [previewShown]);
+
+  /**
+   * v0.14.0 第六批：**预览开关期间冻结左屏滚动位置**（缺陷见 scrollFreezeRef 的注释）。
+   *
+   * 只在 `vs`（编辑模式）内随 `previewShown` 的**边沿**生效：
+   * 关 → 开、开 → 关都算一次开关，各冻结一次。
+   *
+   * 时序：
+   *   t0            记下 scrollTop，窗口开启（`until = now + PREVIEW_TOGGLE_FREEZE_MS`）
+   *   t0 ~ t0+620ms 窗口内：联动同步 / RO 锚点补偿都不许改写左屏 scrollTop
+   *   t0+620ms      精确还原 scrollTop（先还原再清窗口，避免还原动作本身被当成"用户滚动"）
+   *
+   * 为什么用 620ms 而不是 420ms（过渡时长）：过渡结束那一帧 iframe 内还会有一轮
+   * mermaid/katex 异步渲染与布局稳定；留 200ms 余量确保还原是**最后一次**写入。
+   */
+  useEffect(() => {
+    if (viewMode !== "edit") return;
+    const textarea = sourceTextareaRef.current;
+    if (!textarea) return;
+    // 记录开关前的滚动位置。注意必须在**本 effect 执行时**读：
+    // 此时宽度过渡还没开始，scrollTop 仍是用户看到的位置。
+    const frozenTop = textarea.scrollTop;
+    const frozenMax = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+    // 是否"在底部"：滚动位置距 max 不足 2px 视为贴底（用户拖动到底时的亚像素误差）
+    const atBottom = frozenMax > 0 && frozenTop >= frozenMax - 2;
+    const until = performance.now() + PREVIEW_TOGGLE_FREEZE_MS;
+    scrollFreezeRef.current = { scrollTop: frozenTop, until, atBottom, programTop: frozenTop };
+    let cancelled = false;
+    /**
+     * 单次还原：只**定位**，**不清窗口**。
+     *
+     * ⚠️ 第一版实现把 `scrollFreezeRef.current = null` 放在这里 —— 结果是第一次 rAF
+     * （约 30ms）就把冻结窗口清掉了，之后 iframe 内容变高（实测 ~470ms）时联动同步
+     * 与 RO 补偿照常写入，漂移照旧。**窗口必须由最后的定时器统一关闭**（见下方
+     * `finalize`）。
+     *
+     * 两种口径（实测决定，见 scrollFreezeRef.atBottom 的注释）：
+     * - 原来**在底部** → 对齐到**当前新的** `max`（宽度/内容重排后 max 可能变化，
+     *   硬写旧像素值会离底部 28.67px，正是用户看到的"每轮往上滚一点"）；
+     * - 原来**不在底部** → 写回记下的像素值（普通阅读位置不该被开关预览改变）。
+     */
+    const restore = () => {
+      if (cancelled) return;
+      const ta = sourceTextareaRef.current;
+      if (!ta) return;
+      // 确认窗口确实还属于本次（复开关时会被新值覆盖 → 交给最新那次）
+      const cur = scrollFreezeRef.current;
+      if (!cur || cur.until !== until) return;
+      const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+      /**
+       * ⚠️ **用户在窗口内主动滚动 → 立即放弃本次还原，以用户为准**。
+       *
+       * 没有这条守卫会出现更严重的回归：开关预览后 1.3s 内用户用滚轮/拖动滚动条，
+       * 会被随后的 restore 拉回旧位置（"滚不动"）。判据：
+       * 当前 scrollTop 与「上次我们写入的值」对不上 → 一定是外部（用户/浏览器）改的。
+       * `programTop` 记录我们上一次写入后的实际读数（浏览器会把它对齐到整数/钳位）。
+       */
+      if (Math.abs(ta.scrollTop - cur.programTop) > 1.5) {
+        scrollFreezeRef.current = null;
+        return;
+      }
+      const target = cur.atBottom ? max : Math.min(Math.max(0, cur.scrollTop), max);
+      if (Math.abs(ta.scrollTop - target) > 0.5) {
+        // 标记"这是程序还原"，避免 scroll 监听把它当用户操作去反推右屏
+        isFrozenRestoreRef.current = true;
+        ta.scrollTop = target;
+        isFrozenRestoreRef.current = false;
+      }
+      // 记录写入后的**真实**读数（浏览器可能钳位/取整），下次据此判断是否被外部改动
+      cur.programTop = ta.scrollTop;
+    };
+
+    /**
+     * 收尾：最后再还原一次并**关闭窗口**。整个窗口期间（到此刻为止）
+     * `isScrollFrozen()` 一直为真，联动同步与 RO 补偿都不会改写左屏。
+     *
+     * 时间点为什么取 `PREVIEW_TOGGLE_FREEZE_MS + 700`（1320ms）：
+     * 实测 iframe 内容重写让左栏 `scrollHeight` 在 ~470ms 才跳到最终值，
+     * mermaid/katex 异步渲染还会更晚；再用「连续 3 帧 + 4 个定时器」覆盖到 1.3s，
+     * 保证最后一次还原一定发生在布局稳定之后（贴底场景每次取最新 max，天然收敛）。
+     */
+    const finalize = () => {
+      if (cancelled) return;
+      restore();
+      const cur = scrollFreezeRef.current;
+      if (cur && cur.until === until) scrollFreezeRef.current = null;
+      /**
+       * v0.14.0 第六批补丁：**窗口关闭后补做一次左→右对齐**。
+       *
+       * 为什么必须补：冻结期间 `syncToPreview` 也被拦掉了（它会给右屏写 scrollTop）。
+       * 而"打开预览"时右屏 iframe 是**新初始化**的（`previewIframeInitRef` 被重置），
+       * 一开始停在顶部。冻结窗口结束后若不补这一次同步，右屏就永远停在 0
+       * （实测：预览开合 12 轮后右屏仍在 0%，用户看到"右屏不跟随"）。
+       *
+       * 这里用**百分比**做粗对齐即可：真正的块级锚点映射由用户的下一次滚动触发
+       * （那时 `syncToPreview` 已解冻、锚点也早已测量完毕）。冻结窗口内不测锚点，
+       * 因为此刻宽度还在过渡、测量结果不可信。
+       */
+      const ta = sourceTextareaRef.current;
+      const iframe = previewIframeRef.current;
+      const pdoc = iframe?.contentDocument;
+      const pwin = iframe?.contentWindow;
+      if (ta && pdoc && pwin) {
+        const pmax = Math.max(0, pdoc.documentElement.scrollHeight - pwin.innerHeight);
+        const smax = Math.max(0, ta.scrollHeight - ta.clientHeight);
+        if (pmax > 0 && smax > 0) {
+          try {
+            const ratio = ta.scrollTop / smax;
+            isSyncingScrollRef.current = true;
+            pwin.scrollTo(0, Math.round(ratio * pmax));
+          } catch {
+            /* iframe 尚未就绪：忽略 */
+          } finally {
+            isSyncingScrollRef.current = false;
+          }
+        }
+      }
+    };
+    const restores: Array<() => void> = [];
+    const timerAt = (ms: number, fn: () => void) => {
+      const t = setTimeout(fn, ms);
+      restores.push(() => clearTimeout(t));
+    };
+    // rAF 链：连续 3 帧各还原一次（覆盖内容重写的中间态，窗口保持打开）
+    let rafId = 0;
+    const rafChain = (n: number) => {
+      rafId = requestAnimationFrame(() => {
+        restore();
+        if (n > 1) rafChain(n - 1);
+      });
+    };
+    rafChain(3);
+    restores.push(() => cancelAnimationFrame(rafId));
+    // 定时器：覆盖 iframe 异步渲染（mermaid/katex）造成的后续变高
+    timerAt(260, restore);
+    timerAt(PREVIEW_TOGGLE_FREEZE_MS, restore);
+    timerAt(PREVIEW_TOGGLE_FREEZE_MS + 400, restore);
+    // 最后一步：还原 + 关闭冻结窗口（必须在这里清，不能在 restore 里清）
+    timerAt(PREVIEW_TOGGLE_FREEZE_MS + 700, finalize);
+    return () => {
+      cancelled = true;
+      restores.forEach((f) => f());
+      // effect 卸载（再次开关 / 离开编辑模式）：清掉本窗口，避免守卫长期生效
+      const cur = scrollFreezeRef.current;
+      if (cur && cur.until === until) scrollFreezeRef.current = null;
+    };
+    // 只在"编辑模式内预览开关"时触发：viewMode 变化不重复冻结（那是模式切换，另有恢复逻辑）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewShown]);
 
   // 防抖：首次展开预览立即渲染，编辑时延迟渲染
@@ -6928,11 +7155,26 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       });
 
     /**
+     * v0.14.0 第六批：当前是否处于「预览开关滚动冻结窗口」内。
+     * 见 scrollFreezeRef 的注释（用户实测的反复开合累积上漂缺陷）。
+     *
+     * ⚠️ 这里**不按时间戳自行过期**：窗口的关闭时机必须由冻结 effect 的 `finalize`
+     * 统一决定（它还会先做最后一次还原）。第一版按 `until` 判过期，导致
+     * `until`（620ms）与 finalize（1320ms）不一致 → 620ms 后守卫静默失效，
+     * iframe 后续变高的写入又漏了进来。
+     */
+    const isScrollFrozen = (): boolean => scrollFreezeRef.current !== null;
+
+    /**
      * 左 → 右：源码行映射到预览 scrollTop。
      *
      * 回退链：块锚点映射 → 百分比映射 → 无（测量不到就放弃，不写坏滚动位置）。
      */
     const syncToPreview = () => {
+      // v0.14.0 第六批：冻结窗口内不把左屏位置推给右屏。
+      // 两道原因：① 开关预览不该动任何一侧的阅读位置；② 冻结还原写 scrollTop
+      // 会派发 scroll 事件，若不拦会被误当"用户滚动"而把右屏推走（右屏本来也没该动）。
+      if (isScrollFrozen() || isFrozenRestoreRef.current) return;
       const now = performance.now();
       if (!shouldAcceptScroll(lock, "source", now)) return;
       markScrollSource(lock, "source", now);
@@ -6971,6 +7213,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
     /** 右 → 左：预览 scrollTop 反算源码行，再换算成 textarea scrollTop。 */
     const syncToSource = () => {
+      // v0.14.0 第六批：**预览开关过渡期间不许改左屏滚动位置**。
+      //
+      // 缺陷（用户实测）：文档在底部时反复双击 Shift 开合预览，左屏每轮上漂 ~28.67px。
+      // 根因：宽度过渡 + iframe 内容重写会派发右屏 scroll 事件 → 本函数把右屏位置
+      // 反算成源码行再写回左屏；而左右映射是**有损往返**（底部 → 底部少 28.67px），
+      // 累积起来就是持续上漂。
+      // 关键事实：开关预览**不改变** textarea 的 scrollHeight（实测两态都是 8833），
+      // 内容与可滚动空间都没变 → 左屏本来就不该被写。
+      if (isScrollFrozen()) return;
       const now = performance.now();
       if (!shouldAcceptScroll(lock, "preview", now)) return;
       markScrollSource(lock, "preview", now);

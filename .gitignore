@@ -58,3 +58,6 @@ test-snapshot.txt
 .DS_Store
 ehthumbs.db
 desktop.ini
+
+# CodeGraph 本地索引（每台机器各自生成，不入库；可用 codegraph init 重建）
+.codegraph/
