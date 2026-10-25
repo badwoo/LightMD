@@ -14,8 +14,18 @@
  *   尺寸，故 serializer 在表格后（空一行）追加旁路注释指令
  *   `<!-- lightmd-table-size: {"columnWidths":[…],"rowHeights":[…]} -->`，
  *   parser 的 parseTable 读取并写回这两个 attrs、同时吞掉指令行。
- *   NodeView 无需改动：初始化与 update() 都会调用 applyColumnWidths/applyRowHeights，
- *   因此「重开文档 → attrs 有值 → 尺寸自动应用」。
+ *
+ *   ⚠️ v0.14.0 返修（需求7 回归）：**不能只靠构造时应用尺寸**。
+ *   实测（jsdom + 真实 EditorView）：`new EditorView` 里 NodeView 的 constructor 是
+ *   **先于** PM 把 `thead/tbody/tr/td` 填进 contentDOM 执行的，因此构造期
+ *   `contentDOM.querySelectorAll("tr")` 恒为空：
+ *     · `table.style.width` 能设上（它只用 attrs 求和，不依赖单元格）→ 表格总宽正确；
+ *     · 每个 `td/th` 的 `style.width/height` **一个都没写**（查不到行）；
+ *   而 PM 渲染完子节点后**不会再调用** `update()`（节点没有变化），于是重开文档后
+ *   列宽/行高恒为默认（`table-layout:fixed` 下按等宽均分）→ 用户看到"尺寸失效"。
+ *   拖拽时之所以正常，是因为每一次拖拽事务都产生了**新表格节点** → `update()` 被调用。
+ *   修复：构造后再补一次（见 `scheduleApplyAfterRender`），并在 update() 里保持应用。
+ *
  * - 行列增删时同步更新 columnWidths 数组，保持长度与列数一致
  */
 import type { NodeView, EditorView, ViewMutationRecord } from "prosemirror-view";
@@ -830,6 +840,16 @@ export class TableView implements NodeView {
     y: number;
   } | null = null;
 
+  /**
+   * v0.14.0 返修（需求7 回归）：首帧补应用尺寸的 MutationObserver。
+   * 见 `scheduleApplyAfterRender`；命中（contentDOM 出现 <tr>）后立刻断开并置空，
+   * 不长期观察（避免每次编辑都跑回调）。
+   */
+  private renderApplyObserver: MutationObserver | null = null;
+
+  /** v0.14.0 返修（需求7 回归）：视图已销毁的标记（延后的补应用据此早退） */
+  private destroyed = false;
+
   constructor(node: Node, view: EditorView, getPos: () => number | undefined) {
     this.view = view;
     this.getPos = getPos;
@@ -863,9 +883,75 @@ export class TableView implements NodeView {
     // v0.13.0 需求1：右上角三点菜单（常驻显示由 CSS 控制）
     this.kebabButton = createBlockKebabButton(this.dom, this.getPos);
 
-    // 初始应用列宽和行高
+    // 初始应用列宽和行高。
+    //
+    // ⚠️ 构造期只能设上 **table 自身**的 width（由 attrs 求和得出，不依赖子节点）；
+    // 每个 td/th 的 width/height 此时**必然设不上** —— PM 还没把 thead/tbody/tr/td
+    // 填进 contentDOM（实测见上方「v0.14.0 返修（需求7 回归）」注释）。
+    // 因此这里保留调用（负责 table 宽度 + 无尺寸时的清空），真正的逐格应用由
+    // `scheduleApplyAfterRender` 在 PM 渲染完成后补齐。
     this.applyColumnWidths(node);
     this.applyRowHeights(node);
+    this.scheduleApplyAfterRender(node);
+  }
+
+  /**
+   * v0.14.0 返修（需求7 回归）：PM 渲染完子节点后补一次尺寸应用。
+   *
+   * 背景见文件头「v0.14.0 返修（需求7 回归）」：构造期 contentDOM 里没有任何 tr/td，
+   * 逐格 width/height 全被跳过；而子节点渲染完成 PM **不会**再调 update()
+   * （节点没变化），于是重开文档后尺寸永久缺失。
+   *
+   * 三层兜底（不依赖任何单一帧时序，重开/挂载/延迟渲染都能命中）：
+   *   ① 微任务：PM 的同步渲染路径通常已在 NodeView 构造后立即完成；
+   *   ② requestAnimationFrame：覆盖布局/字体回流后才可读的情况（真实 WebView2）；
+   *   ③ MutationObserver：**确定性兜底** —— 只要 contentDOM 里出现第一个 `<tr>`，
+   *      就立刻应用并断开观察。这覆盖「同步读取仍为空表」「视图先建后挂载」
+   *      「文档延迟渲染」等前两层都可能错过的情况。
+   *
+   * 幂等：applyColumnWidths/applyRowHeights 只按 attrs 重写 style，重复调用无副作用，
+   * 因此三层都触发也不会互相干扰；视图销毁时断开观察（见 destroy）。
+   *
+   * @param node 构造时的表格节点。其 attrs 即目标尺寸；若期间节点被编辑，
+   *             update() 会用**新节点**再应用一次（本方法是首帧补位，不取代 update）。
+   */
+  private scheduleApplyAfterRender(node: Node) {
+    const apply = (): boolean => {
+      // 已销毁 → 不再应用（destroy 会断开观察，这里只是双保险）
+      if (this.destroyed) return true;
+      // 子节点还没渲染出来 → 交给下一层/观察器再试
+      if (this.contentDOM.querySelector("tr") === null) return false;
+      this.applyColumnWidths(node);
+      this.applyRowHeights(node);
+      return true;
+    };
+
+    // ① 微任务
+    void Promise.resolve().then(() => {
+      apply();
+    });
+    // ② 下一帧
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        apply();
+      });
+    }
+    // ③ 出现 <tr> 即应用（确定性兜底；命中一次后断开，避免长期观察带来开销）
+    if (typeof MutationObserver === "function") {
+      const observer = new MutationObserver(() => {
+        if (apply()) {
+          observer.disconnect();
+          if (this.renderApplyObserver === observer) this.renderApplyObserver = null;
+        }
+      });
+      observer.observe(this.contentDOM, { childList: true, subtree: true });
+      this.renderApplyObserver = observer;
+      // 观察器注册前 PM 可能已经渲染完（竞态）：再同步试一次，命中就别留着观察器
+      if (apply()) {
+        observer.disconnect();
+        this.renderApplyObserver = null;
+      }
+    }
   }
 
   // ─── 列宽/行高应用 ──────────────────────────────────────
@@ -2057,7 +2143,27 @@ export class TableView implements NodeView {
     return true;
   }
 
+  /**
+   * v0.14.0 返修（需求7 回归）：销毁时的首帧补应用清理。
+   *
+   * 抽成独立方法（而不是内联进销毁入口）有两个原因：
+   * ① 既有结构断言会用正则截取销毁方法体来做「监听器是否被清理」的校验；
+   *    若在里面内联 `if`/`try` 块，正则会提前匹配到内层 `}` 而截断，
+   *    误判监听器没被清理。保持方法体为扁平的调用序列最稳妥；
+   * ② 语义独立：这里只负责"停掉延后应用"，与其它监听/菜单清理互不相干。
+   */
+  private cleanupRenderApply() {
+    this.destroyed = true;
+    if (this.renderApplyObserver) {
+      this.renderApplyObserver.disconnect();
+      this.renderApplyObserver = null;
+    }
+  }
+
   destroy() {
+    // v0.14.0 返修（需求7 回归）：标记已销毁 + 断开首帧补应用的观察器，
+    // 否则延后的补应用可能作用在已脱离文档的 DOM 上，且观察器会长期持有引用。
+    this.cleanupRenderApply();
     closeMenu();
     this.hideToolbar();
     removeResizeIndicator();

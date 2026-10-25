@@ -17,12 +17,15 @@
 | `LightMD_0.14.0_x64_en-US.msi` | MSI 安装包（企业分发） |
 
 ```
-522494bfe35ac5e5408e6948bb2839f3aa308f327df1637a59224ae73aaedfef  LightMD_0.14.0_x64-setup.exe
-30c2f86222a1a57d67fd5e3524bfaa1765e98c6ba6b2e1c7e49585666d38c5e8  LightMD_0.14.0_x64_en-US.msi
+b5fcd045132bbf6351dffc178986d8df8960a322e257acf227d43a13219a3486  LightMD_0.14.0_x64-setup.exe
+ad83bc611a854efddb00b6dc400294818d8b6bb5dd0d84f5526da082cfecd530  LightMD_0.14.0_x64_en-US.msi
 ```
 
-> NSIS 7,821,635 B ／ MSI 11,276,288 B；`lightmd.exe` 的 `FileVersion` / `ProductVersion`
-> 实测均为 `0.14.0`。请以本组校验值为准（同一版本号共七轮返修打包）。
+> NSIS 7,822,170 B ／ MSI 11,276,288 B；`lightmd.exe` 的 `FileVersion` / `ProductVersion`
+> 实测均为 `0.14.0`。请以本组校验值为准（同一版本号共八轮返修打包）。
+>
+> 第八轮（本次）修复了**表格尺寸持久化回归**：列宽/行高写入 markdown 后重开仍失效。
+> 该修复已重新打包，上表为第八轮产物的校验值。
 
 ## 二、版本内容
 
@@ -79,6 +82,7 @@
 | 标题栏下拉菜单被编辑区挡住 | stacking context 三层失效，给标题栏建独立层级（内容区不加 `z-index`，避免把内部 fixed 弹层关进低上下文） |
 | 预览开关动画生硬、打开时只有右屏在动 | 0.28s → 0.42s 并换对称缓动；左栏宽度改由 flex 派生（`auto` ↔ `calc()` 不可插值导致首帧跳终态）；分割条宽度也逐帧过渡 |
 | 左右屏篇幅差异导致滚不到一起 | 长行软换行改用真实行轴测量、补末尾锚点并修正「到底该用哪一行」、把 mermaid/katex 注入节点从锚点基数里过滤 |
+| **表格拖拽改列宽/行高后重开失效（回归）** | 尺寸**已**写入 markdown（指令行在），断在渲染层：NodeView 的 constructor 先于 ProseMirror 把 `tr/td` 填进 DOM 执行，构造期查不到行 → 只设上了表格总宽，每个 `td/th` 的 width/height 一个没写；而渲染完成后 ProseMirror 不会再调 `update()`（节点未变），尺寸于是永久缺失。改为构造后由微任务 + `requestAnimationFrame` + `MutationObserver` 三层兜底，DOM 一出现 `<tr>` 就应用尺寸 |
 
 ### 2.3 快捷键与行为变更
 
@@ -95,10 +99,11 @@
 
 | 项目 | 结果 |
 |---|---|
-| 前端测试 | **318 文件 / 5582 用例**全部通过（v0.13.2 基线 299/5113） |
+| 前端测试 | **319 文件 / 5587 用例**全部通过（v0.13.2 基线 299/5113） |
 | 类型检查 | `tsc --noEmit` exit 0（strict） |
 | Rust 单测 | `cargo test` 192 passed / 3 ignored |
-| 实机验收（打包产物） | **103 项全 PASS**：真实 WebView2 鼠标键盘手势 + CDP 帧采样 / 像素 diff |
+| 实机验收（打包产物） | **111 项全 PASS**：真实 WebView2 鼠标键盘手势 + CDP 帧采样 / 像素 diff |
+| 表格尺寸持久化（第八轮专项） | **8/8 PASS**（真机）：打开已有指令即生效 / 拖→保存→**真正关闭**→磁盘重开 / **整进程重启**后重开 / 无尺寸表格零内联样式；新增 jsdom 回归锁 `v0140-table-size-reopen-render.test.ts`（5 条，修复前红、修复后绿） |
 | 版本一致性 | `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock` = **0.14.0** |
 | 打包 | `npx tauri build` 产出 MSI + NSIS，`lightmd.exe` 版本元数据 0.14.0，SHA256 与 `SHA256SUMS.txt` 一致 |
 
@@ -108,6 +113,8 @@
   本版解决的是「两屏滚不到一起」，**没有**为「看起来一样长」伪造空行间距。
 - **表格尺寸指令是 LightMD 扩展语法**：其它编辑器会当作 HTML 注释忽略（不影响表格渲染）；
   在 LightMD 阅读模式下不可见。
+- **表格尺寸只有「阅读模式」可直接拖拽**：编辑模式下 ProseMirror 视图不显示
+  （`display:none`，量不到几何），拖拽需切到阅读模式；右侧 iframe 预览是渲染产物，不参与拖拽。
 - **跨文件撤销是整篇文本级**：一次 `Ctrl+Z` 撤回「那轮批量替换」，且只在该文件本轮未被手工编辑过时生效。
 - **阅读进度只保留在当前会话内存**：同一会话关闭→重开可恢复；重启应用不恢复已关闭文件。
 - **「选取范围内」的快照不跟随事后改选区**：勾选瞬间捕获一次，之后只随替换平移。
