@@ -374,6 +374,17 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
 
+### v0.14.0 Batch 7 (2026-10-25, repackaged under the same version)
+
+**Two UX fixes — left-pane reading focus shifting after closing the preview, and lost reading-progress linkage between Read mode and split mode**
+
+| # | Item | What landed |
+| --- | --- | --- |
+| 1 | In split mode the left pane showed section 3.1 in the middle; **closing the preview jumped to 3.3**, reopening restored it. Reopening also left the right pane offset until the left pane was nudged | The previous batch froze the left pane and restored the **raw pixel** `scrollTop`; but the text column width differs between split and full width, so long paragraphs re-wrap and the same pixel points at later content (measured offset **1152px / 3744px**). It now captures/restores a **viewport-center content anchor** (`captureTextAnchor(textarea, clientHeight/2)` + `restoreTextAnchor`), while bottom/top keep their `atBottom`/top semantics; user-scroll detection now uses real input events and **ignores Shift** (otherwise the second keypress of the double-Shift shortcut cancels the restore). The right pane is now aligned after unfreezing via `syncToPreview(force)`, i.e. the same **block-anchor mapping**, retried at 0/160/480/1000ms. Measured: center offset **1152/3744px → 0.084/0.272px**, right-pane drift **6/37px → 0px**, bottom 20 toggles still **0.00px** |
+| 2 | **Reading-progress linkage lost** between Read mode and split mode | Switching Read→Edit also flips `previewShown` (Edit opens with the preview), so the freeze window started by mistake and pulled the left pane back to the stale textarea position **after** `applyScroll` had restored the percentage. The freeze window now has a `viewMode` gate: it only starts when the mode is unchanged and the preview alone is toggled. Measured: Read→split **50.00%→50.00%**, back to Read **50.01%**; bottom 100%→99.98%→99.99% |
+
+Quality: `tsc --noEmit` exit 0; full suite **318 files / 5582 tests** green; Rust `cargo test` 192 passed / 3 ignored; real-device probes `v0140-probe-preview-focus.mjs` (3 PASS), `v0140-probe-mode-progress.mjs`, and `v0140-probe-preview-toggle-drift.mjs` (6/6 PASS); version remains **0.14.0** in all three places.
+
 ### v0.14.0 Batch 5 (2026-10-24, repackaged under the same version)
 
 **Four fixes — update-check connectivity, search breaking after undo, preview-toggle animation, left/right pane length & scroll alignment**

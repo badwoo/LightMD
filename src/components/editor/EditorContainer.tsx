@@ -6257,11 +6257,39 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
      */
     atBottom: boolean;
     /**
+     * v0.14.0 第七批：非底部时按**视口中央内容锚点**还原（而不是像素）。
+     *
+     * 缺陷：分屏左栏与全宽左栏的正文列宽不同，长段落软换行数不同；同一像素
+     * `scrollTop` 在关闭预览后会落到更靠后的章节（真机实测中央小节偏移
+     * 1152px / 3744px，用户看到 3.1 变成 3.3）。冻结窗口内每个布局稳定点
+     * 都用这个锚点把"中央那一行文字"拉回视口中央，开/关两态语义一致。
+     * 底部场景仍走上方的 `atBottom`（贴底不能被中央锚点破坏）。
+     */
+    anchor: TextContentAnchor | null;
+    /**
      * 我们上一次写入后的**真实** scrollTop 读数（浏览器会取整/钳位，所以不能直接用目标值）。
-     * 用于判断"当前位置是不是被外部（用户滚轮/拖动）改过"——改过就放弃还原。
+     * 保留用于诊断与回归断言；用户主动滚动的判据改为**输入事件**（见 restore 的注释）。
      */
     programTop: number;
   } | null>(null);
+  /**
+   * v0.14.0 第七批：冻结窗口的**上一个** viewMode / previewShown。
+   *
+   * 冻结只能用于"编辑模式内**单纯**开合预览"；阅读↔编辑切换时 previewShown 也会翻转
+   * （编辑默认带预览），若不排除，冻结窗口会把 applyScroll 刚按百分比恢复好的
+   * 阅读进度又拉回开合前的 textarea 位置（实测就是用户报的"阅读模式和分屏模式
+   * 的阅读进度联动丢失"）。
+   */
+  const freezePrevViewModeRef = useRef(viewMode);
+  const freezePrevShownRef = useRef(previewShown);
+  /**
+   * v0.14.0 第七批：解冻后按**块锚点映射**把左屏位置主动推给右屏。
+   *
+   * 为什么不能继续用百分比：实测重开预览后右屏偏差 6px/37px，且章节越深偏差越大
+   * （百分比在长文档上与块锚点映射不等价）。这个 ref 由分屏同步 effect 注册，
+   * 指向带 force 的 syncToPreview（跳过方向锁，但保留 isSyncing 重入守卫）。
+   */
+  const syncPreviewAfterToggleRef = useRef<(() => void) | null>(null);
   /**
    * v0.14.0 第六批：**本帧的 scrollTop 写入是"冻结还原"而非用户滚动**。
    *
@@ -6372,32 +6400,82 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, [previewShown]);
 
   /**
-   * v0.14.0 第六批：**预览开关期间冻结左屏滚动位置**（缺陷见 scrollFreezeRef 的注释）。
+   * v0.14.0 第六/七批：**预览开合期间冻结左屏滚动位置**（缺陷见 scrollFreezeRef 的注释）。
    *
-   * 只在 `vs`（编辑模式）内随 `previewShown` 的**边沿**生效：
-   * 关 → 开、开 → 关都算一次开关，各冻结一次。
+   * 只在**编辑模式内单纯开合预览**时随 `previewShown` 的边沿生效（关→开、开→关各一次）；
+   * 阅读↔编辑切换虽然也会翻转 previewShown，但由下方的 `modeChanged` 闸门排除，
+   * 否则会覆盖 applyScroll 刚恢复的阅读进度。
    *
    * 时序：
-   *   t0            记下 scrollTop，窗口开启（`until = now + PREVIEW_TOGGLE_FREEZE_MS`）
-   *   t0 ~ t0+620ms 窗口内：联动同步 / RO 锚点补偿都不许改写左屏 scrollTop
-   *   t0+620ms      精确还原 scrollTop（先还原再清窗口，避免还原动作本身被当成"用户滚动"）
-   *
-   * 为什么用 620ms 而不是 420ms（过渡时长）：过渡结束那一帧 iframe 内还会有一轮
-   * mermaid/katex 异步渲染与布局稳定；留 200ms 余量确保还原是**最后一次**写入。
+   *   t0             记录 scrollTop / 是否贴顶贴底 / 视口中央内容锚点，窗口开启
+   *   t0 ~ 稳定      联动同步与 RO 锚点补偿都不许改写左屏；每帧按中央锚点还原
+   *   布局稳定后     关窗（ResizeObserver 盯 scrollHeight，静默 320ms；上限 4s），
+   *                  关窗后再做 5 次幂等裁决校验，并用块锚点映射主动对齐右屏
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // v0.14.0 第七批：**只有"编辑模式内单纯开合预览"才冻结**。
+    // 阅读↔编辑切换时 previewShown 也会翻转（编辑默认带预览），而那条路径由
+    // pendingScrollRef/applyScroll 按百分比恢复阅读进度；若这里再冻结，会把刚恢复好的
+    // 进度又拉回开合前的 textarea 位置 → 用户报的"阅读模式和分屏模式进度联动丢失"。
+    const modeChanged = viewMode !== freezePrevViewModeRef.current;
+    const shownChanged = previewShown !== freezePrevShownRef.current;
+    freezePrevViewModeRef.current = viewMode;
+    freezePrevShownRef.current = previewShown;
+    if (modeChanged || !shownChanged) return;
     if (viewMode !== "edit") return;
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
-    // 记录开关前的滚动位置。注意必须在**本 effect 执行时**读：
-    // 此时宽度过渡还没开始，scrollTop 仍是用户看到的位置。
+    // 记录开合前的滚动像素与**视口中央内容锚点**。
+    // 必须用 layout effect：此时 DOM 已提交、浏览器尚未绘制，宽度过渡还没走第一帧，
+    // 读到的 clientWidth/scrollTop 仍是用户眼前的真实状态。
     const frozenTop = textarea.scrollTop;
     const frozenMax = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
     // 是否"在底部"：滚动位置距 max 不足 2px 视为贴底（用户拖动到底时的亚像素误差）
     const atBottom = frozenMax > 0 && frozenTop >= frozenMax - 2;
+    // 顶部同理：贴顶时用户期望继续贴顶，中央锚点反而会把文档往下推
+    const atTop = frozenTop <= 2;
+    // 非底部/顶部才取中央锚点：两端由 atBottom/atTop 单独处理
+    const anchor = atBottom || atTop
+      ? null
+      : captureTextAnchor(textarea, textarea.clientHeight / 2);
     const until = performance.now() + PREVIEW_TOGGLE_FREEZE_MS;
-    scrollFreezeRef.current = { scrollTop: frozenTop, until, atBottom, programTop: frozenTop };
+    scrollFreezeRef.current = { scrollTop: frozenTop, until, atBottom, anchor, programTop: frozenTop };
     let cancelled = false;
+    /**
+     * 用户在冻结窗口内**主动滚动/输入** → 立即放弃本次还原，以用户为准。
+     *
+     * v0.14.0 第七批修正：旧实现拿"当前 scrollTop 与上次程序写入值差 >1.5px"当判据，
+     * 但宽度变化时浏览器会因 scrollHeight 收缩而**自动钳位** scrollTop（不是用户操作），
+     * 旧判据会把自动钳位误判成用户滚动而放弃还原 → 中央内容就跳走。
+     * 现在只看真实输入事件；布局导致的钳位继续由锚点纠正。
+     */
+    let abortedByUser = false;
+    const abort = () => {
+      abortedByUser = true;
+      const cur = scrollFreezeRef.current;
+      if (cur && cur.until === until) scrollFreezeRef.current = null;
+    };
+    textarea.addEventListener("wheel", abort, { passive: true });
+    textarea.addEventListener("pointerdown", abort, { passive: true });
+    textarea.addEventListener("touchstart", abort, { passive: true });
+    /**
+     * ⚠️ 不能把任意 keydown 都当"用户滚动"：双击 Shift 开关预览时，
+     * 第二次 Shift 的 keydown/keyup 可能落在冻结窗口内 → 会把刚刚开始的还原取消掉，
+     * 用户就又能看到"关一次跳一次"。只认真正会滚动或改写内容的键。
+     */
+    const onKeyDown = (e: KeyboardEvent) => {
+      const k = e.key;
+      if (k === "Shift" || k === "Control" || k === "Alt" || k === "Meta" || k === "CapsLock") return;
+      if (
+        k === "PageUp" || k === "PageDown" || k === "Home" || k === "End" ||
+        k === "ArrowUp" || k === "ArrowDown" || k === " " || k === "Enter" ||
+        k === "Backspace" || k === "Delete" || k === "Tab" ||
+        (typeof k === "string" && k.length === 1)
+      ) {
+        abort();
+      }
+    };
+    textarea.addEventListener("keydown", onKeyDown);
     /**
      * 单次还原：只**定位**，**不清窗口**。
      *
@@ -6406,39 +6484,35 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
      * 与 RO 补偿照常写入，漂移照旧。**窗口必须由最后的定时器统一关闭**（见下方
      * `finalize`）。
      *
-     * 两种口径（实测决定，见 scrollFreezeRef.atBottom 的注释）：
-     * - 原来**在底部** → 对齐到**当前新的** `max`（宽度/内容重排后 max 可能变化，
-     *   硬写旧像素值会离底部 28.67px，正是用户看到的"每轮往上滚一点"）；
-     * - 原来**不在底部** → 写回记下的像素值（普通阅读位置不该被开关预览改变）。
+     * 三种口径（实测决定，见 scrollFreezeRef 的字段注释）：
+     * - 原来**在底部** → 对齐到**当前新的** `max`（贴底语义，不能离底）；
+     * - 非底部且有中央锚点 → 用 `restoreTextAnchor` 把"中央那行文字"拉回中央
+     *   （宽度过渡每一帧都调用，长段落重排后仍锁定同一内容）；
+     * - 测量不可用 → 退回原像素值（安全兜底）。
      */
     const restore = () => {
-      if (cancelled) return;
+      if (cancelled || abortedByUser) return;
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       // 确认窗口确实还属于本次（复开关时会被新值覆盖 → 交给最新那次）
       const cur = scrollFreezeRef.current;
       if (!cur || cur.until !== until) return;
-      const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
-      /**
-       * ⚠️ **用户在窗口内主动滚动 → 立即放弃本次还原，以用户为准**。
-       *
-       * 没有这条守卫会出现更严重的回归：开关预览后 1.3s 内用户用滚轮/拖动滚动条，
-       * 会被随后的 restore 拉回旧位置（"滚不动"）。判据：
-       * 当前 scrollTop 与「上次我们写入的值」对不上 → 一定是外部（用户/浏览器）改的。
-       * `programTop` 记录我们上一次写入后的实际读数（浏览器会把它对齐到整数/钳位）。
-       */
-      if (Math.abs(ta.scrollTop - cur.programTop) > 1.5) {
-        scrollFreezeRef.current = null;
-        return;
-      }
-      const target = cur.atBottom ? max : Math.min(Math.max(0, cur.scrollTop), max);
-      if (Math.abs(ta.scrollTop - target) > 0.5) {
-        // 标记"这是程序还原"，避免 scroll 监听把它当用户操作去反推右屏
-        isFrozenRestoreRef.current = true;
-        ta.scrollTop = target;
+      isFrozenRestoreRef.current = true;
+      try {
+        if (cur.atBottom) {
+          const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+          if (Math.abs(ta.scrollTop - max) > 0.5) ta.scrollTop = max;
+        } else if (cur.anchor) {
+          restoreTextAnchor(ta, cur.anchor);
+        } else {
+          const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+          const target = Math.min(Math.max(0, cur.scrollTop), max);
+          if (Math.abs(ta.scrollTop - target) > 0.5) ta.scrollTop = target;
+        }
+      } finally {
         isFrozenRestoreRef.current = false;
       }
-      // 记录写入后的**真实**读数（浏览器可能钳位/取整），下次据此判断是否被外部改动
+      // 记录写入后的**真实**读数（浏览器可能钳位/取整），供诊断与测试断言
       cur.programTop = ta.scrollTop;
     };
 
@@ -6455,47 +6529,32 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
      */
     const finalize = () => {
       if (cancelled) return;
-      // 记录"应该停在哪"：贴底时是**当前最新** max（宽度/内容重排后 max 可能变），
-      // 否则是开合前记下的原像素值。关窗后的裁决校验也以它为准。
       const frozen = scrollFreezeRef.current;
       const expected = frozen ? frozen.scrollTop : 0;
       const wasAtBottom = frozen ? frozen.atBottom : false;
+      const centerAnchor = frozen ? frozen.anchor : null;
       restore();
       const cur = scrollFreezeRef.current;
       if (cur && cur.until === until) scrollFreezeRef.current = null;
       /**
-       * v0.14.0 第六批补丁：**窗口关闭后补做一次左→右对齐**。
+       * v0.14.0 第七批：**解冻后用块锚点映射主动对齐右屏**。
        *
-       * 为什么必须补：冻结期间 `syncToPreview` 也被拦掉了（它会给右屏写 scrollTop）。
-       * 而"打开预览"时右屏 iframe 是**新初始化**的（`previewIframeInitRef` 被重置），
-       * 一开始停在顶部。冻结窗口结束后若不补这一次同步，右屏就永远停在 0
-       * （实测：预览开合 12 轮后右屏仍在 0%，用户看到"右屏不跟随"）。
-       *
-       * 这里用**百分比**做粗对齐即可：真正的块级锚点映射由用户的下一次滚动触发
-       * （那时 `syncToPreview` 已解冻、锚点也早已测量完毕）。冻结窗口内不测锚点，
-       * 因为此刻宽度还在过渡、测量结果不可信。
+       * 旧实现这里按"左屏像素 / 可滚高度 × 右屏可滚高度"算百分比，实测重开预览后
+       * 右屏偏差 6px（3.1 章）/ 37px（7.3 章），章节越深偏差越大；用户必须再滚一下
+       * 左屏，右屏才被 scroll 监听纠正。现在直接调用 register 在分屏同步 effect 里的
+       * `syncToPreview(force)`：它走同一套 `data-src-line` 块锚点映射，与用户滚动时
+       * 完全同源；并在 iframe 异步渲染的若干时间点重试（内容变高后锚点坐标会变）。
        */
-      const ta = sourceTextareaRef.current;
-      const iframe = previewIframeRef.current;
-      const pdoc = iframe?.contentDocument;
-      const pwin = iframe?.contentWindow;
-      if (ta && pdoc && pwin) {
-        const pmax = Math.max(0, pdoc.documentElement.scrollHeight - pwin.innerHeight);
-        const smax = Math.max(0, ta.scrollHeight - ta.clientHeight);
-        if (pmax > 0 && smax > 0) {
-          try {
-            const ratio = ta.scrollTop / smax;
-            isSyncingScrollRef.current = true;
-            pwin.scrollTo(0, Math.round(ratio * pmax));
-          } catch {
-            /* iframe 尚未就绪：忽略 */
-          } finally {
-            isSyncingScrollRef.current = false;
-          }
-        }
-      }
-      // 关窗后的最终裁决：开合流程若还在关窗之后写左屏，这里把它拉回来
-      verifyAfterFinalize(expected, wasAtBottom, 4);
+      const syncRight = () => {
+        if (cancelled || abortedByUser) return;
+        try { syncPreviewAfterToggleRef.current?.(); } catch { /* 右屏尚未就绪：下次重试 */ }
+      };
+      syncRight();
+      timerAt(160, syncRight);
+      timerAt(480, syncRight);
+      timerAt(1000, syncRight);
+      // 关窗后的最终裁决：开合流程若还在关窗之后写左屏，这里按**同一内容锚点**拉回
+      verifyAfterFinalize(wasAtBottom, centerAnchor, expected, 5);
     };
     const restores: Array<() => void> = [];
     const timerAt = (ms: number, fn: () => void) => {
@@ -6504,30 +6563,46 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
 
     /**
-     * v0.14.0 第六批：**关窗后的最终裁决校验**。
+     * v0.14.0 第六/七批：**关窗后的最终裁决校验**。
      *
      * 实测（`scripts/v0140-probe-open-writer.mjs` 抓调用栈）发现：打开预览时
      * `syncToSource`（右屏→左屏的块锚点映射）会在关窗**之后**再写一次左屏
-     * （hook 记为 `7582 → 7553.2`，正是有损映射的 28.67px 缺口），若不管它，
-     * 用户看到的仍是"开一次预览就上移一截"。
-     * 既然**开关预览不改变左屏内容与可滚动范围**，左屏位置任何时候被开合流程写走
-     * 都是错的 —— 所以关窗后再看几眼，写走了就拉回"贴底 / 原像素值"。
+     * （hook 记为 `7582 → 7553.2`，正是有损映射的 28.67px 缺口）。既然开关预览
+     * 不改变左屏内容，左屏位置被开合流程写走就是错的 —— 关窗后再看几眼并拉回。
      *
-     * @param expected 期望停留的位置：贴底时为当前 `max`，否则为开合前的原像素值
+     * v0.14.0 第七批：非底部不再写"原像素值"，而是**重复应用中央内容锚点**
+     * （幂等），这样即使中途发生了宽度重排或同步写入，最终视口中央仍是同一小节。
+     *
+     * @param atBottom  开合前是否贴底（贴底对齐最新 max）
+     * @param anchor    开合前的视口中央内容锚点（非底部时使用）
+     * @param expected  原像素值（仅当锚点测量不可用时兜底）
      */
-    const verifyAfterFinalize = (expected: number, atBottom: boolean, tries = 4) => {
-      if (cancelled) return;
+    const verifyAfterFinalize = (
+      atBottom: boolean,
+      anchor: TextContentAnchor | null,
+      expected: number,
+      tries = 4,
+    ) => {
+      if (cancelled || abortedByUser) return;
       const ta = sourceTextareaRef.current;
       if (!ta) return;
-      const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
-      const want = atBottom ? max : Math.min(Math.max(0, expected), max);
-      if (Math.abs(ta.scrollTop - want) > 0.5) {
-        isFrozenRestoreRef.current = true;
-        ta.scrollTop = want;
+      isFrozenRestoreRef.current = true;
+      try {
+        if (atBottom) {
+          const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+          if (Math.abs(ta.scrollTop - max) > 0.5) ta.scrollTop = max;
+        } else if (anchor) {
+          restoreTextAnchor(ta, anchor);
+        } else {
+          const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+          const want = Math.min(Math.max(0, expected), max);
+          if (Math.abs(ta.scrollTop - want) > 0.5) ta.scrollTop = want;
+        }
+      } finally {
         isFrozenRestoreRef.current = false;
       }
       if (tries > 1) {
-        timerAt(140, () => verifyAfterFinalize(expected, atBottom, tries - 1));
+        timerAt(140, () => verifyAfterFinalize(atBottom, anchor, expected, tries - 1));
       }
     };
 
@@ -6602,13 +6677,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     return () => {
       cancelled = true;
       restores.forEach((f) => f());
+      textarea.removeEventListener("wheel", abort);
+      textarea.removeEventListener("pointerdown", abort);
+      textarea.removeEventListener("touchstart", abort);
+      textarea.removeEventListener("keydown", onKeyDown);
       // effect 卸载（再次开关 / 离开编辑模式）：清掉本窗口，避免守卫长期生效
       const cur = scrollFreezeRef.current;
       if (cur && cur.until === until) scrollFreezeRef.current = null;
     };
-    // 只在"编辑模式内预览开关"时触发：viewMode 变化不重复冻结（那是模式切换，另有恢复逻辑）
+    // 只在"编辑模式内**单纯**开合预览"时触发：
+    // - 依赖 viewMode：阅读↔编辑切换也会让 previewShown 翻转，必须由 modeChanged 排除；
+    // - viewMode 变化时上一轮冻结会被 cleanup 清掉，不残留。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewShown]);
+  }, [previewShown, viewMode]);
 
   // 防抖：首次展开预览立即渲染，编辑时延迟渲染
   // 大文件（>1MB）增加防抖时间到 1000ms，减少渲染开销
@@ -7260,14 +7341,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
      *
      * 回退链：块锚点映射 → 百分比映射 → 无（测量不到就放弃，不写坏滚动位置）。
      */
-    const syncToPreview = () => {
+    const syncToPreview = (force = false) => {
       // v0.14.0 第六批：冻结窗口内不把左屏位置推给右屏。
       // 两道原因：① 开关预览不该动任何一侧的阅读位置；② 冻结还原写 scrollTop
       // 会派发 scroll 事件，若不拦会被误当"用户滚动"而把右屏推走（右屏本来也没该动）。
       if (isScrollFrozen() || isFrozenRestoreRef.current) return;
-      const now = performance.now();
-      if (!shouldAcceptScroll(lock, "source", now)) return;
-      markScrollSource(lock, "source", now);
+      if (!force) {
+        const now = performance.now();
+        if (!shouldAcceptScroll(lock, "source", now)) return;
+        markScrollSource(lock, "source", now);
+      }
       const preview = getPreviewScroller();
       if (!preview) return;
       if (isSyncingScrollRef.current) return;
@@ -7300,6 +7383,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         isSyncingScrollRef.current = false;
       }
     };
+
+    /**
+     * v0.14.0 第七批：给冻结窗口注册"解冻后用块锚点主动对齐右屏"的入口。
+     * force=true 跳过方向锁（这是程序主动对齐，不是用户滚动），但仍受
+     * isScrollFrozen/isSyncing 守卫约束。
+     */
+    const syncPreviewAfterToggle = () => syncToPreview(true);
+    syncPreviewAfterToggleRef.current = syncPreviewAfterToggle;
 
     /** 右 → 左：预览 scrollTop 反算源码行，再换算成 textarea scrollTop。 */
     const syncToSource = () => {
@@ -7354,7 +7445,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       }
     };
 
-    textarea.addEventListener("scroll", syncToPreview, { passive: true });
+    // ⚠️ 必须包一层：`syncToPreview` 现在有 force 参数，直接把函数当事件监听器
+    // 会被传入 Event 对象（truthy）→ 每次都跳过方向锁。
+    const onSourceScroll = () => syncToPreview();
+    textarea.addEventListener("scroll", onSourceScroll, { passive: true });
     // 右屏滚动：window 上接一份（iframe 文档滚动会在 contentWindow 派发），
     // 再在 contentDocument 上接一份捕获阶段兜底（部分 WebView2 版本只在 document
     // 层派发；捕获阶段对不冒泡的 scroll 同样有效）。
@@ -7372,9 +7466,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     });
     return () => {
       cancelAnimationFrame(raf);
-      textarea.removeEventListener("scroll", syncToPreview);
+      textarea.removeEventListener("scroll", onSourceScroll);
       previewWin.removeEventListener("scroll", syncToSource);
       previewDocNow?.removeEventListener("scroll", syncToSource, { capture: true } as EventListenerOptions);
+      if (syncPreviewAfterToggleRef.current === syncPreviewAfterToggle) {
+        syncPreviewAfterToggleRef.current = null;
+      }
       resetScrollDirectionLock(lock);
       isSyncingScrollRef.current = false;
     };

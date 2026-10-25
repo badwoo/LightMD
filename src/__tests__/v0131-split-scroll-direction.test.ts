@@ -28,7 +28,8 @@ const containerSrc = readFileSync("src/components/editor/EditorContainer.tsx", "
 describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
   it("左屏滚动**驱动**右屏（左→右映射存在）", () => {
     expect(containerSrc).toContain("mapSourceLineToPreviewScroll(");
-    expect(containerSrc).toContain("textarea.addEventListener(\"scroll\", syncToPreview");
+    // 事件监听必须包一层：syncToPreview 现在有 force 参数，直接当监听器会收到 Event（truthy）
+    expect(containerSrc).toContain('textarea.addEventListener("scroll", onSourceScroll');
   });
 
   it("右屏滚动**回推**左屏（右→左映射存在）", () => {
@@ -52,17 +53,20 @@ describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
     // 程序性 scroll 事件（上一版正是在这里互推，用户看到完全不联动/跳回顶部）。
     // 现在两侧都必须先问方向锁、再登记自己是本次滚动的发起者。
     const previewFn = containerSrc.slice(
-      containerSrc.indexOf("const syncToPreview = () =>"),
+      containerSrc.indexOf("const syncToPreview = (force = false) =>"),
       containerSrc.indexOf("const syncToSource = () =>"),
     );
     const sourceFn = containerSrc.slice(
       containerSrc.indexOf("const syncToSource = () =>"),
-      containerSrc.indexOf('textarea.addEventListener("scroll", syncToPreview'),
+      containerSrc.indexOf("const onSourceScroll = () => syncToPreview();"),
     );
     expect(previewFn).toContain('shouldAcceptScroll(lock, "source"');
     expect(previewFn).toContain('markScrollSource(lock, "source"');
     expect(sourceFn).toContain('shouldAcceptScroll(lock, "preview"');
     expect(sourceFn).toContain('markScrollSource(lock, "preview"');
+    // force=true 只给"解冻后主动对齐右屏"使用：跳过方向锁，但仍必须过冻结/重入守卫
+    expect(previewFn).toContain("if (!force) {");
+    expect(previewFn).toContain("if (isScrollFrozen() || isFrozenRestoreRef.current) return;");
     // 同一调用栈的重入仍由 isSyncingScrollRef 兜底（两道防线）
     expect(previewFn).toContain("if (isSyncingScrollRef.current) return;");
     expect(sourceFn).toContain("if (isSyncingScrollRef.current) return;");
@@ -74,7 +78,7 @@ describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
   });
 
   it("清理干净：effect 卸载时移除两个方向的监听、复位方向锁与同步标记（不泄漏）", () => {
-    expect(containerSrc).toContain('textarea.removeEventListener("scroll", syncToPreview)');
+    expect(containerSrc).toContain('textarea.removeEventListener("scroll", onSourceScroll)');
     expect(containerSrc).toContain('previewWin.removeEventListener("scroll", syncToSource)');
     expect(containerSrc).toContain("previewDocNow?.removeEventListener(\"scroll\", syncToSource");
     expect(containerSrc).toContain("resetScrollDirectionLock(lock);");

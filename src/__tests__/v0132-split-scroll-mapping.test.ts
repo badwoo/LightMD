@@ -317,8 +317,8 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
   }
 
   it("syncToPreview 与 syncToSource 都从同一份 collectAnchors 取锚点", () => {
-    const previewFn = fnBody("const syncToPreview = () =>", "const syncToSource = () =>");
-    const sourceFn = fnBody("const syncToSource = () =>", 'textarea.addEventListener("scroll", syncToPreview');
+    const previewFn = fnBody("const syncToPreview = (force = false) =>", "const syncToSource = () =>");
+    const sourceFn = fnBody("const syncToSource = () =>", "const onSourceScroll = () => syncToPreview();");
     expect(previewFn).toContain("collectAnchors()");
     expect(sourceFn).toContain("collectAnchors()");
     // 采集函数把视口坐标换算回内容坐标（scrollTop 也在内容坐标系）。
@@ -328,13 +328,16 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
   });
 
   it("方向锁在两侧都先检查再登记（异步 scroll 回声不会把另一侧反推回去）", () => {
-    const previewFn = fnBody("const syncToPreview = () =>", "const syncToSource = () =>");
-    const sourceFn = fnBody("const syncToSource = () =>", 'textarea.addEventListener("scroll", syncToPreview');
+    const previewFn = fnBody("const syncToPreview = (force = false) =>", "const syncToSource = () =>");
+    const sourceFn = fnBody("const syncToSource = () =>", "const onSourceScroll = () => syncToPreview();");
     // 两道防线：方向锁（跨帧回声）+ isSyncingScrollRef（同调用栈重入）
     expect(previewFn).toContain('shouldAcceptScroll(lock, "source"');
     expect(previewFn).toContain('markScrollSource(lock, "source"');
     expect(sourceFn).toContain('shouldAcceptScroll(lock, "preview"');
     expect(sourceFn).toContain('markScrollSource(lock, "preview"');
+    // force=true 只在解冻后主动对齐时跳过方向锁，冻结/重入守卫仍必须在最前
+    expect(previewFn).toContain("if (!force) {");
+    expect(previewFn).toContain("if (isScrollFrozen() || isFrozenRestoreRef.current) return;");
     for (const fn of [previewFn, sourceFn]) {
       expect(fn).toContain("if (isSyncingScrollRef.current) return;");
       expect(fn).toContain("isSyncingScrollRef.current = true;");

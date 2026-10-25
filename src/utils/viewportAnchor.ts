@@ -143,16 +143,26 @@ export function findFirstOffsetAtOrBelow(
 }
 
 /**
- * 捕获 textarea 内容锚点（视口顶部字符偏移 + 其视口 Y）。
+ * 捕获 textarea 内容锚点（指定视口 Y 处的字符偏移 + 其真实视口 Y）。
+ *
+ * @param viewportY 要锚定的视口 Y（px）。默认 0 = 视口顶部（窗口缩放/改排版时保持"顶部看到的内容"）；
+ *   传 `clientHeight / 2` = 视口中央（v0.14.0 第七批：预览开合时保持"眼前中间的内容"）。
+ *   为什么中央锚点：左右分栏宽度变化会让长段落重新软换行，同一像素 scrollTop 会指向更后/更前
+ *   的章节（实测关闭预览后中央小节偏移上千像素）。用户判断"阅读焦点"看的是视口中间，
+ *   所以开合预览必须按中央内容锚定，而不是像素。
  * 内容不足一屏 / 空文本 / 无法测量时返回 null（调用方跳过补偿）。
  */
-export function captureTextAnchor(textarea: HTMLTextAreaElement): TextContentAnchor | null {
+export function captureTextAnchor(
+  textarea: HTMLTextAreaElement,
+  viewportY = 0,
+): TextContentAnchor | null {
   if (textarea.scrollHeight <= textarea.clientHeight) return null;
   const text = textarea.value;
   if (!text) return null;
+  const targetY = Number.isFinite(viewportY) ? viewportY : 0;
   const offset = findFirstOffsetAtOrBelow(
     text.length,
-    0,
+    targetY,
     (o) => measureOffsetViewportY(textarea, o) ?? -Infinity,
   );
   const y = measureOffsetViewportY(textarea, offset);

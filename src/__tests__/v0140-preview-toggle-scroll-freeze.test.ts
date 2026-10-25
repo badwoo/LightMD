@@ -78,60 +78,79 @@ describe("v0.14.0 第六批 · CSS：padding-inline 必须参与宽度过渡（�
   });
 });
 
-describe("v0.14.0 第六批 · 组件：预览开合期间的滚动冻结窗口", () => {
-  it("存在冻结窗口状态（记录原位置 + 是否贴底 + 程序写入后的真实读数）", () => {
+describe("v0.14.0 第六/七批 · 组件：预览开合期间的滚动冻结窗口", () => {
+  it("存在冻结窗口状态（原位置 + 是否贴底 + 视口中央内容锚点 + 真实读数）", () => {
     expect(tsx).toMatch(/scrollFreezeRef\s*=\s*useRef</);
     expect(tsx).toMatch(/scrollTop:\s*number/);
     expect(tsx).toMatch(/atBottom:\s*boolean/);
+    expect(tsx).toMatch(/anchor:\s*TextContentAnchor \| null/);
     expect(tsx).toMatch(/programTop:\s*number/);
   });
 
-  it("冻结窗口由 previewShown 变化触发，且只在编辑模式生效", () => {
-    // 找一个 effect：依赖数组是 [previewShown]，且体内有 viewMode !== "edit" 的早退
-    const m = tsx.match(/\},\s*\[previewShown\]\);/);
-    expect(m).not.toBeNull();
-    expect(tsx).toMatch(/if \(viewMode !== "edit"\) return;/);
+  it("非底部必须捕获视口中央内容锚点（不是像素）", () => {
+    // 核心契约：宽度变化后按"眼前中间那行字"还原，否则 3.1 会跳到 3.3
+    expect(tsx).toMatch(/captureTextAnchor\(textarea, textarea\.clientHeight \/ 2\)/);
+    expect(tsx).toMatch(/restoreTextAnchor\(ta, cur\.anchor\)/);
+    // 贴顶/贴底两端不取中央锚点（否则会把文档从顶部拉下来）
+    expect(tsx).toMatch(/const atTop = frozenTop <= 2;/);
+    expect(tsx).toMatch(/const anchor = atBottom \|\| atTop/);
+  });
+
+  it("冻结窗口只由编辑模式内**单纯**开合预览触发，不参与阅读↔编辑切换", () => {
+    // 依赖里必须有 viewMode，并用 modeChanged 排除模式切换（否则会覆盖 applyScroll 的进度恢复）
+    expect(tsx).toMatch(/\},\s*\[previewShown, viewMode\]\);/);
+    const idx = tsx.indexOf("const modeChanged = viewMode !== freezePrevViewModeRef.current;");
+    expect(idx).toBeGreaterThan(-1);
+    expect(tsx.slice(idx, idx + 900)).toMatch(/if \(modeChanged \|\| !shownChanged\) return;/);
   });
 
   it("左→右 / 右→左 两个联动同步方向都必须被冻结守卫拦住", () => {
-    // syncToPreview（左→右）：冻结时不推右屏
-    const syncToPreview = tsx.slice(tsx.indexOf("const syncToPreview = () =>"));
-    expect(syncToPreview.slice(0, 700)).toMatch(/isScrollFrozen\(\)/);
-    // syncToSource（右→左）：冻结时绝对不写左屏（这是累积上漂的直接来源）
+    const syncToPreview = tsx.slice(tsx.indexOf("const syncToPreview = (force = false) =>"));
+    expect(syncToPreview.slice(0, 600)).toMatch(/isScrollFrozen\(\)/);
     const syncToSource = tsx.slice(tsx.indexOf("const syncToSource = () =>"));
     expect(syncToSource.slice(0, 1400)).toMatch(/isScrollFrozen\(\)/);
   });
 
   it("宽度过渡期的 ResizeObserver 锚点补偿也必须被冻结守卫拦住", () => {
-    // restoreTextAnchor 在 RO 回调里，宽度逐帧变化时会被调用；开关预览不改内容，
-    // 此刻补偿带亚像素误差且会累积 → 冻结窗口内必须跳过
     const roIdx = tsx.indexOf("restoreTextAnchor(ta, textAnchorRef.current)");
     expect(roIdx).toBeGreaterThan(-1);
     const around = tsx.slice(Math.max(0, roIdx - 900), roIdx);
     expect(around).toMatch(/scrollFreezeRef\.current/);
   });
 
-  it("贴底时还原到**最新 max**，非贴底时写回原像素值", () => {
-    expect(tsx).toMatch(/cur\.atBottom \? max : Math\.min\(Math\.max\(0, cur\.scrollTop\), max\)/);
+  it("窗口内用户主动滚动/输入优先（用输入事件判断，不把布局钳位误判成用户滚动）", () => {
+    // 旧实现用 programTop 差值判断，宽度收缩导致浏览器自动钳位时会被误判 → 中央内容跳走
+    expect(tsx).toMatch(/const abort = \(\) => \{/);
+    expect(tsx).toMatch(/textarea\.addEventListener\("wheel", abort/);
+    expect(tsx).toMatch(/textarea\.addEventListener\("keydown", onKeyDown\)/);
+    // 双击 Shift 的第二次按键不能取消还原（否则又变回"关一次跳一次"）
+    expect(tsx).toMatch(/k === "Shift" \|\| k === "Control"/);
+    expect(tsx).toMatch(/let abortedByUser = false;/);
   });
 
-  it("窗口内用户主动滚动优先：位置被外部改动就放弃还原（否则会「滚不动」）", () => {
-    expect(tsx).toMatch(/Math\.abs\(ta\.scrollTop - cur\.programTop\) > 1\.5/);
-  });
-
-  it("窗口关闭后补一次左→右对齐（否则重开的右屏永远停在顶部）", () => {
-    // 冻结期间 syncToPreview 被拦，而打开预览时 iframe 是新建的（停在 0）
+  it("窗口关闭后用块锚点映射主动对齐右屏（不是百分比粗对齐）", () => {
+    expect(tsx).toMatch(/syncPreviewAfterToggleRef/);
+    expect(tsx).toMatch(/const syncPreviewAfterToggle = \(\) => syncToPreview\(true\);/);
     const finIdx = tsx.indexOf("const finalize = () =>");
     expect(finIdx).toBeGreaterThan(-1);
-    const fin = tsx.slice(finIdx, finIdx + 2500);
-    expect(fin).toMatch(/previewIframeRef\.current/);
-    expect(fin).toMatch(/scrollTo\(0,/);
+    const fin = tsx.slice(finIdx, finIdx + 1800);
+    expect(fin).toMatch(/syncPreviewAfterToggleRef\.current\?\.\(\)/);
+    // 必须在 iframe 异步渲染后重试，否则右屏在长文档上仍有几十像素偏差
+    expect(fin).toMatch(/timerAt\(1000, syncRight\)/);
+  });
+
+  it("关窗后的最终裁决校验按同一内容锚点幂等拉回（兜住迟到的右→左同步）", () => {
+    const vIdx = tsx.indexOf("const verifyAfterFinalize = (");
+    expect(vIdx).toBeGreaterThan(-1);
+    const verify = tsx.slice(vIdx, vIdx + 1600);
+    expect(verify).toMatch(/restoreTextAnchor\(ta, anchor\)/);
+    // 调用点在 finalize 里（verify 定义之前），断言全文存在即可
+    expect(tsx).toMatch(/verifyAfterFinalize\(wasAtBottom, centerAnchor, expected, 5\)/);
   });
 
   it("还原动作要打标记，避免其派发的 scroll 事件被当成用户滚动去推右屏", () => {
     expect(tsx).toMatch(/isFrozenRestoreRef\.current = true;/);
-    // 标记必须在写入前后成对出现
     const setIdx = tsx.indexOf("isFrozenRestoreRef.current = true;");
-    expect(tsx.slice(setIdx, setIdx + 400)).toContain("isFrozenRestoreRef.current = false;");
+    expect(tsx.slice(setIdx, setIdx + 900)).toContain("isFrozenRestoreRef.current = false;");
   });
 });
