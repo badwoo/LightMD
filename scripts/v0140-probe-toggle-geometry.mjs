@@ -336,9 +336,9 @@ const main = async () => {
     }
     const openTl = await runTimeline("open", 5);
     log("  f | dt | taW | shellW | sh | max | st | gap | pct | open");
-    let prevSt2 = null;
+    let prevSt2 = null; let printed2 = 0;
     for (const r of openTl) {
-      if (prevSt2 !== null && Math.abs(r.st - prevSt2) > 0.01) log(`  ${String(r.f).padStart(2)} | ${String(r.dt).padStart(6)} | ${String(r.w).padStart(7)} | ${String(r.shellW).padStart(7)} | ${String(r.sh).padStart(8)} | ${String(r.max).padStart(8)} | ${String(r.st).padStart(9)} | ${String(r.gap).padStart(6)} | ${String(r.pct).padStart(6)} | ${r.open}`);
+      if ((prevSt2 !== null && Math.abs(r.st - prevSt2) > 0.01) || r.dt > 1300) log(`  ${String(r.f).padStart(2)} | ${String(r.dt).padStart(6)} | ${String(r.w).padStart(7)} | ${String(r.shellW).padStart(7)} | ${String(r.sh).padStart(8)} | ${String(r.max).padStart(8)} | ${String(r.st).padStart(9)} | ${String(r.gap).padStart(6)} | ${String(r.pct).padStart(6)} | ${r.open}`);
       prevSt2 = r.st;
     }
     await sleep(800);
