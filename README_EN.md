@@ -374,11 +374,11 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
 
-### v0.14.0 (2026-10-23 ~ 10-25, including seven fix batches)
+### v0.14.0 (2026-10-23 ~ 10-26, including eight fix rounds)
 
 **Two modes instead of three, a complete search stack, a built-in update check, and real-machine defect convergence**
 
-This release collapses the three modes (Read / Edit / Split) into **two** — Edit is now the old split view, and the right-hand preview can slide out and back. Find & replace becomes a complete stack (whole word / case / selection scope / across files / undoable), and a "Check for updates" panel is built into Settings. The previously planned CodeMirror 6 migration was dropped after re-evaluation. Six follow-up batches then cleared the 15 defects found during real-machine retesting; every batch was verified on the **packaged installer with real WebView2 mouse/keyboard gestures**.
+This release collapses the three modes (Read / Edit / Split) into **two** — Edit is now the old split view, and the right-hand preview can slide out and back. Find & replace becomes a complete stack (whole word / case / selection scope / across files / undoable), and a "Check for updates" panel is built into Settings. The previously planned CodeMirror 6 migration was dropped after re-evaluation. Seven follow-up rounds then cleared the defects found during real-machine retesting; every batch was verified on the **packaged installer with real WebView2 mouse/keyboard gestures**.
 
 **New features**
 
@@ -411,8 +411,9 @@ This release collapses the three modes (Read / Edit / Split) into **two** — Ed
 | Title-bar menus were covered by the editor | A three-layer stacking-context failure; the title bar now creates its own layer (content containers deliberately get no `z-index`, which would trap inner fixed popovers) |
 | The preview toggle animation felt abrupt | 0.28s → 0.42s with a symmetric easing; the left pane's width is derived by flex (an inline `auto`↔`calc()` width cannot interpolate and jumped on the first frame); the divider width transitions too |
 | Panes of different length could not scroll together | Real line-axis measurement for soft-wrapped lines, a trailing anchor, the correct "line at max scroll", and filtering mermaid/katex injected nodes out of the anchor base |
+| Column widths / row heights were lost after reopening (regression) | The sizes were already written to markdown; the break was in the render layer — the NodeView constructor runs before ProseMirror inserts `tr/td`, so only the table's total width was applied; after rendering the node is unchanged, so `update()` is never called again. Now a microtask + `requestAnimationFrame` + `MutationObserver` fallback applies sizes as soon as the `<tr>` appears |
 
-Quality: `tsc --noEmit` exit 0 (strict); full suite **318 files / 5582 tests** passing; Rust `cargo test` 192 passed / 3 ignored; every batch verified on the **packaged installer with real mouse/keyboard gestures and CDP frame sampling** (103 checks in total); version **0.14.0** in `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock`.
+Quality: `tsc --noEmit` exit 0 (strict); full suite **319 files / 5587 tests** passing; Rust `cargo test` 192 passed / 3 ignored; every batch verified on the **packaged installer with real mouse/keyboard gestures and CDP frame sampling** (111 checks in total); version **0.14.0** in `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock`.
 
 Known trade-offs: (1) cross-file undo is **one whole-document step** and is dropped once you edit that file manually (better to under-undo than overwrite your edits); (2) reading progress lives in session memory, so closed files are not restored after a restart; (3) the table-size comment is a LightMD extension that other editors ignore; (4) the selection-scope snapshot is fixed when you tick the box; (5) an existing user who manually resized the folder pane keeps that height; (6) during the preview transition the right pane is briefly around 17 frames taller than its box, but the scrollbar gutter is reserved so nothing shifts.
 
