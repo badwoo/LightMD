@@ -1,0 +1,194 @@
+/* ─── v0.15.0 R3c：AI 指令库编辑器 ─────────────────────────────────────
+ *
+ * 复用 AiConnectionSettings.css 的视觉语言（同一批 .ai-btn / .ai-input /
+ * .ai-textarea 类），本文件只补指令库独有的布局。若两文件同时加载，
+ * 后加载者覆盖同名规则 —— 故这里只定义新类，不重复定义通用控件。
+ */
+
+.ai-instruction-settings {
+  display: block;
+}
+
+.ai-inst-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.ai-inst-list {
+  flex: 0 0 184px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+}
+
+.ai-inst-empty {
+  margin: 8px 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.ai-inst-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.ai-inst-item:hover {
+  background: color-mix(in srgb, var(--bg-primary) 80%, var(--accent-color) 20%);
+}
+
+.ai-inst-item.is-selected {
+  border-color: var(--accent-color);
+  background: color-mix(in srgb, var(--bg-primary) 78%, var(--accent-color) 22%);
+}
+
+.ai-inst-item:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+.ai-inst-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-inst-scope {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-primary) 70%, var(--text-secondary) 30%);
+  border-radius: 4px;
+}
+
+.ai-inst-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ai-inst-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ai-inst-tip {
+  margin: 12px 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+/* 变量插入行：说明 + 两个 token 按钮 */
+.ai-inst-var-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.ai-inst-var-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.ai-inst-var-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg-primary) 85%, var(--accent-color) 15%);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.ai-inst-var-btn:hover {
+  border-color: var(--accent-color);
+}
+
+.ai-inst-var-btn:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+/* ─── 内建模板区 ────────────────────────────────────────── */
+
+.ai-inst-builtin {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+.ai-inst-builtin h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ai-inst-builtin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.ai-inst-builtin-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+}
+
+.ai-inst-builtin-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* ─── 窄窗口 ───────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .ai-inst-layout {
+    flex-direction: column;
+  }
+  .ai-inst-list {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 160px;
+  }
+}

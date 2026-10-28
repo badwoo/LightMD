@@ -89,10 +89,35 @@ describe("v0.7.2 aiAssistService provider 透传", () => {
     mockIsTauri.mockReset();
     mockIsTauri.mockReturnValue(true);
     MockChannel.last = null;
+    // v0.15.0 需求（AI 深度配置）：AI 助手改用**独立连接档案** settings.ai，
+    // 不再读 settings.translate。这里给一份 AI 档案（与 translate 故意用不同值，
+    // 以便断言"改翻译不影响 AI"）。
     useSettingsStore.getState().setTranslateConfig({
       translateProviderPreset: "kimi",
       translateBaseUrl: "https://api.moonshot.cn/v1",
       translateModel: "kimi-k3",
+    });
+    useSettingsStore.getState().setAiSettings({
+      profiles: [
+        {
+          id: "ai-kimi",
+          name: "AI Kimi",
+          protocol: "openai-chat",
+          baseUrl: "https://api.moonshot.cn/v1",
+          model: "kimi-k3",
+          credentialId: "ai-kimi",
+          authMode: "required",
+          contextWindowTokens: 32768,
+          maxOutputTokens: 4096,
+          requestPolicy: {
+            tokenField: "max_tokens",
+            temperature: 0.4,
+            includeStreamUsage: true,
+          },
+        },
+      ],
+      activeProfileId: "ai-kimi",
+      instructions: [],
     });
   });
 
@@ -107,12 +132,27 @@ describe("v0.7.2 aiAssistService provider 透传", () => {
     await aiAssistService.run("continue", "上文内容", () => {});
     const call = mockInvoke.mock.calls.find(([cmd]) => cmd === "ai_assist_text");
     expect(call).toBeTruthy();
-    expect(call![1]).toMatchObject({
+    // v0.15.0：凭据按 profile 隔离（credentialId），并把协议/预算/推理策略透传。
+    // provider 字段改为 profile.id —— 旧实现传的是 translate 的厂商名（那正是
+    // "AI 与翻译配置耦合"的表现，本版要求解耦）。
+    const args = call![1] as Record<string, unknown>;
+    expect(args).toMatchObject({
       task: "continue",
       text: "上文内容",
-      provider: "kimi",
+      credentialId: "ai-kimi",
+      provider: "ai-kimi",
       baseUrl: "https://api.moonshot.cn/v1",
       model: "kimi-k3",
+      protocol: "openai-chat",
+      contextWindowTokens: 32768,
+      maxOutputTokens: 4096,
+      tokenField: "max_tokens",
+      includeStreamUsage: true,
+      systemPrompt: null,
     });
+    // 未配置推理档 → 传 null（Rust 侧据此不发送 reasoning_effort）
+    expect(args.reasoningEffort).toBeNull();
+    // 温度按档案透传（不再是 translate 的默认 0.1）
+    expect(args.temperature).toBe(0.4);
   });
 });

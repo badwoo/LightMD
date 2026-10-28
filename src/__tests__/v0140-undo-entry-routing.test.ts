@@ -198,15 +198,21 @@ describe("安全护栏：内容不一致绝不整篇覆盖（用户手改后不�
     expect(crossFileEditMatches("a\r\nb", "a\nb")).toBe(false);
   });
 
-  it("doLocalUndo / doLocalRedo 的四条分支都用该护栏判定（阅读/源码 × 撤销/恢复）", () => {
+  it("doLocalUndo / doLocalRedo 都委托统一协调器，且护栏语义由 coordinator 承担", () => {
+    // v0.15.0 需求（跨模式撤销统一）：阅读/源码 × 撤销/恢复 四条分支不再各自内联
+    // 校验 `crossFileEditMatches`，而是统一走：
+    //   doLocalUndo/Redo → coordinator.handleUndo/Redo
+    //                    → crossFileEntryStillValid（方向敏感：undo 比 after / redo 比 before）
+    // 因此这里锁定"薄转发"这一新契约；护栏本身的行为断言见
+    // `v0140-search-replace-undo.test.ts` 的「coordinator 的跨文件护栏按方向校验」。
     const undoIdx = containerSrc.indexOf("const doLocalUndo = useCallback");
-    const undoBody = containerSrc.slice(undoIdx, undoIdx + 3200);
-    expect(undoBody).toContain("crossFileEditMatches(ext.after, getMarkdownFromDoc");
-    expect(undoBody).toContain("crossFileEditMatches(ext.after, sourceContentRef.current)");
+    const undoBody = containerSrc.slice(undoIdx, undoIdx + 800);
+    expect(undoBody).toContain("historyCoordinatorRef.current?.handleUndo()");
+    expect(undoBody).not.toContain("crossFileEditMatches(");
     const redoIdx = containerSrc.indexOf("const doLocalRedo = useCallback");
-    const redoBody = containerSrc.slice(redoIdx, redoIdx + 3200);
-    expect(redoBody).toContain("crossFileEditMatches(ext.before, getMarkdownFromDoc");
-    expect(redoBody).toContain("crossFileEditMatches(ext.before, sourceContentRef.current)");
+    const redoBody = containerSrc.slice(redoIdx, redoIdx + 800);
+    expect(redoBody).toContain("historyCoordinatorRef.current?.handleRedo()");
+    expect(redoBody).not.toContain("crossFileEditMatches(");
   });
 
   it("真实形态 md（CRLF/末尾无换行/列表/表格/行内代码）装载后与替换结果逐字节一致 → 护栏不误伤", () => {

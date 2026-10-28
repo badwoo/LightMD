@@ -15,6 +15,7 @@
 use tauri::ipc::Channel;
 use tauri::State;
 
+use crate::translate::credential::{authorization_header, resolve_credential_with, AuthMode, Credential};
 use crate::translate::prompt::build_prompt;
 use crate::translate::provider::{OpenAiCompatibleProvider, TranslateError, TranslateResult};
 use crate::translate::TranslateState;
@@ -38,6 +39,13 @@ fn sanitize_provider(provider: &str) -> String {
 
 fn keyring_entry(provider: &str) -> Result<keyring::Entry, String> {
     let account = format!("translate_api_key::{}", sanitize_provider(provider));
+    keyring::Entry::new(KEYRING_SERVICE, &account)
+        .map_err(|e| format!("AUTH|凭据管理器不可用: {}", e))
+}
+
+/// v0.15.0：profile.id 独立槽位，与旧 provider 槽位分开，防止同 provider 双端点串 Key。
+fn profile_keyring_entry(credential_id: &str) -> Result<keyring::Entry, String> {
+    let account = format!("ai_credential::{}", sanitize_provider(credential_id));
     keyring::Entry::new(KEYRING_SERVICE, &account)
         .map_err(|e| format!("AUTH|凭据管理器不可用: {}", e))
 }
@@ -243,6 +251,66 @@ pub async fn has_translate_key(provider: String) -> Result<bool, String> {
             .map(|e| e.get_password().is_ok())
             .unwrap_or(false);
         Ok(legacy_ok)
+    })
+    .await
+    .map_err(|e| format!("AUTH|{}", e))?
+}
+
+// ─── v0.15.0 需求（AI 深度配置）：按 profile 隔离的凭据命令 ─────────────
+//
+// 为什么必须新增而不是复用 `set_translate_key(provider)`：
+// 旧槽位是 `translate_api_key::{provider}` —— 同一 provider 配两个不同 base_url
+// （如火山 Anthropic 与 OpenAI 兼容两个端点、或自建与官方）时会**串用同一个 Key**。
+// 新槽位 `ai_credential::{credentialId}` 以 profile 稳定 ID 为键，天然隔离。
+//
+// `clear_ai_credential_key` 是新增能力：此前 set_translate_key 拒绝空 Key，
+// 全仓没有删除 keyring 条目的命令，UI 的"清除 Key"无法实现。
+
+/// 保存某 **AI 连接档案** 的 Key（槽位 `ai_credential::{credentialId}`）
+#[tauri::command]
+pub async fn set_ai_credential_key(credential_id: String, key: String) -> Result<(), String> {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err("AUTH|Key 不能为空".to_string());
+    }
+    let credential_id = sanitize_provider(&credential_id);
+    if credential_id.is_empty() {
+        return Err("AUTH|凭据标识为空".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        profile_keyring_entry(&credential_id)?
+            .set_password(&key)
+            .map_err(|e| format!("AUTH|Key 保存失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("AUTH|{}", e))?
+}
+
+/// 检查某 AI 档案是否已配置 Key（只回布尔，绝不回明文）
+#[tauri::command]
+pub async fn has_ai_credential_key(credential_id: String) -> Result<bool, String> {
+    let credential_id = sanitize_provider(&credential_id);
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(profile_keyring_entry(&credential_id)
+            .map(|e| e.get_password().is_ok())
+            .unwrap_or(false))
+    })
+    .await
+    .map_err(|e| format!("AUTH|{}", e))?
+}
+
+/// 删除某 AI 档案的 Key（条目本就不存在时视为成功——幂等）
+#[tauri::command]
+pub async fn clear_ai_credential_key(credential_id: String) -> Result<(), String> {
+    let credential_id = sanitize_provider(&credential_id);
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = profile_keyring_entry(&credential_id)?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            // 条目不存在 = 已是目标状态，不报错（UI 可安全重复点）
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(format!("AUTH|Key 清除失败: {}", e)),
+        }
     })
     .await
     .map_err(|e| format!("AUTH|{}", e))?

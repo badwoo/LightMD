@@ -22,6 +22,8 @@ import {
   TranslateServiceError,
 } from "./translateService";
 import type { TranslateResultData } from "../stores/translateStore";
+// v0.15.0 需求（AI 深度配置）：AI 连接档案解析（与翻译解耦）
+import { resolveAiConnection } from "./aiProfiles";
 
 /** 对话上下文范围（功能4 三档） */
 export type AiChatContextScope = "selection" | "document" | "none";
@@ -141,19 +143,34 @@ export const aiChatService = {
     // 单任务模型：新任务自动取消旧任务（与翻译/助手共享任务槽）
     await translateService.cancel().catch(() => undefined);
 
-    const cfg = useSettingsStore.getState().translate;
+    // v0.15.0 需求（AI 深度配置）：对话同样改用独立连接档案 `settings.ai`。
+    // AI 对话是"护城河"功能，与翻译共用配置会让用户改翻译时意外改坏对话模型。
+    const { ai } = useSettingsStore.getState();
+    const profile = resolveAiConnection(ai);
+    if (!profile) {
+      throw new TranslateServiceError({ code: "NO_KEY", detail: "ai-profile-missing" });
+    }
     const channel = new Channel<string>();
     channel.onmessage = onChunk;
 
     try {
       return await invoke<TranslateResultData>("ai_chat", {
         messages,
-        // v0.7.2 P1：Key 按厂商独立存储，与翻译共用 translateProviderPreset
-        provider: cfg.translateProviderPreset,
-        baseUrl: cfg.translateBaseUrl,
-        model: cfg.translateModel,
-        // v0.7.3：采样温度由设置透传（Rust 侧对话再抬到 ≥0.3）
-        temperature: cfg.translateTemperature,
+        // v0.15.0：凭据按 profile 隔离；协议/预算/推理档随档案透传
+        credentialId: profile.credentialId,
+        provider: profile.protocol === "anthropic-messages" ? "custom" : profile.id,
+        baseUrl: profile.baseUrl,
+        model: profile.model,
+        // 温度未配置时传 0 占位，Rust 侧按 requestPolicy 决定是否写入请求体
+        temperature: profile.requestPolicy.temperature ?? 0,
+        contextWindowTokens: profile.contextWindowTokens,
+        maxOutputTokens: profile.maxOutputTokens,
+        tokenField: profile.requestPolicy.tokenField,
+        reasoningEffort: profile.requestPolicy.reasoningEffort ?? null,
+        includeStreamUsage: profile.requestPolicy.includeStreamUsage,
+        protocol: profile.protocol,
+        // 自定义 system：显式参数注入（messages 里的伪造 system 仍由 Rust 过滤）
+        systemPrompt: profile.systemPrompt ?? null,
         // v0.9.0：单任务槽按窗口分桶（AC-14：窗口 A 全文翻译时 B 仍可对话）
         windowLabel: getWindowLabel(),
         onChunk: channel,

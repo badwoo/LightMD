@@ -1,0 +1,221 @@
+/* ─── v0.15.0 F1：图片灯箱（覆盖应用视口） ──────────────────────────────
+ *
+ * 定位：`position: fixed` 覆盖整个**所属 document** 视口（主文档 = 应用视口，
+ * iframe 预览 = 右屏视口）。z-index 高于应用内所有浮层（弹窗 1000、搜索面板等），
+ * 低于 Tauri 原生菜单 —— 灯箱只是应用级浮层，不要求 OS 全屏。
+ *
+ * 布局：整块容器用 padding 预留工具栏与图注空间，图片舞台居中；缩放/平移只改
+ * 图片的 width/height 与 transform，不触发遮罩层重排。
+ */
+
+.lightmd-lightbox {
+  position: fixed;
+  inset: 0;
+  /* 高于应用内全部浮层（ImageEditDialog 等为 1000） */
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 40px;
+  background: rgba(0, 0, 0, 0.88);
+  overscroll-behavior: contain;
+  /* 灯箱内坐标以自己为基准（子元素绝对定位用） */
+  isolation: isolate;
+  animation: lightmd-lightbox-fade-in 0.12s ease-out;
+}
+
+@keyframes lightmd-lightbox-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.lightmd-lightbox-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(32, 32, 32, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  /* 工具栏本身不能被遮罩的点击关闭逻辑误命中 */
+  z-index: 2;
+}
+
+.lightmd-lightbox-btn {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  color: #f0f0f0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+
+.lightmd-lightbox-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.lightmd-lightbox-btn:focus-visible {
+  outline: 2px solid #7aa7ff;
+  outline-offset: 2px;
+}
+
+.lightmd-lightbox-btn:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.lightmd-lightbox-percent {
+  min-width: 52px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #e6e6e6;
+  user-select: none;
+}
+
+.lightmd-lightbox-counter {
+  min-width: 52px;
+  text-align: center;
+  font-size: 12px;
+  color: #b6b6b6;
+  user-select: none;
+}
+
+.lightmd-lightbox-close {
+  margin-left: 4px;
+}
+
+/* 图片舞台：铺满内容区，图片居中；平移用 transform 只影响图片本身 */
+.lightmd-lightbox-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /* 触屏/触控板：禁用浏览器默认手势，避免与拖拽平移冲突 */
+  touch-action: none;
+}
+
+.lightmd-lightbox-stage.is-pannable {
+  cursor: grab;
+}
+
+.lightmd-lightbox-stage.is-pannable:active {
+  cursor: grabbing;
+}
+
+.lightmd-lightbox-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  /* 逐帧 transform 跟手，不加过渡（过渡会让平移有拖尾感） */
+  will-change: transform;
+  /* 放大后保持像素边缘清晰（图片细节查看场景） */
+  image-rendering: auto;
+}
+
+/* 坏图占位（base64 损坏 / asset 路径失效）：给出可读提示，仍可切图与关闭 */
+.lightmd-lightbox-broken {
+  max-width: 60%;
+  padding: 24px 28px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #d8d8d8;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px dashed rgba(255, 255, 255, 0.24);
+  border-radius: 10px;
+}
+
+/* 左右切图按钮：贴在视口两侧垂直居中 */
+.lightmd-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 46px;
+  height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  line-height: 1;
+  color: #f2f2f2;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  z-index: 2;
+}
+
+.lightmd-lightbox-nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.lightmd-lightbox-nav:focus-visible {
+  outline: 2px solid #7aa7ff;
+  outline-offset: 2px;
+}
+
+.lightmd-lightbox-prev { left: 14px; }
+.lightmd-lightbox-next { right: 14px; }
+
+/* 图注 / alt：只展示一行，过长省略，避免遮挡图片 */
+.lightmd-lightbox-caption {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  max-width: min(78%, 900px);
+  padding: 6px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #dcdcdc;
+  text-align: center;
+  background: rgba(20, 20, 20, 0.7);
+  border-radius: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+  z-index: 2;
+}
+
+/* 小窗口（窄屏）下收紧边距，保证图片仍有可用面积 */
+@media (max-width: 720px) {
+  .lightmd-lightbox {
+    padding: 52px 12px;
+  }
+  .lightmd-lightbox-nav {
+    width: 36px;
+    height: 60px;
+    font-size: 26px;
+  }
+  .lightmd-lightbox-prev { left: 4px; }
+  .lightmd-lightbox-next { right: 4px; }
+}
+
+/* 减少动效偏好：关闭淡入动画 */
+@media (prefers-reduced-motion: reduce) {
+  .lightmd-lightbox {
+    animation: none;
+  }
+}

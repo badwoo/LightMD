@@ -20,6 +20,8 @@ import {
   TranslateServiceError,
 } from "./translateService";
 import type { TranslateResultData } from "../stores/translateStore";
+// v0.15.0 需求（AI 深度配置）：AI 连接档案解析（与翻译解耦）
+import { resolveAiConnection } from "./aiProfiles";
 
 /** AI 助手任务类型（与 Rust 侧 build_ai_assist_prompt 一一对应） */
 export type AiTask = "continue" | "polish" | "summary";
@@ -62,7 +64,14 @@ export const aiAssistService = {
     // 单任务模型：新任务自动取消旧任务（与翻译共享任务槽）
     await translateService.cancel().catch(() => undefined);
 
-    const cfg = useSettingsStore.getState().translate;
+    // v0.15.0 需求（AI 深度配置）：AI 助手改用**独立连接档案**（`settings.ai`），
+    // 不再复用翻译的 provider/baseUrl/model —— 两者从此可以分别配置、互不影响。
+    // 无可用档案时明确报错，而不是静默回退到翻译配置（那会让用户以为改的是 AI）。
+    const { ai } = useSettingsStore.getState();
+    const profile = resolveAiConnection(ai);
+    if (!profile) {
+      throw new TranslateServiceError({ code: "NO_KEY", detail: "ai-profile-missing" });
+    }
     const channel = new Channel<string>();
     channel.onmessage = onChunk;
 
@@ -70,12 +79,23 @@ export const aiAssistService = {
       return await invoke<TranslateResultData>("ai_assist_text", {
         task,
         text: trimmed,
-        // v0.7.2 P1：Key 按厂商独立存储，与翻译共用 translateProviderPreset
-        provider: cfg.translateProviderPreset,
-        baseUrl: cfg.translateBaseUrl,
-        model: cfg.translateModel,
-        // v0.7.3：采样温度由设置透传（kimi 等厂商仅允许 1）
-        temperature: cfg.translateTemperature,
+        // v0.15.0：凭据按 profile 隔离（同 provider 不同 endpoint 不串 Key）
+        credentialId: profile.credentialId,
+        provider: profile.protocol === "anthropic-messages" ? "custom" : profile.id,
+        baseUrl: profile.baseUrl,
+        model: profile.model,
+        // 采样温度：未配置（undefined）时**不发**——推理档默认省略，
+        // 由 Rust 侧按 requestPolicy 决定是否写进请求体
+        temperature: profile.requestPolicy.temperature ?? 0,
+        // 上下文/输出预算（Rust 侧据此裁剪与限制 max tokens）
+        contextWindowTokens: profile.contextWindowTokens,
+        maxOutputTokens: profile.maxOutputTokens,
+        tokenField: profile.requestPolicy.tokenField,
+        reasoningEffort: profile.requestPolicy.reasoningEffort ?? null,
+        includeStreamUsage: profile.requestPolicy.includeStreamUsage,
+        protocol: profile.protocol,
+        // 自定义 system：**显式参数**注入（不走 messages，不放宽 Rust 的 system 过滤）
+        systemPrompt: profile.systemPrompt ?? null,
         // v0.9.0：单任务槽按窗口分桶（窗口 A 的续写/润色不顶掉窗口 B 的任务）
         windowLabel: getWindowLabel(),
         onChunk: channel,

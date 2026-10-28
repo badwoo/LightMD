@@ -57,14 +57,24 @@ export interface SourceViewportMetrics {
   lineTops?: number[];
 }
 
-/** 取滚动上限（`scrollHeight - clientHeight`，非法时 0） */
-function maxScrollOf(scrollHeight: number, clientHeight: number): number {
+/**
+ * 取滚动上限（`scrollHeight - clientHeight`，非法时 0）
+ *
+ * v0.15.0 需求7：`export`（v0.14.0 起是模块内私有函数）。`utils/contentScrollMap.ts`
+ * 的"阅读 ↔ 编辑共享内容锚点"需要同一套"可滚动上限"口径，故在此**抽取复用**。
+ * 行为与签名均未改动，既有调用与测试不受影响。
+ */
+export function maxScrollOf(scrollHeight: number, clientHeight: number): number {
   const max = scrollHeight - clientHeight;
   return Number.isFinite(max) && max > 0 ? max : 0;
 }
 
-/** 把 `v` 钳到 `[lo, hi]`；`v` 非有限时取 `lo` */
-function clamp(v: number, lo: number, hi: number): number {
+/**
+ * 把 `v` 钳到 `[lo, hi]`；`v` 非有限时取 `lo`
+ *
+ * v0.15.0 需求7：同 `maxScrollOf`，为 `contentScrollMap` 抽取复用（导出不改变行为）。
+ */
+export function clamp(v: number, lo: number, hi: number): number {
   if (!Number.isFinite(v)) return lo;
   return v < lo ? lo : v > hi ? hi : v;
 }

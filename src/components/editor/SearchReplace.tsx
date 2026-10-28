@@ -45,11 +45,145 @@ import {
   type SearchFileResult,
 } from "../../utils/searchEngine";
 import { requestSearchJump, peekSearchJump, takeSearchJump, type SearchJumpTarget } from "../../utils/searchJump";
+import { pathCompareKey } from "../../utils/path";
+import { UNTITLED_PROGRESS_PREFIX } from "../../utils/tabKey";
+import {
+  cancelWorkspaceSearch,
+  createWorkspaceQueryId,
+  searchWorkspace,
+  skipSummaryTotal,
+  WorkspaceSearchError,
+  type WorkspaceFileResult,
+  type WorkspaceSearchSnapshot,
+} from "../../services/workspaceSearch";
 import "./SearchReplace.css";
 
 // R4 起 MatchRange 就由本文件导出（既有测试/调用方按此路径 import），
 // v0.14.0 实现搬到 utils/searchEngine.ts 后这里保持同名再导出，避免改调用方。
 export type { MatchRange };
+
+/**
+ * v0.15.0 R6b：**工作区结果里的路径显示与跳转**。
+ *
+ * 为什么不能只用文件名：`D:/ws/a/README.md` 与 `D:/ws/b/README.md` 文件名完全一样，
+ * 只显示文件名无法区分；必须显示相对工作区根的路径（如 `a/README.md`），
+ * 否则用户根本定位不到是哪一个。
+ *
+ * 取**最深匹配根**：多根同时打开时（如 `D:/ws` 与 `D:/ws/proj`），同一个文件
+ * 应相对更具体的那个根来显示——与 v0.15.0 F2「嵌套根取最深」同一口径。
+ *
+ * 不做任何覆盖：源文件路径原样返回，仅用于展示；跳转仍用完整绝对路径。
+ */
+function relPathOf(filePath: string, roots: string[]): string {
+  if (!filePath) return "";
+  const norm = filePath.replace(/\\/g, "/");
+  const lower = norm.toLowerCase();
+  let best: string | null = null;
+  for (const r of roots) {
+    if (!r) continue;
+    const root = r.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    if (!root) continue;
+    if (lower === root || lower.startsWith(root + "/")) {
+      if (best === null || root.length > best.length) best = root;
+    }
+  }
+  if (best === null) return norm;
+  const rest = norm.slice(best.length).replace(/^\/+/, "");
+  return rest || norm;
+}
+
+/**
+ * v0.15.1 需求4：**跳转键归一化**（面板内唯一比较口径）。
+ *
+ * 真因（复核确认）：工作区结果的 `fileKey` 来自 `services/workspaceSearch.ts`
+ * 的 `fileKeyOf()` = `pathCompareKey(filePath)`（反斜杠→正斜杠 + 全小写），
+ * 而面板这一侧的 `docKey` 是宿主直接给的原始路径（`D:\ws\a.md` 这种原生形态）。
+ * 两边直接 `===` 永远不相等 → 接收端 effect 里 `pending.fileKey !== key` 恒真 →
+ * pending 永不被消费 → 用户点结果"没反应"。
+ *
+ * 归一化只对**真实文件路径**成立；临时标签的键是 `untitled:<id>`（无路径语义），
+ * 归一化会把它小写化（本来也全小写），但为免将来 id 带大写被误伤，这里显式放行。
+ * 空串（未落盘且无 id 的兜底）原样返回，避免把两个"无键"文档误判成同一份。
+ */
+function jumpKeyOf(key: string | null | undefined): string {
+  const raw = key ?? "";
+  if (!raw) return "";
+  if (raw.startsWith(UNTITLED_PROGRESS_PREFIX)) return raw;
+  return pathCompareKey(raw);
+}
+
+/** 两个跳转键是否指向同一文档（空键永不相等） */
+function sameJumpKey(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ka = jumpKeyOf(a);
+  const kb = jumpKeyOf(b);
+  return ka !== "" && ka === kb;
+}
+
+/**
+ * v0.15.1 需求6：结果条幅的「高度平滑」外壳。
+ *
+ * 为什么需要 JS 而不是纯 CSS：条幅内容在收起时会被**卸载**（既有交互契约：
+ * 收起后 `search-results` 节点必须不存在）。纯 CSS 的 height:auto ↔ 0 过渡在
+ * "内容一卸载高度就已经塌了"的情况下没有起点可插值，还是会一帧跳变。
+ * 因此这里在展开/收起切换的那一帧用 useLayoutEffect：
+ * 1. 先把外壳高度**锁**成收起前的实测值（`height: <px>`）；
+ * 2. 强制读一次布局（reflow）让浏览器记住这个起点；
+ * 3. 下一帧再切到目标值（展开 = auto，收起 = 0），过渡才有得插值。
+ *
+ * 退化路径：浏览器不支持 `interpolate-size: allow-keywords` 时，`height:auto` 不可插值，
+ * 浏览器会在过渡结束后直接落到 auto —— 观感上是"很快就出现"，功能与布局完全正确。
+ * `prefers-reduced-motion` 下 CSS 关掉过渡，本组件也不做任何额外动作（幂等）。
+ */
+function ResultsShell({
+  open,
+  testId,
+  children,
+}: {
+  open: boolean;
+  testId: string;
+  children?: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  /** 上一帧是否是展开态（用于区分"展开/收起"两个方向） */
+  const prevOpenRef = useRef(open);
+  /** 最近一次展开时实测的内容高度（收起动画的起点） */
+  const lastHeightRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const wasOpen = prevOpenRef.current;
+    prevOpenRef.current = open;
+    if (!el) return;
+    if (open) {
+      // 展开：起点锁 0 → 目标 auto（allow-keywords 支持时可插值）
+      el.style.height = "0px";
+      // 强制 reflow，确保浏览器以 0 作为过渡起点
+      void el.offsetHeight;
+      el.style.height = "";
+      // 记录本次展开后的真实高度（下次收起时作为起点）
+      const raf = requestAnimationFrame(() => {
+        lastHeightRef.current = el.offsetHeight;
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+    if (!wasOpen) return; // 一直是收起态：不需要动画
+    // 收起：起点锁住上次展开高度 → 目标 0
+    el.style.height = `${lastHeightRef.current || el.offsetHeight}px`;
+    void el.offsetHeight;
+    el.style.height = "0px";
+    return;
+  }, [open]);
+
+  return (
+    <div
+      ref={ref}
+      className={`search-results-shell${open ? " is-open" : ""}`}
+      data-testid={testId}
+    >
+      {children}
+    </div>
+  );
+}
 
 /** 「查找所有打开文件」的数据来源：一个可搜索的已打开文件 */
 export interface SearchableFile {
@@ -128,6 +262,25 @@ interface SearchReplaceProps {
    * 这个版本号每次换文档 +1，是唯一可靠的「文档已换」信号。
    */
   contentVersion?: number;
+  /**
+   * v0.15.0 需求 R6b：**工作区搜索**的数据来源（`openFolders` 根目录，宿主传）。
+   *
+   * - 缺省（undefined / 空数组）→ 「工作区」作用域按钮**不渲染**，面板行为与 v0.14.0
+   *   完全一致（保证未接线时不崩、也不出现点了没反应的按钮）。
+   * - 由宿主从 `useFileStore.getState().openFolders` 取值传入（本面板不读 store：
+   *   文件系统状态属于宿主职责，面板只做展示与转发）。
+   */
+  workspaceRoots?: string[];
+  /**
+   * v0.15.0 需求 R6b：已打开文件的内存文本（**脏文档覆盖**用）。
+   *
+   * 工作区结果算的是磁盘内容；用户改了已打开文件但没保存时，条幅会显示"这行有"、
+   * 点进去却没有。传入本回调后，服务层会对**已打开文件**改用内存文本重算命中。
+   *
+   * 缺省时不覆盖（结果 = 纯磁盘内容），功能可用但存在上述不一致。
+   * 实现建议：复用既有的 `collectFiles()` 结果转成 `{ filePath, getText }`。
+   */
+  openFileTexts?: () => Array<{ filePath: string; getText: () => string }>;
 }
 
 // ─── 块级偏移映射（v0.14.0：实现已抽到 utils/searchEngine.ts）──────────
@@ -250,6 +403,14 @@ const EMPTY_RANGE: MatchRange = { start: 0, end: 0 };
 /** collectFiles 缺省（仅当前文档）时使用的 fileKey */
 const FALLBACK_FILE_KEY = "__search_current_doc__";
 /**
+ * v0.15.1 需求5：搜索面板的**兜底宽度**（CSS 里是固定 920px）。
+ *
+ * 用途只有两处「测量失败时的降级」：初始居中定位、拖拽 clamp。
+ * 必须与 `SearchReplace.css` 的 `.search-replace { width }` 保持一致 ——
+ * 不一致会让测量失败的那一帧把面板摆偏/夹错（旧值是 460，已随需求5 同步）。
+ */
+const SEARCH_PANEL_FALLBACK_WIDTH = 920;
+/**
  * 「阅读模式下 doc 变化 → 重算搜索」的防抖时长。
  *
  * 为什么需要：连续打字每一击都是一个新 doc 对象，若每帧全量重扫整篇文档，
@@ -273,6 +434,8 @@ export function SearchReplaceDialog({
   splitPreviewOpen,
   applyFileText,
   contentVersion,
+  workspaceRoots,
+  openFileTexts,
 }: SearchReplaceProps) {
   const t = useT();
   const viewMode = useEditorStore((s) => s.viewMode);
@@ -322,6 +485,35 @@ export function SearchReplaceDialog({
   const [currentMatch, setCurrentMatch] = useState(0);
   const [showReplace, setShowReplace] = useState(initialShowReplace);
 
+  /**
+   * v0.15.0 R6b：**搜索作用域**三档。
+   *
+   * - `current`：当前文件（默认，与 v0.14.0 完全一致）；
+   * - `openFiles`：打开的文件（v0.14.0 的「查找所有打开文件」条幅）；
+   * - `workspace`：工作区（Rust 扫 openFolders，流式结果）。
+   *
+   * 为什么用单一 state 而不是沿用 `showResults` 布尔：条幅的"显隐"与"数据来源"
+   * 是两个维度，用布尔会让"切到工作区但没展开条幅"这类中间态无法表达；
+   * 而且三档互斥（同一时刻只有一个生效），单 state 天然保证互斥。
+   * `showResults` 保留为"条幅是否展开"的派生值（见 showResults 定义处），
+   * 保证既有逻辑与测试不受影响。
+   */
+  const [scope, setScope] = useState<"current" | "openFiles" | "workspace">("current");
+  /** 工作区结果（按文件分组） */
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileResult[]>([]);
+  const [workspaceTotal, setWorkspaceTotal] = useState(0);
+  const [workspaceScanned, setWorkspaceScanned] = useState(0);
+  const [workspaceSkipped, setWorkspaceSkipped] = useState(0);
+  const [workspaceTruncated, setWorkspaceTruncated] = useState(false);
+  /** 工作区搜索进行中（进度条/取消按钮的显隐） */
+  const [workspaceSearching, setWorkspaceSearching] = useState(false);
+  /** 工作区搜索错误提示（正则拒绝等）；null = 无错误 */
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  /** 脏文档覆盖剔除数（提示"已按内存内容校正"） */
+  const [workspaceReconciled, setWorkspaceReconciled] = useState(0);
+  /** 当前工作区查询 id（换词/关闭时据此 cancel） */
+  const workspaceQueryRef = useRef<string | null>(null);
+
   // 当 initialShowReplace 变化时同步 showReplace（Ctrl+H 在已打开搜索框时切换到替换模式）
   useEffect(() => {
     if (initialShowReplace) setShowReplace(true);
@@ -348,7 +540,9 @@ export function SearchReplaceDialog({
   // 初始位置：浮动在文档中间
   useEffect(() => {
     if (!initialized && containerRef.current) {
-      const w = containerRef.current.offsetWidth || 460;
+      // v0.15.1 需求5：面板宽度改为固定 920px（CSS），兜底值同步跟上，
+      // 否则测量失败时会按旧的 460 居中 —— 视觉上明显偏左。
+      const w = containerRef.current.offsetWidth || SEARCH_PANEL_FALLBACK_WIDTH;
       const h = containerRef.current.offsetHeight || 80;
       setPosition({
         x: Math.max(20, (window.innerWidth - w) / 2),
@@ -371,8 +565,16 @@ export function SearchReplaceDialog({
     const handleMove = (ev: MouseEvent) => {
       const newX = posX + ev.clientX - startX;
       const newY = posY + ev.clientY - startY;
-      // 限制在视口范围内
-      const maxX = window.innerWidth - 60;
+      /**
+       * 限制在视口范围内。
+       *
+       * v0.15.1 需求5：面板宽度从 460 变成 920，旧口径 `innerWidth - 60` 只保证
+       * 「左沿离右边 60px」，920 宽的面板会被拖出去大半个屏（右侧内容不可见、
+       * 拖回来也费劲）。这里按**面板实测宽度**夹住右沿，保证整块面板始终可见。
+       * 面板比视口还宽时（窄窗口 + max-width:92vw 已兜底，正常不会发生）夹到 0。
+       */
+      const panelW = containerRef.current?.offsetWidth || SEARCH_PANEL_FALLBACK_WIDTH;
+      const maxX = Math.max(0, window.innerWidth - panelW);
       const maxY = window.innerHeight - 30;
       setPosition({
         x: Math.max(0, Math.min(newX, maxX)),
@@ -520,6 +722,34 @@ export function SearchReplaceDialog({
   // 就地跳转失败的一次性提示（条幅点击落到无法定位的位置时给出可见反馈，而不是静默无反应）
   const [jumpFailed, setJumpFailed] = useState(false);
   const jumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * v0.15.1 需求4：**跳转目标的延迟兑现**。
+   *
+   * 场景：工作区命中的文件常常**还没打开**。点击 → App 打开文件（异步：读盘 → 派发
+   * `lightmd:openFile` → 建标签 → 换 docKey）→ 本面板的 docKey effect 消费 pending。
+   * 但那一刻目标文档的**文本还没灌进编辑器**（EditorContainer 的 effect 后一步才做），
+   * 于是用当前文本算出的落点必然算错；等文本就绪、`performSearch` 重算匹配时，
+   * 它又按"高亮第一处"把位置覆盖掉 —— 用户看到的是"文件打开了但停在开头"。
+   *
+   * 解法：把**目标本身**（query + occurrence，跨文本空间稳定的口径）暂存在这里，
+   * `performSearch` 每次算完匹配后优先兑现它（一次即清）。为什么存目标而不存偏移：
+   * 偏移是"某一版文本"的坐标，文本换了就作废；occurrence 在新文本空间里可重算。
+   * `key` 存目标文档的归一化键：换到**别的**文档时必须作废，否则会把上一个文件的
+   * 跳转套到新文本上（跳错比不跳更糟）。
+   */
+  const pendingJumpRef = useRef<{ key: string; target: SearchJumpTarget } | null>(null);
+  /**
+   * `matchesRef` 对应的文本快照（见下方"匹配集是否已跟上当前文本"的判定）。
+   * `null` = 还没算过任何匹配（等价于"不一致"）。
+   */
+  const matchesTextRef = useRef<string | null>(null);
+  /**
+   * `docKey` 的**同步**镜像：`performSearch` 的依赖里没有 docKey（它只依赖文本来源），
+   * 而兑现 pending 落点时要判断"这条落点是不是当前文档的"。用 ref 读权威值，
+   * 避免闭包拿到上一次渲染的 docKey。
+   */
+  const docKeyRef = useRef<string | undefined>(docKey);
+  docKeyRef.current = docKey;
   useEffect(() => () => {
     if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
   }, []);
@@ -543,6 +773,7 @@ export function SearchReplaceDialog({
       setMatchCount(0);
       setCurrentMatch(0);
       matchesRef.current = [];
+      matchesTextRef.current = null;
       // 问题1修复：清除 ProseMirror 中的搜索高亮 Decoration
       if (editorView && !isSourceMode) {
         const tr = editorView.state.tr;
@@ -578,7 +809,46 @@ export function SearchReplaceDialog({
     const matches = ranges || [];
 
     matchesRef.current = matches;
+    // 记录这批匹配对应的文本（跨文件跳转的接收端据此判断"匹配集是否已跟上当前文本"）
+    matchesTextRef.current = text;
     setMatchCount(matches.length);
+
+    // v0.15.1 需求4：若有一条「刚打开文件」的跳转目标待兑现，优先落到它上面。
+    //
+    // 为什么放在这里：跨文件跳转的接收端（docKey effect）消费 pending 时，目标文档的
+    // 文本/匹配集往往还没就绪，落点算不出来；本函数是"匹配集刷新"的唯一出口，
+    // 在这里用 occurrence 在新文本空间重算落点，才能保证用户看到的最终位置正确。
+    // 一次性消费（取完即清）：用户随后手动"下一个/上一个"不应被它拽回。
+    // 文档键不一致时**直接丢弃**：换到别的文档了，旧目标毫无意义。
+    const pendingJump = pendingJumpRef.current;
+    if (pendingJump !== null) {
+      pendingJumpRef.current = null;
+      if (sameJumpKey(pendingJump.key, docKeyRef.current)) {
+        const offset = resolveJumpByOccurrence(
+          text,
+          pendingJump.target.query,
+          pendingJump.target.occurrence,
+          { caseSensitive, useRegex, wholeWord },
+        );
+        let pendingIdx =
+          offset === null ? -1 : matches.findIndex((m) => offset >= m.start && offset < m.end);
+        if (pendingIdx < 0 && offset !== null) {
+          pendingIdx = matches.findIndex((m) => m.start >= offset);
+        }
+        if (pendingIdx >= 0) {
+          setCurrentMatch(pendingIdx + 1);
+          highlightMatch(pendingIdx);
+          setJumpFailed(false);
+          return;
+        }
+        // 落点在新文本空间里找不到（内容已变 / 关键词消失）：明确提示，不假装成功
+        setJumpFailed(true);
+        if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
+        jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
+        return;
+      }
+    }
+
     setCurrentMatch(matches.length > 0 ? 1 : 0);
 
     // 高亮第一个匹配
@@ -1156,6 +1426,162 @@ export function SearchReplaceDialog({
     rebuildResults();
   }, [showResults, rebuildResults]);
 
+  // ─── v0.15.0 R6b：工作区搜索编排 ────────────────────────────────
+
+  /** 工作区作用域是否可用（宿主传了 roots 且非空） */
+  const workspaceAvailable = !!workspaceRoots && workspaceRoots.length > 0;
+
+  /**
+   * 执行一次工作区搜索。
+   *
+   * 竞态：每次调用生成新 `queryId`，服务层据此丢弃旧帧；本组件同时 `cancel` 上一次
+   * 查询（双保险：服务层保证旧帧不影响结果，cancel 让 Rust 尽早停止扫盘省 CPU）。
+   *
+   * 脏文档覆盖：把 `openFileTexts()` 交给服务层（已打开文件用内存重算）。
+   */
+  const runWorkspaceSearch = useCallback(() => {
+    if (!workspaceAvailable) return;
+    const query = searchText;
+    // 空词：清空结果即可，不发 IPC（Rust 也会立即返回空，但没必要往返）
+    if (!query) {
+      setWorkspaceFiles([]);
+      setWorkspaceTotal(0);
+      setWorkspaceScanned(0);
+      setWorkspaceSkipped(0);
+      setWorkspaceTruncated(false);
+      setWorkspaceSearching(false);
+      setWorkspaceError(null);
+      setWorkspaceReconciled(0);
+      return;
+    }
+    // 正则首版禁用：UI 已禁用勾选（见 regex checkbox 的 disabled），这里再兜一层，
+    // 保证即使状态被程序化改动也不会把 regex 请求发出去
+    if (useRegex) {
+      setWorkspaceError(t("search.workspaceRegexUnsupported"));
+      setWorkspaceSearching(false);
+      setWorkspaceFiles([]);
+      setWorkspaceTotal(0);
+      return;
+    }
+
+    // 取消上一次（换词/重新点搜索）
+    const previous = workspaceQueryRef.current;
+    if (previous) void cancelWorkspaceSearch(previous);
+
+    const queryId = createWorkspaceQueryId();
+    workspaceQueryRef.current = queryId;
+    setWorkspaceSearching(true);
+    setWorkspaceError(null);
+    setWorkspaceFiles([]);
+    setWorkspaceTotal(0);
+    setWorkspaceScanned(0);
+    setWorkspaceSkipped(0);
+    setWorkspaceTruncated(false);
+    setWorkspaceReconciled(0);
+
+    let openFiles: Array<{ filePath: string; getText: () => string }> | null = null;
+    try {
+      openFiles = openFileTexts?.() ?? null;
+    } catch {
+      openFiles = null; // 宿主实现异常：退化为纯磁盘结果，不影响搜索可用性
+    }
+
+    void searchWorkspace(
+      {
+        queryId,
+        roots: workspaceRoots ?? [],
+        query,
+        options: { caseSensitive, wholeWord, regex: useRegex },
+      },
+      {
+        openFiles,
+        onProgress: (snap: WorkspaceSearchSnapshot) => {
+          // 过期快照不落地（服务层已过滤，这里再核对一次 queryId：
+          // 组件可能在本轮 cancel 之后才收到上一次查询的最后一帧）
+          if (workspaceQueryRef.current !== queryId) return;
+          setWorkspaceFiles(snap.files);
+          setWorkspaceTotal(snap.totalHits);
+          setWorkspaceScanned(snap.filesScanned);
+          setWorkspaceSkipped(snap.filesSkipped);
+          setWorkspaceTruncated(snap.truncated);
+        },
+        onDone: (result) => {
+          if (workspaceQueryRef.current !== queryId) return;
+          workspaceQueryRef.current = null;
+          setWorkspaceSearching(false);
+          setWorkspaceFiles(result.files);
+          setWorkspaceTotal(result.totalHits);
+          setWorkspaceScanned(result.filesScanned);
+          setWorkspaceSkipped(result.filesSkipped);
+          setWorkspaceTruncated(result.truncated);
+          setWorkspaceReconciled(result.reconciledFiles);
+          // 取消导致的收尾：保留已有结果，不报错
+        },
+        onError: (err) => {
+          if (workspaceQueryRef.current !== queryId) return;
+          workspaceQueryRef.current = null;
+          setWorkspaceSearching(false);
+          setWorkspaceFiles([]);
+          setWorkspaceTotal(0);
+          // 正则拒绝必须有明确提示（不能静默失败）
+          setWorkspaceError(
+            err.code === "REGEX_UNSUPPORTED"
+              ? t("search.workspaceRegexUnsupported")
+              : t("search.workspaceSearchFailed", { detail: err.detail || err.message }),
+          );
+        },
+      },
+    ).catch(() => {
+      // onError 已给出可见提示；这里吞掉 rejection 避免 unhandled rejection
+    });
+  }, [
+    workspaceAvailable,
+    workspaceRoots,
+    searchText,
+    caseSensitive,
+    wholeWord,
+    useRegex,
+    openFileTexts,
+    t,
+  ]);
+
+  /**
+   * 工作区搜索的触发条件：进入工作区作用域 / 搜索词变化 / 选项变化 / roots 变化。
+   *
+   * 为什么要 debounce（260ms）：`searchText` 每敲一个字符就变，直接搜会把整个工作区
+   * 反复扫（1000 文件 × 每次按键），既卡又浪费。用户停止输入 260ms 后才真正开始，
+   * 与 IDE 的"边打边搜但节流"体感一致。
+   */
+  useEffect(() => {
+    if (scope !== "workspace") return;
+    if (!searchText) {
+      setWorkspaceFiles([]);
+      setWorkspaceTotal(0);
+      setWorkspaceError(null);
+      setWorkspaceSearching(false);
+      return;
+    }
+    const timer = setTimeout(() => runWorkspaceSearch(), 260);
+    return () => clearTimeout(timer);
+  }, [scope, searchText, caseSensitive, wholeWord, useRegex, workspaceRoots, runWorkspaceSearch]);
+
+  /**
+   * 卸载 / 关闭面板 → 取消进行中的工作区搜索。
+   *
+   * 必须做：Rust 侧扫盘是长任务，用户关掉面板后还继续扫会白烧 CPU/IO；
+   * 服务层虽然有 queryId 裁决（旧帧不会污染 UI），但**只有 cancel 能真正停下扫描**。
+   */
+  useEffect(() => {
+    return () => {
+      const qid = workspaceQueryRef.current;
+      if (qid) {
+        workspaceQueryRef.current = null;
+        void cancelWorkspaceSearch(qid);
+      }
+    };
+  }, []);
+
+
   /**
    * v0.14.0 需求5：**换文档后立即在新文档上重新搜索**。
    *
@@ -1259,6 +1685,36 @@ export function SearchReplaceDialog({
   }, [docKey, readCurrentText, searchText, highlightMatch, onJumpToFile]);
 
   /**
+   * v0.15.0 R6b：点击**工作区**结果 → 跳转。
+   *
+   * 口径与「打开的文件」完全一致（复用 `requestSearchJump`，occurrence 定位）：
+   * 工作区结果算在**磁盘源码空间**，跳过去后目标文档可能是阅读模式（PM 渲染文本），
+   * 行号必然错位；`occurrence`（第 N 次出现）才是跨文本空间稳定的。
+   *
+   * 为什么不像 `handleResultClick` 那样对"当前文档"走就地跳转：
+   * 工作区结果可能来自**磁盘旧内容**（脏文档已被服务层覆盖过，但当前文档若未打开
+   * 在 collectFiles 里则仍是磁盘口径）。统一走 requestSearchJump 让 App 打开文件后
+   * 由接收端 `takeSearchJump` + `resolveJumpByOccurrence` 闭环 —— 与 v0.14.0 的
+   * 跨文件跳转同一条链路，行为一致且不用维护第二套定位逻辑。
+   */
+  const handleWorkspaceResultClick = useCallback(
+    (group: WorkspaceFileResult, r: SearchFileResult) => {
+      const target: SearchJumpTarget = {
+        fileKey: r.fileKey,
+        filePath: r.filePath || group.filePath,
+        line: r.line,
+        column: r.column,
+        length: Math.max(1, (r.ranges[0]?.end ?? 0) - (r.ranges[0]?.start ?? 0)),
+        query: searchText,
+        occurrence: r.occurrence,
+      };
+      onJumpToFile?.(target);
+      requestSearchJump(target);
+    },
+    [onJumpToFile, searchText],
+  );
+
+  /**
    * v0.14.0：跨文件跳转的「接收端」——切标签完成后由本面板自己完成定位闭环。
    *
    * 时序：点击结果 → requestSearchJump 写入 pending + 派发 lightmd:search-jump →
@@ -1271,34 +1727,57 @@ export function SearchReplaceDialog({
    * 为什么拿 peekSearchJump 再 take：
    * 别的窗口/别的面板实例也可能有 pending，必须先确认 fileKey 与当前 docKey 一致才消费，
    * 否则会把别人的跳转请求吃掉（表现为"点了结果但没反应"）。
+   *
+   * v0.15.1 需求4 修复（真因 a）：这里的比较**必须走归一化键**（`sameJumpKey`）。
+   * 工作区结果的 fileKey 是 `pathCompareKey(filePath)`（正斜杠 + 小写），而 docKey 是
+   * 宿主给的原始路径（可能反斜杠 + 原大小写）—— 旧代码直接 `!==` 比较，恒不相等，
+   * pending 永远不会被消费，于是「点了工作区结果没反应」。
    */
   useEffect(() => {
     const key = docKey;
     if (!key) return;
     const pending = peekSearchJump();
-    if (!pending || pending.fileKey !== key) return;
-    const taken = takeSearchJump(key);
+    if (!pending || !sameJumpKey(pending.fileKey, key)) return;
+    // 过滤条件用 pending 自己的键（take 内部是严格相等比较，传归一化后的键会失配）
+    const taken = takeSearchJump(pending.fileKey);
     if (!taken) return;
-    // 用「第 N 次出现」在当前文本空间定位（跨源码/PM 空间靠 occurrence，不靠行号）
+    /**
+     * v0.15.1 需求4：**匹配集是否已跟上当前文本**。
+     *
+     * `matchesRef` 是"上一次 performSearch 算出的匹配"，只有它对应的文本
+     * （`matchesTextRef`）与当前文本一致时，才能拿它做落点判定。
+     * 刚打开文件的那一刻：文本已换新、匹配集还是旧的 → 必须等 performSearch 重算。
+     */
     const { text } = readCurrentText();
-    const offset = resolveJumpByOccurrence(text, taken.query, taken.occurrence, {
-      caseSensitive,
-      useRegex,
-      wholeWord,
-    });
-    const matches = matchesRef.current;
-    let idx = offset === null ? -1 : matches.findIndex((m) => offset >= m.start && offset < m.end);
-    if (idx < 0 && offset !== null) idx = matches.findIndex((m) => m.start >= offset);
-    if (idx >= 0) {
-      setCurrentMatch(idx + 1);
-      highlightMatch(idx);
-      setJumpFailed(false);
-    } else {
-      // 定位不到（文本刚被改过 / 关键词在渲染文本里形态不同）：给可见提示，2 秒后复位
-      setJumpFailed(true);
-      if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
-      jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
+    const matchesConsistent = matchesTextRef.current !== null && matchesTextRef.current === text;
+    if (matchesConsistent) {
+      const offset = resolveJumpByOccurrence(text, taken.query, taken.occurrence, {
+        caseSensitive,
+        useRegex,
+        wholeWord,
+      });
+      const matches = matchesRef.current;
+      let idx =
+        offset === null ? -1 : matches.findIndex((m) => offset >= m.start && offset < m.end);
+      if (idx < 0 && offset !== null) idx = matches.findIndex((m) => m.start >= offset);
+      if (idx >= 0) {
+        setCurrentMatch(idx + 1);
+        highlightMatch(idx);
+        setJumpFailed(false);
+        return;
+      }
     }
+    // 文本/匹配集尚未就绪：只登记目标，由 performSearch 在匹配集刷新后兑现。
+    pendingJumpRef.current = { key: jumpKeyOf(key), target: taken };
+    // 兜底：目标文档迟迟不出现关键词（文件被改过 / 打开失败）时，不要静默挂着
+    if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
+    jumpTimerRef.current = setTimeout(() => {
+      if (pendingJumpRef.current) {
+        pendingJumpRef.current = null;
+        setJumpFailed(true);
+        jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
+      }
+    }, 4000);
     // 依赖里只放 docKey 与搜索选项：本 effect 的职责就是"文档就绪后消费一次 pending"，
     // 把 matches 等易变引用放进来会重复触发消费（pending 已被 take，第二次为空但语义混淆）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1359,55 +1838,90 @@ export function SearchReplaceDialog({
           ⟳
         </button>
       </div>
-      {/* v0.14.0：4 个勾选框（默认全不勾）+ 「查找所有打开文件」 */}
+      {/* v0.14.0：4 个勾选框（默认全不勾）+ 右侧两个作用域按钮。
+          v0.15.1 需求6：拆成「勾选组 + 右侧动作组」两段固定布局 —— 勾选组可压缩、
+          动作组固定尺寸贴右沿，保证面板放大（需求5 的 920px）与结果条幅出现/消失时，
+          两个按钮的位置**完全不动**、也不会因 flex-wrap 换行掉到第二行。
+          结构断言见 v0150-search-workspace-ui.test.tsx。 */}
       <div className="search-options-row">
-        <label className="search-check" title={t("search.wholeWord")}>
-          <input
-            type="checkbox"
-            data-testid="search-whole-word"
-            checked={wholeWord}
-            onChange={(e) => setWholeWord(e.target.checked)}
-          />
-          <span className="search-check-label">{t("search.wholeWord")}</span>
-        </label>
-        <label className="search-check" title={t("search.matchCase")}>
-          <input
-            type="checkbox"
-            data-testid="search-match-case"
-            checked={caseSensitive}
-            onChange={(e) => setCaseSensitive(e.target.checked)}
-          />
-          <span className="search-check-label">{t("search.matchCase")}</span>
-        </label>
-        <label className="search-check" title={t("search.inSelection")}>
-          <input
-            type="checkbox"
-            data-testid="search-in-selection"
-            checked={inSelection}
-            onChange={handleToggleInSelection}
-          />
-          <span className="search-check-label">{t("search.inSelection")}</span>
-        </label>
-        {/* 正则：沿用 R4 行为（可 $1 捕获组），沿用旧 title key */}
-        <label className="search-check" title={t("search.useRegex")}>
-          <input
-            type="checkbox"
-            data-testid="search-use-regex"
-            checked={useRegex}
-            onChange={(e) => setUseRegex(e.target.checked)}
-          />
-          <span className="search-check-label search-check-mono">.*</span>
-        </label>
-        <button
-          type="button"
-          className={`search-find-files-btn${showResults ? " active" : ""}`}
-          data-testid="search-find-in-open-files"
-          title={t("search.findInOpenFiles")}
-          onClick={toggleResults}
-        >
-          {t("search.findInOpenFiles")}
-        </button>
+        <div className="search-options-checks" data-testid="search-options-checks">
+          <label className="search-check" title={t("search.wholeWord")}>
+            <input
+              type="checkbox"
+              data-testid="search-whole-word"
+              checked={wholeWord}
+              onChange={(e) => setWholeWord(e.target.checked)}
+            />
+            <span className="search-check-label">{t("search.wholeWord")}</span>
+          </label>
+          <label className="search-check" title={t("search.matchCase")}>
+            <input
+              type="checkbox"
+              data-testid="search-match-case"
+              checked={caseSensitive}
+              onChange={(e) => setCaseSensitive(e.target.checked)}
+            />
+            <span className="search-check-label">{t("search.matchCase")}</span>
+          </label>
+          <label className="search-check" title={t("search.inSelection")}>
+            <input
+              type="checkbox"
+              data-testid="search-in-selection"
+              checked={inSelection}
+              onChange={handleToggleInSelection}
+            />
+            <span className="search-check-label">{t("search.inSelection")}</span>
+          </label>
+          {/* 正则：沿用 R4 行为（可 $1 捕获组），沿用旧 title key。
+              v0.15.0 R6b：工作区作用域**禁用**正则（Rust 首版拒绝，语义不等价），
+              勾选状态下切到工作区会立即给出明确提示，而不是静默返回空结果 */}
+          <label className="search-check" title={t("search.useRegex")}>
+            <input
+              type="checkbox"
+              data-testid="search-use-regex"
+              checked={useRegex}
+              disabled={scope === "workspace"}
+              onChange={(e) => setUseRegex(e.target.checked)}
+            />
+            <span className="search-check-label search-check-mono">.*</span>
+          </label>
+        </div>
+        <div className="search-options-actions" data-testid="search-options-actions">
+          <button
+            type="button"
+            className={`search-find-files-btn${showResults ? " active" : ""}`}
+            data-testid="search-find-in-open-files"
+            title={t("search.findInOpenFiles")}
+            onClick={toggleResults}
+          >
+            {t("search.findInOpenFiles")}
+          </button>
+          {/* v0.15.0 R6b：搜索作用域切换。只在宿主传了 workspaceRoots 时出现，
+              避免未接线时出现「点了没反应」的按钮 */}
+          {workspaceAvailable && (
+            <button
+              type="button"
+              className={`search-find-files-btn${scope === "workspace" ? " active" : ""}`}
+              data-testid="search-scope-workspace"
+              title={t("search.searchInWorkspace")}
+              onClick={() => {
+                setScope((prev) => (prev === "workspace" ? "current" : "workspace"));
+              }}
+            >
+              {scope === "workspace"
+                ? t("search.scopeWorkspaceActive")
+                : t("search.searchInWorkspace")}
+            </button>
+          )}
+        </div>
       </div>
+      {/* v0.15.0 R6b：工作区作用域的错误提示（正则被拒 / IPC 失败）——
+          必须可见，绝不静默失败 */}
+      {scope === "workspace" && workspaceError && (
+        <div className="search-hint search-hint-error" data-testid="search-workspace-error">
+          {workspaceError}
+        </div>
+      )}
       {/* 勾了「选取范围内」却没取到选区：红字提示 + 匹配数 0（绝不静默退化成全文） */}
       {inSelection && !selectionRange && (
         <div className="search-hint" data-testid="search-selection-hint">
@@ -1450,50 +1964,156 @@ export function SearchReplaceDialog({
         </div>
       )}
       {/* 结果条幅：放在替换行**下方**（纵向展开而不是盖住替换行），
-          条幅自身可滚动，长结果不影响面板其它控件 */}
-      {showResults && (
-        <div className="search-results" data-testid="search-results">
-          <div className="search-results-summary" data-testid="search-results-summary">
-            {fileResults.length === 0
-              ? t("search.resultsEmpty")
-              : t("search.resultsCount", {
-                  count: resultMatchTotal,
-                  files: Object.keys(resultFileCounts).length,
-                })}
-            {resultsTruncated && fileResults.length > 0
-              ? ` · ${t("search.tooManyResults", { count: fileResults.length })}`
-              : ""}
-          </div>
-          {fileResults.map((r, i) => (
-            <div
-              key={`${r.fileKey}:${r.line}:${i}`}
-              className="search-result-item"
-              data-testid="search-result-item"
-              title={`${r.filePath || r.fileName}:${r.line}`}
-              onClick={() => handleResultClick(r)}
-            >
-              <span className="search-result-file" data-testid="search-result-file" title={r.filePath}>
-                {r.fileName || r.filePath || "—"}
-                <span className="search-result-file-count">
-                  ({resultFileCounts[r.fileKey] ?? r.ranges.length})
-                </span>
-                <span className="search-result-file-line">:{r.line}</span>
-              </span>
-              <span className="search-result-line" data-testid="search-result-line">
-                {r.segments.map((seg, si) =>
-                  seg.match ? (
-                    <mark key={si} className="search-result-match" data-testid="search-result-match">
-                      {seg.text}
-                    </mark>
-                  ) : (
-                    <span key={si}>{seg.text}</span>
-                  ),
-                )}
-              </span>
+          条幅自身可滚动，长结果不影响面板其它控件。
+
+          v0.15.1 需求6：外壳 `.search-results-shell` **常驻**（即使条幅收起也在 DOM 里），
+          展开/收起只切 `is-open` 类，靠 height:0 ↔ height:auto 的过渡把面板高度
+          平滑地长/缩（`interpolate-size: allow-keywords`，WebView2 155 支持；
+          不支持时退化为瞬时显隐，功能不失效）。
+          为什么外壳常驻而内容仍条件渲染：收起时立即卸载内容能保证"再点一次立即收起"
+          的既有语义与测试契约（`search-results` 节点在收起后必须不存在），
+          外壳只负责把高度这一维做平滑。 */}
+      <ResultsShell open={showResults} testId="search-results-shell">
+        {showResults && (
+          <div className="search-results" data-testid="search-results">
+            <div className="search-results-summary" data-testid="search-results-summary">
+              {fileResults.length === 0
+                ? t("search.resultsEmpty")
+                : t("search.resultsCount", {
+                    count: resultMatchTotal,
+                    files: Object.keys(resultFileCounts).length,
+                  })}
+              {resultsTruncated && fileResults.length > 0
+                ? ` · ${t("search.tooManyResults", { count: fileResults.length })}`
+                : ""}
             </div>
-          ))}
+            {fileResults.map((r, i) => (
+              <div
+                key={`${r.fileKey}:${r.line}:${i}`}
+                className="search-result-item"
+                data-testid="search-result-item"
+                title={`${r.filePath || r.fileName}:${r.line}`}
+                onClick={() => handleResultClick(r)}
+              >
+                <span className="search-result-file" data-testid="search-result-file" title={r.filePath}>
+                  {r.fileName || r.filePath || "—"}
+                  <span className="search-result-file-count">
+                    ({resultFileCounts[r.fileKey] ?? r.ranges.length})
+                  </span>
+                  <span className="search-result-file-line">:{r.line}</span>
+                </span>
+                <span className="search-result-line" data-testid="search-result-line">
+                  {r.segments.map((seg, si) =>
+                    seg.match ? (
+                      <mark key={si} className="search-result-match" data-testid="search-result-match">
+                        {seg.text}
+                      </mark>
+                    ) : (
+                      <span key={si}>{seg.text}</span>
+                    ),
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </ResultsShell>
+      {/* v0.15.0 R6b：**工作区**结果条幅。
+          与「打开的文件」条幅互斥（同一时刻只有一个作用域生效），
+          复用同一套 `.search-results / .search-result-item` 样式，视觉上一致。
+          v0.15.1 需求6：同样套常驻外壳，让"进入/离开工作区作用域"引起的高度变化
+          也走同一条过渡（否则切作用域时面板高度会一帧跳变）。 */}
+      <ResultsShell open={scope === "workspace"} testId="search-workspace-results-shell">
+        {scope === "workspace" && (
+        <div className="search-results" data-testid="search-workspace-results">
+          <div className="search-results-summary" data-testid="search-workspace-summary">
+            {workspaceSearching ? (
+              <span data-testid="search-workspace-progress">
+                {t("search.workspaceSearching", {
+                  scanned: workspaceScanned,
+                  hits: workspaceTotal,
+                  skipped: workspaceSkipped,
+                })}
+              </span>
+            ) : workspaceTotal === 0 ? (
+              t("search.resultsEmpty")
+            ) : (
+              t("search.resultsCount", {
+                count: workspaceTotal,
+                files: workspaceFiles.length,
+              })
+            )}
+            {/* 进度摘要：跳过数与原因（大工作区时用户要知道"为什么没搜到某些文件"） */}
+            {!workspaceSearching && workspaceSkipped > 0 ? (
+              ` · ${t("search.workspaceSkippedCount", { count: workspaceSkipped })}`
+            ) : (
+              ""
+            )}
+            {/* 结果被 Rust 上限截断 */}
+            {workspaceTruncated ? ` · ${t("search.workspaceTruncated")}` : ""}
+            {/* 脏文档覆盖：告诉用户"已按内存内容校正"，避免以为结果不全 */}
+            {workspaceReconciled > 0
+              ? ` · ${t("search.workspaceReconciled", { count: workspaceReconciled })}`
+              : ""}
+            {/* 取消按钮：只在搜索进行中显示 */}
+            {workspaceSearching && (
+              <button
+                type="button"
+                className="search-cancel-btn"
+                data-testid="search-workspace-cancel"
+                title={t("search.workspaceCancel")}
+                onClick={() => {
+                  const qid = workspaceQueryRef.current;
+                  if (qid) {
+                    workspaceQueryRef.current = null;
+                    void cancelWorkspaceSearch(qid);
+                  }
+                  setWorkspaceSearching(false);
+                }}
+              >
+                {t("search.workspaceCancel")}
+              </button>
+            )}
+          </div>
+          {workspaceFiles.map((g) =>
+            g.rows.map((r, ri) => (
+              <div
+                key={`${g.fileKey}:${r.line}:${ri}`}
+                className="search-result-item"
+                data-testid="search-workspace-result-item"
+                title={`${r.filePath || g.fileName}:${r.line}`}
+                onClick={() => handleWorkspaceResultClick(g, r)}
+              >
+                <span
+                  className="search-result-file"
+                  data-testid="search-result-file"
+                  // 工作区结果的关键信息：**相对路径**（同名文件在不同目录时靠它区分）
+                  title={r.filePath}
+                >
+                  {g.fileName || r.filePath || "—"}
+                  <span className="search-result-file-count">({g.matchCount})</span>
+                  <span className="search-result-file-line">:{r.line}</span>
+                  {workspaceRoots && workspaceRoots.length > 0
+                    ? <span className="search-result-file-path">{relPathOf(r.filePath, workspaceRoots)}</span>
+                    : null}
+                </span>
+                <span className="search-result-line" data-testid="search-result-line">
+                  {r.segments.map((seg, si) =>
+                    seg.match ? (
+                      <mark key={si} className="search-result-match" data-testid="search-result-match">
+                        {seg.text}
+                      </mark>
+                    ) : (
+                      <span key={si}>{seg.text}</span>
+                    ),
+                  )}
+                </span>
+              </div>
+            )),
+          )}
         </div>
-      )}
+        )}
+      </ResultsShell>
     </div>
   );
 }

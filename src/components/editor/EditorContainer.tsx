@@ -32,6 +32,8 @@ import { undo, redo } from "prosemirror-history";
 import { toggleMark } from "prosemirror-commands";
 import type { EditorView } from "prosemirror-view";
 import { useEditorStore, isTranslateSnapshotForFile, type ViewMode } from "../../stores/useEditorStore";
+// v0.15.0 需求 R6b：工作区搜索作用域取 openFolders（只读，不订阅）
+import { useFileStore } from "../../stores/useFileStore";
 import { useSettingsStore, isAiChatRectVisible, DOC_ZOOM_STEP } from "../../stores/useSettingsStore";
 // v0.12.1 需求9：设置弹窗拖滑条时的临时排版预览（非持久化，取消即还原）
 import { useTypographyPreviewStore, withPreview } from "../../stores/useTypographyPreviewStore";
@@ -44,6 +46,12 @@ import { LinkDialog } from "../dialogs/LinkDialog";
 import { TableDialog } from "../dialogs/TableDialog";
 import { ImageInsertDialog } from "../dialogs/ImageInsertDialog";
 import { ImageEditDialog } from "../dialogs/ImageEditDialog";
+// v0.15.0 需求（图片灯箱）：常驻挂载的灯箱组件（打开时才 portal，未打开零 DOM）
+import { ImageLightbox } from "../image/ImageLightbox";
+import {
+  bindPreviewLightbox,
+  closeLightbox,
+} from "../../core/plugins/image-lightbox";
 import { EditorContextMenu } from "./EditorContextMenu";
 // v0.12.0 需求2：阅读模式（PM）右键菜单（首次为 PM 模式引入自定义菜单）
 import { PmContextMenu } from "./PmContextMenu";
@@ -239,6 +247,36 @@ import { SEARCH_JUMP_EVENT, type SearchJumpTarget } from "../../utils/searchJump
 // v0.14.0 续修 需求1：阅读模式键盘 Ctrl+Z 由 PM 动态键位接管（core/keymap.ts），
 // 必须把宿主撤销入口注册过去 —— 否则它直接调 prosemirror-history 的 undo，
 // 「跨文件替换记录」永远轮不到 doLocalUndo 消费（用户实测 B 文件撤不回来）。
+/**
+ * v0.15.0 需求（跨模式撤销统一）：时间线模块导入。
+ *
+ * `services/documentHistory` 是纯逻辑单例（每文档一条时间线）；`editorHistory/*`
+ * 提供源码/PM 两个 adapter 与唯一决策出口 coordinator。三者都不含 React/DOM，
+ * 因此可独立单测（proof 见 `services/documentHistory.test.ts`）。
+ */
+import {
+  begin as historyBegin,
+  documentHistory,
+  forget as historyForget,
+} from "../../services/documentHistory";
+import {
+  commitWholeText,
+  makeHistoryCoordinator,
+  type HistoryCoordinator,
+  type HistoryHost,
+} from "../../editorHistory/coordinator";
+import { createSourceAdapter, inferSourceEditKind } from "../../editorHistory/sourceAdapter";
+// v0.15.0 需求（阅读↔编辑内容对齐）：内容锚点与块几何采集
+import {
+  blockGeometryFromLineAxis,
+  captureContentAnchor,
+  collectPmBlockGeometry,
+  restoreContentAnchor,
+  restoreTextareaContentAnchor,
+  type ContentAnchor,
+} from "../../utils/contentScrollMap";
+// v0.15.0 需求（阅读区标题折叠）：会话级折叠状态 + iframe 面桥
+import { createIframeFoldBridge, readingFold } from "./readingFold";import { createPmAdapter } from "../../editorHistory/pmAdapter";
 import { setHostUndoRedo } from "../../core/keymap";
 import type { SearchableFile } from "./SearchReplace";
 import "../../styles/editor.css";
@@ -718,6 +756,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * 非 Markdown 文件也显示代码预览（与旧 split 行为一致）。
    */
   const previewShown = viewMode === "edit" && splitPreviewOpen;
+  /**
+   * v0.15.0 需求 R6b：工作区搜索可用的根目录（订阅 openFolders）。
+   *
+   * 用选择器只取 path 数组并 `join` 成字符串再切分，避免 openFolders 每次引用变化
+   * 都让 EditorContainer 重渲染（它内部会触发整棵编辑器树的重渲染）。
+   */
+  const workspaceRoots = useFileStore(
+    (s) => s.openFolders.map((f) => f.path).join("\u0000"),
+  ).split("\u0000").filter(Boolean);
 
   // v0.4.0：分屏分割条拖拽 hook（direction="split"，按容器总宽计算 ratio）
   const splitResizer = useResizable({
@@ -779,6 +826,35 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const sourceContentRef = useRef(content);
   sourceContentRef.current = sourceContent;
   const lastTextareaCursorRef = useRef(0);
+  /**
+   * v0.15.1 需求1：源码面**最近一次的滚动位置**（编辑前现场）。
+   *
+   * 为什么需要单独记：`onChange` 触发时 DOM 的 scrollTop 已经是"编辑之后"的值
+   * （浏览器可能因内容变高/变矮或光标滚入视口而调整它），拿它当 beforeSelection
+   * 会让撤销后的滚动位置对不上。由 scroll 监听持续维护，onChange 里读它才是旧值。
+   */
+  const lastSourceScrollTopRef = useRef(0);
+  /**
+   * v0.15.1 需求1：待应用的源码选区（撤销/恢复落地后恢复光标用）。
+   *
+   * 为什么必须经 `useLayoutEffect([sourceContent])`：`setSourceContent` 是受控组件，
+   * React 提交新 value 时会把 textarea 的 selection 重置掉，而那次提交可能晚于
+   * 我们在 rAF 里设的光标 → 直接设会被覆盖（实测 12 → 0）。
+   * layout effect 在 DOM 提交之后、浏览器绘制之前执行，是唯一"设了就不会被覆盖"的时机。
+   *
+   * 为什么要带 `until` 时间戳（而不是应用一次就清）：撤销会连带触发
+   * `onContentChange → App.setContent → content prop 变化 → 再 setSourceContent`，
+   * 也就是**第二次**受控提交，它同样会把选区重置成 0。实测时序是
+   * `set 12 → React 提交(重置 0) → 60ms 兜底(12)`，中间有一帧光标在文首。
+   * 因此把它保持 ~200ms 的"选区保护窗"，窗口内每次 sourceContent 提交都重新应用；
+   * 窗口结束或用户主动输入（onChange / 点击）即失效，不会干扰正常编辑。
+   */
+  const pendingSourceSelectionRef = useRef<{
+    start: number;
+    end: number;
+    scrollTop: number | null;
+    until: number;
+  } | null>(null);
 
   // 自动保存：需要在 sourceContentRef 声明之后调用
   // v0.6.6 问题4：getter ref 拦截读取——自动保存/版本快照拿到 unmask 后的真实内容
@@ -814,6 +890,59 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       : tab.path || null;
   }, []);
   /**
+   * v0.15.0 需求（跨模式撤销统一）：**统一时间线**的宿主与协调器。
+   *
+   * 背景（评估报告 §六.1）：v0.14.0 之前阅读模式用 `prosemirror-history`（PM 栈），
+   * 源码模式用组件内 diff 栈（`undoStackRef`），两套**物理隔离** —— 在编辑模式改完
+   * 切到阅读模式，Ctrl+Z 撤不掉刚才的编辑（只能切回去撤）。v0.14.0 做了"入口路由 +
+   * 按文档独立 + 跨文件记录"三层缓解，本质未变。
+   *
+   * 从本版起：**每个文档一条逻辑时间线**（`services/documentHistory`），源码与 PM
+   * 都只是"往同一条时间线上提交条目"的 adapter，撤销/恢复全部经
+   * `editorHistory/coordinator` 决策后由本组件的 host 落地。
+   *
+   * 两条铁律：
+   * 1. **时间线只存真实内容**：源码侧必须 unmask（`sourceContentRef` 是显示层短标记文本，
+   *    直接喂会把 base64 永久退化成 `image-1.png`，用户存盘即损坏）；
+   * 2. **bridge 事务不进历史**：协调器写回阅读模式时 dispatch 的事务必须带
+   *    `addToHistory:false` + `historyBridge:true`，否则"撤销动作本身"又被记一条 → 死循环。
+   */
+  const historyDocKeyOrEmpty = useCallback((): string => undoDocKey() ?? "", [undoDocKey]);
+  const historyHostRef = useRef<HistoryHost | null>(null);
+  const historyCoordinatorRef = useRef<HistoryCoordinator | null>(null);
+  /** 当前文档的真实文本（源码 unmask 后 / 阅读 getMarkdownFromDoc）——时间线与护栏的唯一事实来源 */
+  const currentRealText = useCallback((): string => {
+    if (viewMode === "preview" && isMdFile) {
+      const view = viewRef.current;
+      if (!view || view.isDestroyed) return "";
+      try {
+        return getMarkdownFromDoc(view.state.doc);
+      } catch {
+        return "";
+      }
+    }
+    return unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+  }, [viewMode, isMdFile]);
+  /** 上一次已同步进时间线的真实文本（避免重复 begin / 无变化 commit） */
+  const lastRealTextRef = useRef<string>("");
+  // ─── v0.15.0 需求（阅读区标题折叠）────────────────────────────
+  // 折叠**只作用于阅读面**：阅读模式（PM）+ 编辑模式的右侧预览（iframe）。
+  // 编辑区 WYSIWYG 与源码 textarea 都不折叠（本版明确范围）。
+  //
+  // 状态键只用 headingId，不按块下标：两个渲染面的块下标口径不同
+  // （PM 含空行还原的空段落与末尾 pad 段落，iframe 不含），按下标存会串位。
+  //
+  // ⚠️ 这两个 effect 必须放在 `undoDocKey` 声明**之后**：它内部调用 `undoDocKey()`，
+  // 提前引用会踩 TDZ（tsc: "used before declaration"）。
+  useEffect(() => {
+    readingFold.setEnabled(viewMode === "preview");
+  }, [viewMode]);
+  useEffect(() => {
+    // 与撤销同一口径：真实文件 = 路径 / 临时标签 = untitled:<id>。
+    // 不用 `currentDocKeyFromStore`（定义在 2900 行之后，同样会 TDZ）。
+    readingFold.setDocKey(undoDocKey());
+  }, [filePath, forceUpdateKey, undoDocKey]);
+  /**
    * v0.13.2 需求5：撤销历史按**文档**保管（跨标签保留）。
    * - `docKeyRef`：当前活动文档键（真实文件 = 路径 / 临时标签 = untitled:<id>）。
    *   必须用 ref：换文档 effect 与撤销处理器都要读它，而它由 store 计算得出。
@@ -844,6 +973,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
      * 有值时恢复光标 = 行首 + anchorColumn（clamp 到源行长度）。
      */
     anchorColumn?: number | null;
+    /**
+     * v0.15.0 需求（阅读↔编辑内容对齐）：模式切换瞬间采到的**内容锚点**。
+     *
+     * 为什么不再只用百分比：百分比在"同一份内容的同一套排版"下才等价；阅读模式与
+     * 编辑模式的正文宽度、行高、块间距都不同，长段落软换行数也不同 → 同一百分比
+     * 指向的是**不同内容**（0.14.0 实测有数行几何差）。
+     * 锚点记的是「视口中央是哪个块 + 块内比例」，与排版几何无关，
+     * 换到另一套排版后反算 scrollTop 仍是同一处内容。
+     */
+    contentAnchor?: ContentAnchor | null;
   } | null>(null);
 
   // 待恢复的 iframe 滚动百分比：分屏模式下 iframe 内容异步加载，
@@ -855,6 +994,164 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 标记正在恢复滚动位置（模式切换后 applyScroll 尚未执行完）
   // 打字机 effect 的初始 scrollToCenter 检查此标志，避免 smooth 滚动覆盖 applyScroll 的 scrollTop
   const isRestoringScrollRef = useRef(false);
+  /**
+   * v0.15.0 需求（阅读↔编辑内容对齐）：模式切换**前**采集来源侧的内容锚点。
+   *
+   * 必须在切换前的 effect 里同步调用（此时来源面还有真实布局、块几何可量）；
+   * 切完再采集就只能拿到目标面了。经 ref 暴露给模式切换 effect 使用。
+   */
+  const captureContentAnchorRef = useRef<(() => ContentAnchor | null) | null>(null);
+  /**
+   * v0.15.0 需求（阅读↔编辑内容对齐）：在**模式切换的那次渲染之前**把来源面锚点存下来。
+   *
+   * 为什么用 `useLayoutEffect` 而不是普通 effect：普通 effect 在 DOM 更新（面已切换）
+   * 之后才跑，那时阅读面可能已卸载/隐藏，块几何全是 0 → 采到 null。
+   * `useLayoutEffect` 在浏览器绘制前、依赖变化的那次提交里同步执行，此时**旧面仍在**。
+   */
+  const modeSwitchAnchorRef = useRef<ContentAnchor | null>(null);
+  /**
+   * 阅读面（`.ProseMirror`）块几何的**滚动期缓存**。
+   *
+   * 为什么不能在切换瞬间现量（这是复核抓出的 P0）：
+   * `useLayoutEffect` 在 DOM commit 之后执行，此时 `.editor-container` 已被
+   * `display: none`（非阅读面），`getBoundingClientRect()` 全是 0 → 每块 height=0
+   * → `visible:false` → 采集返回 null，整条对齐链路变成死代码。
+   * 因此在阅读面**真实可见**期间（滚动时）持续缓存，切换时只读缓存。
+   */
+  const pmGeomCacheRef = useRef<{
+    blocks: import("../../utils/contentScrollMap").BlockGeometry[];
+    scrollTop: number;
+    clientHeight: number;
+    scrollHeight: number;
+  } | null>(null);
+  /** 采一次当前阅读面几何并写入缓存（阅读面可见时调用） */
+  const cachePmGeometry = useCallback(() => {
+    const container = editorRef.current;
+    if (!container || container.clientHeight <= 0) return;
+    const blocks = collectPmBlockGeometry(container);
+    if (!blocks) return;
+    pmGeomCacheRef.current = {
+      blocks,
+      scrollTop: container.scrollTop,
+      clientHeight: container.clientHeight,
+      scrollHeight: container.scrollHeight,
+    };
+  }, []);
+  /**
+   * v0.15.1 需求3：**双向**采集模式切换前的「视口中央内容锚点」。
+   *
+   * ## 缺陷（用户原话：「不断双击 Ctrl 键进行阅读模式和编辑模式切换时…屏幕不断会滚动位置偏移」）
+   *
+   * v0.15.0 只给**阅读→编辑**这个方向采了内容锚点（`useLayoutEffect` 里判
+   * `prevViewMode === "preview" && viewMode !== "preview"`），反向的
+   * **编辑→阅读** 仍退回「滚动百分比」恢复。
+   *
+   * 但两种排版的几何完全不同（正文列宽 / 行高 / 块间距 / 软换行数），
+   * **同一百分比指向的是不同内容**。于是每一轮 Ctrl 切换：
+   *   阅读(锚点恢复，内容对) → 编辑(百分比恢复，内容偏一点)
+   *   → 阅读(锚点恢复，但基准已被上一步的百分比偏移污染) → …
+   * 误差**单向累积**，几轮之后视口就明显跑掉（用户看到"屏幕不断滚动位置偏移"）。
+   *
+   * 修法：两个方向都采内容锚点。源码面没有子元素可量，用 `measureSourceLineAxis`
+   * 的实测按行轴还原块几何（`blockGeometryFromLineAxis`）—— 与
+   * `textareaTopFromContentAnchor` 恢复侧同一套坐标系，往返才自洽。
+   *
+   * ⚠️ 必须在 `useLayoutEffect`（DOM commit 之后、绘制之前）里做：此时**来源面仍在**
+   * （普通 effect 跑的时候来源面已 display:none，块几何全是 0）。
+   */
+  const captureSourceContentAnchor = useCallback((): ContentAnchor | null => {
+    const textarea = sourceTextareaRef.current;
+    if (!textarea) return null;
+    if (!(textarea.clientHeight > 0) || !(textarea.scrollHeight > 0)) return null;
+    const markdown = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+    if (!markdown) return null;
+    try {
+      const blockLines = topLevelBlockStartLines(markdown);
+      const measured = measureSourceLineAxis({ textarea, blockLines });
+      if (!measured) return null;
+      const blocks = blockGeometryFromLineAxis({
+        totalLines: measured.totalLines,
+        lineAxis: measured.axis,
+        blockLines,
+        contentHeight: textarea.scrollHeight,
+        maxScroll: Math.max(0, textarea.scrollHeight - textarea.clientHeight),
+      });
+      if (!blocks) return null;
+      return captureContentAnchor(blocks, textarea.scrollTop, textarea.clientHeight, {
+        contentHeight: textarea.scrollHeight,
+      });
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const prev = prevViewModeRef.current;
+    if (prev === viewMode) return;
+    if (prev === "preview" && viewMode !== "preview") {
+      // 阅读 → 编辑：用滚动期缓存的 PM 块几何（阅读面此刻已被 display:none，现量全是 0）
+      const cache = pmGeomCacheRef.current;
+      modeSwitchAnchorRef.current = cache
+        ? captureContentAnchor(cache.blocks, cache.scrollTop, cache.clientHeight, {
+            contentHeight: cache.scrollHeight,
+          })
+        : null;
+      return;
+    }
+    if (prev !== "preview" && viewMode === "preview") {
+      // v0.15.1 需求3：编辑 → 阅读方向也必须采锚点（旧实现只走百分比 → 逐轮累积偏移）
+      modeSwitchAnchorRef.current = captureSourceContentAnchor();
+    }
+  }, [viewMode, captureSourceContentAnchor]);
+
+  /**
+   * v0.15.1 需求1：撤销/恢复落地后，在 **React 提交完 DOM、绘制之前** 恢复源码选区。
+   *
+   * 为什么必须在这里（而不是 rAF）：`setSourceContent` 是受控组件，React 提交新
+   * value 时会把 textarea 的 selection 重置掉；那次提交可能晚于我们的 rAF，
+   * 于是 rAF 里设好的光标被覆盖（实测 12 → 0，用户看到"撤销后光标跳回文首"）。
+   * `useLayoutEffect` 跑在 DOM 提交之后、浏览器绘制之前 → 设了就一定生效。
+   */
+  useLayoutEffect(() => {
+    const pending = pendingSourceSelectionRef.current;
+    if (!pending) return;
+    if (Date.now() > pending.until) {
+      pendingSourceSelectionRef.current = null;
+      return;
+    }
+    const ta = sourceTextareaRef.current;
+    if (!ta) return;
+    const len = ta.value.length;
+    const start = Math.min(pending.start, len);
+    const end = Math.min(pending.end, len);
+    try {
+      ta.setSelectionRange(start, end);
+      if (pending.scrollTop !== null) ta.scrollTop = pending.scrollTop;
+      lastTextareaCursorRef.current = start;
+    } catch {
+      /* textarea 已卸载 / 只读：忽略 */
+    }
+  }, [sourceContent]);
+
+  /**
+   * 进入阅读模式时缓存一次几何（用户没滚动就直接切走的情况），并在内容换新时清空旧缓存
+   * （避免用上一份文档的块几何去映射新文档）。
+   */
+  useEffect(() => {
+    if (viewMode !== "preview") {
+      pmGeomCacheRef.current = null;
+      return;
+    }
+    // rAF 等布局稳定后采（刚切进阅读面时块高可能尚未定）
+    const raf = requestAnimationFrame(() => cachePmGeometry());
+    return () => cancelAnimationFrame(raf);
+  }, [viewMode, content, forceUpdateKey, cachePmGeometry]);
+  /**
+   * 修正 iframe 采集坐标系（复核抓出的 P0 #2）：
+   * 根元素 `getBoundingClientRect().top === -scrollTop`，若再 `- scrollerRect.top`
+   * 就等价于 `rect.top + 2*scrollTop`（v0.13.2 已踩过同款坑）。
+   * 该逻辑在 `contentScrollMap.collectIframeBlockGeometry` 内，见那里的一行修正。
+   */
 
   // 当 content prop 变化（文件切换）时，同步 sourceContent
   // 编辑/分屏模式需要同步；非 md 文件在阅读模式下也需要同步（纯文本预览依赖 sourceContent）
@@ -922,6 +1219,56 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   }, [pushUndoEntry]);
 
   /**
+   * v0.15.1 需求1（**关键修复**）：源码模式「离散编辑」写入**统一时间线**。
+   *
+   * ## 缺陷背景（用户实测：「随便编辑撤销恢复几次后就说到了边界，然后撤销和恢复都不能用了」）
+   *
+   * v0.15.0 把 `doLocalUndo/doLocalRedo` 改成只走 `documentHistory`（统一时间线），
+   * 但**只把 `handleSourceChange`（普通打字）接了过去**，其余 8 处源码编辑仍调
+   * `pushUndoEntry` 写进**已退休的旧 diff 栈**（`undoStackRef`，现在没有任何人消费它）：
+   * 格式工具栏（加粗/标题/行内代码…）、斜杠命令插入、`insertTextAtCursor`（对话框插入）、
+   * 格式 ghost 退格删除、格式刷应用、块级复制粘贴回写…
+   *
+   * 双重后果：
+   * 1. 这些操作**不可撤销**（Ctrl+Z 看不到它们）——功能回归；
+   * 2. 更严重：它们改了 `sourceContent` 却**没有推进时间线的 knownText** →
+   *    下一次普通打字的 `commit({ before: 旧文本 })` 与 knownText 失配 →
+   *    协调器 `rebaseText(force:true)` 强制对齐 → `truncateRedo` **把 redo 分支整段删掉**
+   *    （而 `force` 也会把游标位置推平）→ 反复几次后时间线彻底失效，
+   *    于是每次撤销都走"空栈"分支，弹出「已到本模式撤销边界」，恢复也一并失效。
+   *
+   * ## 做法
+   * 与 `handleSourceChange` 同一口径：**时间线只存真实内容**（unmask 后），
+   * 并把编辑前的光标/滚动作为 `beforeSelection`（撤销要回到这里）。
+   */
+  const recordDiscreteSourceEdit = useCallback(
+    (beforeMasked: string, afterMasked: string, caret: number, scrollTop: number) => {
+      const beforeReal = unmaskBase64Images(beforeMasked, base64TokensRef.current);
+      const afterReal = unmaskBase64Images(afterMasked, base64TokensRef.current);
+      if (beforeReal === afterReal) return;
+      const key = historyDocKeyOrEmpty();
+      if (!key) return;
+      // 基线纠偏：离散操作之前可能已有别的路径改过文本（如翻译回写），
+      // 以宿主为准 rebase，避免 commit 被静默拒绝后"这一步永远撤不回来"。
+      if (documentHistory.currentText(key) !== beforeReal) {
+        documentHistory.rebaseText(key, beforeReal, { force: true });
+      }
+      documentHistory.commit(
+        {
+          before: beforeReal,
+          after: afterReal,
+          origin: "source",
+          beforeSelection: { start: caret, end: caret, scrollTop },
+          afterSelection: { start: caret, end: caret, scrollTop },
+        },
+        key,
+      );
+      lastRealTextRef.current = afterReal;
+    },
+    [historyDocKeyOrEmpty],
+  );
+
+  /**
    * v0.14.0 需求1+2：**整篇文本写回的单一入口**（搜索替换 / 跨文件替换复用）。
    *
    * ## 为什么必须收口成一处（两个用户报的缺陷同源）
@@ -954,124 +1301,159 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const writeBackCurrentDoc = useCallback((newText: string) => {
     const view = viewRef.current;
     const liveMd = viewMode === "preview" && isMdFile;
+    // v0.15.0 需求（跨模式撤销统一）：写回前先取真实旧文本，写回后作为一条
+    // `origin:"replace"` 条目提交到统一时间线（搜索/替换/跨文件替换共用）。
+    // ⚠️ 不要再依赖 `addToHistory:true` 让 PM 栈顺带记录：那会让同一次替换
+    // 同时进 PM 栈与统一时间线 → 一次 Ctrl+Z 撤两步（评审 §1.7 第 7 项）。
+    const beforeReal = currentRealText();
     if (liveMd) {
       if (!view) return;
       try {
         const newDoc = withTrailingParagraph(markdownToDoc(newText));
         const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
-        // 进撤销栈：用户要求「搜索替换也要能 Ctrl+Z 撤回」
-        tr.setMeta("addToHistory", true);
+        // 阅读模式立即生效；但**不进** PM 历史（由统一时间线记录这一步）
+        tr.setMeta("addToHistory", false);
         // 注意**不要**设 fileSwitch（那会让 onDocChange 跳过序列化与脏标记）
         view.dispatch(tr);
       } catch (e) {
         console.error("[EditorContainer] 阅读模式整篇写回失败:", e);
       }
-      return;
+    } else {
+      // 源码模式 / 非 md 阅读模式：走 textarea 状态通道
+      setSourceContent(newText);
+      sourceContentRef.current = newText;
+      onContentChangeRef.current?.(newText);
+      setDirtyRef.current(true);
+      // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
+      lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
     }
-    // 源码模式 / 非 md 阅读模式：走 textarea 状态通道，并记撤销记录
-    const textarea = sourceTextareaRef.current;
-    recordUndoEntry(
-      sourceContentRef.current,
-      newText,
-      textarea?.selectionStart ?? 0,
-      textarea?.scrollTop ?? 0,
-    );
-    setSourceContent(newText);
-    sourceContentRef.current = newText;
-    onContentChangeRef.current?.(newText);
-    setDirtyRef.current(true);
-    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
-    lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
-  }, [viewMode, isMdFile, recordUndoEntry]);
+    // 统一记录这一步（源码/阅读同一入口）。文本无变化时 commit 内部返回 null。
+    //
+    // ⚠️ `beforeReal` 必须与时间线的 knownText 逐字节一致，否则 commit 会**静默拒绝**
+    // （安全语义：不允许把基于旧文本的改动接在新文本后面）。而 knownText 可能因
+    // 模式切换重解析 / trailing-paragraph / 外部重载而与当前宿主文本不同 ——
+    // 此时必须先 rebase 把基线对齐，否则"搜索替换"这一步根本不会进撤销栈
+    //（实机探针实测：A 上撤销替换无任何反应）。
+    const key = historyDocKeyOrEmpty();
+    if (key) {
+      if (documentHistory.currentText(key) !== beforeReal) {
+        documentHistory.rebaseText(key, beforeReal, { force: true });
+      }
+      documentHistory.commit(
+        { before: beforeReal, after: newText, origin: "replace" },
+        key,
+      );
+      lastRealTextRef.current = newText;
+    }
+    if (liveMd) {
+      // 阅读模式的 setDirty/序列化由 onDocChange 完成，与既有行为一致
+      setDirtyRef.current(true);
+    }
+  }, [viewMode, isMdFile, currentRealText, historyDocKeyOrEmpty]);
+
+  /**
+   * v0.15.0 需求（跨模式撤销统一）：**统一撤销系统的安装点**。
+   *
+   * 在首次渲染前（useMemo，不产生副作用依赖）建三样东西：
+   * - `pmAdapter`：PM 事务 → 时间线条目（节流序列化 + 忽略 historyBridge）；
+   * - `sourceAdapter`：源码 textarea 编辑归并（typing/IME/paste/pair 分组）；
+   * - `coordinator`：undo/redo 唯一决策出口（护栏/边界/落地）。
+   *
+   * ⚠️ host 的三个方法来**读 ref** 而不是闭包捕获 state：协调器是"长期存活对象"，
+   * 若捕获 `viewMode`/`sourceContent` 会永久停在创建那一刻的值（切模式后撤销走错分支）。
+   */
+  const sourceAdapterRef = useRef(createSourceAdapter());
+  const pmAdapterRef = useRef(
+    createPmAdapter({
+      // 只序列化 doc：`view.state.doc` 是 PM doc；时间线存真实 Markdown
+      serialize: (doc) => {
+        try {
+          return getMarkdownFromDoc(doc as Parameters<typeof getMarkdownFromDoc>[0]);
+        } catch {
+          return "";
+        }
+      },
+      commit: (plan) => historyCoordinatorRef.current?.commitFromPm(plan),
+      // 非用户编辑（fileSwitch / 翻译回写 / trailing-paragraph）只推进基线，不产生条目
+      rebase: (textValue) => {
+        const key = historyDocKeyOrEmpty();
+        if (key) documentHistory.rebaseText(key, textValue);
+      },
+    }),
+  );
+  const historyHost = useMemo<HistoryHost>(() => ({
+    docKey: () => historyDocKeyOrEmpty(),
+    currentText: () => currentRealText(),
+    // 读 store 的实时值而非闭包：协调器长期存活，闭包会停在创建时
+    currentMode: () => (useEditorStore.getState().viewMode === "preview" ? "pm" : "source"),
+    applyText: (text, restore, meta) => {
+      // 落地实现体在下方 `applyHistoryText`（依赖阅读/源码两套既有写回链路）
+      applyHistoryTextRef.current?.(text, restore, meta);
+    },
+    notifyBoundary: (kind) => {
+      if (kind === "undo") {
+        const boundaryMsg = sourceUndoBoundaryMessage(0);
+        if (boundaryMsg) notifyWarning(boundaryMsg);
+      } else if (kind === "cross-file-stale") {
+        notifyWarning(translate("editor.undoCrossFileStale"));
+      }
+    },
+    afterApply: (textValue, direction) => {
+      lastRealTextRef.current = textValue;
+      setDirtyRef.current(true);
+      if (direction === "undo") formatGhostHandlersRef.current.clear("undo");
+    },
+  }), [historyDocKeyOrEmpty, currentRealText]);
+  historyHostRef.current = historyHost;
+  historyCoordinatorRef.current = useMemo(
+    () => makeHistoryCoordinator({
+      api: documentHistory,
+      host: historyHost,
+      // 撤销前必须把 PM 侧的节流队列落地，否则丢最后一段打字
+      flushPending: () => {
+        pmAdapterRef.current.flush();
+      },
+      // v0.15.1 需求1：undo/redo 落地后把 PM adapter 基线前移到实际文本。
+      //
+      // 不做的后果（用户实测的「撤几次后撤销/恢复全废」）：bridge 事务被 pmAdapter
+      // 整批忽略（这是对的，否则撤销动作本身会被记成新编辑），但它的 baseline 仍停在
+      // 撤销前的文本 → 用户一打字，commit 的 before 与时间线 knownText 失配 →
+      // 协调器 force-rebase → truncateRedo 把 redo 分支整段删掉 → 恢复失效，
+      // 反复几次后连撤销也失效并误报「已到本模式撤销边界」。
+      syncAdapterBaseline: (textValue) => {
+        pmAdapterRef.current.setBaseline(textValue);
+      },
+    }),
+    [historyHost],
+  );
+  /** 阅读/源码「把历史文本写回宿主」的实现（稍后定义，经 ref 供上面 host 调用） */
+  const applyHistoryTextRef = useRef<
+    ((text: string, restore: unknown, meta: unknown) => void) | null
+  >(null);
+  /**
+   * v0.15.0 源码编辑归并的一次性标记（每个只描述"刚刚发生的那一次输入"，
+   * 由 `handleSourceChange` 消费后复位）：
+   * - `sourceComposingRef`：IME 组合输入进行中（一次 composition = 一条历史）；
+   * - `sourceJustPairedRef`：刚由自动配对补全（`()` 一次插入 = 一条历史）；
+   * - `sourceJustPastedRef`：刚发生粘贴（一次粘贴 = 一条历史，不与后续打字合并）。
+   */
+  const sourceComposingRef = useRef(false);
+  const sourceJustPairedRef = useRef(false);
+  const sourceJustPastedRef = useRef(false);
 
   /**
    * v0.13.2 需求5（返修后口径）：执行一次**当前文档**的撤销。
    *
-   * 用户复测明确要求：「不再跨文档；当前文档的编辑撤销和恢复只在当前文档生效，
-   * 切换到其他文档进行撤销恢复也是在对应文档，互不干扰。」
-   * 因此这里只操作当前文档的栈（PM history / 源码 diff 栈），不做任何切换文档的路由。
-   *
-   * v0.14.0 需求2：**先**尝试消费「跨文件替换」记录。
-   * 用户要求「跨文件搜索和替换，切换到对应文件后也能使用撤销或恢复」——
-   * 那个文件被替换时并没有打开在编辑器里，它的 PM/源码撤销栈里不可能有这一步。
-   * 所以这里在常规撤销之前检查 `peekCrossFileUndo`：
-   * - 记录存在 **且** 当前文本仍等于记录的 `after`（逐字节一致护栏）→ 整篇写回 `before`，
-   *   并登记对称的可恢复记录，`return true`；
-   * - 记录存在但内容已被用户手工改过 → **丢弃记录**，落到常规撤销栈
-   *   （绝不能整篇覆盖回去抹掉用户的手工编辑）。
+   * v0.15.0 需求（跨模式撤销统一）：实现体改为**委托统一协调器**。
+   * 阅读模式（PM）与源码模式（diff 栈）过去各有一套物理隔离的栈，切模式后
+   * Ctrl+Z 撤不掉另一侧的改动；现在两者共用同一条逻辑时间线，
+   * 撤销可以穿过任意多次模式切换。
    *
    * @returns 是否真的撤销了一步（false = 当前文档撤销栈已空）
    */
   const doLocalUndo = useCallback((): boolean => {
-    if (viewMode === "preview") {
-      const view = viewRef.current;
-      if (!view) return false;
-      const key = undoDocKey();
-      const ext = peekCrossFileUndo(key);
-      if (ext && crossFileEditMatches(ext.after, getMarkdownFromDoc(view.state.doc))) {
-        // 内容与记录快照一致 → 安全：整篇写回替换前的文本
-        dropCrossFileUndo(key);
-        pushCrossFileRedo(key, ext);
-        const newDoc = withTrailingParagraph(markdownToDoc(ext.before));
-        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
-        // 这条撤销动作本身要进撤销栈，这样紧接着的 Ctrl+Y 能恢复
-        tr.setMeta("addToHistory", true);
-        view.dispatch(tr);
-        return true;
-      }
-      if (ext) dropCrossFileUndo(key);
-      const before = view.state.doc;
-      undo(view.state, view.dispatch);
-      return view.state.doc !== before;
-    }
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return false;
-    // v0.14.0 需求2：源码模式同样先看跨文件替换记录
-    {
-      const key = undoDocKey();
-      const ext = peekCrossFileUndo(key);
-      if (ext && crossFileEditMatches(ext.after, sourceContentRef.current)) {
-        dropCrossFileUndo(key);
-        pushCrossFileRedo(key, ext);
-        recordUndoEntry(sourceContentRef.current, ext.before, textarea.selectionStart, textarea.scrollTop);
-        setSourceContent(ext.before);
-        sourceContentRef.current = ext.before;
-        onContentChangeRef.current?.(ext.before);
-        setDirtyRef.current(true);
-        lastContentRef.current = unmaskBase64Images(ext.before, base64TokensRef.current);
-        return true;
-      }
-      if (ext) dropCrossFileUndo(key);
-    }
-    if (undoStackRef.current.length === 0) return false;
-    // 将当前状态推入恢复栈（记录差异，正向：当前→撤销目标）
-    const currentContent = sourceContentRef.current;
-    const undoEntry = undoStackRef.current.pop()!;
-    const undoneContent = applyDiff(currentContent, undoEntry, true);
-    // v0.12.0 需求1 返修②：撤销后文档与 ghost 快照不符 → 清除格式 ghost
-    // （修复"点击格式符后 Ctrl+Z 撤销了但 ghost 文本还在"）
-    formatGhostHandlersRef.current.clear("undo");
-    // 恢复栈存储反向差异（从撤销后状态恢复到当前状态）
-    const redoDiff = computeDiff(undoneContent, currentContent);
-    redoStackRef.current.push({ ...redoDiff, cursorPos: textarea.selectionStart, scrollTop: textarea.scrollTop });
-    isUndoRedoRef.current = true;
-    setSourceContent(undoneContent);
-    sourceContentRef.current = undoneContent;
-    onContentChangeRef.current?.(undoneContent);
-    setDirtyRef.current(true);
-    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
-    lastContentRef.current = unmaskBase64Images(undoneContent, base64TokensRef.current);
-    requestAnimationFrame(() => {
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(undoEntry.cursorPos, undoEntry.cursorPos);
-        ta.scrollTop = undoEntry.scrollTop;
-      }
-      isUndoRedoRef.current = false;
-    });
-    return true;
-  }, [viewMode, undoDocKey]);
+    return historyCoordinatorRef.current?.handleUndo() ?? false;
+  }, []);
 
   /**
    * v0.13.2 需求5（返修后口径）：执行一次**当前文档**的恢复（不跨文档）。
@@ -1080,83 +1462,39 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * （用户刚撤销掉一次批量替换，接着按 Ctrl+Y 要能把它恢复回来）。
    */
   const doLocalRedo = useCallback((): boolean => {
-    if (viewMode === "preview") {
-      const view = viewRef.current;
-      if (!view) return false;
-      const key = undoDocKey();
-      const ext = peekCrossFileRedo(key);
-      if (ext && crossFileEditMatches(ext.before, getMarkdownFromDoc(view.state.doc))) {
-        dropCrossFileRedo(key);
-        pushCrossFileUndo(key, ext);
-        const newDoc = withTrailingParagraph(markdownToDoc(ext.after));
-        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
-        tr.setMeta("addToHistory", true);
-        view.dispatch(tr);
-        return true;
-      }
-      if (ext) dropCrossFileRedo(key);
-      const before = view.state.doc;
-      redo(view.state, view.dispatch);
-      return view.state.doc !== before;
-    }
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return false;
-    // v0.14.0 需求2：源码模式同样先看跨文件「恢复」记录
-    {
-      const key = undoDocKey();
-      const ext = peekCrossFileRedo(key);
-      if (ext && crossFileEditMatches(ext.before, sourceContentRef.current)) {
-        dropCrossFileRedo(key);
-        pushCrossFileUndo(key, ext);
-        recordUndoEntry(sourceContentRef.current, ext.after, textarea.selectionStart, textarea.scrollTop);
-        setSourceContent(ext.after);
-        sourceContentRef.current = ext.after;
-        onContentChangeRef.current?.(ext.after);
-        setDirtyRef.current(true);
-        lastContentRef.current = unmaskBase64Images(ext.after, base64TokensRef.current);
-        return true;
-      }
-      if (ext) dropCrossFileRedo(key);
-    }
-    if (redoStackRef.current.length === 0) return false;
-    const currentContent = sourceContentRef.current;
-    const redoEntry = redoStackRef.current.pop()!;
-    const redoneContent = applyDiff(currentContent, redoEntry, false);
-    // v0.12.0 需求1 返修②：恢复后文档与 ghost 快照不符 → 清除格式 ghost
-    formatGhostHandlersRef.current.clear("undo");
-    // 撤销栈存储差异：从当前状态到恢复后状态，撤销时反向应用即可回到当前状态
-    const undoDiff = computeDiff(currentContent, redoneContent);
-    undoStackRef.current.push({ ...undoDiff, cursorPos: textarea.selectionStart, scrollTop: textarea.scrollTop });
-    isUndoRedoRef.current = true;
-    setSourceContent(redoneContent);
-    sourceContentRef.current = redoneContent;
-    onContentChangeRef.current?.(redoneContent);
-    setDirtyRef.current(true);
-    // v0.6.6 问题4：lastContentRef 与 content prop 同为真实坐标（unmask 后）
-    lastContentRef.current = unmaskBase64Images(redoneContent, base64TokensRef.current);
-    requestAnimationFrame(() => {
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(redoEntry.cursorPos, redoEntry.cursorPos);
-        ta.scrollTop = redoEntry.scrollTop;
-      }
-      isUndoRedoRef.current = false;
-    });
-    return true;
-  }, [viewMode, undoDocKey]);
+    return historyCoordinatorRef.current?.handleRedo() ?? false;
+  }, []);
 
+  /**
+   * v0.15.1 需求1：菜单/右键菜单的**撤销/恢复可用性**必须读统一时间线。
+   *
+   * 旧实现读 `undoStackRef.length > 0`（已退休的 diff 栈），它永远是 0 →
+   * 右键菜单里「撤销/恢复」恒为灰色不可点，用户感知为"撤销彻底坏了"。
+   */
+  const canUndoUnified = useCallback((): boolean => {
+    const key = historyDocKeyOrEmpty();
+    return key ? documentHistory.canUndo(key) : false;
+  }, [historyDocKeyOrEmpty]);
+  const canRedoUnified = useCallback((): boolean => {
+    const key = historyDocKeyOrEmpty();
+    return key ? documentHistory.canRedo(key) : false;
+  }, [historyDocKeyOrEmpty]);
   /**
    * v0.13.2 需求5（返修后口径）：**撤销/恢复总入口**（Ctrl+Z / Ctrl+Y / 菜单 / 工具栏共用）。
    *
    * 用户复测要求：撤销/恢复**只在当前文档生效**，切到别的文档后各自操作自己的历史，
    * 互不干扰。因此这里直接执行当前文档的本地撤销；当前文档已撤到底时给出边界提示，
    * **不**切换到其他文档（跨文档顺序撤销账本已移除）。
+   *
+   * v0.15.1 需求1：**边界提示的职责已收归协调器**（`historyHost.notifyBoundary`），
+   * 这里不再补一条。旧实现在 `doLocalUndo()` 返回 false 时无条件再弹一次
+   * 「已到本模式撤销边界」，造成两个问题：
+   * 1. **重复提示**（协调器已经弹过，用户一次撤销看到两条）；
+   * 2. **误报**：`false` 也可能是「docKey 为空」「跨文件条目过期被丢弃」等原因，
+   *    那些场景与"撤到底"无关，弹边界文案是错的。
    */
   const handleUndo = useCallback(() => {
-    if (doLocalUndo()) return;
-    const boundaryMsg = sourceUndoBoundaryMessage(0);
-    if (boundaryMsg) notifyWarning(boundaryMsg);
+    doLocalUndo();
   }, [doLocalUndo]);
 
   const handleRedo = useCallback(() => {
@@ -1204,8 +1542,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         const newContent = currentContent.substring(0, start) + finalSyntax + currentContent.substring(end);
         const scrollTop = textarea.scrollTop;
         // 直接推入差异（不用防抖，格式操作是离散的）
-        const diff = computeDiff(currentContent, newContent);
-        pushUndoEntry({ ...diff, cursorPos: start, scrollTop });
+        // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
+        recordDiscreteSourceEdit(currentContent, newContent, start, scrollTop);
         setSourceContent(newContent);
         sourceContentRef.current = newContent;
         onContentChangeRef.current?.(newContent);
@@ -1316,6 +1654,25 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       },
       onReady: (v) => {
         viewRef.current = v;
+        // v0.15.1 需求1（**关键修复**）：编辑器创建完成后必须给统一时间线建基线。
+        //
+        // 缺陷：v0.15.0 只在「换文档 effect」里 `historyBegin(incomingKey, content)`，
+        // 而那个 effect 要求 `content !== lastContentRef.current`（否则提前 return）。
+        // 首次挂载时 `lastContentRef` 就等于 `content` → **一次 begin 都不会发生** →
+        // `documentHistory.currentText(key)` 恒为 null → 协调器 `commitFromPm` 里
+        // `syncBaseline` 看到 known=null 直接跳过 → `api.commit` 里 `ensureDoc` 用
+        // `raw.before ?? ""` 建了一条 **knownText=""** 的空时间线 → `before !== knownText`
+        // → **commit 被静默拒绝**。结果：**阅读模式（PM）里的编辑从来不进时间线**，
+        // 切到编辑模式后按 Ctrl+Z 撤不掉（用户实测「跨模式撤销还是有问题」）。
+        //
+        // 这里补上首挂基线：content 是真实内容（App 传入的就是磁盘/标签文本）。
+        pmAdapterRef.current.reset(content);
+        sourceAdapterRef.current.reset();
+        const initialKey = docKeyRef.current;
+        if (initialKey && documentHistory.currentText(initialKey) === null) {
+          historyBegin(initialKey, content);
+        }
+        lastRealTextRef.current = content;
         onEditorReadyRef.current?.(v);
       },
       // v0.6.0：PM 选区「译」浮动按钮触发（ref 转发最新闭包，编辑器只创建一次）
@@ -1391,6 +1748,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // （setState 稳定，无需经 ref 转发；只读标签的拦截在插件 click 处理器内）
       onHeadingBadgeClick: (headingPos, currentLevel, anchor) =>
         setHeadingMenu({ open: true, anchor, level: currentLevel, pos: headingPos }),
+      // v0.15.0 需求（跨模式撤销统一）：把 PM 事务转发给时间线的 PM adapter。
+      // adapter 内部过滤 bridge / addToHistory:false / 无 docChanged 的事务，
+      // 这里无条件转发即可。
+      onTransactions: (before, trs, after) => {
+        pmAdapterRef.current.handleTransactions(before, trs, after);
+      },
     });
     if (view) viewRef.current = view;
     return () => {
@@ -1398,6 +1761,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       viewRef.current = null;
       // 清理字数统计定时器
       if (wordCountTimerRef.current) clearTimeout(wordCountTimerRef.current);
+      // v0.15.0 需求（图片灯箱）：卸载时兜底关闭（PM 插件 destroy 与组件卸载各有一层，
+      // 三层冗余是刻意的——任何一层失效都不该把浮层留在界面上）
+      closeLightbox();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1425,6 +1791,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const percent = computeScrollPercent(container.scrollHeight, container.clientHeight, container.scrollTop);
       if (percent !== null) {
         pmScrollPercentRef.current = percent;
+        // v0.15.0 需求（阅读↔编辑内容对齐）：滚动期缓存块几何。
+        // 必须在这里采（阅读面可见、布局真实），不能在切换瞬间采（那时 display:none）。
+        // 恢复过程中不采：瞬时布局（内容刚替换）会污染缓存。
+        if (!isRestoringScrollRef.current) cachePmGeometry();
         // v0.12.0 返修（问题5）：正在恢复滚动位置时不写进度——恢复过程中的瞬时
         // 像素值（如内容刚替换时的 0）会覆盖刚从快照注入的进度
         if (!isRestoringScrollRef.current) {
@@ -1493,6 +1863,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (!textarea) return;
     const handler = () => {
       const percent = computeScrollPercent(textarea.scrollHeight, textarea.clientHeight, textarea.scrollTop);
+      // v0.15.1 需求1：记录"编辑前"的滚动位置，供撤销恢复现场用
+      //（onChange 里读到的已是新布局，跨行编辑时 scrollTop 可能已被浏览器调整）
+      lastSourceScrollTopRef.current = textarea.scrollTop;
       if (percent !== null) {
         textareaScrollPercentRef.current = percent;
         // v0.12.0 返修（问题5）：恢复期间不写进度（同上）
@@ -1631,9 +2004,41 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       redoStackRef.current = (restored?.sourceRedo as HistoryEntry[] | undefined) ?? [];
       lastHistoryContentRef.current = content;
       docKeyRef.current = incomingKey;
+      // v0.15.0 需求（跨模式撤销统一）：切换文档时把**统一时间线**切到新文档。
+      // 内容与时间线已知文本一致 → 保留历史（切回来仍可撤销）；不一致 → 重置
+      // （外部重载/磁盘被改，位置语义已失效）。同时清空两个 adapter 的节流队列，
+      // 避免上一个文档的待提交编辑串到新文档。
+      if (incomingKey) {
+        pmAdapterRef.current.reset(content);
+        sourceAdapterRef.current.reset();
+        // v0.15.0 需求（跨模式撤销统一）：切文档时**不能无条件 `historyBegin`**。
+        //
+        // `begin(docKey, content)` 在 `content !== knownText` 时会**整条重置**时间线
+        // （那是给"外部重载/磁盘被改"用的安全语义）。但切标签时 `content` 是 store
+        // 里的最新文本，而时间线的 `knownText` 可能是"跨文件替换记录时的 before"——
+        // 两者必然不同 → 一进 B 就把「跨文件替换」条目丢掉，用户切过去撤不回来
+        //（实机探针 8 项 FAIL 的根因）。
+        //
+        // 正确语义：
+        // - 该文档**还没有**时间线 → `begin` 建立基线；
+        // - 已有时间线 → 保留条目，只把基线推进到当前文本（`rebaseText`）；
+        //   仅在"确实无历史"（条目为空）时才用 `begin` 重新对齐。
+        const hadTimeline = documentHistory.currentText(incomingKey) !== null;
+        if (hadTimeline) {
+          // force:true → 处于"已撤销若干步"时先截断 redo 再推进基线
+          //（切走再切回来，redo 分支的位置语义已失效，丢弃比错位安全）
+          documentHistory.rebaseText(incomingKey, content, { force: true });
+          historyBegin(incomingKey, content);
+        } else {
+          documentHistory.begin(incomingKey, content);
+        }
+        lastRealTextRef.current = content;
+      }
     } catch (e) {
       console.error("更新编辑器内容失败:", e);
     }
+    // v0.15.0 需求（图片灯箱）：切文档强制关闭灯箱，避免浮层盖住新文档 / 残留旧图
+    closeLightbox();
   }, [content, forceUpdateKey, isMdFile, filePath]);
 
   // ─── v0.7.0 bug修复：文件切换保留浏览进度 ─────────
@@ -1696,6 +2101,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     prevViewModeRef.current = viewMode;
 
     if (!view) return;
+
+    // v0.15.1 需求1：**模式切换前必须先 flush PM 的节流队列**。
+    //
+    // pmAdapter 把「序列化 + 提交时间线」推迟到防抖窗口末尾（350ms，最长 900ms）。
+    // 用户在阅读模式打完字立刻切到编辑模式时，最后那次输入还挂在队列里：
+    // - 不 flush → 时间线里少这一步（切过去再撤销撤不到它，用户看到"阅读里打的字
+    //   切到编辑就撤不掉了"）；
+    // - 更糟：切换本身会整篇重解析 doc，随后 bridge/rebase 事务会**清掉队列**
+    //   （pmAdapter 的 addToHistory:false 分支 `hasPending=false`），那一步永久丢失。
+    // flush 会同步把 pending 序列化并 commit，必须在任何整篇替换之前执行。
+    pmAdapterRef.current.flush();
 
     // 判断切换方向
     const fromPreview = prevMode === "preview";
@@ -1766,7 +2182,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           percent: sourcePercent,
           anchorLine: lineIndex,
           anchorColumn,
+          // v0.15.0 需求（阅读↔编辑内容对齐）：附上内容锚点。
+          // ⚠️ 此 effect 是"切换之后"跑的，来源（阅读面）此时可能已被 `setViewMode`
+          // 卸载 → 只能采到空。因此真正的采集发生在 useLayoutEffect（见下方
+          // `modeSwitchAnchorRef`），这里只负责把已采到的锚点带进恢复计划。
+          contentAnchor: modeSwitchAnchorRef.current,
         };
+        modeSwitchAnchorRef.current = null;
 
         requestAnimationFrame(() => {
           const textarea = sourceTextareaRef.current;
@@ -1857,7 +2279,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             percent: sourcePercent,
             anchorLine: lineIndex,
             anchorColumn: null,
+            // v0.15.1 需求3：编辑→阅读方向也带内容锚点（在 useLayoutEffect 里采的）。
+            // 旧实现这里没有 anchor，只能按百分比恢复 —— 与阅读→编辑方向不对称，
+            // 反复双击 Ctrl 时误差单向累积，视口越切越偏。
+            contentAnchor: modeSwitchAnchorRef.current,
           };
+          modeSwitchAnchorRef.current = null;
 
           onContentChangeRef.current?.(sourceContent);
           lastContentRef.current = sourceContent;
@@ -1868,13 +2295,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode]);
+  // v0.15.0 需求（图片灯箱）：切模式时关闭灯箱（阅读↔编辑两侧的采集 root 会变）
 
   // ─── 延迟恢复滚动位置 ──────────────────────────
   // 等内容渲染完成后再恢复滚动，使用 sourceContent 和 viewMode 作为触发
   // 双重 rAF 确保浏览器完成布局计算
   useEffect(() => {
     if (!pendingScrollRef.current) return;
-    const { targetMode, percent, anchorLine, anchorColumn } = pendingScrollRef.current;
+    const { targetMode, percent, anchorLine, anchorColumn, contentAnchor } = pendingScrollRef.current;
     pendingScrollRef.current = null;
     // 标记正在恢复滚动位置，阻止打字机 effect 的初始 scrollToCenter 覆盖
     // 根因：打字机 effect 的 scrollToCenter 使用 smooth 滚动，是异步多帧的，
@@ -1887,19 +2315,49 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         const container = editorRef.current;
         if (container) {
           viewRef.current?.focus();
-          // v0.12.0 返修（问题4）：滚动位置**一律按阅读进度百分比**恢复。
-          // 旧实现优先用"光标行放在视口同比例位置"的锚点：源码行号 → PM 块的映射
-          // （docBlockLineToPos）在含代码块/表格/列表的文档里并不等价，会落在别的块上，
-          // 用户切换后看到进度百分比与视口内容都偏移 → 感知为"阅读进度不联动"。
-          // 现在：进度（百分比）在三种模式下完全一致；光标位置由切换 effect 按内容映射
-          //（行 + 行内列）单独恢复，"编辑位置"同样一致。
-          const newTop = computeRestoreScrollTop(percent, container.scrollHeight, container.clientHeight);
+          // v0.15.1 需求3：**优先用内容锚点**（编辑→阅读方向）。
+          //
+          // v0.12.0 的口径是"滚动位置一律按百分比恢复"，理由是源码行号→PM 块的映射
+          // 在含代码块/表格/列表的文档里不等价。那一点仍然成立 —— 但那是拿**行号**去
+          // 映射块的旧做法。现在用的是 `contentScrollMap` 的**块几何锚点**（实测按行轴
+          // 反推的块 top/height + 视口中央比例），跨排版等价性已由 52 条纯函数用例覆盖。
+          //
+          // 而百分比在阅读↔编辑两种排版间**不等价**（正文列宽/行高/块距不同 → 软换行数
+          // 不同 → 同一百分比指向不同内容）。只用百分比就会让「双击 Ctrl 反复切换」
+          // 每轮累积一点偏移（用户实测的"屏幕不断滚动位置偏移"）。
+          // 因此：有锚点走锚点，锚点不可用（采不到/映射失败）才退回百分比。
+          let newTop: number | null = null;
+          if (contentAnchor) {
+            const blocks = collectPmBlockGeometry(container);
+            if (blocks) {
+              newTop = restoreContentAnchor(blocks, contentAnchor, container.clientHeight, {
+                contentHeight: container.scrollHeight,
+              });
+            }
+          }
+          if (newTop === null) {
+            newTop = computeRestoreScrollTop(percent, container.scrollHeight, container.clientHeight);
+          }
           container.scrollTop = newTop ?? 0;
           // PM 焦点/选区映射可能让浏览器把光标滚入视口 → 下一帧再校正一次
           if (newTop !== null) {
             requestAnimationFrame(() => {
               const c = editorRef.current;
-              if (c) c.scrollTop = newTop;
+              if (!c) return;
+              // 有锚点时下一帧仍以锚点为准（内容可能刚布局完，scrollHeight 还在变）
+              if (contentAnchor) {
+                const b2 = collectPmBlockGeometry(c);
+                if (b2) {
+                  const again = restoreContentAnchor(b2, contentAnchor, c.clientHeight, {
+                    contentHeight: c.scrollHeight,
+                  });
+                  if (again !== null) {
+                    c.scrollTop = again;
+                    return;
+                  }
+                }
+              }
+              c.scrollTop = newTop as number;
             });
           }
         }
@@ -1922,7 +2380,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             textarea.setSelectionRange(pos, pos);
             lastTextareaCursorRef.current = pos;
           }
-          // ② 滚动位置：按百分比恢复（与另两个模式的阅读进度一致）
+          // ② 滚动位置恢复。
+          //
+          // v0.15.0 需求（阅读↔编辑内容对齐）：**优先用内容锚点**（阅读→编辑方向）。
+          // 百分比在两种排版下不等价（正文宽度/行高/段距不同 → 长段落软换行数不同，
+          // 同一百分比指向不同内容）；锚点记的是"视口中央是哪个块 + 块内比例"，
+          // 与排版无关。只有锚点不可用时才退回百分比。
           //
           // v0.14.0 需求2（P1 根因修复）：此处**不能**再写 `newTop ?? 0`。
           // 实测双 rAF 在 ~44ms 执行，此时 textarea 的 scrollHeight-clientHeight=0
@@ -1930,15 +2393,32 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           // 左栏停顶部；splitScrollSync 随即把 0 推给右屏 iframe → 两屏都掉到 0。
           // 现在改为：可滚动才写；不可滚动且期望非顶部 → 短间隔重试（见
           // planScrollRestore / SCROLL_RESTORE_RETRY_MS 的注释）。
-          restoreScrollWithRetry(textarea, percent, 0, () => isRestoringScrollRef.current);
+          const anchorTop = textareaTopFromContentAnchor(textarea, contentAnchor);
+          if (anchorTop !== null) {
+            textarea.scrollTop = anchorTop;
+            // 布局稳定后校正一次（内容可能刚写入，scrollHeight 还在变）
+            requestAnimationFrame(() => {
+              const t2 = sourceTextareaRef.current;
+              if (!t2) return;
+              const again = textareaTopFromContentAnchor(t2, contentAnchor);
+              if (again !== null) t2.scrollTop = again;
+            });
+          } else {
+            restoreScrollWithRetry(textarea, percent, 0, () => isRestoringScrollRef.current);
+          }
           // focus/setSelectionRange 可能触发浏览器把光标滚入视口 → 下一帧校正
           if (computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight) !== null) {
             requestAnimationFrame(() => {
               const t2 = sourceTextareaRef.current;
-              if (t2) {
-                const top2 = computeRestoreScrollTop(percent, t2.scrollHeight, t2.clientHeight);
-                if (top2 !== null) t2.scrollTop = top2;
+              if (!t2) return;
+              // 有锚点时以锚点为准，不要让百分比校正把它覆盖回错误位置
+              if (contentAnchor) {
+                const again = textareaTopFromContentAnchor(t2, contentAnchor);
+                if (again !== null) t2.scrollTop = again;
+                return;
               }
+              const top2 = computeRestoreScrollTop(percent, t2.scrollHeight, t2.clientHeight);
+              if (top2 !== null) t2.scrollTop = top2;
             });
           }
         }
@@ -1972,6 +2452,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   // ─── 源码编辑内容变化 ──────────────────────────
   const handleSourceChange = useRef((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // v0.15.1 需求1：真实用户输入 = 选区保护窗立即失效（否则撤销后的光标还原
+    // 会跟用户的输入抢光标）。
+    pendingSourceSelectionRef.current = null;
     // v0.7.3 改进10(U3)：任何用户编辑（含自动配对/粘贴/撤销）都会使 source
     // 续写 ghost 位置语义失效——取消任务并清除 overlay（与 PM 模式 docChanged 失效一致）
     sourceGhostHandlersRef.current.invalidate();
@@ -1991,12 +2474,51 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         textarea.setSelectionRange(cursorPos, cursorPos);
       }
     }
-    recordUndoEntry(
-      sourceContentRef.current,
-      newContent,
-      cursorPos,
-      textarea.scrollTop,
-    );
+    // v0.15.0 需求（跨模式撤销统一）：源码编辑改由 sourceAdapter 归并后提交到**统一时间线**。
+    // 旧 `recordUndoEntry`（diff 栈）退休——它与阅读模式的 PM 栈物理隔离，正是"跨模式撤不掉"
+    // 的根因。adapter 负责把连续打字/退格合并成一步（900ms 窗口、光标连续），
+    // 并把 IME / 自动配对 / 粘贴各自成组。
+    //
+    // ⚠️ 时间线只存**真实内容**：`sourceContentRef` 是 base64 mask 后的展示文本，
+    // 必须 unmask 后再提交，否则一次撤销会把 data URL 永久退化成 `image-1.png`（存盘即损坏）。
+    {
+      const beforeReal = unmaskBase64Images(
+        sourceContentRef.current,
+        base64TokensRef.current,
+      );
+      const afterReal = unmaskBase64Images(newContent, base64TokensRef.current);
+      const plan = sourceAdapterRef.current.plan({
+        before: beforeReal,
+        text: afterReal,
+        kind: inferSourceEditKind({
+          before: beforeReal,
+          after: afterReal,
+          composing: sourceComposingRef.current,
+          justPaired: sourceJustPairedRef.current,
+          justPasted: sourceJustPastedRef.current,
+        }),
+        selection: { start: cursorPos, end: cursorPos, scrollTop: textarea.scrollTop },
+        // v0.15.1 需求1：把**编辑前**的现场也带上（撤销要回到这里）。
+        // 光标取"上一次已知光标 + 本次长度增量"反推（onChange 触发时 DOM 选区已在新位置）；
+        // 滚动取上一帧记录的 scrollTop（同一行打字时它不变，跨行回车时它才是对的旧值）。
+        beforeSelection: {
+          start: Math.max(0, cursorPos - (afterReal.length - beforeReal.length)),
+          end: Math.max(0, cursorPos - (afterReal.length - beforeReal.length)),
+          scrollTop: lastSourceScrollTopRef.current,
+        },
+      });
+      // 三个一次性标记消费后复位：它们只描述"刚刚发生的那一次输入"
+      sourceJustPairedRef.current = false;
+      sourceJustPastedRef.current = false;
+      if (plan) historyCoordinatorRef.current?.commitFromSource(plan);
+      else if (beforeReal !== afterReal) {
+        // adapter 认为不需要新条目（例如仍是同一组连续输入）→ 只推进时间线基线，
+        // 保证下一条 commit 的 before 与宿主逐字节一致（否则会被 commit 拒绝）。
+        const key = historyDocKeyOrEmpty();
+        if (key) documentHistory.rebaseText(key, afterReal);
+      }
+      lastRealTextRef.current = afterReal;
+    }
     setSourceContent(newContent);
     onContentChangeRef.current?.(newContent);
     setDirtyRef.current(true);
@@ -2021,6 +2543,171 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
   });
 
+  /**
+   * v0.15.1 需求1：撤销/恢复落地后**保住阅读面的滚动位置**。
+   *
+   * 缺陷（用户原话「进行撤销时候文档会滚动底」）：撤销把整篇 doc `replaceWith` 成更短的
+   * 内容后，`scrollHeight` 立刻变小 → 浏览器把 `scrollTop` 钳到**新的 max**（= 底部），
+   * 而 `editor.ts` 的 dispatchTransaction 里那段"保存/恢复 scrollTop"也会被同一个钳位
+   * 打回（它写的是旧像素值，超过新 max 就被钳到 max）。
+   * 结果：撤销一次，视口就贴到底。
+   *
+   * 修法：**锚内容不锚像素**。撤销前采「视口中央是哪个块 + 块内比例」，落地后按新几何
+   * 反算 scrollTop；块表在异步布局（图片/mermaid 撑高）里会变，故 0/60/160ms 各校正一次，
+   * 用户一旦自己滚了就停手（`userScrolled` 判据用输入事件，不用 scrollTop 差值 ——
+   * 浏览器钳位会被误判成用户操作，见语义地图 §4-31）。
+   *
+   * @returns 一个"落地后调用"的还原函数（撤销前先调 `capturePreviewScrollAnchor`）
+   */
+  const restorePreviewScrollFromAnchor = (
+    anchor: ContentAnchor | null,
+    userScrolledRef: { current: boolean },
+  ): void => {
+    if (!anchor) return;
+    const apply = () => {
+      if (userScrolledRef.current) return;
+      const container = editorRef.current;
+      if (!container || container.clientHeight <= 0) return;
+      const blocks = collectPmBlockGeometry(container);
+      if (!blocks) return;
+      const top = restoreContentAnchor(blocks, anchor, container.clientHeight, {
+        contentHeight: container.scrollHeight,
+      });
+      if (top === null) return; // 映射不到就放弃（绝不写 0）
+      container.scrollTop = top;
+    };
+    requestAnimationFrame(() => {
+      apply();
+      // 图片 / mermaid / katex 异步撑高会改块几何，短窗口内再校正两次
+      window.setTimeout(apply, 60);
+      window.setTimeout(apply, 160);
+    });
+  };
+
+  /** 撤销前采集阅读面滚动锚点（阅读面此刻可见，几何可信） */
+  const capturePreviewScrollAnchor = (): ContentAnchor | null => {
+    const container = editorRef.current;
+    if (!container || container.clientHeight <= 0) return null;
+    const blocks = collectPmBlockGeometry(container);
+    if (!blocks) return null;
+    return captureContentAnchor(blocks, container.scrollTop, container.clientHeight, {
+      contentHeight: container.scrollHeight,
+    });
+  };
+
+  /**
+   * v0.15.0 需求（跨模式撤销统一）：把时间线条目的目标文本**写回宿主**。
+   *
+   * 这是 coordinator 唯一的落地通道（通过 `applyHistoryTextRef` 注入），必须保证：
+   * - 阅读模式：整篇 replaceWith 的 bridge 事务带 `addToHistory:false` + `historyBridge:true`，
+   *   否则 pmAdapter 会把"撤销动作本身"当成新编辑再记一条 → 一次按键双撤销/来回弹；
+   * - 源码模式：写 `setSourceContent` + `sourceContentRef` + 上层通知，并按 selection 恢复光标；
+   * - 两条路径都**不得**再走旧 `pushUndoEntry/recordUndoEntry`（已退休）。
+   */
+  applyHistoryTextRef.current = (text, restore, meta) => {
+    const bridgeMeta = meta as { bridge?: boolean; direction?: "undo" | "redo" } | undefined;
+    const isBridge = bridgeMeta?.bridge === true;
+    if (viewMode === "preview" && isMdFile) {
+      const view = viewRef.current;
+      if (!view || view.isDestroyed) return;
+      // v0.15.1 需求1：撤销前先记「视口中央是哪块内容」，落地后按新几何还原。
+      // 必须在 dispatch 之前采（dispatch 后 doc 已换、几何已变）。
+      const scrollAnchor = capturePreviewScrollAnchor();
+      const userScrolledRef = { current: false };
+      const markUserScrolled = () => {
+        userScrolledRef.current = true;
+      };
+      const container = editorRef.current;
+      // 用户接管判据：**输入事件**（wheel/pointerdown/touchstart/滚动键），排除修饰键
+      // —— 浏览器钳位产生的 scroll 事件不能算用户操作。
+      const onWheel = () => markUserScrolled();
+      const onPointer = () => markUserScrolled();
+      const onKey = (e: KeyboardEvent) => {
+        if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+        if (/^(PageUp|PageDown|Home|End|ArrowUp|ArrowDown|ArrowLeft|ArrowRight| )$/.test(e.key)) {
+          markUserScrolled();
+        }
+      };
+      container?.addEventListener("wheel", onWheel, { passive: true });
+      container?.addEventListener("pointerdown", onPointer, { passive: true });
+      container?.addEventListener("touchstart", onPointer, { passive: true });
+      window.addEventListener("keydown", onKey, true);
+      try {
+        const newDoc = withTrailingParagraph(markdownToDoc(text));
+        const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, newDoc.content);
+        // 🔴 关键：撤销动作的落地不进 PM 历史；只用 historyBridge 标记让 pmAdapter 忽略整批
+        tr.setMeta("addToHistory", false);
+        if (isBridge) tr.setMeta("historyBridge", true);
+        view.dispatch(tr);
+        // v0.15.1 需求1：整篇替换会让 scrollHeight 变小 → 浏览器把 scrollTop 钳到新 max
+        // （= 贴底）。这里按内容锚点还原，避免"撤销一次就滚到底"。
+        restorePreviewScrollFromAnchor(scrollAnchor, userScrolledRef);
+      } catch (e) {
+        console.error("[EditorContainer] 统一撤销：阅读模式写回失败:", e);
+      } finally {
+        // 还原窗口结束（约 200ms）后解绑，避免长期挂监听
+        window.setTimeout(() => {
+          container?.removeEventListener("wheel", onWheel);
+          container?.removeEventListener("pointerdown", onPointer);
+          container?.removeEventListener("touchstart", onPointer);
+          window.removeEventListener("keydown", onKey, true);
+        }, 260);
+      }
+      return;
+    }
+    // 源码模式：写 state + 恢复光标
+    const textarea = sourceTextareaRef.current;
+    const sel = restore as { start: number; end: number; scrollTop?: number } | undefined;
+    setSourceContent(text);
+    sourceContentRef.current = text;
+    onContentChangeRef.current?.(text);
+    setDirtyRef.current(true);
+    lastContentRef.current = text;
+    lastRealTextRef.current = text;
+    // 时间线只存真实内容，因此 text 已是 unmask 后的完整文本；
+    // 展示层需要重新 mask 成短标记，否则 textarea 里会平铺超长 base64。
+    const { text: masked } = maskBase64Images(text, base64TokensRef.current);
+    if (masked !== text) {
+      setSourceContent(masked);
+      sourceContentRef.current = masked;
+      onContentChangeRef.current?.(masked);
+    }
+    if (sel) {
+      const pos = Math.max(0, Math.min(masked.length, sel.start));
+      const end = Math.min(masked.length, sel.end);
+      const scrollTop = typeof sel.scrollTop === "number" ? sel.scrollTop : null;
+      // v0.15.1 需求1：撤销后恢复光标/滚动。
+      //
+      // ⚠️ 不能只靠 rAF：`setSourceContent` 是受控组件，React 提交新 value 时会
+      // **重置 textarea 的 selection**（实测落到 0 或末尾），而且那次提交可能发生在
+      // 我们 rAF 之后 → rAF 里设好的光标被 React 覆盖掉（实测 selectionStart 从 12 变 0）。
+      // 因此两条路一起走：
+      // ① 记进 `pendingSourceSelectionRef`，由 `useLayoutEffect([sourceContent])`
+      //    在 React 提交 DOM **之后、绘制之前**应用（这是唯一不会被覆盖的时机）；
+      // ② 保留 rAF + 60ms 兜底，覆盖"内容二次变化（mask 分支）"等异步路径。
+      pendingSourceSelectionRef.current = {
+        start: pos,
+        end,
+        scrollTop,
+        // 选区保护窗：覆盖「撤销 → onContentChange → App.setContent → content prop
+        // 变化 → 再 setSourceContent」这条二次受控提交链（实测需要 ~100ms）。
+        until: Date.now() + 250,
+      };
+      const applySelection = () => {
+        const ta = sourceTextareaRef.current;
+        if (!ta) return;
+        const len = ta.value.length;
+        ta.focus();
+        ta.setSelectionRange(Math.min(pos, len), Math.min(end, len));
+        if (scrollTop !== null) ta.scrollTop = scrollTop;
+        lastTextareaCursorRef.current = Math.min(pos, len);
+      };
+      applySelection();
+      requestAnimationFrame(applySelection);
+      window.setTimeout(applySelection, 60);
+    }
+  };
+
   // ─── 在光标处插入文本（统一入口，供对话框 onInsert 复用）────────────
   // 复用 sourceInsertHandler 的差异记录与光标恢复逻辑
   const insertTextAtCursor = useCallback((text: string, cursorOffset?: number) => {
@@ -2043,8 +2730,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       }
     }
     // 直接推入差异（对话框插入是离散操作，无需防抖）
-    const diff = computeDiff(currentContent, finalContent);
-    pushUndoEntry({ ...diff, cursorPos: start, scrollTop });
+    // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休，写进去没人消费）
+    recordDiscreteSourceEdit(currentContent, finalContent, start, scrollTop);
     setSourceContent(finalContent);
     sourceContentRef.current = finalContent;
     onContentChangeRef.current?.(finalContent);
@@ -2104,8 +2791,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     );
 
     // 推入 undo 栈（离散操作，无需防抖）
-    const diff = computeDiff(currentContent, newContent);
-    pushUndoEntry({ ...diff, cursorPos, scrollTop });
+    // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
+    recordDiscreteSourceEdit(currentContent, newContent, cursorPos, scrollTop);
 
     setSourceContent(newContent);
     sourceContentRef.current = newContent;
@@ -2384,8 +3071,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (newText === currentContent) return; // 非标题行，无变化
       // v0.12.0 需求1：Ctrl+0 转段落 → 清除可能残留的标题格式 ghost
       formatGhostHandlersRef.current.clear("input");
-      const diff = computeDiff(currentContent, newText);
-      pushUndoEntry({ ...diff, cursorPos: start, scrollTop });
+      // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
+      recordDiscreteSourceEdit(currentContent, newText, start, scrollTop);
       setSourceContent(newText);
       sourceContentRef.current = newText;
       onContentChangeRef.current?.(newText);
@@ -2417,8 +3104,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         return;
       }
       const { replacement: newText, cursorOffset } = lifted;
-      const diff = computeDiff(currentContent, newText);
-      pushUndoEntry({ ...diff, cursorPos: start, scrollTop });
+      // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
+      recordDiscreteSourceEdit(currentContent, newText, start, scrollTop);
       setSourceContent(newText);
       sourceContentRef.current = newText;
       onContentChangeRef.current?.(newText);
@@ -2445,8 +3132,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const level = parseInt(action.slice("heading".length), 10);
       const prefix = getHeadingPrefix(level);
       const { replacement: newText, cursorOffset } = setLinePrefixFn(currentContent, start, prefix);
-      const diff = computeDiff(currentContent, newText);
-      pushUndoEntry({ ...diff, cursorPos: start, scrollTop });
+      // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
+      recordDiscreteSourceEdit(currentContent, newText, start, scrollTop);
       setSourceContent(newText);
       sourceContentRef.current = newText;
       onContentChangeRef.current?.(newText);
@@ -2491,9 +3178,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const { replacement, cursorOffset } = result;
 
     // 直接推入差异（格式操作是离散的，不需要防抖）
-    const diff = computeDiff(currentContent, currentContent.substring(0, start) + replacement + currentContent.substring(end));
-    pushUndoEntry({ ...diff, cursorPos: start, scrollTop });
+    // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
     const newContent = currentContent.substring(0, start) + replacement + currentContent.substring(end);
+    recordDiscreteSourceEdit(currentContent, newContent, start, scrollTop);
     setSourceContent(newContent);
     onContentChangeRef.current?.(newContent);
     setDirtyRef.current(true);
@@ -2894,10 +3581,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     );
     if (idx < 0) return;
     // v0.14.0 需求2：「跨文件替换后切到对应文件也能撤销/恢复」。
-    // 未激活标签此刻没有 EditorView / textarea 撤销栈（内容只在 store 里），
-    // 所以按文档键单独记一条「整篇文本级」的 before→after 记录，
-    // 等用户切过去按 Ctrl+Z 时由 doLocalUndo 消费（带逐字节一致护栏）。
-    recordCrossFileEdit(fileKey, st.openTabs[idx].content ?? "", newText);
+    //
+    // v0.15.0 需求（跨模式撤销统一）：记录方式从「docHistoryStore 的 crossFileEdit」
+    // **改为统一时间线上的 `origin:"cross-file"` 条目**。
+    // 为什么必须改：撤销入口已不再内联消费 `peekCrossFileUndo`，而是统一委托
+    // coordinator；若这里仍写旧记录，切过去按 Ctrl+Z 时**没有任何人消费它**
+    // （实机探针实测：跨文件替换后 A/B 都撤不动，8 项 FAIL）。
+    //
+    // `commitWholeText` 会先按该标签的真实内容对齐时间线基线（knownText 不一致时
+    // rebase），因此未激活文档也能正确入账；切过去后 coordinator 的方向敏感护栏
+    // 会校验 after/before 是否仍匹配，不匹配就丢弃而不覆盖用户编辑。
+    commitWholeText(documentHistory, fileKey, st.openTabs[idx].content ?? "", newText, "cross-file");
     st.updateTabContent(idx, newText);
     st.updateTabDirty(idx, true);
   }, [currentDocKey, writeBackCurrentDoc]);
@@ -3440,8 +4134,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (current.slice(ghost.start, ghost.end) !== ghost.content.slice(ghost.start, ghost.end)) return false;
     const newContent = current.slice(0, ghost.start) + current.slice(ghost.end);
     const scrollTop = textarea.scrollTop;
-    const diff = computeDiff(current, newContent);
-    pushUndoEntry({ ...diff, cursorPos: ghost.start, scrollTop });
+    // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
+    recordDiscreteSourceEdit(current, newContent, ghost.start, scrollTop);
     setSourceContent(newContent);
     sourceContentRef.current = newContent;
     onContentChangeRef.current?.(newContent);
@@ -3463,7 +4157,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
     requestAnimationFrame(restore);
     return true;
-  }, []);
+  }, [recordDiscreteSourceEdit]);
 
   // 每次渲染转发最新实现（handleFormatAction 为挂载时创建一次的 ref 函数，避免闭包过期）
   const formatGhostHandlersRef = useRef<{
@@ -4867,8 +5561,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
     if (next === text) return false;
 
-    const diff = computeDiff(text, next);
-    pushUndoEntry({ ...diff, cursorPos: lineEnd, scrollTop });
+    // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
+    recordDiscreteSourceEdit(text, next, lineEnd, scrollTop);
     setSourceContent(next);
     sourceContentRef.current = next;
     onContentChangeRef.current?.(next);
@@ -4885,7 +5579,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       }
     });
     return true;
-  }, []);
+  }, [recordDiscreteSourceEdit]);
 
   // armed 时单击应用：PM（阅读模式；点击处所在段落为应用目标）
   useEffect(() => {
@@ -6334,6 +7028,44 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * @param shouldContinue 每次重试前的守卫（如"已经不在恢复窗口了就别再改用户滚动位置"）
    * @returns 是否已成功写入
    */
+  /**
+   * v0.15.0 需求（阅读↔编辑内容对齐）：把内容锚点换算成 textarea 的 scrollTop。
+   *
+   * 源码面没有子元素可量，块几何只能由 `measureSourceLineAxis` 的**实测按行轴**
+   * 还原（线性估算在软换行长行上会偏 4 倍）。这里每次现量（测量函数内部带
+   * scrollHeight 缓存键，重复调用不贵），量不到就返回 null 交给百分比兜底。
+   */
+  const textareaTopFromContentAnchor = (
+    textarea: HTMLTextAreaElement,
+    anchor: ContentAnchor | null | undefined,
+  ): number | null => {
+    if (!anchor) return null;
+    if (!(textarea.clientHeight > 0) || !(textarea.scrollHeight > 0)) return null;
+    const markdown = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+    if (!markdown) return null;
+    try {
+      const measured = measureSourceLineAxis({
+        textarea,
+        blockLines: topLevelBlockStartLines(markdown),
+      });
+      if (!measured) return null;
+      const blocks = blockGeometryFromLineAxis({
+        totalLines: measured.totalLines,
+        lineAxis: measured.axis,
+        blockLines: topLevelBlockStartLines(markdown),
+        contentHeight: textarea.scrollHeight,
+        maxScroll: Math.max(0, textarea.scrollHeight - textarea.clientHeight),
+      });
+      if (!blocks) return null;
+      return restoreTextareaContentAnchor(blocks, anchor, {
+        scrollHeight: textarea.scrollHeight,
+        clientHeight: textarea.clientHeight,
+      });
+    } catch {
+      return null;
+    }
+  };
+
   const restoreScrollWithRetry = (
     target: ScrollRestoreTarget | null,
     percent: number,
@@ -6841,6 +7573,26 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     [],
   );
 
+  /**
+   * v0.15.0 需求（阅读区标题折叠）：右侧预览（iframe）的折叠桥。
+   *
+   * PM 阅读面由插件走 Decoration；iframe 是独立 document、不在 PM 里，
+   * 只能 DOM 注入。两个面共享同一份折叠状态（`readingFold`），键用 headingId。
+   *
+   * `isActive` 只有「编辑模式 + 预览显示 + md 文件」为真——代码文件预览不做标题折叠
+   * （它们没有 Markdown 标题语义）。
+   */
+  const foldBridge = useMemo(
+    () =>
+      createIframeFoldBridge({
+        getIframeDocument: () => previewIframeRef.current?.contentDocument ?? null,
+        isActive: () => previewShown && isMdFile,
+      }),
+    [previewShown, isMdFile],
+  );
+  /** 折叠状态变化 → 重新应用到 iframe（PM 面由插件自行响应） */
+  useEffect(() => readingFold.subscribe(() => foldBridge.apply()), [foldBridge]);
+
   useEffect(() => {
     if (!previewShown) return;
     const iframe = previewIframeRef.current;
@@ -7013,7 +7765,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 贴标本身幂等（先清旧标签再贴），重复调用无副作用。
       const tagWhenBodyReady = () => {
         const b = doc.body;
-        if (b) tagPreviewSourceLines(b, previewSourceMarkdown);
+        if (b) {
+          tagPreviewSourceLines(b, previewSourceMarkdown);
+          // v0.15.0 需求（图片灯箱）：右侧预览是独立 document，PM 插件管不到；
+          // 每次整篇重写都会清空该 document 上的监听器，故在 body 就绪后幂等重绑。
+          bindPreviewLightbox(iframe);
+          // v0.15.0 需求（阅读区标题折叠）：iframe 面折叠状态幂等重应用
+          foldBridge.apply();
+        }
       };
       if (doc.body) {
         tagWhenBodyReady();
@@ -7055,6 +7814,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       doc.body.innerHTML = previewHtml;
       // v0.13.1 需求13：增量更新同样要重贴标签（元素被整批替换）
       tagPreviewSourceLines(doc.body, previewSourceMarkdown);
+      // v0.15.0 需求（图片灯箱）：body 被整批替换 → 旧 body 的监听器已随节点丢弃，需重绑
+      bindPreviewLightbox(iframe);
+      // v0.15.0 需求（阅读区标题折叠）：body 整批替换后折叠状态要重新应用
+      foldBridge.apply();
       // 重新触发 mermaid 渲染（脚本已加载，直接调用 run）
       if (hasMermaid && (doc as any).defaultView?.mermaid) {
         try {
@@ -7945,6 +8708,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         contentVersion={forceUpdateKey}
         // v0.14.0 需求2：编辑模式关掉右侧预览时，结果条幅可用更高空间
         splitPreviewOpen={previewShown}
+        // v0.15.0 需求 R6b：工作区全文搜索的作用域来源。
+        // ⚠️ 必须**订阅** openFolders（不能只在 JSX 里 getState()）：用户打开/关闭
+        // 文件夹后，「工作区」作用域的可用性要立即跟着变，否则按钮状态是死的。
+        // 传空数组时面板不渲染该按钮 → 未接线时也不会出现"点了没反应"的入口。
+        workspaceRoots={workspaceRoots}
+        // v0.15.0 需求 R6b：脏文档覆盖——已打开文件的命中改用内存文本重算，
+        // 避免"搜索说这行有、点进去却没有"（磁盘内容落后于编辑器）。
+        openFileTexts={() =>
+          collectSearchFiles().map((f) => ({ filePath: f.filePath, getText: f.getText }))
+        }
       />
 
       {/* 链接插入对话框 */}
@@ -7987,6 +8760,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         onClose={() => setImageDialogOpen(false)}
       />
 
+      {/* v0.15.0 需求（图片灯箱）：常驻挂载，未打开时零 DOM。
+          行为完全由事件驱动（PM 插件/预览 iframe 采集点击 → 组件 portal 渲染）。 */}
+      <ImageLightbox />
+
       {/* G3：图片编辑对话框 */}
       <ImageEditDialog
         open={imageEditDialogOpen}
@@ -8011,8 +8788,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         x={contextMenu.x}
         y={contextMenu.y}
         hasSelection={contextMenu.hasSelection}
-        canUndo={undoStackRef.current.length > 0}
-        canRedo={redoStackRef.current.length > 0}
+        // v0.15.1 需求1：禁用态必须读**统一时间线**（旧 diff 栈已退休、永远为空，
+        // 会让右键菜单的撤销/恢复恒为灰色不可点 —— 用户感知为"撤销彻底坏了"）
+        canUndo={canUndoUnified()}
+        canRedo={canRedoUnified()}
         isMdFile={isMdFile}
         translateEnabled={translateEnabled}
         onAction={handleContextMenuAction}

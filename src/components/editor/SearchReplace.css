@@ -7,8 +7,19 @@
   border-radius: 8px;
   box-shadow: var(--shadow-md);
   padding: 0;
-  min-width: 460px;
-  max-width: 90vw;
+  /**
+   * v0.15.1 需求5：搜索面板宽度**放大一倍**（460 → 920），并改成固定宽度。
+   *
+   * 为什么从 min-width 改成 width：
+   * 旧写法只有下限没有确定宽度，面板宽度由内容撑开 —— 结果条幅/勾选项一变化，
+   * 宽度就可能跟着抖，右侧两个作用域按钮（靠右）也随之漂移（需求6 的观感问题之一）。
+   * 固定宽度后按钮相对面板右沿的位置恒定。
+   *
+   * max-width: 92vw 保留窄屏自适应：窗口比 920 窄时面板等比收窄，
+   * 此时宽度由 92vw 决定，按钮仍贴着面板右沿。
+   */
+  width: 920px;
+  max-width: 92vw;
 }
 
 /* 拖拽条 */
@@ -141,13 +152,42 @@
 /* ─── v0.14.0 需求2：勾选项区（全词 / 大小写 / 选取范围内 / 正则）───────
    为什么用 <label> 包 <input type=checkbox>：
    点击文字也能切换勾选状态（checkbox 本身只有 13px，点击目标太小），
-   且键盘 Tab 可达、Space 可切换，无需额外 role/aria。 */
+   且键盘 Tab 可达、Space 可切换，无需额外 role/aria。
+
+   v0.15.1 需求6：本行改成**两段固定布局**（勾选组 + 右侧动作组）：
+   旧写法 `flex-wrap: wrap` + 按钮各自 `margin-left:auto`，一旦宽度不够/内容变长，
+   行会折行，两个作用域按钮就会掉到第二行、位置随结果条幅的出现而漂移。
+   现在：
+   · 整行 `flex-wrap: nowrap` —— 永不折行；
+   · 勾选组 `flex: 1 1 auto; min-width: 0; overflow: hidden` —— 宽度不够时只裁剪勾选项，
+     绝不挤压/推动右侧按钮；
+   · 动作组 `flex: 0 0 auto` 靠右 —— 两个按钮相对面板右沿的位置恒定，
+     与面板宽度（需求5 的 920px）、结果条幅是否展开都无关。 */
 .search-options-row {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  flex-wrap: nowrap;
+  gap: 10px;
   padding: 0 10px 8px;
+}
+
+/* 勾选组：可被压缩（min-width:0 让 flex 允许收缩），溢出时裁剪而不是折行 */
+.search-options-checks {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 右侧动作组：固定尺寸、贴右沿；内部两个按钮按顺序紧邻，不再各自 margin-left:auto */
+.search-options-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .search-check {
@@ -181,9 +221,11 @@
   letter-spacing: 0.5px;
 }
 
-/* 「查找所有打开文件」：与勾选项同一行，靠右（margin-left:auto） */
+/* 「查找所有打开文件」/「搜索整个工作区」：位于右侧动作组内，靠右对齐
+   v0.15.1 需求6：**去掉 margin-left:auto** —— 靠右由父级 .search-options-actions
+   的 margin-left:auto 统一负责；按钮各自再 auto 会让两个按钮被拆到两侧、
+   间距随可用宽度变化（面板放大/条幅展开时肉眼可见地"移动"）。 */
 .search-find-files-btn {
-  margin-left: auto;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 4px;
@@ -214,6 +256,50 @@
   font-size: 11px;
   color: #e5484d;
   line-height: 1.4;
+}
+
+/* ─── v0.15.1 需求6：结果条幅「展开 / 收起」的高度过渡 ─────────────────
+   问题：条幅（`.search-results`）由 `showResults` / `scope === "workspace"` 条件渲染，
+   挂载/卸载会让**面板高度一帧跳变**（搜索行、替换行、按钮整排上下弹一下）。
+
+   做法（外壳常驻 + 高度过渡）：
+   · `.search-results-shell` 是**常驻**的外壳，收起时 height: 0 + overflow: hidden；
+   · 展开时 height: auto（`interpolate-size: allow-keywords` 让 auto 也能参与过渡，
+     WebView2 155 / Chromium 155 支持）；不支持该特性时 auto ↔ 0 会退化为瞬时切换，
+     功能不受影响（条幅照常显隐，只是没有动画）；
+   · 收起时内容会同步卸载（既有测试与交互契约要求节点消失），因此高度起点由 JS
+     在 useLayoutEffect 里按"上一帧实测高度"锁住再过渡到 0 —— 否则内容一卸载就
+     已经塌了，CSS 过渡没有起点可插值（见 SearchReplace.tsx 的 useResultsShell）；
+   · 透明度/位移同向收放，让"长出来"更有层次；滚动与内容布局不受影响。
+
+   注意保留既有约束：条幅仍在**文档流**里、位于替换行之后（不遮挡替换行）。 */
+.search-results-shell {
+  /* 收起态：零高度 + 裁剪；不用 display:none（那会失去过渡） */
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-4px);
+  /* 高度过渡 + 透明度/位移；时长与面板其它动效口径一致（200ms 级别，快而不飘） */
+  transition:
+    height 0.22s cubic-bezier(0.33, 1, 0.68, 1),
+    opacity 0.16s ease-out,
+    transform 0.22s cubic-bezier(0.33, 1, 0.68, 1);
+  /* Chromium 129+：让 height:auto ↔ 0 可插值（WebView2 155 支持） */
+  interpolate-size: allow-keywords;
+}
+
+/* 展开态：高度交给内容（auto），透明度/位移归位 */
+.search-results-shell.is-open {
+  height: auto;
+  opacity: 1;
+  transform: none;
+}
+
+/* 尊重系统减弱动效：不做过渡，直接显隐（功能一致） */
+@media (prefers-reduced-motion: reduce) {
+  .search-results-shell {
+    transition: none;
+  }
 }
 
 /* ─── v0.14.0 需求2：「查找所有打开文件」结果条幅 ───────────────────
@@ -280,6 +366,51 @@
 .search-result-file-line {
   color: var(--text-tertiary);
   font-weight: 400;
+}
+
+/**
+ * v0.15.0 R6b：工作区结果里的**相对路径**（`a/README.md`）。
+ *
+ * 为什么显示它：工作区里不同目录常有同名文件（`a/README.md` 与 `b/README.md`），
+ * 只显示文件名无法区分。相对路径既短又能唯一定位，故作为文件名后的次级信息。
+ * 用更小字号 + 次级色，避免抢文件名的主视觉。
+ */
+.search-result-file-path {
+  color: var(--text-tertiary);
+  font-weight: 400;
+  font-size: 10px;
+  margin-left: 6px;
+  opacity: 0.85;
+  /* 极深目录时截断而不是换行（条幅每行高度必须稳定，否则滚动条会抖） */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/**
+ * v0.15.0 R6b：工作区搜索的**取消**按钮（内联在进度摘要里）。
+ *
+ * 位置：靠右（`margin-left:auto`），与摘要文字同一行 —— 用户扫视进度时
+ * 取消入口就在视线终点，不用去面板别处找。
+ * 只在进行中渲染（组件侧控制），因此不需要额外的隐藏态样式。
+ */
+.search-cancel-btn {
+  float: right;
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.search-cancel-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--accent-color);
 }
 
 .search-result-line {

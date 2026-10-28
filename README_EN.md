@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.14.0**
+**Current Version: v0.15.1**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -20,6 +20,8 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
   slid back in from the vertical "Open preview" rail at the editor's right edge.
   - Double-tap `Ctrl`: toggle Preview ↔ Edit; double-tap `Shift`: toggle the preview pane
   - **Reading position is preserved**: when toggling between the two modes, and even after closing and reopening a tab (0.14.0 batch 2)
+  - **Undo spans mode switches** (0.15.0): each document has **one logical timeline** shared by Preview, Edit and the right-hand preview pane; `Ctrl+Z` can walk back through edits made in another mode instead of losing the stack or jumping to unrelated content
+  - **Content-anchored alignment** (0.15.0): the two panes align by **content anchor** (top-level block + ratio inside it) instead of scroll percentage, so the same paragraph lands at the same spot on both sides; long soft-wrapped lines, code blocks, tables, images and nested lists use measured line axes, and collapsed heading ranges are skipped
   - Hover the divider centre for the vertical, breathing "Close preview / Open preview" label
 
 ### 📊 Rich Content Support
@@ -85,7 +87,8 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 ### 📖 Reading Experience Enhancements
 
-- Image lightbox: click any image for a full-screen view with zoom, prev/next navigation and `Esc` to close
+- **Image lightbox** (reworked in 0.15.0; **double-click** to open since 0.15.1): double-click an image to view it over the app viewport with **25%–800% zoom** (buttons / wheel / double-click toggles fit ↔ 100%), **drag to pan when zoomed**, **`←`/`→` to step through images** (hidden for a single image), `Home` to reset, and `Esc` / overlay / ✕ to close (clicking the image itself does not close it). Works from Preview mode and the right-hand preview pane, each portal-ing into its own `document.body`; multiple windows stay independent
+- **Heading folding in reading areas** (0.15.0, smooth animation in 0.15.1): a fold button appears before headings and collapses everything down to the next heading of the same or higher level; **display-only** — it never changes the Markdown, never writes to the file and never creates an undo step
 - Typography settings (content width / line height / paragraph spacing) really applied, with reading progress as a percentage in the status bar
 - Heading anchors jump correctly; `[toc]` updates live; emoji short codes render as graphics (source text preserved on save)
 - Zero-shift heading symbols — no more jitter when the cursor enters or leaves headings / quotes / code blocks
@@ -115,7 +118,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 - Markdown source symbols appear instantly when the cursor enters a bold / italic / inline code / link range, and hide on leave
 - Markdown-aware paste restores real structure from Markdown text or web rich text
-- Undo history stays consistent across modes with no empty steps
+- Undo history is **unified across modes** — since 0.15.0 every document has a **single logical timeline** (see "Two Editing Modes"): Preview, Edit and the right-hand pane share one undo stack, and switching modes itself is not a step
 
 ### 🧹 Editing Consistency
 
@@ -139,13 +142,24 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - Column-width / row-height dragging, whole-column alignment, row/column add and delete, and a header row that cannot be deleted (so data never impersonates a header)
 - `Enter` inside a cell moves to the cell below in the same column (appending a row at the bottom), `Shift+Enter` inserts a line break
 - **Cell merge / split** (drag across cells → 🔗/✂️; both colspan and rowspan, structure survives reopening; ordinary tables round-trip with zero diff)
+- **Cross-editor notice for merged cells** (0.15.0): on the first merge, LightMD explains that Markdown/GFM has **no** standard merged-cell syntax and that it stores merges as inline `<td colspan/rowspan>` HTML; other editors may show the raw tags, ignore the merge or misalign the table, while **LightMD always renders it faithfully** and the notice never modifies the source file. Shown once; re-openable any time from the table menu ("Compatibility note")
 
 ### ⚡ Navigation & Performance
 
 - In-document link navigation: relative paths open the target document, `#anchor` smooth-scrolls, external links go to the system browser
 - Split view sync is a **top-level block mapping** in both directions (no shared scrollbar): scrolling either side aligns the corresponding block to the top of the other, with a 250 ms direction lock to stop echo pushes
+- **Content-anchored Preview ↔ Edit alignment** (0.15.0): alignment is based on the top-level block at the viewport centre plus the ratio inside it, so both panes land on the same block; top/bottom edges have dedicated branches, and injected Mermaid / KaTeX nodes plus trailing padding paragraphs never skew the anchor
 - Focus mode and Mermaid rendering caches keep hundred-thousand-character documents smooth
 - Task items and footnotes keep a lossless content model, directly editable including nested lists and paragraphs
+
+### 🔎 Workspace Full-Text Search (0.15.0, read-only)
+
+- A new **Workspace** scope next to "Find in open files": searches the body text of every file under all workspace roots open in this window (roots are de-duplicated; a nested root wins over its ancestor)
+- Results are grouped per file and streamed with live progress (files scanned / skipped / hits) and can be cancelled at any time; clicking a hit jumps straight to that file and position
+- Searches `.md` / `.markdown` / `.mdown` / `.mkd` / `.txt` by default; skips `.git`, `node_modules`, hidden directories, symlink cycles and binary files, and skips single files larger than 2 MiB (counting them as skipped)
+- **Read-only**: no workspace-wide replace, no index database, no wiki-link / tag / frontmatter parsing
+- Files that are open but unsaved are re-validated against their **in-memory** content, so stale disk content can never produce phantom hits
+- Regex is **not** supported in the workspace scope in this first release (Rust and JS regex semantics are not equivalent) — ticking Regex shows an explicit notice instead of silently changing semantics
 
 ### 🪟 Immersive Fullscreen & Shortcut Experience
 
@@ -173,7 +187,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 📌 **Tab bar upgrades** — left/right scroll buttons plus smooth wheel scrolling when tabs overflow; pin a tab (pin icon shown); 9-item context menu (Rename / Pin / Print / Save As / Close Others / Close Others Except Pinned / Close to the Left / Close to the Right / Close Unmodified)
 - 📋 **File tree copy / cut / paste / drag** — copy or cut from the context menu or with `Ctrl+C` / `Ctrl+V`; drag onto a folder to copy, hold `Shift` to move (tab paths follow automatically); name clashes get a " - Copy" suffix
 - 🗑 **Delete closes its tabs** — removing a file or folder also closes the matching open tabs
-- 🧭 **Open containing folder as workspace** — from the tab/file/recent-item context menu
+- 🧭 **Open containing folder as workspace** — from the tab/file/recent-item context menu; **since 0.15.0 it no longer re-mounts**: if the file already lives inside an open workspace root (with nested roots, the **deepest** one containing it wins), LightMD only expands to it and highlights it, reusing the existing workspace — no extra sidebar section and no duplicate folder watcher. The toast distinguishes "located in current workspace" from "opened in sidebar"
 - 🖱 **Redesigned sidebar layout** — drag a section header to resize (neighbouring sections trade height, and the last one can be dragged all the way down); floating scroll arrows and a slimmer, subtler scrollbar
 - 🖱 **File tree drag & ordering upgrades (0.8.4)** — drag a file/folder onto a folder to copy, hold `Shift` to move (cross-drive supported); drag within the same folder to reorder (manual order survives restart); copy/cut in the node context menu, and new file / new folder / refresh / paste on the empty-area menu; per-folder sort button in the folder header (name / modified / created × ascending / descending, remembered per folder); external changes sync into the tree automatically (`Ctrl+R` as a fallback refresh)
 - 🗑 **Delete goes to the Recycle Bin (0.8.5)** — deleting files / folders no longer removes them permanently; they land in the system Recycle Bin and can be restored anytime
@@ -204,6 +218,20 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - **Translation Bubble** — streaming results with cancel (`Esc`) and one-click restore of the original (0.6.1)
 - **Efficiency** — symbol-only / URL / email / image-only paragraphs are skipped; links, inline code, and images are protected as placeholders so they are never mistranslated (0.6.2/0.6.4/0.6.5); full-document translation runs 3-way concurrent (0.7.3)
 - **API Key Security** — stored in Windows Credential Manager and removed on uninstall (0.6.1); warnings for non-local URL endpoints (0.6.3); stored per provider (0.7.2)
+- **Fully decoupled from the AI assistant** (0.15.0): translation keeps its own settings, while the AI assistant / chat / custom instructions use the **AI connection profiles** below — changing one never affects the other
+
+### 🔌 AI Connection Profiles & Deep Configuration (0.15.0)
+
+- **Independent connection profiles** — Settings → "AI Connections": create any number of profiles (add / duplicate / rename / delete / reorder / set default). Each profile bundles protocol, endpoint, model, token budgets, request policy, system prompt and its own key; switching profile switches the whole set at once
+- **Two protocols** — one UI for both **OpenAI Chat Completions** (`POST {base}/chat/completions`, `Authorization` header) and **Anthropic Messages** (`POST {base}/v1/messages`, `x-api-key` + `anthropic-version`, `system` as a top-level field)
+- **Custom System Prompt** — per profile, **appended after** the built-in behavioural constraints (never overriding them) and sent in the system position rather than mixed into your messages
+- **Instruction library** — add / edit / duplicate / reorder custom instructions with `{{selection}}` and `{{document}}` variables; built-in templates are read-only and can be copied for editing
+- **Ollama local preset** — picking "Ollama (local)" pre-fills `http://127.0.0.1:11434/v1` with `authMode=none`: no key field, no fake key ever written
+- **Context / output budgets** — each profile sets a context window and max output, validated so output < context; the output limit field can be `max_tokens` or `max_completion_tokens`, and temperature / reasoning effort that are left blank are **not sent at all**
+- **Real token usage** — shows actual input / output tokens when the endpoint reports usage, and "not reported" (never a fake 0) when it does not
+- **Key safety** — keys are stored per profile in Windows Credential Manager, never echoed in the UI and never written to settings files
+- **No guessing** — presets only fill endpoint and protocol, the **model ID is left for you** to enter from your account docs; capabilities are never inferred from the model name
+- **Volcengine acceptance samples** — Anthropic protocol `https://ark.cn-beijing.volces.com/api/plan`, OpenAI-compatible `https://ark.cn-beijing.volces.com/api/plan/v3`
 
 ### 🤖 AI Assistant & AI Chat
 
@@ -219,6 +247,7 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - 🔤 **Custom Font** and Size
 - 🖼 **Image Paste** — paste image and choose insertion method via dialog, with option to save to `assets/` folder
 - 📤 **Export HTML** (preserves Mermaid / KaTeX rendering)
+- 📤 **Export PDF** — printed in-app through WebView2 (**since 0.15.0 with no Edge / Chrome subprocess**: no local browser needed, immune to browser paths and versions, and the export runs in a separate hidden WebView so the editor is untouched)
 - 📤 **Export ePub** — chapters split by heading, bundled images, code-block styling (0.8.0)
 - 📤 **Export LaTeX** — generates a `.tex` source (ctexart + XeLaTeX, Chinese-ready) (0.8.0)
 - 🎯 **Focus Mode** (toggle with `F8`, dims inactive paragraphs)
@@ -245,7 +274,7 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 
 **Knowledge organisation**
 
-- Cross-file full-text search (only **file names** can be searched; `Ctrl+F` is limited to the current document)
+- Cross-file full-text search (`Ctrl+F` is limited to the current document; since 0.15.0 **workspace full-text search** covers the body text of open workspace folders, but there is no workspace-wide replace, no index and no frontmatter parsing)
 - Tag system (`#tag` parsing / tag panel / filtering by tag)
 - YAML frontmatter property panel (note: full-document translation skips the YAML header)
 - Wiki links `[[wiki-link]]` / backlinks / unlinked mentions
@@ -319,10 +348,10 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.14.0 installers:
+Visit the [Releases](../../releases) page to download the 0.15.1 installers:
 
-- **`LightMD_0.14.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.14.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.15.1_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.15.1_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -373,6 +402,61 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.15.1 (2026-10-28)
+
+**Bug-fix release — all 7 issues reported after v0.15.0 shipped are fixed. No new features, no data-format changes.**
+
+The undo item was actually **five stacked defects**: PM (Preview-mode) edits never reached the unified timeline at all (the adapter received an `EditorState` but serialized it as a doc, so it always produced an empty string); the timeline baseline was never created on first mount; eight source-mode edit paths still pushed onto the **retired** diff stack (both non-undoable and pushing `knownText` out of sync, triggering a force-rebase that truncated the redo branch); the adapter baseline was not written back after undo/redo; and the boundary warning fired twice and misfired.
+
+| Issue | Fix |
+| --- | --- |
+| Cross-mode undo “hits the boundary after a few steps, then undo/redo are dead” | The five defects above, fixed one by one. The context menu’s undo/redo enabled state now also reads the unified timeline |
+| Undo scrolls the document to the bottom | Replacing the whole doc shortens it, so the browser clamps `scrollTop` to the new max. Now anchored to **content, not pixels**: capture the viewport-centre block + ratio before undo, then recompute; re-checked at 0/60/160 ms; stops as soon as the user scrolls (input events, not `scrollTop` deltas, so browser clamping is not mistaken for user action) |
+| Caret jumps to the start of the document after undo | Entries lacked `beforeSelection`; and a controlled textarea resets its selection when React commits, possibly after our rAF. Capture the pre-edit context plus a selection-protection window applied in `useLayoutEffect` |
+| Heading folding had no animation | Terminal state changed from `display:none` to “height 0 + clipped + invisible” with `interpolate-size: allow-keywords` so `height:auto ↔ 0` interpolates; the triangle now uses a **fixed glyph + `transform` rotation** (the button element is reused so the transition can run); PM and iframe CSS are kept identical and locked by unit tests; engines without the feature fall back to instant show/hide |
+| Repeated double-Ctrl mode toggling drifted the scroll position | The content anchor was only captured for **Preview→Edit**; the reverse still used percentages, and the two layouts differ → cumulative drift every round. Now **bi-directional** content anchoring (the source side reconstructs block geometry from the measured line axis), with percentage only as fallback. Real-machine probe over 10 rounds: centre content identical 10/10, `scrollTop` constant, no accumulation |
+| Workspace search results did nothing when clicked | (1) The result `fileKey` is normalized (lower-case / forward slashes) while App compared it against the raw `tab.path` → never matched; (2) the hit file may **not be open**, and App only searched open tabs. Both sides now normalize through `pathCompareKey`; unopened files are opened by path with a visible failure toast |
+| Search box too small / jumps in size / buttons move | Panel width 460 → **920 px** (double, with `max-width: 92vw` on narrow screens); the results banner now uses a **always-mounted shell with height/opacity/transform transition** instead of conditional rendering; the options row changed from `flex-wrap: wrap` with per-button `margin-left:auto` to a two-part layout (compressible checkbox group + fixed action group), so both scope buttons stay put |
+| Lightbox missing / should be double-click | The gate was `editable === false`, which only reflects “read-only tab”, not the view mode — so the lightbox **never opened in Preview mode for normal documents**. It now gates on `viewMode === "preview"`. Entry is **double-click** on all three surfaces (Preview PM, edit-mode iframe preview, edit-mode image node); single-click semantics are unchanged (select + edge-drag resize). Also fixed the lightbox’s own double-click being re-captured by the collector (which made it flash back to fit) |
+
+Verification: `tsc --noEmit` exit 0 (strict); **336 test files / 6118 cases all pass** (v0.15.0 baseline 6066, +52); all 115 existing undo-related cases still green with **no existing assertion changed**; real-machine probe (mode-switch drift) 5/5 PASS; versions `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock` = **0.15.1**.
+
+---
+
+### v0.15.0 (2026-10-26 ~ 10-27)
+
+**Experience unification + deep AI configuration + lightweight knowledge retrieval — one undo timeline across modes, heading folding, AI connection profiles with dual protocols, in-app PDF, workspace full-text search**
+
+The theme of this release is stitching together four places where "each piece worked but the combination felt wrong": **undo** is no longer split into two stacks by mode, **Preview ↔ Edit alignment** moves from scroll percentage to content anchors, **AI configuration** becomes independent connection profiles with OpenAI / Anthropic dual protocols instead of piggy-backing on the translation settings, and **PDF export** drops the dependency on a locally installed Edge / Chrome entirely. It also fills in two previously-missing capabilities — **workspace full-text search** (a minimal knowledge-base scope, read-only) and a **cross-editor compatibility notice for merged table cells** — and reworks the image lightbox while fixing duplicate workspace mounting.
+
+**New features**
+
+| Feature | Details |
+| --- | --- |
+| Unified cross-mode undo | One **logical timeline per document** (`services/documentHistory`); the source textarea and ProseMirror each commit through their own adapter into a single coordinator, so Preview, Edit and the right-hand pane share one undo stack — switching modes no longer creates empty steps or drops the stack. Cross-file replace records keep a byte-exact guard: if the target file was edited afterwards the record is discarded rather than overwriting your work |
+| Heading folding in reading areas | A fold button before headings collapses everything down to the next heading of the same or higher level. Purely a display layer (ProseMirror `Decoration` + iframe DOM injection sharing one state aligned by `headingId`); **never touches the doc, never writes Markdown, never enters undo history**, and cleans itself up when a heading is deleted or renamed |
+| Independent AI connection profiles | Settings → "AI Connections": any number of profiles (add / duplicate / rename / delete / reorder / set default), each with protocol, endpoint, model, context window, output budget, request policy, system prompt and its own key — fully decoupled from "AI Translation" |
+| Dual AI protocols | OpenAI Chat Completions (`POST {base}/chat/completions` + `Authorization`) and Anthropic Messages (`POST {base}/v1/messages` + `x-api-key` + `anthropic-version`, `system` top-level); URL joining handles bases ending in `/v1` or `/api/plan` |
+| AI request policy | Output-limit field is either `max_tokens` or `max_completion_tokens` (mutually exclusive); temperature and reasoning effort that are left blank are **not sent at all**; `stream_options.include_usage` can be toggled per endpoint capability |
+| Token budgets and real usage | Context window and max output fields validated so output < context; displays real input/output tokens when usage is reported, and "not reported" instead of a normalized 0 when it is not |
+| Custom System Prompt + instruction library | The system prompt is appended after built-in constraints (never overriding them, never placed in user messages); instructions can be added / edited / duplicated / reordered with `{{selection}}` and `{{document}}` variables, and built-in templates are read-only copies |
+| Ollama local preset | One click pre-fills `http://127.0.0.1:11434/v1` with `authMode=none`: no key field shown, no fake key written |
+| PDF export via in-app WebView2 | No more Edge / Chrome headless subprocess: a separate hidden WebView hosted by Tauri calls `PrintToPdf`, backed by a three-part readiness gate (NavigationCompleted + `fonts.ready` + a page-ready flag) and image-decode timeouts, while the editor stays untouched. Paper size A4/Letter/Legal, mm→inch margins, background printing and disabled default headers/footers all map onto `COREWEBVIEW2_PRINT_SETTINGS`; errors are layered as `PDF_NAV / RENDER / IO / TIMEOUT / UNSUPPORTED` |
+| Workspace full-text search | A new **Workspace** scope next to "Find in open files" scans the body text of every root open in this window (de-duplicated roots, deepest root wins); streaming progress with cancel, results grouped per file, click to jump. Skips `.git` / `node_modules` / hidden dirs / symlink cycles / binaries and counts files over 2 MiB as skipped; open files are re-validated against in-memory content; **read-only** — no workspace-wide replace, no index, no wiki-link / tag / frontmatter parsing |
+| Merged-cell compatibility notice | On the first merge, explains that GFM has no standard merged-cell syntax, that LightMD stores merges as `<td colspan/rowspan>` HTML, and that other editors may show raw tags or misalign; shown once and re-openable from the table menu. The notice never modifies the file and never creates an undo step |
+| Content-anchored Preview ↔ Edit alignment | Alignment uses a **content anchor** (top-level block at the viewport centre + ratio inside it) instead of scroll percentage; top/bottom edges have dedicated branches, long soft-wrapped lines use measured line axes, injected Mermaid/KaTeX nodes and trailing padding paragraphs are excluded, and folded blocks are skipped; when no mapping is possible it never falls back to 0 |
+
+**Fixes**
+
+| Issue | Fix |
+| --- | --- |
+| Image lightbox only gave a full-screen glance | Rebuilt as a viewport-covering lightbox: 25%–800% zoom (buttons / wheel / double-click toggles fit ↔ 100%), drag to pan when zoomed, `←`/`→` stepping (hidden for single images), `Home` reset, `Esc`/overlay/✕ to close while clicking the image itself does not close. The Preview ProseMirror view and the right-hand iframe each portal into their own `document.body`, independent across windows; closing restores the original scroll container and `overflow` |
+| "Open containing folder as workspace" re-mounted duplicates | Path comparison now goes through `utils/path.ts`'s `isSameOrInsidePath` (case, separator and trailing-slash normalisation; `/a/foo` no longer matches `/a/foobar`). When the file already sits inside an open root, the **deepest** containing root is used as the locate context and LightMD only expands + highlights — no extra folder, no duplicate `watchFolder`, no full-tree refresh. Equivalent spellings (`D:\proj\` vs `D:/proj`) no longer create a second root |
+
+Quality: `tsc --noEmit` exit 0 (strict); Rust `cargo test` green; version **0.15.0** in `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock`.
+
+Known trade-offs: ① workspace full-text search does **not** support regex in this first release (Rust regex and JS RegExp semantics differ — better to omit than silently change semantics), and there is no workspace-wide replace or index; ② undo keeps checkpoint semantics on full snapshots (oldest dropped when over budget, checkpoints retained), so in extreme large documents some early steps are not undoable; ③ heading fold state is session-only (keyed by `docKey + headingId`) and does not survive a restart; ④ lightbox zoom is not persisted; ⑤ when an AI endpoint does not report usage the UI says "not reported" — no token or cost estimation is performed.
 
 ### v0.14.0 (2026-10-23 ~ 10-26, including eight fix rounds)
 

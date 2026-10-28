@@ -1,6 +1,6 @@
 [package]
 name = "lightmd"
-version = "0.14.0"
+version = "0.15.1"
 description = "LightMD - 轻量级 Markdown 编辑器"
 authors = ["LightMD"]
 edition = "2021"
@@ -83,3 +83,21 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
+
+# ─── v0.15.0 C2：真机烟囱测试 ───
+# 需要真实 WebView2 Runtime + GUI 会话；**默认不构建**（required-features），
+# 因此不会进入 `cargo build` / 产品打包。手动跑：
+#   cargo run --example pdf_smoke --features pdf-smoke
+# 覆盖三种纸张×三档边距（含 PDF MediaBox 抽检）、连续导出、并发导出、PDF_IO 分层。
+[features]
+pdf-smoke = []
+
+# ⚠️ 用 [[example]] 而不是 [[bin]]：
+# - `[[bin]]` 会被 `cargo build` / `tauri build` 当成**产品可执行目标**去打包，
+#   而本文件只是真机烟囱测试（需要 GUI + WebView2），打包器会因找不到产物而报
+#   `failed to bundle project: 系统找不到指定的文件`（实测踩过）；
+# - `[[example]]` 只在显式 `cargo run --example` 时构建，默认不进入任何打包路径。
+[[example]]
+name = "pdf_smoke"
+path = "examples/pdf_smoke.rs"
+required-features = ["pdf-smoke"]

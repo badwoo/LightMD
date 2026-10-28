@@ -1,0 +1,118 @@
+/* ─── v0.15.0 R3c：AI 设置共用控件样式 ─────────────────────────────────
+ *
+ * 为什么单独一个文件：`AiConnectionSettings` 与 `AiInstructionEditor` 是两个
+ * 可独立挂载的 section（Lead 可只接其中一个），但它们共用同一批输入控件与按钮。
+ * 若把控件样式写在其中一个组件的 CSS 里，另一个单独挂载时就会没有样式。
+ * 因此共用控件集中在此，两个组件各自 import 本文件 + 自己的布局文件。
+ *
+ * 所有颜色走主题 CSS 变量（6 套主题 × 明暗都要成立），不写死色值。
+ */
+
+/* ─── 输入控件 ─────────────────────────────────────────── */
+
+.ai-input,
+.ai-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.ai-input:focus,
+.ai-textarea:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 30%, transparent);
+}
+
+.ai-input-mono,
+.ai-textarea {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px;
+}
+
+.ai-textarea {
+  resize: vertical;
+  min-height: 72px;
+  line-height: 1.6;
+}
+
+/* 两个字段并排（Token 预算 / 请求策略） */
+.ai-field-row {
+  display: flex;
+  gap: 12px;
+}
+
+.ai-field-row > .settings-field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* ─── 按钮 ────────────────────────────────────────────── */
+
+.ai-btn {
+  padding: 5px 11px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+
+.ai-btn:hover:not(:disabled) {
+  border-color: var(--accent-color);
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--accent-color) 12%);
+}
+
+.ai-btn:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+.ai-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ai-btn-primary {
+  color: #fff;
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+.ai-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-color) 84%, #000 16%);
+}
+
+/* ─── 校验提示 ─────────────────────────────────────────── */
+
+.ai-error-list {
+  margin: 10px 0 0;
+  padding: 8px 10px 8px 26px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #d9534f;
+  background: color-mix(in srgb, var(--bg-primary) 90%, #d9534f 10%);
+  border: 1px solid color-mix(in srgb, var(--border-color) 60%, #d9534f 40%);
+  border-radius: 6px;
+}
+
+.ai-error-list li {
+  list-style: disc;
+}
+
+/* 窄窗口：并排字段改为堆叠 */
+@media (max-width: 640px) {
+  .ai-field-row {
+    flex-direction: column;
+    gap: 0;
+  }
+}

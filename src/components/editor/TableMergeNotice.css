@@ -1,0 +1,85 @@
+/* 合并单元格兼容性说明：非阻塞、不会遮挡当前编辑区。 */
+.table-merge-notice {
+  position: fixed;
+  right: 24px;
+  bottom: 56px;
+  z-index: 1200;
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg, 0 12px 36px rgba(0, 0, 0, 0.2));
+}
+
+.table-merge-notice-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-light, var(--border-color));
+}
+
+.table-merge-notice-heading h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.table-merge-notice-icon {
+  color: var(--accent-color);
+  font-size: 17px;
+}
+
+.table-merge-notice-close {
+  padding: 0 4px;
+  color: var(--text-secondary);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.table-merge-notice-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.table-merge-notice-body {
+  padding: 4px 14px 12px;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.table-merge-notice-body code {
+  padding: 1px 4px;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border-radius: 3px;
+  font-family: var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+
+.table-merge-notice-footnote {
+  margin-bottom: 0;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 520px) {
+  .table-merge-notice {
+    right: 16px;
+    bottom: 48px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .table-merge-notice * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

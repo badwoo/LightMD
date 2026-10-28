@@ -14,6 +14,12 @@ import {
   sanitizeShortcutOverrides,
   setShortcutOverrides,
 } from "../core/shortcuts";
+// v0.15.0 需求（AI 深度配置）：AI 连接档案 DTO 与旧 translate 迁移
+import {
+  createAiSettingsFromLegacy,
+  migrateAiSettings,
+  type AiSettings,
+} from "../services/aiProfiles";
 
 /**
  * 主题类型（G6：从 2 主题扩展到 6 主题）
@@ -253,6 +259,25 @@ interface SettingsState {
   sidebarSectionSizes: Record<string, number>;
   /** v0.6.0: AI 翻译配置（API Key 走 keyring，不在此处） */
   translate: TranslateSettings;
+  /**
+   * v0.15.0 需求（AI 深度配置）：AI 连接档案（与翻译解耦）。
+   *
+   * 为什么单独一个字段而不复用 `translate`：本版要求「独立模型配置（与翻译解耦）」
+   * ——AI 助手/对话用的 provider/baseUrl/model/参数 必须能和翻译分别配置，
+   * 各自切换互不影响。API Key 仍走系统 keyring（按 `credentialId` 分槽），
+   * 绝不进入本字段，因此这里序列化后不含任何密钥明文。
+   */
+  ai: AiSettings;
+  /**
+   * v0.15.0 需求（表格合并提示）：是否已看过「合并单元格不跨编辑器保真」的一次性提示。
+   *
+   * 语义：**每安装一次**只自动弹一次；用户仍可从表格菜单「兼容性说明」随时重看
+   * （重看不看此标记、也不会再写它）。默认 false = 首次使用需要提示。
+   *
+   * 为什么放在 settings 而不是 doc：它是用户级偏好（跨文档、跨窗口共享），
+   * 随 `lightmd:settingsChanged` 广播同步到其它窗口，避免每个窗口各弹一次。
+   */
+  tableMergeNoticeSeen: boolean;
   /** v0.7.0 修复1/2：全局 AI 总开关（翻译/续写/润色/摘要共用；关闭后所有 AI 入口静默）
    * 老数据迁移：v0.7.0 之前无此字段，translateEnabled=true 的老用户自动继承为 true */
   aiEnabled: boolean;
@@ -358,6 +383,14 @@ interface SettingsState {
   setSidebarSectionSizes: (sizes: Record<string, number>) => void;
   /** v0.6.0：合并更新 AI 翻译配置 */
   setTranslateConfig: (cfg: Partial<TranslateSettings>) => void;
+  /** v0.15.0：整体写入 AI 连接档案（新增/编辑/删除 profile、切换 active、指令库变更都走这里） */
+  setAiSettings: (ai: AiSettings) => void;
+  /**
+   * v0.15.0 需求（表格合并提示）：标记「已看过跨编辑器兼容性提示」。
+   * 只由一次性提示组件在真正展示后调用（点关闭/遮罩都算看过），
+   * 手动重看入口不得调用它。
+   */
+  setTableMergeNoticeSeen: (seen: boolean) => void;
   /**
    * v0.7.5 功能6：记录 AI 对话窗位置/尺寸（拖拽/缩放结束时调用）。
    * 传入 null 清除记忆（回落默认居中）。
@@ -446,6 +479,13 @@ export function migrateSettings(persisted: unknown, version: number): Partial<Se
   // 其余脏数据（未登记 id、非法键位、保留占用、互相冲突、与默认值相同的冗余覆盖）
   // 统一交给 sanitizeShortcutOverrides 清洗——见 core/shortcuts.ts
   p.shortcuts = sanitizeShortcutOverrides(p.shortcuts);
+  // v0.15.0（version < 7）：AI 连接档案——首次升级从旧 translate 连接复制一份。
+  // migrateAiSettings 自身是幂等的（已有 ai 则原样返回，包括用户清空 profiles 的选择），
+  // 因此这里无需再判断 version，只在缺 ai 时才产生"复制"副作用。
+  p.ai = migrateAiSettings(
+    p as unknown as { translate?: never; ai?: never },
+    "ai-default",
+  );
   return p;
 }
 
@@ -540,6 +580,13 @@ export const useSettingsStore = create<SettingsState>()(
       sidebarSectionSizes: {},
       // v0.6.0：AI 翻译默认配置（旧 localStorage 缺字段时自动回退默认值）
       translate: { ...DEFAULT_TRANSLATE_SETTINGS },
+      // v0.15.0 需求（AI 深度配置）：AI 连接档案初始值。
+      // 默认从 translate 的「默认值」派生一个 profile（等价于首次迁移结果），
+      // 这样即使跳过 migrate（如全新安装）也不会出现 ai.profiles 为空、
+      // 导致 AI 入口报"未配置连接"；之后的迁移在 migrateSettings 里做幂等覆盖。
+      ai: createAiSettingsFromLegacy(DEFAULT_TRANSLATE_SETTINGS, "ai-default"),
+      // v0.15.0 需求（表格合并提示）：默认未看过 → 首次成功合并后弹一次
+      tableMergeNoticeSeen: false,
       // v0.7.0：全局 AI 总开关默认关闭（迁移逻辑见 merge：老用户 translateEnabled=true 继承）
       aiEnabled: false,
       // v0.7.5 功能6：对话窗无位置记忆（首次打开走默认居中）
@@ -665,6 +712,11 @@ export const useSettingsStore = create<SettingsState>()(
       // v0.6.0：合并更新 AI 翻译配置（浅合并，未知字段忽略）
       setTranslateConfig: (cfg) =>
         set((s) => ({ translate: { ...s.translate, ...cfg } })),
+      // v0.15.0 需求（AI 深度配置）：AI 连接档案整体替换。
+      // 不做浅合并——profiles 是数组，浅合并会让删除/重排变得不可表达。
+      setAiSettings: (ai) => set({ ai }),
+      // v0.15.0 需求（表格合并提示）：一次性提示看过标记（跨窗口随 settings 广播同步）
+      setTableMergeNoticeSeen: (seen) => set({ tableMergeNoticeSeen: seen }),
       // v0.7.5 功能6：对话窗位置/尺寸记忆（非法/过小值 → null，回落默认居中）
       setAiChatWindow: (rect) => set({ aiChatWindow: normalizeAiChatRect(rect) }),
       // v0.8.4 需求7：设置/取消文件夹根的排序模式（key 归一化分隔符为 `/`；
@@ -688,7 +740,7 @@ export const useSettingsStore = create<SettingsState>()(
       // v0.14.0 升 5：需求4 文件夹栏默认可视 7 → 11 条（清理旧默认 250）
       // v0.14.0 再升 6：需求2 口径修正为「10 文件栏位 + 1 空白栏位 = 11 个条目位」（362px）；
       // 清掉历史默认 250 / 上一版误做的 392，并保留用户自己拖过的高度
-      version: 6,
+      version: 7,
       migrate: (persisted, version) =>
         migrateSettings(persisted, version) as SettingsState,
       // v0.6.0：自定义合并——translate 嵌套对象做字段级回退，

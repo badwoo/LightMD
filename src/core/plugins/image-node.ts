@@ -18,9 +18,35 @@
  * `ignoreMutation` 协作（改 style 不能被当成文档改动）。NodeView 天然持有
  * `getPos` 与 `view`，比在容器层靠 `posAtDOM` 反查更稳。
  *
- * ## 与图片灯箱的关系
- * 灯箱（`image-lightbox.ts`）只在**只读标签**生效（`editable === false`）。
- * 本 NodeView 在可编辑时接管点击；只读时点击仍由灯箱处理（`onClick` 里判断）。
+ * ## 与图片灯箱的关系（v0.15.1 需求7 重写）
+ *
+ * v0.13.2 的判据是 `view.editable === false` → 放行给灯箱。**这个判据是错的**：
+ * `editable` 只反映「标签是否只读」（`editableGetter` = `!tab.isReadonly`），
+ * 与 viewMode 无关；而 PM 阅读面恰恰在 `viewMode === "preview"` 时可见。
+ * 于是普通文档在阅读模式下 `editable === true` → 旧代码永远走 `activate()`，
+ * 灯箱根本打不开。
+ *
+ * v0.15.1 起**单击/双击语义分离**，两个面行为一致：
+ *
+ * | 场景 | 单击 | 双击 |
+ * |---|---|---|
+ * | 阅读模式（`viewMode === "preview"`） | 选中图片节点（`activate()`，拖拽缩放的前提） | **打开灯箱** |
+ * | 阅读模式 + 只读标签 | 放行（PM 自己处理选区） | 打开灯箱（不依赖 editable） |
+ * | 编辑模式（`viewMode === "edit"`） | 选中 + 四边拖拽缩放 | 不打开（编辑态不弹灯箱） |
+ *
+ * ## 为什么双击不用自判、直接吃原生 `dblclick`
+ *
+ * `mousedown` 里的 `preventDefault()` / `stopPropagation()` **不会**取消浏览器
+ * 后续派发的 `dblclick`（规范上它们只作用于 mousedown 自身的默认动作与冒泡）。
+ * 而 `imageLightboxPlugin` 的监听挂在 `editorView.dom` 的 **capture** 阶段，
+ * 是整棵编辑器 DOM 的最外层捕获点 —— img 上的 dblclick 无论中间谁
+ * stopPropagation 都拦不住它。
+ *
+ * 因此这里**不需要**再自判 300ms/8px：原生 dblclick 一条路径同时服务
+ * 「阅读面（本 NodeView 的 img）」与「schema.toDOM 直接渲染的 img」，
+ * 口径由浏览器统一，也不会出现「自判 + 原生」双触发导致开两次灯箱。
+ * （`utils/imageLightbox` 的 `isDoubleClick` 仍保留，供灯箱内
+ *  「双击 fit⇄100%」的 pointerdown 手势使用 —— 那里必须自判，因为要区分拖拽。）
  */
 import type { NodeView, EditorView } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
@@ -118,10 +144,12 @@ export class ImageView implements NodeView {
       this.dom.appendChild(zone);
     }
 
-    // 点击图片 = 激活（选中该 image 节点），不弹编辑窗
+    // 单击图片 = 激活（选中该 image 节点），不弹编辑窗。
+    // 双击 = 打开灯箱，由 `imageLightboxPlugin` 在 `editorView.dom` 的 **capture**
+    // 阶段监听原生 `dblclick` 完成（原因见文件头「为什么双击不用自判」）。
     this.img.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
-      // 只读标签：放行给图片灯箱（image-lightbox 的冒泡监听）
+      // 只读标签：放行（PM 自己处理选区，不做 NodeSelection）
       if (view.editable === false) return;
       e.preventDefault();
       e.stopPropagation();

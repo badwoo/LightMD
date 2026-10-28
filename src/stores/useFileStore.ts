@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+// v0.15.0 F2：路径比较统一走 utils/path.ts（大小写/分隔符/尾斜杠归一 + 前缀边界匹配）
+import { isSameOrInsidePath } from "../utils/path";
 
 interface FileNode {
   name: string;
@@ -268,11 +270,10 @@ export const useFileStore = create<FileState>()(
         });
       },
       // v0.4.0：检查路径是否在任一已打开文件夹下
-      // 严格匹配：路径等于文件夹路径，或以"文件夹路径+分隔符"开头，避免 /a/b 误匹配 /a/b-c
+      // v0.15.0 F2：改走 utils/path.ts 的 isSameOrInsidePath —— 分隔符/尾斜杠归一 +
+      // Windows 语义大小写不敏感，且「父路径 + "/"」边界匹配天然避免 /a/foo 误匹配 /a/foobar。
       isPathInOpenFolders: (path) =>
-        get().openFolders.some(
-          (f) => path === f.path || path.startsWith(f.path + "/") || path.startsWith(f.path + "\\")
-        ),
+        get().openFolders.some((f) => isSameOrInsidePath(path, f.path)),
       setRecentFiles: (files) => set({ recentFiles: files }),
       // v0.8.3 需求1：头插 + 按 path 去重 + 按 MAX_RECENT_FILES(66) 截断
       // （最新在首位；超出上限时列表末位 = 最早打开的那条被清除）

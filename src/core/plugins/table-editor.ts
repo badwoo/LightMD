@@ -1585,6 +1585,13 @@ export class TableView implements NodeView {
       return false;
     }
     this.view.dispatch(out);
+    // 只在合并事务实际 dispatch 成功后通知宿主；失败/取消路径不会到达这里。
+    // TableView 不依赖 React，自动提示是否展示由 TableMergeNotice 按 seen 裁决。
+    this.dom.ownerDocument.defaultView?.dispatchEvent(
+      new CustomEvent("lightmd:tableMergeNotice", {
+        detail: { reason: "merge" },
+      }),
+    );
     this.clearCellRange();
     return true;
   }
@@ -1694,6 +1701,7 @@ export class TableView implements NodeView {
     buttons.push(
       { label: "🔗", title: t("table.mergeCells"), action: "mergeCells" } as unknown as Btn,
       { label: "✂️", title: t("table.splitCell"), action: "splitCell" } as unknown as Btn,
+      { label: "ⓘ", title: t("table.mergeCompatibility"), action: "mergeCompatibility" } as unknown as Btn,
     );
 
     buttons.forEach(({ label, title, op, align, danger, action, alignAction }) => {
@@ -1731,6 +1739,14 @@ export class TableView implements NodeView {
         }
         if (action === "splitCell") {
           this.splitCurrentCell();
+          return;
+        }
+        if (action === "mergeCompatibility") {
+          this.dom.ownerDocument.defaultView?.dispatchEvent(
+            new CustomEvent("lightmd:tableMergeNotice", {
+              detail: { reason: "manual" },
+            }),
+          );
           return;
         }
         const $pos = this.getCurrentCellPos();

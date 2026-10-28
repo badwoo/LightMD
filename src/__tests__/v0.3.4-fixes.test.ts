@@ -143,29 +143,94 @@ describe("问题2：重命名联动更新收藏和最近文件", () => {
 
 // ─── 问题 3：导出 PDF 格式文件时报错 ──────────────────────
 
-describe("问题3：PDF 导出报错修复", () => {
-  it("export.rs 包含 --virtual-time-budget=10000 等待渲染完成（R3s：5000→10000 防 Mermaid 多图截断）", () => {
-    const src = readSrc("../../src-tauri/src/commands/export.rs");
-    expect(src).toMatch(/--virtual-time-budget=10000/);
+/**
+ * v0.15.0 C2（Windows WebView2 PrintToPdf）迁移说明
+ *
+ * 问题3 的两条断言原本锁在 **Edge headless 实现细节** 上：
+ *   - `export.rs` 里 `--virtual-time-budget=10000`；
+ *   - `build_pdf_print_args` 里 `--print-to-pdf=...` + `--no-pdf-header-footer`。
+ *
+ * v0.15.0 C2 把主路径换成 **进程内 WebView2 `PrintToPdf`**（`src-tauri/src/pdf/`），
+ * 上述参数、函数与外部进程全部删除 —— 它们断言的东西已不存在。
+ *
+ * 但**用户可见契约没有变**，只是实现换了载体：
+ *   1. 渲染必须"等到图表/公式画完再打印" → 旧方案靠虚拟时间预算猜，
+ *      新方案靠页面内就绪脚本的真实判据（`__LMD_PDF_READY` + fonts/images/mermaid/katex）；
+ *   2. 不得出现 WebView2/Chromium 的**默认**页眉页脚（否则每页印日期/临时 URL/页码，
+ *      并与我们用 position:fixed 实现的页眉页脚叠印）→ 旧方案靠 `--no-pdf-header-footer`，
+ *      新方案靠 `SetShouldPrintHeaderAndFooter(false)` + HeaderTitle/FooterUri 置空。
+ *
+ * 因此这里把断言**迁移到新实现的对应契约**上（而不是删除断言）：
+ *   - 纯函数 `pdf::settings::print_settings_values()` 断言默认页眉页脚恒关；
+ *   - 就绪脚本断言"真实判据 + 硬超时放行"存在（取代虚拟时间预算）；
+ *   - 源码级断言 `export.rs` 不再含任何 Edge 参数/外部进程调用。
+ */
+describe("问题3：PDF 导出报错修复（v0.15.0 C2：WebView2 PrintToPdf 契约迁移）", () => {
+  const settingsRs = () => readSrc("../../src-tauri/src/pdf/settings.rs");
+  const windowsRs = () => readSrc("../../src-tauri/src/pdf/windows.rs");
+  const exportRs = () => readSrc("../../src-tauri/src/commands/export.rs");
+
+  it("渲染完成不再靠虚拟时间预算，改由页面就绪脚本按真实判据上报", () => {
+    // 旧契约：--virtual-time-budget=10000（猜"大概画完了"）
+    // 新契约：页面脚本在 document.fonts.ready + 图片 decode + mermaid svg + katex
+    //        全部就绪、且连续两帧稳定后，置 __LMD_PDF_READY 并 postMessage 上报
+    const src = windowsRs();
+    expect(src).toContain("__LMD_PDF_READY");
+    expect(src).toContain("document.fonts.ready");
+    expect(src).toContain("postMessage");
+    // 必须有硬超时放行（页面卡住时不能永远等）
+    expect(src).toMatch(/HARD_MS\s*=\s*\d+/);
   });
 
-  it("build_pdf_print_args 使用生效的 --no-pdf-header-footer（不再用无效的旧参数）", () => {
-    const raw = readSrc("../../src-tauri/src/commands/export.rs");
-    // [返修] 本用例原先断言仍含 `--print-to-pdf-no-header` —— 那是**无效参数**
-    // （Edge 154 实测加/不加输出字节一致），导致每页印上日期、内部临时路径与页码。
-    // 且原先断言被注释里的同名字符串满足 → 先只取 build_pdf_print_args 的实现体
-    // （到测试模块之前），再剔除注释，避免注释/测试断言造成假通过。
-    const start = raw.indexOf("fn build_pdf_print_args");
-    expect(start).toBeGreaterThan(-1);
-    const end = raw.indexOf("#[cfg(test)]");
-    const body = raw
-      .slice(start, end > start ? end : raw.length)
+  it("打印设置禁用默认页眉页脚（取代已删除的 --no-pdf-header-footer）", () => {
+    // 纯函数层：native_header_footer 恒为 false
+    const settings = settingsRs();
+    expect(settings).toMatch(/native_header_footer/);
+    expect(settings).toMatch(/native_header_footer:\s*false/);
+    // COM 装配层：把该值写进 PrintSettings，并把 HeaderTitle/FooterUri 清空做双保险
+    const win = windowsRs();
+    expect(win).toMatch(/SetShouldPrintHeaderAndFooter/);
+    expect(win).toMatch(/SetHeaderTitle/);
+    expect(win).toMatch(/SetFooterUri/);
+  });
+
+  it("纸张/边距映射到 PrintSettings 的英寸值（纯函数，可单测）", () => {
+    const settings = settingsRs();
+    // 三种纸张 A4/Letter/Legal 与 mm→inch 换算必须存在
+    expect(settings).toMatch(/A4/);
+    expect(settings).toMatch(/Letter/);
+    expect(settings).toMatch(/Legal/);
+    expect(settings).toMatch(/25\.4/);
+    expect(settings).toMatch(/fn print_settings_values/);
+  });
+
+  it("export.rs 不再启动 Edge/Chrome 外部进程，也不含旧打印参数", () => {
+    // 只看**实现代码**：先截到测试模块之前，再剔除注释（`//` / `//!` / `/* */`）——
+    // 模块文档里如实记载了"已删除的旧参数名"，源码级守卫测试也用拼接字符串
+    // 断言这些关键字不存在；两者都不算"实现里还在用"。
+    const raw = exportRs();
+    const testModAt = raw.indexOf("#[cfg(test)]");
+    const body = (testModAt > 0 ? raw.slice(0, testModAt) : raw)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
       .split(/\r?\n/)
       .map((l) => l.replace(/\/\/.*$/, ""))
       .join("\n");
-    expect(body).toMatch(/--print-to-pdf=/);
-    expect(body).toMatch(/--no-pdf-header-footer/);
-    expect(body).not.toMatch(/--print-to-pdf-no-header/);
+    const banned = [
+      ["--virtual", "-time-budget"].join(""),
+      ["--print", "-to-pdf="].join(""),
+      ["--no-pdf", "-header-footer"].join(""),
+      ["--print-to-pdf", "-no-header"].join(""),
+      ["fn build_pdf", "_print_args"].join(""),
+      ["fn find_edge", "_path"].join(""),
+      ["std::process", "::Command"].join(""),
+    ];
+    for (const needle of banned) {
+      expect(body, `export.rs 实现代码不应再包含 ${needle}`).not.toContain(needle);
+    }
+    // 但仍必须保留前端契约命令与入参名
+    expect(body).toContain("export_html_to_pdf");
+    expect(body).toContain("html_content: String");
+    expect(body).toContain("pdf_path: String");
   });
 });
 

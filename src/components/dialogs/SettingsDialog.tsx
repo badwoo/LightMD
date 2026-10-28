@@ -28,6 +28,9 @@ import {
   UpdateNetworkError,
   type UpdateCheckResult,
 } from "../../services/updateService";
+// v0.15.0 需求（AI 深度配置）：AI 连接档案 + 指令库（各自读写 settings.ai，无需数据 props）
+import { AiConnectionSettings } from "../settings/AiConnectionSettings";
+import { AiInstructionEditor } from "../settings/AiInstructionEditor";
 import "./SettingsDialog.css";
 
 /** v0.6.0：翻译服务商预设（切换时自动填充 baseUrl/默认模型；models 供模型角色下拉选择） */
@@ -1251,6 +1254,16 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             </div>
             </div>{/* /.translate-config-fields */}
           </section>
+
+          {/* v0.15.0 需求（AI 深度配置）：AI 连接档案管理。
+              与上方「AI 翻译」是**两套独立配置**：翻译仍用 settings.translate，
+              AI 助手/对话用 settings.ai.profiles（本版核心需求：改翻译不影响 AI）。
+              Key 只进系统凭据库，绝不进 persist，UI 不回显明文。 */}
+          <AiConnectionSettings />
+
+          {/* v0.15.0 需求（自定义 system prompt + 指令库）：指令库增删改/复制/排序。
+              变量仅 {{selection}}/{{document}}，纯文本替换不执行代码。 */}
+          <AiInstructionEditor />
 
           {/* 自定义 CSS（v0.11.0 B6-2：此前有 UI 但无注入点 = 写了不生效） */}
           <section className="settings-section">

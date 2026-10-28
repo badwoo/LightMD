@@ -49,6 +49,17 @@ export function isSameOrInsidePath(child: string, parent: string): boolean {
   return c === p || c.startsWith(p + "/");
 }
 
+/**
+ * v0.15.0 F2：两个路径是否**指向同一目录**（忽略分隔符、结尾斜杠、大小写）。
+ *
+ * 语义上就是「互相包含」——双向调用 isSameOrInsidePath，不引入任何新的归一化/
+ * 前缀匹配逻辑。供"该文件夹是否已经是打开的根"这类目录等价判定复用
+ * （utils/path.ts 是唯一比较入口，禁止各调用点自己写 startsWith 归一）。
+ */
+export function isSameDirPath(a: string, b: string): boolean {
+  return isSameOrInsidePath(a, b) && isSameOrInsidePath(b, a);
+}
+
 export function getFileName(filePath: string): string {
   const parts = normalizePath(filePath).split("/");
   return parts[parts.length - 1] || "无标题.md";

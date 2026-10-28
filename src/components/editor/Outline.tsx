@@ -46,6 +46,9 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useT } from "../../i18n";
 import { calculateDragTransaction } from "../../utils/outlineDrag";
+// v0.15.0 需求（阅读区标题折叠）：跳转到大纲项前先展开其被折叠的祖先标题，
+// 否则 scrollIntoView 会滚到一个 display:none 的块上（跳跃看起来"没反应"）
+import { expandBeforeJumpToDocPos } from "./readingFold";
 // v0.13.2 需求7b：大纲滚动位置按文档记忆
 import {
   getOutlineScroll,
@@ -451,6 +454,9 @@ export function Outline({ editorView }: OutlineProps) {
     (pos: number) => {
       if (!editorView) return;
       try {
+        // v0.15.0 需求（阅读区标题折叠）：先展开被折叠的祖先标题，
+        // 否则目标块仍是 display:none，scrollIntoView 等于滚到不可见元素。
+        expandBeforeJumpToDocPos(editorView.state.doc, pos);
         const dom = editorView.nodeDOM(pos);
         if (dom instanceof HTMLElement) {
           dom.scrollIntoView({ behavior: "smooth", block: "start" });

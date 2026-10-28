@@ -40,6 +40,8 @@ import { SettingsDialog } from "./components/dialogs/SettingsDialog";
 import { ExportDialog } from "./components/dialogs/ExportDialog";
 import { ImagePasteDialog } from "./components/dialogs/ImagePasteDialog";
 import { CommandPalette } from "./components/dialogs/CommandPalette";
+// v0.15.0 需求（表格合并提示）：常驻挂载的一次性兼容性提示
+import { TableMergeNotice } from "./components/editor/TableMergeNotice";
 // v0.13.0 需求8：Ctrl+P 文件快速切换器
 import { QuickOpenDialog } from "./components/dialogs/QuickOpenDialog";
 // v0.13.0 需求11：图片管理面板（只管当前文档）
@@ -3505,25 +3507,60 @@ function App() {
    *
    * 定位与高亮仍由 SearchReplace 自己做：面板在同一实例里常驻（GenieSearchDialog
    * 不随标签切换卸载），切完标签后 docKey 变化会触发它 `takeSearchJump`。
+   *
+   * ─── v0.15.1 需求4：两条真因修复 ───────────────────────────────
+   *
+   * ① 键口径不一致：工作区结果的 fileKey 由 `workspaceSearch.fileKeyOf()` 生成
+   *    = `pathCompareKey(filePath)`（反斜杠→正斜杠 + **全小写**），而这里旧代码用
+   *    `(tab.path || "") === fileKey` 严格相等比较 —— 标签里存的是原生路径
+   *    （`D:\ws\a.md`，反斜杠 + 原大小写），永远匹配不上 → `idx < 0` → 静默 return，
+   *    用户感知就是「点了工作区结果没反应」。现在两侧统一走 `toJumpKey()` 归一化。
+   *
+   * ② 命中文件可能根本没打开：旧逻辑只在 `openTabs` 里找，找不到就什么都不做。
+   *    现在未打开时用 `openFileByPath(path)` 打开 —— 它内部走 `lightmd:openFile`
+   *    全链路（标签去重、大文件降级、快照记录），打开后 docKey 变化会驱动
+   *    SearchReplace 消费 pending 并用 occurrence 定位。打开失败必须**可见提示**，
+   *    绝不静默（复用既有 i18n key `filetree.openFileFailed`，不新增 key）。
    */
   useEffect(() => {
+    /** 跳转键归一化：临时标签键原样透传，真实路径走 pathCompareKey（与工作区结果同口径） */
+    const toJumpKey = (k: string) =>
+      k.startsWith(UNTITLED_PROGRESS_PREFIX) ? k : pathCompareKey(k);
+
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ fileKey?: string }>).detail;
+      const detail = (e as CustomEvent<{ fileKey?: string; filePath?: string }>).detail;
       const fileKey = detail?.fileKey;
       if (!fileKey) return;
+      const key = toJumpKey(fileKey);
       const st = useEditorStore.getState();
       const idx = st.openTabs.findIndex((tab, i) =>
         tab.isUntitled
-          ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? i}` === fileKey
-          : (tab.path || "") === fileKey,
+          ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? i}` === key
+          : !!tab.path && pathCompareKey(tab.path) === key,
       );
-      if (idx < 0) return;
-      if (idx === st.activeTabIdx) return; // 已是当前文档，无需切换
-      handleTabSwitchRef.current(st.openTabs[idx]);
+      if (idx >= 0) {
+        if (idx === st.activeTabIdx) return; // 已是当前文档：由 SearchReplace 就地定位
+        handleTabSwitchRef.current(st.openTabs[idx]);
+        return;
+      }
+      // ── 目标文件尚未打开：按路径打开（需求4 真因 b） ──
+      const rawPath =
+        detail?.filePath ||
+        (fileKey.startsWith(UNTITLED_PROGRESS_PREFIX) ? "" : fileKey);
+      if (!rawPath) return; // 临时标签键无法按路径打开，保持原行为（面板会给定位提示）
+      void openFileByPath(rawPath).catch((err) => {
+        // 打开失败要有可见反馈：文件名 + 原因（复用既有 key，不新增 i18n）
+        const msg = err instanceof Error ? err.message : String(err ?? "");
+        notifyError(
+          msg
+            ? `${t("filetree.openFileFailed")}：${getFileName(rawPath)}（${msg}）`
+            : `${t("filetree.openFileFailed")}：${getFileName(rawPath)}`,
+        );
+      });
     };
     window.addEventListener(SEARCH_JUMP_EVENT, handler);
     return () => window.removeEventListener(SEARCH_JUMP_EVENT, handler);
-  }, []);
+  }, [openFileByPath, t]);
 
   // v0.13.2 需求5（返修后口径）：撤销/恢复不再跨文档，因此这里**没有**切文档路由。
   // 每个文档的撤销历史由 EditorContainer 按 docKey 保存/装回，Ctrl+Z 只作用于当前文档。
@@ -3695,6 +3732,10 @@ function App() {
       {showCommandPalette && (
         <CommandPalette onClose={() => setShowCommandPalette(false)} />
       )}
+      {/* v0.15.0 需求（表格合并提示）：常驻挂载，由 CustomEvent 驱动。
+          首次成功合并单元格时自动弹一次，之后可从表格菜单「兼容性说明」重看。
+          未打开时零 DOM；跨窗口显示状态靠 settings 的 tableMergeNoticeSeen 同步。 */}
+      <TableMergeNotice />
       {/* v0.13.0 需求8：文件快速切换器（Ctrl+P）——三类来源去重排序 */}
       {showQuickOpen && (
         <QuickOpenDialog

@@ -1,0 +1,155 @@
+/* ─── v0.15.0 R3c：AI 连接档案管理（设置页内嵌 section） ──────────────────
+ *
+ * 视觉基调：与 SettingsDialog 既有 section 一致（只做容器/间距/焦点态），
+ * 颜色全部走主题 CSS 变量，不写死颜色值（6 套主题 + 明暗都要成立）。
+ *
+ * 布局：左侧档案列表（固定宽）+ 右侧编辑区（自适应）。窄窗口（<640px）转为
+ * 上下堆叠，避免输入框被挤到不可用宽度。
+ */
+
+.ai-settings {
+  /* 与 .settings-section 的间距口径一致 */
+  display: block;
+}
+
+/* ─── 空态引导 ─────────────────────────────────────────── */
+
+.ai-empty {
+  border: 1px dashed var(--border-color);
+  border-radius: 10px;
+  padding: 18px 20px;
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--accent-color) 8%);
+}
+
+.ai-empty-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ai-empty-hint {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.ai-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ─── 布局 ────────────────────────────────────────────── */
+
+.ai-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.ai-profile-list {
+  flex: 0 0 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 460px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+}
+
+.ai-profile-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.ai-profile-item:hover {
+  background: color-mix(in srgb, var(--bg-primary) 80%, var(--accent-color) 20%);
+}
+
+.ai-profile-item.is-selected {
+  border-color: var(--accent-color);
+  background: color-mix(in srgb, var(--bg-primary) 78%, var(--accent-color) 22%);
+}
+
+.ai-profile-item:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+.ai-profile-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-profile-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #fff;
+  background: var(--accent-color);
+  border-radius: 4px;
+}
+
+.ai-profile-badge-muted {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-primary) 70%, var(--text-secondary) 30%);
+}
+
+.ai-profile-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ─── 工具条 ───────────────────────────────────────────── */
+
+.ai-profile-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ai-preset-select {
+  /* 与既有 .settings-select 同宽高，这里只保证在工具条里不被压缩到不可读 */
+  min-width: 190px;
+}
+
+/* 共用控件（输入框/按钮/校验列表）样式见 aiSettingsShared.css，两个组件各自 import。 */
+
+/* ─── 窄窗口：上下堆叠 ──────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .ai-layout {
+    flex-direction: column;
+  }
+  .ai-profile-list {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 180px;
+  }
+  .ai-preset-select {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+}

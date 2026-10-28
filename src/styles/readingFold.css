@@ -1,0 +1,215 @@
+/**
+ * v0.15.0 需求2（R2 阅读区标题折叠）：阅读面折叠样式。
+ * v0.15.1 需求2：折叠 / 展开改为**顺滑动效**（高度 + 透明度 + 三角旋转）。
+ *
+ * 为什么单独一个文件、不改 `styles/editor.css`：`editor.css` 是多人共用热点
+ * （本轮有多个 WP 并行改样式），折叠相关规则全部内聚在本文件 → 合并零冲突。
+ * 本文件由 `components/editor/readingFold.ts` import（随插件模块一起进 bundle）。
+ *
+ * 硬纪律（设计冻结稿 §2.1）：折叠**只影响渲染层**，
+ * 不 delete/replace 节点、不改 doc、不写 Markdown、不产生撤销历史。
+ * 本文件与 `readingFold.ts` 里的 `FOLD_IFRAME_CSS` **必须同口径**：两处关键
+ * 声明由单测锁死一致（`v0150-reading-fold.test.ts` 的「两面口径一致」用例）。
+ *
+ * ## 动效模型（v0.15.1）
+ * 折叠终态不是 `display:none`，而是「高度 0 + 裁切 + 不可见」：
+ *   展开态（无 class）        height: auto, opacity: 1, overflow: 原值, visibility: visible
+ *   折叠态（.lmd-fold-hidden）height: 0,   opacity: 0, overflow: hidden, visibility: hidden
+ *
+ * 三条关键机制：
+ * 1. `interpolate-size: allow-keywords`（Chromium 129+ / WebView2 155 支持）让
+ *    `height: auto ↔ 0` 可插值。只写在 `.ProseMirror` 上（该属性可继承）——刻意
+ *    不写 `:root`：那会把全应用的 auto 高度过渡都变成可插值，越界。
+ * 2. 过渡声明在**两个终态各自**身上：类被加/删的那一刻，动画由「变化后的样式」
+ *    里的 transition 决定，因此折叠与展开方向必须各写一份。
+ *    `height` 在展开态恒为 `auto`，计算值不变 → 打字、换行、块内容变化都不触发动画。
+ * 3. `overflow` / `visibility` 用 **0s 时长 + delay** 做「延迟翻转」：
+ *    - 折叠：`overflow 0s 0s`（立刻裁切）+ `visibility 0s 220ms`（收起后再隐藏）
+ *    - 展开：`overflow 0s 220ms`（长完才放开裁切）+ `visibility 0s 0s`（立刻可见）
+ *    时长 0 的过渡在 delay 结束时翻转取值，**不依赖** `transition-behavior:
+ *    allow-discrete`（少一个特性依赖，退化面更小）。
+ *
+ * ## 为什么不用 JS 计时器
+ * 动画期间反复点击必须收敛到「只点一次」的终态。终态完全由 class 决定、过渡由
+ * 浏览器从当前计算值重新起步 → 天然幂等，无中间高度残留，也不会与空事务抢时序。
+ *
+ * ## 退化路径（`@supports not (interpolate-size: allow-keywords)`）
+ * `height: auto` 不可插值 → 退回瞬时 `display: none`：功能完整（块不占布局、
+ * 不可见、不可选、块内链接不参与 Tab 序列），只是没有动画。
+ */
+
+/* ── 折叠动效的插值开关（可继承，作用域仅编辑区）──────────────── */
+.ProseMirror {
+  interpolate-size: allow-keywords;
+}
+
+/* ── ① 所有顶层块：**展开方向**的几何 / 透明度过渡（0 → auto）────
+   只过渡本功能会改变的属性。`height` 平时恒为 `auto`，计算值不变
+   → 打字、换行、块内容变化都不会触发动画。 */
+.ProseMirror > * {
+  transition:
+    height 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    opacity 220ms ease,
+    margin-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    margin-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    border-top-width 220ms ease,
+    border-bottom-width 220ms ease;
+}
+
+/* ── ② 普通块额外加「展开后放开裁切」的延迟翻转 ────────────────
+   为什么排除四个 wrapper（代码块 / 图表 / 公式 / 表格）：它们 base 就是
+   `overflow: hidden`，且 hover / 选中态会切到 `visible`（左侧手柄需要溢出可见，
+   见 editor.css 的 v0.12.0 返修）。若给它们也加 220ms 延迟的 overflow 过渡，
+   hover 时手柄会出现延迟 —— 真机可感知的回归。它们的展开本来就被 base 的
+   `overflow: hidden` 裁切，不需要这一步。 */
+.ProseMirror > :not(.code-block-wrapper):not(.mermaid-block-wrapper):not(.math-block-wrapper):not(.table-wrapper) {
+  transition:
+    height 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    opacity 220ms ease,
+    margin-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    margin-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    border-top-width 220ms ease,
+    border-bottom-width 220ms ease,
+    /* 展开：先保持裁切，等高度动画结束（220ms）再放开 */
+    overflow 0s linear 220ms,
+    /* 展开：立刻可见，长高过程中就能看到内容 */
+    visibility 0s linear 0s;
+}
+
+/* ── ③ 被折叠的顶层块：高度收起 + 裁切 + 不可见 ────────────────
+   全部 `!important` 是必要的：被折叠的块里可能有内联
+   `style="display/height/..."` 的原始 HTML / 图片包裹（htmlBlockDisabled
+   已转义大部分，但表格合并等路径会带样式），普通特异性不足以稳定压住。
+   `box-sizing: border-box` 保证 padding/border 不再撑出高度（下面也已归零）。
+   ⚠️ 本规则的 transition 必须排在 ①② 之后：选择器特异性与 ② 相同（0,2,0），
+   靠源码顺序取胜（折叠方向要用 `overflow 0s 0s` 立刻裁切）。 */
+.ProseMirror .lmd-fold-hidden {
+  box-sizing: border-box !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border-top-width: 0 !important;
+  border-bottom-width: 0 !important;
+  /* 裁切溢出内容：高度动画期间内容不会压住后续块 */
+  overflow: hidden !important;
+  /* 折叠完成后不可见 → 不可点、不可选、块内链接不参与 Tab 序列
+     （visibility:hidden 的元素仍可被脚本聚焦，故不声称「绝对不可聚焦」） */
+  visibility: hidden !important;
+  opacity: 0;
+  pointer-events: none;
+  /* 折叠方向：overflow 立刻裁切；visibility 等高度动画走完再隐藏 */
+  transition:
+    height 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    opacity 220ms ease,
+    margin-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    margin-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    border-top-width 220ms ease,
+    border-bottom-width 220ms ease,
+    overflow 0s linear 0s,
+    visibility 0s linear 220ms;
+}
+
+/* ── ④ 退化路径：不支持 `height: auto` 关键字插值的引擎 ──────────
+   高度无法插值 → 直接瞬时显隐（功能不失效，只是没有动画）。
+   这一行同时是 v0.15.0 行为的等价兜底：老引擎上折叠仍「不占布局、
+   不可见、不可选」。 */
+@supports not (interpolate-size: allow-keywords) {
+  .lmd-fold-hidden { display: none; }
+}
+
+/* ── 带折叠按钮的标题：提供定位上下文 ────────────────────────
+   与 v0.12.1 标题级别徽标的 `.pm-heading-marker` 同一套几何：
+   position:relative + 按钮 `right:100%` 贴到标题左缘外，脱离文档流、零布局影响。 */
+.ProseMirror .lmd-fold-heading {
+  position: relative;
+}
+
+/* ── 折叠按钮（PM 面由 Decoration.widget 生成；iframe 面有同款内联样式表）── */
+.ProseMirror .lmd-fold-toggle {
+  position: absolute;
+  right: 100%;
+  /* 紧贴标题左缘：阅读态通常没有 H1~H6 级别徽标，只有三角 */
+  margin-right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 固定尺寸而非 em：标题字号随级别变（H1 = 2em），用 em 会让 H1 的三角
+     变成 H6 的两倍大，观感上完全不成比例。 */
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.55;
+  transition: opacity 150ms ease, color 150ms ease, background-color 150ms ease;
+}
+
+/**
+ * 光标停在标题上时（编辑态）v0.12.1 的级别徽标会出现在同一个 `right:100%` 槽位，
+ * 三角必须让出徽标宽度排到更外一档，否则两者重叠、点击互相抢。
+ * `:has()` 在现代引擎均可用（Chromium 105+ / Safari 15.4+）；不支持时三角只是
+ * 与徽标重叠（退化可见、功能不失效），故不做 JS 兜底。
+ */
+.ProseMirror :is(h1, h2, h3, h4, h5, h6):has(.pm-heading-badge) .lmd-fold-toggle {
+  margin-right: calc(0.35em + 22px + 0.2em);
+}
+
+.ProseMirror .lmd-fold-toggle:hover {
+  opacity: 1;
+  color: var(--accent-color);
+  background: var(--code-bg);
+}
+
+.ProseMirror .lmd-fold-toggle:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+/* ── ⑤ 三角朝向：**固定字符 + transform 旋转**（v0.15.1 需求2）──
+   为什么不再切换 `content: "▾"/"▸"`：`content` 不可过渡，切换时字符硬跳。
+   现在两个状态用**同一个字符**（▾），只过渡 `transform: rotate()`：
+   展开 = 0°（朝下）、折叠 = -90°（朝右，等价旧 ▸ 的朝向）。
+   状态来源是**标题节点**上的 `data-lmd-fold-collapsed`（节点装饰原地改属性，
+   不重建 DOM），因此按钮元素被复用 → 旋转可过渡。 */
+.ProseMirror .lmd-fold-toggle::before {
+  content: "▾";
+  display: inline-block;
+  transform: rotate(0deg);
+  transform-origin: 50% 50%;
+  transition: transform 180ms cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+[data-lmd-fold-collapsed="true"] > .lmd-fold-toggle::before {
+  transform: rotate(-90deg);
+}
+
+/* ── ⑥ 减少动效偏好：折叠过渡与三角旋转一并归零（功能不变）──── */
+@media (prefers-reduced-motion: reduce) {
+  .ProseMirror .lmd-fold-toggle,
+  .ProseMirror .lmd-fold-toggle::before,
+  .ProseMirror > *,
+  .ProseMirror .lmd-fold-hidden,
+  .lmd-fold-hidden {
+    transition: none !important;
+  }
+}

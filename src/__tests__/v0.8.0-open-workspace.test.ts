@@ -25,7 +25,12 @@ describe("v0.8.0 WP2 需求6 打开所在文件夹工作区", () => {
     const deps = makeDeps({ isPathInOpenFolders: vi.fn(() => false) });
     const result = openContainingWorkspace("D:/projects/demo/a.md", deps);
 
-    expect(result).toEqual({ mounted: false, parentDir: "D:/projects/demo" });
+    // v0.15.0 F2：返回值新增 rootDir（未挂载分支 = 即将挂载的父目录）
+    expect(result).toEqual({
+      mounted: false,
+      parentDir: "D:/projects/demo",
+      rootDir: "D:/projects/demo",
+    });
     expect(deps.openFolder).toHaveBeenCalledWith("D:/projects/demo");
     expect(deps.expandTo).not.toHaveBeenCalled();
     expect(deps.setActive).not.toHaveBeenCalled();

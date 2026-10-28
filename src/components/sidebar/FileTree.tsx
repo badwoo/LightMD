@@ -35,6 +35,8 @@ import { beginFileDrag, DROP_DIR_ATTR, type FileDragPayload } from "../../utils/
 import { resolveInsertPlace, canDropIntoTarget } from "../../utils/dropTarget";
 // v0.8.4 需求3：源所在目录计算（path.ts 版本已归一 `\` → `/`，与树内路径口径一致）
 import { getParentDir as getParentDirOf } from "../../utils/path";
+// v0.15.0 F2：workspace 复用/去重的路径比较与取名复用 utils/path.ts（禁止另写前缀匹配）
+import { isSameDirPath, getFileName } from "../../utils/path";
 import { syncOpenTabsAfterRename } from "../../services/renameService";
 // v0.8.2：「打开的文件」栏条目与打开的标签严格同步（数量/选中一致根因修复）
 import { syncTempFilesWithTabs } from "../../utils/tempFilesSync";
@@ -1320,32 +1322,52 @@ export function FileTree() {
 
   // 打开指定路径的文件夹（核心逻辑，供按钮点击和拖拽打开复用）
   // v0.4.0：改用 addOpenFolder + updateFolderTree，支持同时打开多个文件夹
+  // v0.15.0 F2：去重前移到此处判定 —— store.addOpenFolder 已按 path 去重（重复调用仅更新
+  // recentFolders），但 listDir / updateFolderTree / watchFolder 会照旧重复执行（watcher 虽被
+  // Rust 侧引用计数吃成 no-op，仍是一次多余 IPC + 一次整树刷新）。因此先判断是否已是打开根，
+  // 已打开则只做"刷新该栏 + 定位"的最小动作，不重复注册 watcher、不重置其它栏的展开状态。
   const openFolderAt = useCallback(async (selected: string) => {
+    let alreadyOpen = false;
+    let target = selected;
     try {
-      addOpenFolder(selected);
+      // v0.15.0 F2：等价根（大小写/分隔符/尾斜杠差异）视为同一工作区，
+      // 后续一律用 store 里已有的**原始写法**作为 key —— 否则 addOpenFolder 的
+      // 字符串严格去重会因写法不同而真的多挂一个根（folder 数 +1）。
+      const existing = useFileStore
+        .getState()
+        .openFolders.find((f) => isSameDirPath(f.path, selected));
+      alreadyOpen = Boolean(existing);
+      if (existing) target = existing.path;
+      addOpenFolder(target);
       const entries = await fileService.listDir(selected);
       const nodes = entries.map(mapToFileNode);
-      updateFolderTree(selected, nodes);
+      updateFolderTree(target, nodes);
       // 缓存根目录子节点（保留其他文件夹的缓存）
       // v0.8.4 需求3+7：排序统一出口 —— FileNode 渲染子节点优先取 childrenMap
       // （childrenByPath），因此缓存必须已按根排序模式/手动顺序排好
       setChildrenMap((prev) => {
         const next = new Map(prev);
-        next.set(selected, sortChildren(selected, selected, nodes));
+        next.set(target, sortChildren(target, target, nodes));
         return next;
       });
       setExpandedPaths(new Set());
       // v0.8.4 需求10：注册文件夹 watcher（递归监听子树变更 → 定向刷新）。
-      // 失败（网络盘/权限等）仅提示兜底方案，不阻断打开流程
-      try {
-        await fileService.watchFolder(selected);
-      } catch {
-        showError(t("filetree.watchUnavailable"));
+      // 失败（网络盘/权限等）仅提示兜底方案，不阻断打开流程。
+      // v0.15.0 F2：仅"真正新增"时注册 —— 已在打开的根其 watcher 已存在（Rust 侧按窗口
+      // 引用计数，重复调用本为 no-op），跳过可省一次 IPC 并在测试中锁死"不增加调用次数"。
+      if (!alreadyOpen) {
+        try {
+          await fileService.watchFolder(selected);
+        } catch {
+          showError(t("filetree.watchUnavailable"));
+        }
       }
     } catch (err) {
       showError(t("filetree.openFolderFailed"));
       console.error(err);
     }
+    // v0.15.0 F2：added 供调用方判断是否真正新增（提示/watcher 以"新增成功"为前提）
+    return { added: !alreadyOpen };
   }, [addOpenFolder, updateFolderTree, sortChildren, t]);
 
   const openFolder = useCallback(async () => {
@@ -1532,8 +1554,14 @@ export function FileTree() {
           window.dispatchEvent(new CustomEvent("lightmd:openFolder", { detail: { path: p } })),
         setActive: (p) => setActivePath(p),
       });
-      const name = result.parentDir.split(/[\\/]/).pop() || result.parentDir;
-      showMessage(t("filetree.workspaceOpened", { name }));
+      // v0.15.0 F2：提示文案区分「已定位」与「新挂载」，名字取定位用的工作区根
+      // （多根嵌套时 = 最深根；未挂载时 = 即将挂载的父目录）
+      const name = getFileName(result.rootDir.replace(/[\\/]+$/, "")) || result.rootDir;
+      showMessage(
+        result.mounted
+          ? t("filetree.workspaceLocated", { name })
+          : t("filetree.workspaceOpened", { name }),
+      );
     },
     [expandTo, t],
   );

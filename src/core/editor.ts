@@ -7,6 +7,7 @@
  */
 import { EditorView, Decoration, DecorationSet } from "prosemirror-view";
 import { EditorState, Plugin, PluginKey } from "prosemirror-state";
+import type { Transaction } from "prosemirror-state";
 import { history } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap } from "prosemirror-commands";
@@ -50,6 +51,8 @@ import { createSlashCommandPlugin } from "./plugins/slash-command";
 import { createEmojiCompletePlugin } from "./plugins/emoji-complete";
 // v0.13.2 需求9：文档末尾垫一个可放光标的段落（表格/代码块结尾时才能继续编辑）
 import { trailingParagraphPlugin, withTrailingParagraph } from "./plugins/trailing-paragraph";
+// v0.15.0 需求（阅读区标题折叠）：Decoration 层插件 + 会话级折叠状态控制器
+import { createReadingFoldPlugin, readingFold, type ReadingFoldController } from "../components/editor/readingFold";
 // v0.7.0：AI 续写幽灵文本装饰（meta 驱动，无回调依赖）
 import { aiGhostPlugin } from "./plugins/ai-ghost";
 
@@ -221,6 +224,21 @@ export interface EditorOptions {
   /** 编辑器就绪回调 */
   onReady?: (view: EditorView) => void;
   /**
+   * v0.15.0 需求（跨模式撤销统一）：事务批回调（**在 `view.updateState` 之后**调用）。
+   *
+   * 用途：把用户编辑提交到统一时间线（`editorHistory/pmAdapter`）。
+   * - `before` 是应用前的 state，`after` 是应用后的 state，`trs` 是本批事务数组；
+   * - adapter 会自行忽略 `historyBridge` 事务（撤销落地）、`addToHistory:false` 事务
+   *   （fileSwitch/翻译回写等）与无 docChanged 的事务，因此这里可以无条件转发。
+   * - **必须在 updateState 之后**：序列化要拿新 doc，且 resetHistory 重建 state 后
+   *   adapter 需要的是重建后的文档状态。
+   */
+  onTransactions?: (
+    before: EditorState,
+    trs: readonly Transaction[],
+    after: EditorState,
+  ) => void;
+  /**
    * 打字机模式 ref，供 EditorContainer 的 keyup 监听判断滚动方式
    *
    * 滚动策略（由 EditorContainer 的 keyup/click 监听统一处理）：
@@ -295,13 +313,21 @@ export interface EditorOptions {
    * EditorContainer 据此渲染级别下拉菜单（改级别 = setNodeMarkup）。
    */
   onHeadingBadgeClick?: (headingPos: number, currentLevel: number, anchor: DOMRect) => void;
+  /**
+   * v0.15.1 需求2：阅读区折叠状态控制器（默认为模块单例 `readingFold`）。
+   *
+   * 为什么需要可注入：折叠插件的装饰/订阅都围绕一个 controller 实例。
+   * 生产只有一个单例（会话内共享折叠状态）；单测需要**独立实例**（避免用例间
+   * 状态泄漏，且能直接 `toggle()` 驱动而不用走 store）。不传时行为不变。
+   */
+  foldController?: ReadingFoldController;
 }
 
 /**
  * 创建配置完整的 ProseMirror EditorView
  */
 export function createEditor(options: EditorOptions): EditorView | null {
-  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, onEmojiStateChange, aiGhostHint, editableGetter, onHeadingBadgeClick } = options;
+  const { parent, initialContent = "", onDocChange, onSelectionChange, onReady, typewriterModeRef, spellcheckEnabled = false, onTranslateTrigger, translateEnabledGetter, translateTooltipOptions, onSlashStateChange, onEmojiStateChange, aiGhostHint, editableGetter, onHeadingBadgeClick, onTransactions } = options;
 
   if (!parent) return null;
 
@@ -379,6 +405,11 @@ export function createEditor(options: EditorOptions): EditorView | null {
       // v0.13.2 需求9：文档末尾永远垫一个可放光标的段落
       // （表格/代码块/图表/公式结尾时，用户点空白处才能继续编辑）
       trailingParagraphPlugin(),
+      // v0.15.0 需求（阅读区标题折叠）：纯渲染层插件——用 Decoration 给标题加折叠按钮、
+      // 给被折叠块加 display:none 类。**不碰 doc、不写 Markdown、不产生撤销历史**
+      // （折叠操作只 dispatch 空事务，docChanged=false）。
+      // 未启用时 props.decorations 返回 DecorationSet.empty，常驻注册零开销。
+      createReadingFoldPlugin({ controller: options.foldController ?? readingFold }),
     ],
   });
 
@@ -513,6 +544,21 @@ export function createEditor(options: EditorOptions): EditorView | null {
 
       // 标记初始事务已完成
       if (!initialized) initialized = true;
+
+      // v0.15.0 需求（跨模式撤销统一）：把本批事务转发给统一时间线的 PM adapter。
+      //
+      // 放在最后（state 已更新、乱序无关）是因为 adapter 只看"最终 doc 文本"：
+      // 序列化拿 `view.state.doc`（updateState 之后的当前 doc），bridge/非用户事务
+      // 由 adapter 内部按 meta 过滤，因此这里可以无条件转发。
+      //
+      // ⚠️ 不要把它挪到 updateState 之前：resetHistory 分支会在其后重建 state，
+      // 提前调用会让 adapter 拿到已被丢弃的旧 doc（切文档后第一条历史的 before 错误）。
+      try {
+        onTransactions?.(state, [tr], view.state);
+      } catch (e) {
+        // 历史提交失败绝不阻断编辑：用户在打字，不能因为时间线异常而丢输入
+        console.error("[editor] onTransactions 回调异常（已忽略）:", e);
+      }
 
       // 选区变化时更新行号/列号/选中字符数（字数计算由 EditorContainer 防抖 300ms 后
       // 惰性调用 getText() 完成）

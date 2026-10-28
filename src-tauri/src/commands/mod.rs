@@ -10,3 +10,5 @@ pub mod watcher;
 pub mod window_cmds;
 // v0.14.0 需求1：软件更新（GitHub release 检查 / 下载安装包 / 启动安装）
 pub mod update;
+// v0.15.0 需求（知识库最小集）：工作区全文搜索（只读，流式分批 + 可取消）
+pub mod workspace_search;

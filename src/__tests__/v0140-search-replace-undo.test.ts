@@ -61,16 +61,23 @@ describe("需求1：整篇写回必须按视图模式分流（阅读模式要 di
         ? containerSrc.indexOf("const writeBackCurrentDoc = useCallback") + 3000
         : undefined,
     );
-    // 阅读模式判定 + 整篇 replaceWith + 进撤销栈
+    // 阅读模式判定 + 整篇 replaceWith（立即生效）
     expect(body).toContain('viewMode === "preview" && isMdFile');
     expect(body).toContain("replaceWith(0, view.state.doc.content.size, newDoc.content)");
-    expect(body).toContain('tr.setMeta("addToHistory", true)');
+    // v0.15.0 需求（跨模式撤销统一）：这一步不再靠 PM 栈记录（addToHistory 必须为 false），
+    // 否则同一替换会同时进 PM 栈与统一时间线 → 一次 Ctrl+Z 撤两步。
+    // 改为提交一条 origin:"replace" 的时间线条目（下方单独断言）。
+    expect(body).toContain('tr.setMeta("addToHistory", false)');
+    expect(body).not.toContain('tr.setMeta("addToHistory", true)');
+    expect(body).toContain('origin: "replace"');
   });
 
-  it("源码模式分支记录撤销记录（recordUndoEntry）", () => {
+  it("源码模式分支同样走统一时间线（不再用旧 diff 栈 recordUndoEntry）", () => {
     const body = containerSrc.slice(containerSrc.indexOf("const writeBackCurrentDoc = useCallback"));
     const head = body.slice(0, 3000);
-    expect(head).toContain("recordUndoEntry(");
+    // 旧 `recordUndoEntry` 属于已退休的两套栈；统一后源码/阅读共用同一条提交
+    expect(head).not.toContain("recordUndoEntry(");
+    expect(head).toContain("documentHistory.commit(");
   });
 
   it("applyFileText 的当前文档分支**不得**再直接 setSourceContent（缺陷根因）", () => {
@@ -86,10 +93,17 @@ describe("需求1：整篇写回必须按视图模式分流（阅读模式要 di
 });
 
 describe("需求2：跨文件替换的记录与消费", () => {
-  it("applyFileText 的其他标签分支登记跨文件替换记录", () => {
+  it("applyFileText 的其他标签分支登记到统一时间线（origin=cross-file）", () => {
+    // v0.15.0 需求（跨模式撤销统一）：跨文件替换不再写 docHistoryStore 的旧
+    // `crossFileEdit` 记录——撤销入口已统一委托 coordinator，旧记录**没有任何人消费**
+    // （实机探针实测 8 项 FAIL 的根因之一）。现在改为往统一时间线记
+    // `origin:"cross-file"` 条目，并先对齐该未激活文档的基线。
     const body = containerSrc.slice(containerSrc.indexOf("const applyFileText = useCallback"));
     const head = body.slice(0, 2500);
-    expect(head).toContain("recordCrossFileEdit(fileKey,");
+    expect(head).toContain("commitWholeText(");
+    expect(head).toContain('"cross-file"');
+    // 反向断言：不得回退成旧的独立记录通道
+    expect(head).not.toContain("recordCrossFileEdit(");
   });
 
   it("onSourceContentChange 必须走统一写回入口（两个调用方都要正确）", () => {
@@ -111,27 +125,30 @@ describe("需求2：跨文件替换的记录与消费", () => {
     expect(body).not.toContain("recordUndoEntry(");
   });
 
-  it("doLocalUndo 先消费跨文件记录，且校验内容逐字节一致", () => {
+  it("doLocalUndo 委托统一协调器（跨文件记录已并入统一时间线）", () => {
     const idx = containerSrc.indexOf("const doLocalUndo = useCallback");
-    const body = containerSrc.slice(idx, idx + 3200);
-    expect(body).toContain("peekCrossFileUndo(");
-    // 护栏：只有当前文本仍等于记录的 after 才应用。
-    // v0.14.0 续修 需求1：判定抽成纯函数 `crossFileEditMatches`（实现仍是严格 ===），
-    // 目的只是让「用户手改后不误覆盖」可以被单测直接覆盖；语义未放宽。
-    expect(body).toMatch(
-      /crossFileEditMatches\(ext\.after, getMarkdownFromDoc|crossFileEditMatches\(ext\.after, sourceContentRef\.current/,
-    );
-    // 不一致时必须丢弃记录，落到常规撤销栈
-    expect(body).toContain("dropCrossFileUndo(");
+    const body = containerSrc.slice(idx, idx + 800);
+    // v0.15.0 需求（跨模式撤销统一）：两套栈合并为一条时间线后，跨文件替换记录
+    // 不再由 doLocalUndo 内联消费——`peekCrossFileUndo` 那套语义已迁入
+    // `services/documentHistory` 的 `origin:"cross-file"` 条目 + `editorHistory/coordinator`
+    // 的方向敏感护栏。这里锁定新接线契约：doLocalUndo 必须是协调器的薄转发，
+    // 不得回退成"先查 id 记录、再走另一套栈"的双栈形态。
+    expect(body).toContain("historyCoordinatorRef.current?.handleUndo()");
+    expect(body).not.toContain("peekCrossFileUndo(");
   });
 
-  it("doLocalRedo 对称消费「恢复」记录", () => {
-    const idx = containerSrc.indexOf("const doLocalRedo = useCallback");
-    const body = containerSrc.slice(idx, idx + 3200);
-    expect(body).toContain("peekCrossFileRedo(");
-    expect(body).toMatch(
-      /crossFileEditMatches\(ext\.before, getMarkdownFromDoc|crossFileEditMatches\(ext\.before, sourceContentRef\.current/,
-    );
+  it("coordinator 的跨文件护栏按方向校验（undo 比 after / redo 比 before）", async () => {
+    // 行为层断言：护栏必须方向敏感——只比 after 会让"撤销后立刻恢复"永远失败，
+    // 那是 v0.15.0 实现过程中被测试当场抓出的真实缺陷（写进 proof 记录）。
+    const { crossFileEntryStillValid } = await import("../editorHistory/coordinator");
+    const entry = { id: 1, before: "BEFORE", after: "AFTER", origin: "cross-file" as const } as never;
+    expect(crossFileEntryStillValid(entry, "AFTER", "undo")).toBe(true);
+    expect(crossFileEntryStillValid(entry, "BEFORE", "undo")).toBe(false);
+    expect(crossFileEntryStillValid(entry, "BEFORE", "redo")).toBe(true);
+    expect(crossFileEntryStillValid(entry, "AFTER", "redo")).toBe(false);
+    // 非跨文件条目不受该护栏约束（同文档内每次提交已逐字节对齐）
+    const sourceEntry = { id: 1, before: "BEFORE", after: "AFTER", origin: "source" as const } as never;
+    expect(crossFileEntryStillValid(sourceEntry, "X", "undo")).toBe(true);
   });
 
   it("撤销用 early-declared 的 undoDocKey（避开 TDZ），不是 later 的 currentDocKey", () => {

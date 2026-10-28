@@ -1,6 +1,8 @@
 pub mod commands;
 pub mod db;
 pub mod hotkey;
+/// v0.15.0 C2：Windows WebView2 PrintToPdf（PDF 导出不再起外部浏览器进程）
+pub mod pdf;
 pub mod translate;
 pub mod utils;
 pub mod window;
@@ -122,6 +124,10 @@ pub fn run() {
         // v0.9.0：插件对 `on_window_ready` 触发的**运行时创建窗口**同样自动
         // restore/save，故辅助窗口按固定槽位 label 天然获得几何跨会话恢复，
         // session.json 不需要（也不应该）再存一份几何。
+        //
+        // v0.15.0 C2：PDF 导出的隐藏窗口（label `pdf-<id>`）必须被**过滤掉**，
+        // 否则每次导出都会往 window-state 文件里塞一条 1024×768 的幽灵记录
+        // （且下次启动无对应窗口可恢复，文件只增不减）。
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(
@@ -129,6 +135,7 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
+                .with_filter(|label| !pdf::is_aux_label(label))
                 .build(),
         )
         // v0.6.0 AI 翻译：单任务状态托管（v0.9.0 起按窗口分桶）
@@ -258,6 +265,11 @@ pub fn run() {
             commands::translate::test_translate_connection,
             commands::translate::set_translate_key,
             commands::translate::has_translate_key,
+            // v0.15.0 需求（AI 深度配置）：按 profile 隔离的凭据命令
+            // （槽位 ai_credential::{credentialId}，避免同 provider 双端点串 Key）
+            commands::translate::set_ai_credential_key,
+            commands::translate::has_ai_credential_key,
+            commands::translate::clear_ai_credential_key,
             // v0.7.2 P2：动态拉取厂商模型列表
             commands::translate::list_translate_models,
             // v0.7.0：AI 助手（续写/润色/摘要，复用翻译基建与单任务模型）
@@ -295,6 +307,10 @@ pub fn run() {
             commands::update::check_update,
             commands::update::download_update,
             commands::update::launch_installer,
+            // ─── v0.15.0 需求（知识库最小集）：工作区全文搜索 ───
+            // 流式分批推送（Channel）+ 可取消；只读，不做全库替换
+            commands::workspace_search::search_workspace,
+            commands::workspace_search::cancel_workspace_search,
         ])
         .build(tauri::generate_context!())
         .expect("error while running LightMD");
