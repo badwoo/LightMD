@@ -183,6 +183,57 @@ function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// ─── v0.15.1 需求5：源码模式（textarea）搜索高亮 overlay ─────────────
+/**
+ * overlay 元素类名。位置/层级/透明字色由 `SearchReplace.css` 的
+ * `.source-search-overlay` 规则负责；排版度量由 `syncTextareaMetrics` 同步。
+ */
+export const SOURCE_SEARCH_OVERLAY_CLASS = "source-search-overlay";
+/** 全部命中用的 class（与 PM Decoration 侧同名，样式统一在 SearchReplace.css） */
+export const SEARCH_MATCH_CLASS = "search-match";
+/** 当前项用的 class */
+export const SEARCH_MATCH_CURRENT_CLASS = "search-match-current";
+
+/**
+ * 构建源码模式搜索高亮 overlay 的 HTML。
+ *
+ * ## 为什么源码模式必须用 overlay
+ * textarea 是**单元素纯文本**控件：它内部的文字不是 DOM 文本节点，无法挂
+ * `Decoration`，也无法用 `<mark>` 包裹。唯一的做法是在 textarea 之上叠一层
+ * 与它排版度量**完全同构**的普通 div（复刻全文、文字透明、只给命中区间上底色），
+ * 视觉上等价于"高亮了 textarea 里的文字"。这正是项目里 `source-ghost-overlay`
+ * （AI 续写预览）已经验证过的手法，本函数只是把"复刻全文"换成"复刻全文 + 命中底色"。
+ *
+ * ## 约束
+ * 纯函数、不碰 DOM：调用方负责把返回值写进 overlay 的 innerHTML（便于单测）。
+ * 文本必须转义（原文可能含 `<`、`&`），否则会被当成 HTML 注入。
+ *
+ * @param text textarea 的**当前值**（已由 textarea 规范化为 `\n`，与匹配偏移同一坐标系）
+ * @param ranges 命中区间（升序；坐标是 `text` 的字符偏移）
+ * @param current 当前项下标（-1 = 无当前项）
+ */
+export function buildSearchOverlayHtml(
+  text: string,
+  ranges: ReadonlyArray<{ start: number; end: number }>,
+  current: number,
+): string {
+  if (!text) return "";
+  const parts: string[] = [];
+  let cursor = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    const start = Math.max(cursor, Math.min(r.start, text.length));
+    const end = Math.max(start, Math.min(r.end, text.length));
+    if (end <= start) continue;
+    if (start > cursor) parts.push(escapeHtml(text.slice(cursor, start)));
+    const cls = i === current ? SEARCH_MATCH_CURRENT_CLASS : SEARCH_MATCH_CLASS;
+    parts.push(`<mark class="${cls}">${escapeHtml(text.slice(start, end))}</mark>`);
+    cursor = end;
+  }
+  if (cursor < text.length) parts.push(escapeHtml(text.slice(cursor)));
+  return parts.join("");
+}
+
 /**
  * 生成 PrismJS 语法高亮 CSS（用于 iframe 和导出 HTML）
  * @param dark 是否暗色主题

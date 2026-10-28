@@ -46,7 +46,16 @@ vi.mock("../services/workspaceSearch", () => ({
 }));
 
 import { SearchReplaceDialog, type SearchableFile } from "../components/editor/SearchReplace";
-import { peekSearchJump, __resetSearchJumpForTest } from "../utils/searchJump";
+import { peekSearchJump, requestSearchJump, __resetSearchJumpForTest } from "../utils/searchJump";
+import {
+  collectFileResults,
+  buildOffsetMap,
+  pmLineColumnOfOffset,
+} from "../utils/searchEngine";
+import { computeTextareaCursorPosition } from "../utils/cursorPosition";
+import { markdownToDoc } from "../core/markdown/parser";
+import { EditorState } from "prosemirror-state";
+import { EditorView } from "prosemirror-view";
 import { useEditorStore } from "../stores/useEditorStore";
 
 // ─── 测试替身 ─────────────────────────────────────────────
@@ -567,6 +576,288 @@ describe("R6b · i18n key 完整性（中英必须同时存在）", () => {
       const zhParams = [...String(zhDict[key]).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
       const enParams = [...String(enDict[key]).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
       expect(enParams, `${key} 的占位符与 zh-CN 不一致`).toEqual(zhParams);
+    }
+  });
+});
+
+// ═══════════ ⑦ v0.15.1 需求4 续修：跳转失效三症状的回归锁 ═══════════
+
+describe("v0.15.1 · 症状1：同一文档连点 4 处，每次都能定位（不依赖 docKey 变化）", () => {
+  /** 同一文档 4 处命中的源码文本（每行一处 hello） */
+  const TEXT = "hello A\nhello B\nhello C\nhello D";
+  /** 面板 docKey 用宿主原始路径（反斜杠 + 原大小写），fileKey 用归一化键 —— 两侧口径不同 */
+  const DOC_KEY = "D:\\ws\\a.md";
+  const FILE_KEY = "d:/ws/a.md";
+
+  function renderCurrentDocPanel(extra: Record<string, unknown> = {}) {
+    const files: SearchableFile[] = [
+      { fileKey: FILE_KEY, filePath: "D:/ws/a.md", fileName: "a.md", getText: () => TEXT },
+    ];
+    const taRef = makeTextareaRef(TEXT);
+    Object.defineProperty(taRef.current!, "offsetParent", {
+      get: () => document.body,
+      configurable: true,
+    });
+    return render(
+      createElement(SearchReplaceDialog, {
+        onClose: () => {},
+        editorView: null,
+        sourceTextareaRef: taRef,
+        sourceContent: TEXT,
+        isMdFile: true,
+        docKey: DOC_KEY,
+        collectFiles: () => files,
+        ...extra,
+      }),
+    );
+  }
+
+  it("★ 连点 4 条结果：每次 currentMatch 都前进（修复前只第 1 次生效）", async () => {
+    mockSuccess([
+      group("D:/ws/a.md", [
+        { line: 1, occurrence: 0, text: "hello A" },
+        { line: 2, occurrence: 1, text: "hello B" },
+        { line: 3, occurrence: 2, text: "hello C" },
+        { line: 4, occurrence: 3, text: "hello D" },
+      ]),
+    ]);
+    const { container } = renderPanel({
+      workspaceRoots: ["D:/ws"],
+      // 让 docKey 与工作区 fileKey 指向**同一份已打开文档**（用户的实际场景）
+      docKey: DOC_KEY,
+      sourceContent: TEXT,
+      collectFiles: () => [
+        { fileKey: FILE_KEY, filePath: "D:/ws/a.md", fileName: "a.md", getText: () => TEXT },
+      ],
+    });
+    typeQuery(container, "hello");
+    fireEvent.click(container.querySelector('[data-testid="search-scope-workspace"]')!);
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll('[data-testid="search-workspace-result-item"]').length,
+      ).toBe(4);
+    });
+
+    const items = container.querySelectorAll('[data-testid="search-workspace-result-item"]');
+    const seen: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      fireEvent.click(items[i]);
+      await waitFor(() => {
+        const txt = (container.querySelector('[data-testid="search-count"]') as HTMLElement)?.textContent ?? "";
+        // 当前文档有 4 处命中 → 计数必然是 "n/4"，不会停在"无结果"
+        expect(txt).toContain("/4");
+      });
+      seen.push((container.querySelector('[data-testid="search-count"]') as HTMLElement).textContent ?? "");
+      // 关键：每一处都不该残留 pending（旧实现在第 2 次起 pending 一直挂着）
+      expect(peekSearchJump(), `第 ${i + 1} 次点击后不该残留 pending`).toBeNull();
+    }
+    // 4 次点击分别落在第 1/2/3/4 处 —— 修复前恒为 "1/4"
+    expect(seen).toEqual(["1/4", "2/4", "3/4", "4/4"]);
+  });
+
+  it("目标已是当前文档时，事件通道当场消费 pending 并清空", async () => {
+    const { container } = renderCurrentDocPanel();
+    typeQuery(container, "hello");
+    expect(
+      (container.querySelector('[data-testid="search-count"]') as HTMLElement).textContent,
+    ).toContain("1/4");
+
+    // 直接派发一条指向当前文档的跳转请求（模拟面板点击别的来源）
+    requestSearchJump({
+      fileKey: FILE_KEY,
+      filePath: "D:/ws/a.md",
+      line: 3,
+      column: 1,
+      length: 5,
+      query: "hello",
+      occurrence: 2,
+    });
+    await waitFor(() => {
+      expect(peekSearchJump()).toBeNull();
+    });
+    // occurrence=2 → 第 3 处
+    expect(
+      (container.querySelector('[data-testid="search-count"]') as HTMLElement).textContent,
+    ).toContain("3/4");
+  });
+
+  it("目标文件不是当前文档时**不**消费 pending（留给 App 切标签后消费）", async () => {
+    const { container } = renderCurrentDocPanel();
+    typeQuery(container, "hello");
+    requestSearchJump({
+      fileKey: "d:/ws/other.md",
+      filePath: "D:/ws/other.md",
+      line: 1,
+      column: 1,
+      length: 5,
+      query: "hello",
+      occurrence: 0,
+    });
+    // 不是我的 → 原样留着
+    expect(peekSearchJump()?.fileKey).toBe("d:/ws/other.md");
+  });
+});
+
+describe("v0.15.1 · 症状2：同一行多处命中可区分（点第 N 个 <mark> 落到第 N 处）", () => {
+  const ONE_LINE = "foo A foo B foo C foo D";
+  const FILES = (): SearchableFile[] => [
+    { fileKey: "D:/ws/m.md", filePath: "D:/ws/m.md", fileName: "m.md", getText: () => ONE_LINE },
+  ];
+
+  it("collectFileResults：同一行 4 处命中 → 1 条结果、4 个 mark、hitIndex 依次 0..3", () => {
+    const res = collectFileResults(
+      ONE_LINE,
+      { query: "foo" },
+      { fileKey: "k", filePath: "D:/ws/m.md", fileName: "m.md" },
+    );
+    expect(res.results).toHaveLength(1);
+    const marks = res.results[0].segments.filter((s) => s.match);
+    expect(marks.map((s) => s.hitIndex)).toEqual([0, 1, 2, 3]);
+    // 逐处全文偏移必须递增且指向真正的 foo
+    const offsets = res.results[0].hitOffsets!;
+    expect(offsets).toEqual([0, 6, 12, 18]);
+    for (const off of offsets) expect(ONE_LINE.slice(off, off + 3)).toBe("foo");
+  });
+
+  it("★ 点第 2/3/4 个 <mark>：分别定位到第 2/3/4 处（修复前全部跳回第 1 处）", async () => {
+    const { container } = renderPanel({
+      docKey: "D:/ws/m.md",
+      sourceContent: ONE_LINE,
+      collectFiles: FILES,
+    });
+    typeQuery(container, "foo");
+    fireEvent.click(container.querySelector('[data-testid="search-find-in-open-files"]')!);
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="search-result-item"]')).toBeTruthy();
+    });
+    const marks = container.querySelectorAll('[data-testid="search-result-match"]');
+    expect(marks.length).toBe(4);
+
+    const expectAt = async (markIdx: number, expected: string) => {
+      // 每次都**重新查询**节点：点击后 React 会重渲染，旧节点虽 isConnected 但
+      // 已不参与事件冒泡链，持有旧引用会点到"幽灵元素"（实测导致误判）
+      const live = container.querySelectorAll('[data-testid="search-result-match"]');
+      expect(live.length).toBe(4);
+      fireEvent.click(live[markIdx]);
+      await waitFor(() => {
+        expect(
+          (container.querySelector('[data-testid="search-count"]') as HTMLElement).textContent,
+        ).toBe(expected);
+      });
+      // 稳定性：等过 160ms 兜底重搜 + 150ms 内容重同步窗口后仍停在这一处
+      // （修复前这里会被 performSearch 的重置覆盖回 "1/4"）
+      await waitFor(
+        () => {
+          expect(
+            (container.querySelector('[data-testid="search-count"]') as HTMLElement).textContent,
+          ).toBe(expected);
+        },
+        { timeout: 600 },
+      );
+    };
+    await expectAt(0, "1/4");
+    await expectAt(1, "2/4");
+    await expectAt(2, "3/4");
+    await expectAt(3, "4/4");
+    // 每个 mark 的 data-hit-index 依次 0..3（点第 N 个 = 行内第 N 处）
+    expect(
+      Array.from(container.querySelectorAll('[data-testid="search-result-match"]')).map((m) =>
+        m.getAttribute("data-hit-index"),
+      ),
+    ).toEqual(["0", "1", "2", "3"]);
+  });
+});
+
+describe("v0.15.1 · 症状3：行号/列号与状态栏同口径（含 CRLF）", () => {
+  it("CRLF 文档：条幅行列与 computeTextareaCursorPosition 完全一致（\\r 不计入列宽）", () => {
+    const raw = "aa foo\r\nbb foo\r\ncc foo\r\n";
+    const res = collectFileResults(
+      raw,
+      { query: "foo" },
+      { fileKey: "k", filePath: "D:/ws/a.md", fileName: "a.md" },
+    );
+    // 逐处命中的原始偏移（在**原始串**上找，用于喂状态栏的同一口径函数）
+    const offsets: number[] = [];
+    let at = raw.indexOf("foo");
+    while (at >= 0) {
+      offsets.push(at);
+      at = raw.indexOf("foo", at + 1);
+    }
+    expect(res.results.map((r) => `${r.line}:${r.column}`)).toEqual(["1:4", "2:4", "3:4"]);
+    const status = offsets.map((o) => {
+      const p = computeTextareaCursorPosition(raw, o, o);
+      return `${p.line}:${p.column}`;
+    });
+    expect(status).toEqual(["1:4", "2:4", "3:4"]);
+  });
+
+  it("★ 阅读模式：条幅显示行号 = PM 逻辑块行号（列表/表格不再整体偏行）", () => {
+    const md = "- 第一项 foo\n- 第二项 foo\n- 第三项 foo";
+    const doc = markdownToDoc(md);
+    const map = buildOffsetMap(doc);
+    const res = collectFileResults(
+      map.text,
+      { query: "foo" },
+      { fileKey: "k", filePath: "D:/ws/a.md", fileName: "a.md" },
+    );
+    const status = res.results.map((r, i) => {
+      const off = res.results[i].hitOffsets?.[0] ?? 0;
+      const stamp = pmLineColumnOfOffset(doc, map.blocks, off);
+      return `${stamp?.line}:${stamp?.column}`;
+    });
+    // 源码行号是 2/3/4；状态栏（与修复后的条幅显示）是 1/2/3
+    expect(res.results.map((r) => r.line)).toEqual([2, 3, 4]);
+    expect(status).toEqual(["1:5", "2:5", "3:5"]);
+  });
+
+  it("表格文档：banner 源码行 4/7 → 状态栏逻辑行 2/3", () => {
+    const md = "| a | b |\n| --- | --- |\n| foo | x |\n| y | foo |";
+    const doc = markdownToDoc(md);
+    const map = buildOffsetMap(doc);
+    const res = collectFileResults(
+      map.text,
+      { query: "foo" },
+      { fileKey: "k", filePath: "D:/ws/a.md", fileName: "a.md" },
+    );
+    const status = res.results.map((r) => {
+      const stamp = pmLineColumnOfOffset(doc, map.blocks, r.hitOffsets?.[0] ?? 0);
+      return stamp?.line;
+    });
+    expect(res.results.map((r) => r.line)).toEqual([4, 7]);
+    expect(status).toEqual([2, 3]);
+  });
+
+  it("★ 面板在阅读模式下渲染的 :行 就是状态栏口径（列表文档 1/2/3，不是 2/3/4）", async () => {
+    const md = "- 第一项 foo\n- 第二项 foo\n- 第三项 foo";
+    const doc = markdownToDoc(md);
+    const mount = document.createElement("div");
+    mount.className = "editor-container";
+    document.body.appendChild(mount);
+    const view = new EditorView({ mount }, { state: EditorState.create({ doc }) });
+    useEditorStore.setState({ viewMode: "preview" } as any);
+    try {
+      const { container } = render(
+        createElement(SearchReplaceDialog, {
+          onClose: () => {},
+          editorView: view,
+          isMdFile: true,
+          docKey: "D:/ws/list.md",
+        }),
+      );
+      typeQuery(container, "foo");
+      fireEvent.click(container.querySelector('[data-testid="search-find-in-open-files"]')!);
+      await waitFor(() => {
+        expect(container.querySelectorAll('[data-testid="search-result-item"]').length).toBe(3);
+      });
+      const shown = Array.from(
+        container.querySelectorAll('[data-testid="search-result-file"]'),
+      ).map((el) => (el.textContent ?? "").replace(/^.*?\)/, ""));
+      // 显示的是状态栏口径 1/2/3；旧实现会显示源码行 2/3/4
+      expect(shown).toEqual([":1:5", ":2:5", ":3:5"]);
+    } finally {
+      view.destroy();
+      mount.remove();
+      useEditorStore.setState({ viewMode: "edit" } as any);
     }
   });
 });

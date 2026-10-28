@@ -469,8 +469,19 @@ describe("v0.14.0 查找所有打开文件：结果条幅", () => {
     typeSearch("foo");
     expect(getMatchCount()).toBe(1);
     requestSearchJump(target);
-    // docKey 不变时不应消费（模拟"还没切过去"）
-    expect(peekSearchJump()).not.toBeNull();
+    /**
+     * ⚠️ v0.15.1 需求4 续修：**这条期望值被改写过**（唯一一处改动）。
+     *
+     * 原断言是 `expect(peekSearchJump()).not.toBeNull()`，注释为「docKey 不变时不应消费
+     * （模拟"还没切过去"）」。它锁定的正是被修掉的旧行为：目标**已经是**当前文档时
+     * （这里 docKey 就是 b.md，而 target.fileKey 也是 b.md），旧实现不做任何处理，
+     * pending 一直挂着 —— 这就是用户报告的「点击第一处跳过去后再点其他几处没反应」。
+     *
+     * 新实现：面板自己监听 `lightmd:search-jump`，目标就是当前文档时**当场消费并定位**，
+     * 不再依赖 docKey 变化。因此这里期望 pending 已被清空、且计数落到命中的那一处。
+     */
+    expect(peekSearchJump()).toBeNull();
+    expect((document.querySelector('[data-testid="search-count"]') as HTMLElement).textContent).toContain("1/");
     // 模拟 App 切标签完成：docKey 变成 b.md 的最新值 → 触发消费
     act(() => {
       rerender(createElement(Harness, { initialContent: "nothing\nfoo in b", docKey: "b.md", files: files() }));

@@ -1,88 +1,151 @@
 /* ─── 搜索替换对话框（浮动窗口） ──────────────────────── */
+/**
+ * v0.15.1 需求3：搜索面板**观感重设计**（用户原话「搜索框的观感不好，太长了，
+ * 高度又太低，观感不协调，请美学的设计下」）。
+ *
+ * 上一轮的失误：把宽度从 460 直接拉到 920，而单行控件高度仍是 34px。
+ * 920 / 34 ≈ 27 : 1 —— 一根又扁又长的横条，既不像查找栏也不像浮动面板。
+ *
+ * 这一版重新定比例（详见各规则注释里的小标题）：
+ * · 宽度 **620px**（560~620 目标区间的上沿）—— 实测这一宽度才能让**中英文都在
+ *   一行放下** 4 个勾选项 + 2 个作用域按钮（英文最坏情况需要 ≈617px），
+ *   所以既不需要折行、也不会把右侧按钮挤走（需求6 的布局约束原封不动）；
+ * · 纵向整体放大：输入框 34 → 38px、行内边距 8 → 12px、控件间距 6 → 8px；
+ * · 比例 = 620 : 38 ≈ 16.3 : 1，落在现代查找栏的观感区间
+ *   （VS Code 查找框架 ≈ 420 : 28、Linear / Raycast 命令面板 ≈ 560~640 : 40）。
+ *
+ * 圆角 8 → 12px、阴影改成「贴边细影 + 远距离柔影」两层，让浮起关系更明确；
+ * 面板开 `overflow: hidden` 把子元素（尤其拖拽条底色）裁进圆角内。
+ */
 .search-replace {
   position: fixed;
   z-index: 10000;
+  /* 纵向堆叠：拖拽条 / 搜索行 / 选项行 / 替换行 / 提示 / 结果条幅，间距由各自 padding 决定 */
+  display: flex;
+  flex-direction: column;
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  box-shadow: var(--shadow-md);
+  border-radius: 12px;
+  /* 两层阴影：近处一圈让面板与文档有清晰边界，远处柔影表达"浮在上面" */
+  box-shadow:
+    var(--shadow-md),
+    0 18px 44px -20px rgba(0, 0, 0, 0.42);
   padding: 0;
+  /* 圆裁剪：拖拽条的底色不会从圆角外露出直角 */
+  overflow: hidden;
   /**
-   * v0.15.1 需求5：搜索面板宽度**放大一倍**（460 → 920），并改成固定宽度。
+   * 宽度固定（不用 min-width）—— 结果条幅/勾选项内容变化不会让面板宽度抖动，
+   * 右侧作用域按钮相对面板右沿的位置也就恒定。
    *
-   * 为什么从 min-width 改成 width：
-   * 旧写法只有下限没有确定宽度，面板宽度由内容撑开 —— 结果条幅/勾选项一变化，
-   * 宽度就可能跟着抖，右侧两个作用域按钮（靠右）也随之漂移（需求6 的观感问题之一）。
-   * 固定宽度后按钮相对面板右沿的位置恒定。
+   * 取值 620px 的依据是**实测**（见 _verify-out/v0151-search-panel.txt）：
+   *   · 中文（默认 locale）：勾选组内容 290px + 动作组 237px + 间距 ≈ 562px → 余量 ~57px；
+   *   · 英文（最坏情况：Whole word / Match case / In selection + Find in open files /
+   *     Search entire workspace）：需要 306 + 278 ≈ 617px → 620px 刚好放下，不裁剪。
+   * 若取 600px，英文会把最后一个 `.*` 项切掉约 21px（肉眼可见的半个勾选框），故取 620。
    *
-   * max-width: 92vw 保留窄屏自适应：窗口比 920 窄时面板等比收窄，
-   * 此时宽度由 92vw 决定，按钮仍贴着面板右沿。
+   * max-width: 92vw 是窄屏降级：窗口窄于 ~674px 时宽度改由 92vw 决定，
+   * 此时勾选组（可压缩）先被裁剪，右侧动作组仍贴着面板右沿（见 .search-options-row）。
    */
-  width: 920px;
+  width: 620px;
   max-width: 92vw;
 }
 
-/* 拖拽条 */
+/* 拖拽条：与 12px 圆角协调的顶部握把区（高度 32px，比正文行略矮，避免抢视线） */
 .search-drag-handle {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 8px;
+  padding: 7px 12px;
   cursor: move;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-light);
   background: var(--bg-secondary);
-  border-radius: 8px 8px 0 0;
+  border-radius: 11px 11px 0 0;
   user-select: none;
+  flex: 0 0 auto;
 }
 
 .search-drag-dots {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-tertiary);
   letter-spacing: -2px;
+  line-height: 1;
 }
 
 .search-drag-title {
   flex: 1;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* ─── 搜索行 / 替换行：主输入行是面板的视觉重心 ─────────────────────
+   v0.15.1 需求3：行内边距 8px → 12px（上下）+ 14px（左右），控件间距 6 → 8px。
+   面板 620px 宽时，搜索行内容宽 = 620 - 28 = 592px：
+     input(flex) + ↑(28) + ↓(28) + 计数(46) + ⟳(30) + 4×8 间距 = input ≈ 420px
+   —— 输入区仍是绝对主体，但两侧留白把"一长条"的感觉收住了。 */
 .search-row,
 .replace-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 12px 14px;
+  flex: 0 0 auto;
 }
 
+/* 替换行紧贴搜索行下方（上边距由搜索行的下 padding 提供，这里不再叠加） */
 .replace-row {
   padding-top: 0;
 }
 
+/* ─── 输入框：高度 34 → 38px，圆角 4 → 8px，聚焦有柔和光圈 ────────────
+   v0.15.1 需求3：38px 高 + 14px 字号 + 1.35 行高，单行文本在框内垂直居中且不显局促。
+   圆角从 4px 提到 8px（面板 12px 的一半略多），控件与面板的圆角语言统一：
+   8px 控件 / 12px 面板 —— 现代编辑器与命令面板常见的"同心"比例。 */
 .search-input {
   flex: 1;
-  height: 34px;
-  padding: 0 10px;
+  height: 38px;
+  padding: 0 12px;
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: 8px;
   background: var(--bg-primary);
   color: var(--text-primary);
   font-size: 14px;
+  font-family: inherit;
+  line-height: 1.35;
   outline: none;
   min-width: 0;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background var(--transition-fast);
 }
 
+/* 输入框拿到焦点 = 用户正在输入：边框 + 3px 柔光环，视线自然落到这里 */
 .search-input:focus {
   border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 16%, transparent);
 }
 
-/* R4：正则表达式非法时输入框红框提示 */
+/* 悬停给出可编辑暗示（未聚焦时比默认边框略深一档） */
+.search-input:hover:not(:focus) {
+  border-color: var(--text-tertiary);
+}
+
+/* R4：正则表达式非法时输入框红框提示
+   v0.15.1 需求3：红框必须压过 :hover / :focus 的新样式（否则悬停时红边会被灰边顶掉），
+   故这里把 hover/focus 两种状态一并列出，并给同样规格的红色柔光环。 */
 .search-input-invalid,
+.search-input-invalid:hover,
 .search-input-invalid:focus {
   border-color: #e5484d;
+}
+
+.search-input-invalid:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, #e5484d 16%, transparent);
 }
 
 /* R4：正则非法红字提示（复用 .search-count 位置） */
@@ -90,18 +153,29 @@
   color: #e5484d;
 }
 
+/* ─── 图标按钮（↑ ↓ ⟳ ✕）：34×34 的方形热区，与 38px 输入框同高一线 ─────
+   v0.15.1 需求3：原来 padding: 4px 6px（热区 ~22×22）在 38px 高的行里显得过小、过散。
+   改成固定 28×28 方块 + 6px 圆角，图标 14px，热区足够、又与输入框的 8px 圆角同族。
+   注意 keep `line-height: 1` 与 `display: flex` 居中，避免字形基线把热区撑歪。 */
 .search-option-btn,
 .search-nav-btn,
 .search-toggle-btn,
 .search-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 13px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  font-size: 14px;
   color: var(--text-secondary);
-  transition: background var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
   line-height: 1;
   flex-shrink: 0;
 }
@@ -112,6 +186,18 @@
 .search-close-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+/* 关闭按钮在拖拽条里：让它贴右沿、悬停时给一点"危险"提示色 */
+.search-close-btn {
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+}
+
+.search-close-btn:hover {
+  background: color-mix(in srgb, #e5484d 14%, transparent);
+  color: #e5484d;
 }
 
 .search-option-btn.active {
@@ -125,28 +211,44 @@
   cursor: not-allowed;
 }
 
+/* 计数：「3/17」这类短文本，等宽数字避免个位/十位跳动时左右抖 */
 .search-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-tertiary);
-  min-width: 50px;
+  min-width: 46px;
   text-align: center;
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* ─── 替换行按钮：次要动作（描边）与主导出按钮区分层次 ────────────────
+   v0.15.1 需求3：高度统一 28px（与图标按钮同高）、圆角 6px、字号 12.5px，
+   与 38px 输入框并排时上下各留 5px，视觉上成"一行控件"而不是"高低不齐"。 */
 .replace-btn {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   cursor: pointer;
-  padding: 3px 10px;
-  border-radius: 4px;
-  font-size: 12px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-family: inherit;
   color: var(--text-primary);
-  transition: background var(--transition-fast);
+  white-space: nowrap;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
   flex-shrink: 0;
 }
 
 .replace-btn:hover:not(:disabled) {
   background: var(--bg-hover);
+  border-color: var(--text-tertiary);
 }
 
 /* ─── v0.14.0 需求2：勾选项区（全词 / 大小写 / 选取范围内 / 正则）───────
@@ -162,16 +264,29 @@
    · 勾选组 `flex: 1 1 auto; min-width: 0; overflow: hidden` —— 宽度不够时只裁剪勾选项，
      绝不挤压/推动右侧按钮；
    · 动作组 `flex: 0 0 auto` 靠右 —— 两个按钮相对面板右沿的位置恒定，
-     与面板宽度（需求5 的 920px）、结果条幅是否展开都无关。 */
+     与面板宽度、结果条幅是否展开都无关。
+
+   ⚠️ v0.15.1 需求3（本轮的观感重设计）**只动间距与字号，不动这套 flex 语义**：
+   面板宽度定为 620px 后，中英文的勾选组 + 动作组都能一行放下（实测见
+   _verify-out/v0151-search-panel.txt），右侧按钮不位移。 */
 .search-options-row {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
   gap: 10px;
-  padding: 0 10px 8px;
+  /* 顶部一条极淡 hairline + 上内边距：把「输入区」与「选项/作用域区」分成两层，
+     视觉层次清楚，同时不给面板增加明显高度（1px + 10px）。
+     左右内边距 12px（比搜索行的 14px 窄 2px）：这一行是最拥挤的一行，
+     省下的 4px 全部让给内容，保证中英文都能一行放下（实测见 _verify-out）。 */
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border-light);
+  flex: 0 0 auto;
 }
 
-/* 勾选组：可被压缩（min-width:0 让 flex 允许收缩），溢出时裁剪而不是折行 */
+/* 勾选组：可被压缩（min-width:0 让 flex 允许收缩），溢出时裁剪而不是折行。
+   注意**不要**给它加 mask-image 渐隐遮罩：勾选组在 flex 里会被拉伸到"可用宽度"，
+   内容刚好放得下时遮罩仍然会把最后一项（`.*`）的右侧 16px 淡掉 —— 实测证实了这点，
+   等于凭空制造"这一项禁用了"的错觉。宁可硬裁剪，也不要常亮的假状态。 */
 .search-options-checks {
   display: flex;
   align-items: center;
@@ -185,26 +300,33 @@
 .search-options-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex: 0 0 auto;
   margin-left: auto;
 }
 
+/* 勾选项：字号 12 → 12px、框体 13 → 14px。
+   v0.15.1 需求3：这一行是全面板**信息密度最高**的一行（4 个勾选 + 2 个按钮），
+   因此字号取 12px（与正文 14px 拉开一档），腾出的宽度让
+   **英文长文案（Whole word / Match case / In selection + Find in open files /
+   Search entire workspace）也能在 620px 一行放下**，不必裁剪。
+   具体余量见 _verify-out/v0151-search-panel.txt 的实测数字。 */
 .search-check {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: 12px;
   color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
   /* 勾选态由 input:checked 的强调色体现，label 不额外加背景，避免视觉噪音 */
   white-space: nowrap;
+  transition: color var(--transition-fast);
 }
 
 .search-check input[type="checkbox"] {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   margin: 0;
   cursor: pointer;
   accent-color: var(--accent-color);
@@ -221,21 +343,39 @@
   letter-spacing: 0.5px;
 }
 
+/* 正则禁用态（工作区作用域下）：明确"这一项此刻不可用"，但仍可见可读 */
+.search-check input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.search-check:has(input[type="checkbox"]:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* 「查找所有打开文件」/「搜索整个工作区」：位于右侧动作组内，靠右对齐
    v0.15.1 需求6：**去掉 margin-left:auto** —— 靠右由父级 .search-options-actions
    的 margin-left:auto 统一负责；按钮各自再 auto 会让两个按钮被拆到两侧、
-   间距随可用宽度变化（面板放大/条幅展开时肉眼可见地"移动"）。 */
+   间距随可用宽度变化（面板放大/条幅展开时肉眼可见地"移动"）。
+   v0.15.1 需求3：高度 28px、圆角 6px、字号 12.5px、水平内边距 10px ——
+   与图标按钮/replace-btn 同一套控件规格，面板里不再有"三种高度"的按钮。 */
 .search-find-files-btn {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
-  padding: 3px 8px;
-  font-size: 12px;
+  border-radius: 6px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-family: inherit;
   color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .search-find-files-btn:hover {
@@ -252,10 +392,11 @@
 
 /* 勾了「选取范围内」但没有选区时的红字提示 */
 .search-hint {
-  padding: 0 10px 8px;
-  font-size: 11px;
+  padding: 0 14px 10px;
+  font-size: 11.5px;
   color: #e5484d;
-  line-height: 1.4;
+  line-height: 1.45;
+  flex: 0 0 auto;
 }
 
 /* ─── v0.15.1 需求6：结果条幅「展开 / 收起」的高度过渡 ─────────────────
@@ -286,6 +427,9 @@
     transform 0.22s cubic-bezier(0.33, 1, 0.68, 1);
   /* Chromium 129+：让 height:auto ↔ 0 可插值（WebView2 155 支持） */
   interpolate-size: allow-keywords;
+  /* 面板是 flex 纵向容器（v0.15.1 需求3）：外壳尺寸完全由自身高度决定，
+     不参与拉伸/压缩，保证 height 过渡的起止值就是它自己的高度 */
+  flex: 0 0 auto;
 }
 
 /* 展开态：高度交给内容（auto），透明度/位移归位 */
@@ -305,46 +449,65 @@
 /* ─── v0.14.0 需求2：「查找所有打开文件」结果条幅 ───────────────────
    关键约束：条幅**紧贴搜索框下方、不遮住替换行**。
    做法是把它放进面板的常规文档流（DOM 顺序在 .replace-row 之后），
-   而不是 position:absolute 覆盖 —— 绝对定位会盖住替换输入框与按钮，用户没法边看结果边替换。 */
+   而不是 position:absolute 覆盖 —— 绝对定位会盖住替换输入框与按钮，用户没法边看结果边替换。
+
+   v0.15.1 需求3：条幅是面板的"下半身"—— 顶部一条分割线把它和上半身分开，
+   底部随面板圆角收口（`overflow` 由面板统一裁剪，这里只留上下 padding 的呼吸感）。 */
 .search-results {
   border-top: 1px solid var(--border-color);
   /* 可滚动：结果多时面板不会无限长到溢出屏幕 */
-  max-height: 240px;
+  max-height: 264px;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 6px 0 8px;
   /* 滚动时卡住条幅高度，避免拖拽条/搜索行被推出视口 */
   overscroll-behavior: contain;
+  /* 结果区用次级底色：与上半身（bg-primary）分层，一眼看出"这里是结果" */
+  background: var(--bg-secondary);
 }
 
 /* 右侧预览关闭时（面板独占编辑区）可以给得更高一点 */
 .search-replace-solo .search-results {
-  max-height: 340px;
+  max-height: 360px;
 }
 
+/* 汇总行：sticky 吸顶，底色必须与结果区一致（否则滚动时上沿露一条白边） */
 .search-results-summary {
-  padding: 2px 10px 6px;
-  font-size: 11px;
+  padding: 2px 14px 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
   color: var(--text-tertiary);
   position: sticky;
   top: 0;
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   /* sticky 汇总行：长列表滚动时汇总数仍在视野里 */
   z-index: 1;
 }
 
+/* 结果条目：行高 1.5 → 1.45 + 上下 5px，单条 ≈ 28px（与控件同族的节奏），
+   悬停用圆角块而不是整条通色 —— 600px 宽的面板里，"块状悬停"更像现代列表 */
 .search-result-item {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 3px 10px;
+  margin: 0 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.45;
   /* 结果行可能很长：文件名不换行、行内容省略（完整内容在 title 里） */
   white-space: nowrap;
+  transition: background var(--transition-fast);
 }
 
 .search-result-item:hover {
+  background: var(--bg-hover);
+}
+
+/* 键盘可达：Tab 落到结果条目时有明确焦点环（否则只能靠鼠标） */
+.search-result-item:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: -2px;
   background: var(--bg-hover);
 }
 
@@ -399,9 +562,11 @@
   margin-left: auto;
   background: transparent;
   border: 1px solid var(--border-color);
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 11px;
+  border-radius: 6px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-family: inherit;
   color: var(--text-secondary);
   cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast);
@@ -422,12 +587,13 @@
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-/* 命中关键字高亮：用 <mark> 语义标签（浏览器默认可访问语义正确），颜色跟主题强调色走 */
+/* 命中关键字高亮：用 <mark> 语义标签（浏览器默认可访问语义正确），颜色跟主题强调色走
+   v0.15.1 需求3：圆角 2 → 3px、左右 1 → 2px，在放大后的行高里不至于"糊成一团"。 */
 .search-result-line mark.search-result-match {
   background: var(--bg-selection);
   color: var(--accent-color);
-  border-radius: 2px;
-  padding: 0 1px;
+  border-radius: 3px;
+  padding: 0 2px;
   font-weight: 600;
 }
 
@@ -502,5 +668,137 @@
   .search-genie-out > .search-replace {
     animation: none;
     opacity: 0;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   v0.15.1 需求5：搜索高亮（全部命中 + 当前项醒目色）
+   ────────────────────────────────────────────────────────────────────────
+   【只新增，不改既有规则】面板宽高/内边距/字号由另一个任务负责，这里只
+   追加两个高亮 class 与源码模式 overlay 的定位规则。
+
+   颜色取舍（为什么是"淡黄 + 橙红"）：
+   · 全部命中 `.search-match`：低饱和淡黄底色、**无**描边 —— 整篇几十处同时
+     出现时，高饱和会糊成一片，正文可读性直接崩；淡黄只做"这里有命中"的
+     区域提示，不抢文字。
+   · 当前项 `.search-match-current`：橙红底色 + 2px 描边 + 内发光 —— 必须
+     一眼从一片淡黄里跳出来（用户点 ↑/↓ 就是为了看"现在这一处是哪个"）。
+     两者色相相距约 40°（黄 → 橙红），色弱用户也能靠描边与明度差区分。
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── 阅读模式（ProseMirror Decoration，两层独立的 inline deco）── */
+
+/* 全部命中：低调底色，不加描边（几十处同时出现时不糊屏） */
+.ProseMirror .search-match {
+  background: rgba(255, 213, 79, 0.42);
+  border-radius: 2px;
+}
+
+/* 当前项：橙红 + 描边 + 柔光，醒目不刺眼 */
+.ProseMirror .search-match-current {
+  background: rgba(255, 122, 61, 0.62);
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px rgba(240, 82, 20, 0.85), 0 0 6px rgba(240, 82, 20, 0.45);
+}
+
+/* 暗色主题：黄底要更透（否则在深色正文上变成一片亮斑），橙红要更实（否则发灰） */
+[data-theme="dark"] .ProseMirror .search-match {
+  background: rgba(255, 213, 79, 0.26);
+}
+
+[data-theme="dark"] .ProseMirror .search-match-current {
+  background: rgba(255, 138, 76, 0.72);
+  box-shadow: 0 0 0 2px rgba(255, 106, 40, 0.9), 0 0 8px rgba(255, 106, 40, 0.5);
+}
+
+/* ── 源码模式（textarea 之上的 overlay）─────────────────────────────
+   由 SearchReplace 在首次需要时动态 append 进 `.source-editor-wrapper`
+   （那里已有 position: relative，与 source-ghost-overlay 同一个定位上下文）。
+
+   关键点：
+   · `pointer-events: none` —— 绝不能挡住 textarea 的点击/选择/输入；
+   · 文字与背景全部透明，只给 <mark> 上底色 —— 下方 textarea 的原文才是
+     "正文"，overlay 只负责染色，任何不透明都会把用户正在编辑的字盖住；
+   · `overflow: hidden` + JS 同步 scrollTop —— textarea 自己滚动时 overlay
+     跟着滚，否则底色会错行（比没有高亮更糟）；
+   · 排版度量（字体/行高/内边距/宽高）由 JS 的 syncTextareaMetrics 逐项复制，
+     这里不要写死 font-size 之类，否则两边换行位置不一致。 */
+.source-search-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: inherit;
+  color: transparent;
+  /* 与 textarea 一致的默认族；JS 会用计算样式覆盖 */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* overlay 内的命中：mark 默认带的 background/color 必须显式压掉，
+   否则浏览器默认的"黑底白字"会把高亮变成黑块 */
+.source-search-overlay .search-match,
+.source-search-overlay .search-match-current {
+  color: transparent;
+  border-radius: 2px;
+}
+
+.source-search-overlay .search-match {
+  background: rgba(255, 213, 79, 0.42);
+}
+
+.source-search-overlay .search-match-current {
+  background: rgba(255, 122, 61, 0.62);
+  box-shadow: 0 0 0 2px rgba(240, 82, 20, 0.85);
+}
+
+[data-theme="dark"] .source-search-overlay .search-match {
+  background: rgba(255, 213, 79, 0.26);
+}
+
+[data-theme="dark"] .source-search-overlay .search-match-current {
+  background: rgba(255, 138, 76, 0.72);
+  box-shadow: 0 0 0 2px rgba(255, 106, 40, 0.9);
+}
+
+/* ── 非 md 文件的阅读面（Prism 渲染的 .plaintext-preview）──
+   该面无法挂 Decoration / textarea overlay（改 DOM 会破坏 Prism 结构），
+   当前项仍走 Range 选区（::selection），这里只给 `.search-match` 留一份
+   样式，便于将来若在该面做全量包裹时直接复用。 */
+.plaintext-preview .search-match {
+  background: rgba(255, 213, 79, 0.42);
+  border-radius: 2px;
+}
+
+.plaintext-preview .search-match-current {
+  background: rgba(255, 122, 61, 0.62);
+  box-shadow: 0 0 0 2px rgba(240, 82, 20, 0.85);
+}
+
+/* ── 计数旁的上限提示（"仅高亮前 2000 处"）──
+   v0.15.1 需求5 要求"不要静默截断"：文案必须可见。
+   刻意做成小号弱化色而不是报错红 —— 它不是错误，是性能取舍的说明；
+   但用 `flex-shrink: 0` 保证不被挤没（挤掉就等于静默了）。 */
+.search-highlight-limit {
+  font-size: 11.5px;
+  line-height: 1.2;
+  color: var(--text-tertiary);
+  background: rgba(255, 213, 79, 0.18);
+  border: 1px solid rgba(255, 193, 7, 0.35);
+  border-radius: 999px;
+  padding: 1px 7px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 减弱动效偏好下不做任何过渡（本组高亮本身无动画，留此声明是为了将来加过渡时自动生效） */
+@media (prefers-reduced-motion: reduce) {
+  .ProseMirror .search-match,
+  .ProseMirror .search-match-current,
+  .source-search-overlay .search-match,
+  .source-search-overlay .search-match-current {
+    transition: none;
   }
 }

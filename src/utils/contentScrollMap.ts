@@ -491,6 +491,67 @@ export function resolveAnchorBlock(
 }
 
 /**
+ * 「块 + 其后的排版空隙」构成的**连续区域**（v0.15.1 需求3 第四次返修核心）。
+ *
+ * ## 为什么不能直接用块的 `height`
+ *
+ * 两个渲染面的"块高"口径不同：
+ * - 阅读面（PM）：`height` = 元素 `getBoundingClientRect().height`，**不含**外边距 →
+ *   块与块之间留着真实空隙（`.ProseMirror p` 的段间距等）；
+ * - 源码面（textarea）：`blockGeometryFromLineAxis` 让每块延伸到**下一块起始行**，
+ *   空行/margin 被算进上一块 → 块与块**首尾相接**。
+ *
+ * 于是"块内比例"在两套排版里不可比：视口中央落在 PM 的空隙里时，
+ * `findBlockAtY` 只能把比例钳到前一块的 `1`，空隙里那段真实偏移被抹掉。
+ * 实机表现（v0.15.1 探针）：把视口停在段落空隙里往返切换一次，阅读面
+ * `scrollTop` 一次性跳 11px（不累积，但"切一下视野挪了一行"）。
+ *
+ * ## 口径
+ *
+ * 取「本块顶 → **下一可见块**顶」为一个连续区域，比例在区域内连续：
+ * 空隙因此被算进前一块的区域（与源码面的块高口径一致），两侧归一化方式相同 →
+ * 同一几何内往返**像素级幂等**，跨排版时也不会在空隙处丢一段。
+ *
+ * 末块没有"下一块"，沿用自身 `height`（其后是文末空白，由 `atBottom` 分支负责，
+ * 不在这里臆造延伸——否则贴底精度会被内容高估计误差污染）。
+ *
+ * ⚠️ 只在本模块的**采集/恢复**内部使用：`findBlockAtY` 的对外语义
+ * （"空隙 → 前一块 ratio=1"）保持不变，那是被单测锁定的契约。
+ */
+interface ContentRegion {
+  block: BlockGeometry;
+  top: number;
+  /** 区域高度：块顶 → 下一可见块顶（末块用自身 height） */
+  extent: number;
+}
+
+function contentRegionsOf(blocks: BlockGeometry[]): ContentRegion[] {
+  const vis = sortedVisible(blocks);
+  const out: ContentRegion[] = [];
+  for (let i = 0; i < vis.length; i++) {
+    const block = vis[i];
+    const next = vis[i + 1];
+    const rawExtent = next ? next.top - block.top : Math.max(0, block.height);
+    out.push({ block, top: block.top, extent: Number.isFinite(rawExtent) ? Math.max(0, rawExtent) : 0 });
+  }
+  return out;
+}
+
+/** 区域表里定位内容坐标 `y`（非递减 `top` 上二分；`y` 在首块前 → 首区 ratio 0） */
+function regionAtY(
+  regions: ContentRegion[],
+  y: number,
+): { region: ContentRegion; ratio: number } | null {
+  if (!isNum(y) || regions.length === 0) return null;
+  const tops = regions.map((r) => r.top);
+  const at = lastBlockAtOrBefore(tops, y);
+  if (at < 0) return { region: regions[0], ratio: 0 };
+  const region = regions[at];
+  const ratio = region.extent > 0 ? clamp((y - region.top) / region.extent, 0, 1) : 0;
+  return { region, ratio };
+}
+
+/**
  * **采集**内容锚点：来源视口中央所在块 + 块内比例；贴顶/贴底走专门分支。
  *
  * ## 为什么锚视口中央
@@ -533,13 +594,19 @@ export function captureContentAnchor(
     typeof opts?.atBottom === "boolean" ? opts.atBottom : top >= maxScroll - edge;
 
   const centerY = top + viewportHeight / 2;
-  const hit = findBlockAtY(blocks, centerY) ?? { block: vis[0], ratio: 0 };
+  /**
+   * v0.15.1 需求3（第四次返修）：中央按**连续区域**（本块顶 → 下一块顶）取比例，
+   * 而不是按元素 rect 高 —— 否则中央落在块间空隙时比例被钳成 1，空隙宽度丢失，
+   * 往返切换一次视野就跳一个空隙（实测 11px）。
+   */
+  const regions = contentRegionsOf(blocks);
+  const hit = regionAtY(regions, centerY) ?? { region: regions[0], ratio: 0 };
   return {
-    blockIndex: hit.block.index,
-    headingId: hit.block.headingId,
+    blockIndex: hit.region.block.index,
+    headingId: hit.region.block.headingId,
     // 保留原始浮点比例：往返恒等依赖"同一份几何下 ratio 不变"
     ratioWithinBlock: hit.ratio,
-    sourceLine: isNum(hit.block.sourceLine) ? hit.block.sourceLine : undefined,
+    sourceLine: isNum(hit.region.block.sourceLine) ? hit.region.block.sourceLine : undefined,
     atTop,
     atBottom,
   };
@@ -664,8 +731,15 @@ export function restoreContentAnchor(
   const resolved = resolveAnchorBlock(blocks, anchor);
   // ★ 无法映射 → null，绝不 0 兜底
   if (!resolved) return null;
-  const height = Math.max(0, resolved.block.height);
-  const contentPoint = resolved.block.top + resolved.ratio * height;
+  /**
+   * v0.15.1 需求3（第四次返修）：比例按**连续区域**（块顶 → 下一块顶）换算，
+   * 与 `captureContentAnchor` 同一口径。用元素 rect 高会让"空隙里的比例"在
+   * 阅读面（rect 高、有空隙）与源码面（块高含空行、无空隙）之间来回丢一个空隙，
+   * 实测表现为"往返切换一次视野跳 11px"。
+   */
+  const region = contentRegionsOf(blocks).find((r) => r.block.index === resolved.block.index);
+  const extent = region ? region.extent : Math.max(0, resolved.block.height);
+  const contentPoint = resolved.block.top + resolved.ratio * extent;
   return clamp(contentPoint - viewportHeight / 2, 0, maxScroll);
 }
 

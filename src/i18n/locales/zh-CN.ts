@@ -1093,6 +1093,8 @@ export const zhCN: Record<string, string> = {
   "search.previous": "上一个",
   "search.next": "下一个",
   "search.noResult": "无结果",
+  // v0.15.1 需求5：命中数超过高亮上限时的可见提示（不静默截断）
+  "search.highlightTruncated": "仅高亮前 {count} 处",
   "search.replace": "替换",
   "search.replacePlaceholder": "替换为...",
   "search.replaceCurrent": "替换当前",

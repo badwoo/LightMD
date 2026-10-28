@@ -24,9 +24,12 @@
  */
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import type { Node as PMNode } from "prosemirror-model";
-import { searchHighlightKey } from "../../core/editor";
+import { searchHighlightKey, searchMatchesKey, type SearchHighlightRange } from "../../core/editor";
+// v0.15.1 需求5：源码模式（textarea）搜索高亮的 overlay 构建（纯函数，可单测）
+import { buildSearchOverlayHtml, SOURCE_SEARCH_OVERLAY_CLASS, SEARCH_MATCH_CURRENT_CLASS } from "../../utils/highlight";
+import { syncTextareaMetrics } from "../../utils/focus-paragraph";
 import { useEditorStore } from "../../stores/useEditorStore";
-import { useT } from "../../i18n";
+import { useT, getCurrentLanguage } from "../../i18n";
 import {
   lookupPmPos,
   pmPosToTextOffset,
@@ -38,13 +41,22 @@ import {
   collectFileResults,
   resolveJumpOffset,
   resolveJumpByOccurrence,
+  pmLineColumnOfOffset,
   MAX_FILES,
   type MatchRange,
   type OffsetBlock,
   type SearchOptions,
   type SearchFileResult,
 } from "../../utils/searchEngine";
-import { requestSearchJump, peekSearchJump, takeSearchJump, type SearchJumpTarget } from "../../utils/searchJump";
+import {
+  requestSearchJump,
+  peekSearchJump,
+  peekSearchJumpSeq,
+  takeSearchJump,
+  jumpOccurrenceOf,
+  SEARCH_JUMP_EVENT,
+  type SearchJumpTarget,
+} from "../../utils/searchJump";
 import { pathCompareKey } from "../../utils/path";
 import { UNTITLED_PROGRESS_PREFIX } from "../../utils/tabKey";
 import {
@@ -338,6 +350,104 @@ function buildOffsetMap(doc: PMNode): OffsetMap {
 }
 
 /**
+ * v0.15.1 需求5：把文本偏移空间的命中区间映射为 **PM 文档区间**（纯函数）。
+ *
+ * 为什么单独抽出来：`performSearch`（把全部命中推给 Decoration 插件）与
+ * `highlightMatch`（只更新当前项）都要做这件事，两处必须用**同一套映射规则**，
+ * 否则"全量高亮"和"当前项高亮"会落在不同字符上（用户会看到当前项框住了别的词）。
+ *
+ * 映射规则（与既有单区间实现逐条一致，不能改）：
+ * - 起点：`lookupPmPos(blocks, start)`
+ * - 终点：`lookupPmPos(blocks, end - 1)` 再 `+1`（`end-1` 是为了让"恰好结束在块末尾"
+ *   的命中落在同一块内，而不是越到下一块开头）
+ * - 任一端落在块间隙（换行符）或越界 → 该命中**跳过**（无法在 PM 里表达）
+ *
+ * @returns 与 `ranges` 同序的 `{from,to}` 数组（跳过项不出现在结果里），
+ *   以及在结果中的「当前项下标」（原始 current 找不到时为 -1 → 调用方回退到 0）
+ */
+function mapRangesToPm(
+  blocks: OffsetBlock[],
+  ranges: ReadonlyArray<MatchRange>,
+  docSize: number,
+): { ranges: SearchHighlightRange[]; currentOf: Map<number, number> } {
+  const out: SearchHighlightRange[] = [];
+  const currentOf = new Map<number, number>();
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    const pmStart = lookupPmPos(blocks, r.start);
+    if (pmStart === undefined) continue;
+    const pmEnd = lookupPmPos(blocks, r.end - 1);
+    if (pmEnd === undefined) continue;
+    const to = Math.min(pmEnd + 1, docSize);
+    if (to <= pmStart) continue;
+    currentOf.set(i, out.length);
+    out.push({ from: pmStart, to });
+  }
+  return { ranges: out, currentOf };
+}
+
+/**
+ * v0.15.1 需求5：在「匹配下标 → PM 区间下标」换算表里找**最近的**已映射项。
+ *
+ * 为什么需要：某些命中在 PM 空间里无法表达（起点/终点落在块间隙，例如跨段落的
+ * 命中在 `offsetMap.text` 里是连续的、在 PM 里却跨两个块）。这类命中没有对应
+ * 区间，若直接回退到"第 0 处"，用户点「下一个」会看到醒目色**跳回文档开头**，
+ * 像是按钮失灵。这里取"同方向最近的一处"作为当前项，视觉上连续、不会误导。
+ *
+ * @returns 有换算表时返回最近的已映射下标；表为空时返回 -1
+ */
+function nearestMappedRangeIndex(currentOf: Map<number, number>, matchIdx: number): number {
+  if (currentOf.size === 0) return -1;
+  const direct = currentOf.get(matchIdx);
+  if (direct !== undefined) return direct;
+  let bestKey = Number.POSITIVE_INFINITY;
+  let bestVal = -1;
+  for (const [k, v] of currentOf) {
+    // 优先取「匹配下标 ≥ 当前」里最小的那个；没有再取全局最大的
+    if (k >= matchIdx && k < bestKey) {
+      bestKey = k;
+      bestVal = v;
+    }
+  }
+  if (bestVal >= 0) return bestVal;
+  for (const [k, v] of currentOf) {
+    if (k < bestKey) {
+      bestKey = k;
+      bestVal = v;
+    }
+  }
+  return bestVal;
+}
+
+/**
+ * v0.15.1 需求5：构造要推给 Decoration 插件的区间集合（含 2000 处上限）。
+ *
+ * 输入必须是**已映射到 PM 空间的区间**（`mapRangesToPm` 的输出）。
+ * 上限的意义见 `MAX_HIGHLIGHT_MATCHES`；这里只负责"截取前 N 处"并**保留当前项**：
+ * 若当前项落在截断范围之外（用户点到了第 2500 处的"下一个"），把它替换进来，
+ * 否则用户点了上/下却看不到"当前项"颜色，会以为按钮失灵。
+ */
+function buildHighlightPayload(
+  pmRanges: ReadonlyArray<SearchHighlightRange>,
+  currentIdx: number,
+): { payload: { ranges: SearchHighlightRange[]; current: number }; truncated: boolean } {
+  const truncAt = Math.min(pmRanges.length, MAX_HIGHLIGHT_MATCHES);
+  const truncated = pmRanges.length > truncAt;
+  const ranges = pmRanges.slice(0, truncAt).map((r) => ({ from: r.from, to: r.to }));
+  let current = currentIdx >= 0 && currentIdx < truncAt ? currentIdx : -1;
+  if (current < 0 && truncated && pmRanges.length > 0) {
+    // 当前项在截断之外：用当前项替换掉最后一处，保证"当前项颜色"一定可见
+    const cur = pmRanges[Math.max(0, Math.min(currentIdx, pmRanges.length - 1))];
+    if (cur && ranges.length > 0) {
+      ranges[ranges.length - 1] = { from: cur.from, to: cur.to };
+      current = ranges.length - 1;
+    }
+  }
+  if (current < 0) current = ranges.length > 0 ? 0 : -1;
+  return { payload: { ranges, current }, truncated };
+}
+
+/**
  * R4（v0.10.0）：按模式构造搜索正则（纯函数，便于单元测试）
  *
  * - 关闭正则：全量转义元字符（v0.4.2 字面量语义回归不变）
@@ -403,13 +513,59 @@ const EMPTY_RANGE: MatchRange = { start: 0, end: 0 };
 /** collectFiles 缺省（仅当前文档）时使用的 fileKey */
 const FALLBACK_FILE_KEY = "__search_current_doc__";
 /**
- * v0.15.1 需求5：搜索面板的**兜底宽度**（CSS 里是固定 920px）。
+ * v0.15.1 需求5：**同时高亮的命中处数上限**。
+ *
+ * 为什么必须有上限：旧实现只给一处上 Decoration，成本是 O(1)；改成"全部高亮"后
+ * 每次搜索都要为每处命中建 Decoration 并做 `DecorationSet.create`（内部按位置建树），
+ * 几千处尚可（实测 2000 处 ≈ 十几 ms），上万处会明显掉帧，而用户根本看不出
+ * 一万个黄框的差别（屏幕里同时可见的也就几十处）。
+ *
+ * 取 2000：约等于"一屏 40 行 × 50 屏"的可见量，远超实际阅读范围，
+ * 又把最坏情况的 Decoration 数量钉死在可预测的量级。
+ * **超出时绝不静默**：计数处追加可见提示（见 `highlightTruncated`），
+ * 计数本身仍显示全部命中总数（用户知道真实总量）。
+ */
+const MAX_HIGHLIGHT_MATCHES = 2000;
+/** 上限提示用的 i18n key（i18n 由 Lead 统一维护，缺失时走下方兜底文案） */
+const HIGHLIGHT_LIMIT_KEY = "search.highlightTruncated";
+/**
+ * i18n 尚未补该 key 时的兜底文案。
+ *
+ * 为什么不用 `t()` 的默认行为（缺 key 返回 key 本身）：那会让用户看到
+ * `search.highlightTruncated` 这种原始 key，等于没有提示 —— 而需求明确要求
+ * "不要静默截断"。这里按当前语言给一句可读的兜底，等 Lead 在 locales 里补上
+ * 正式 key 后自动生效（`t()` 命中就不再走兜底）。
+ */
+const HIGHLIGHT_LIMIT_FALLBACK: Record<string, string> = {
+  "zh-CN": "仅高亮前 {count} 处",
+  "en-US": "highlighting first {count} only",
+};
+
+/**
+ * 上限提示文案：优先取 i18n 正式 key，**未配置时用兜底文案**。
+ *
+ * 为什么要判断返回值是否等于 key 本身：`t()` 的缺失行为是"返回 key 并 console.warn"，
+ * 直接用它会让用户看到 `search.highlightTruncated` 这种原始 key（等于没有提示）。
+ */
+function highlightLimitMessage(t: (k: string, p?: Record<string, string | number>) => string, count: number): string {
+  const text = t(HIGHLIGHT_LIMIT_KEY, { count });
+  if (text !== HIGHLIGHT_LIMIT_KEY) return text;
+  const lang = getCurrentLanguage();
+  const fallback = HIGHLIGHT_LIMIT_FALLBACK[lang] ?? HIGHLIGHT_LIMIT_FALLBACK["zh-CN"];
+  return fallback.replace("{count}", String(count));
+}
+/**
+ * 搜索面板的**兜底宽度**（CSS 里是固定 620px）。
  *
  * 用途只有两处「测量失败时的降级」：初始居中定位、拖拽 clamp。
  * 必须与 `SearchReplace.css` 的 `.search-replace { width }` 保持一致 ——
- * 不一致会让测量失败的那一帧把面板摆偏/夹错（旧值是 460，已随需求5 同步）。
+ * 不一致会让测量失败的那一帧把面板摆偏/夹错。
+ *
+ * 版本沿革：460（初版）→ 920（v0.15.1 需求5，导致"又扁又长"）
+ * → **620（v0.15.1 需求3 观感重设计，与输入框 38px 高配成协调比例，
+ *   且实测中英文都能一行放下所有勾选项与作用域按钮）**。
  */
-const SEARCH_PANEL_FALLBACK_WIDTH = 920;
+const SEARCH_PANEL_FALLBACK_WIDTH = 620;
 /**
  * 「阅读模式下 doc 变化 → 重算搜索」的防抖时长。
  *
@@ -523,6 +679,46 @@ export function SearchReplaceDialog({
   const matchesRef = useRef<MatchRange[]>([]);
   // 缓存偏移映射，performSearch 构建后 highlightMatch 复用
   const offsetMapRef = useRef<OffsetMap | null>(null);
+  /**
+   * v0.15.1 需求5：这批匹配映射到 **PM 区间**后的结果（只读缓存）。
+   *
+   * 为什么要缓存：`performSearch` 要把全部命中推给 Decoration（O(n) 次二分），
+   * `highlightMatch` 只挪"当前项"。若每次 ↑/↓ 都重算全量映射，点一下要扫全文
+   * （几 MB 文档上百 ms），手感直接崩。匹配集一变（performSearch 重新赋值）这里就整体覆盖。
+   *
+   * `currentOf` 是「匹配下标 → PM 区间下标」的换算表：映射时可能有命中落在块间隙
+   * 被跳过（换行符位置），两者下标就会错位，绝不能直接混用。
+   *
+   * `doc` 记录这份缓存属于哪一版文档：PM 位置是**某一版 doc 的坐标**，doc 换了
+   * （用户打字/替换/撤销而 performSearch 还没跑完防抖）缓存必须整体作废，
+   * 否则 ↑/↓ 会把醒目色框到错误的字上。
+   */
+  const pmRangesRef = useRef<{
+    doc: PMNode;
+    ranges: SearchHighlightRange[];
+    currentOf: Map<number, number>;
+  } | null>(null);
+  /**
+   * v0.15.1 需求5：源码模式 overlay 用的命中区间（`{start,end}` 文本偏移坐标）。
+   * 与 `pmRangesRef` 互斥：哪个模式生效由 `isSourceMode` 决定，切换时另一边会被清空。
+   */
+  const sourceHighlightRangesRef = useRef<MatchRange[]>([]);
+  /** 源码模式搜索高亮 overlay（懒创建，挂在 textarea 的 `.source-editor-wrapper` 里） */
+  const sourceOverlayRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * v0.15.1 需求5：这批匹配是**基于哪一版 doc** 算出来的。
+   *
+   * 为什么必须有：`highlightMatch` 用 `matchesRef`（文本偏移）+ `offsetMapRef`
+   * （块映射）反查 PM 位置，两者都属于"某一版文档的坐标"。用户在阅读模式里打字后，
+   * doc 立刻变了，但重算搜索走 150ms 防抖（`CONTENT_RESYNC_DEBOUNCE_MS`）——
+   * 这段窗口里若点 ↑/↓，旧偏移套到**新**文档上就会把醒目色框到**别的词**上
+   *（实测：在 "cat dog cat" 前面插一个 cat，点「下一个」会把 "dog" 框成当前项）。
+   *
+   * 因此：doc 与这里记录的不一致时，`highlightMatch` **直接不动高亮**，
+   * 等防抖重搜算完再上色。宁可短暂没有醒目色，也不能框错词 —— 框错词会让用户
+   * 以为"搜索定位错了"，比"慢半拍"严重得多。
+   */
+  const matchesDocRef = useRef<PMNode | null>(null);
   // 选区快照所属文档（docKey+m 模式）：与当前文档不一致时快照作废
   const selectionDocKeyRef = useRef<string>("");
   /**
@@ -540,8 +736,8 @@ export function SearchReplaceDialog({
   // 初始位置：浮动在文档中间
   useEffect(() => {
     if (!initialized && containerRef.current) {
-      // v0.15.1 需求5：面板宽度改为固定 920px（CSS），兜底值同步跟上，
-      // 否则测量失败时会按旧的 460 居中 —— 视觉上明显偏左。
+      // v0.15.1 需求3：面板宽度固定 620px（CSS），兜底值同步跟上，
+      // 否则测量失败时会按旧的 920 居中 —— 视觉上明显偏右。
       const w = containerRef.current.offsetWidth || SEARCH_PANEL_FALLBACK_WIDTH;
       const h = containerRef.current.offsetHeight || 80;
       setPosition({
@@ -568,9 +764,9 @@ export function SearchReplaceDialog({
       /**
        * 限制在视口范围内。
        *
-       * v0.15.1 需求5：面板宽度从 460 变成 920，旧口径 `innerWidth - 60` 只保证
-       * 「左沿离右边 60px」，920 宽的面板会被拖出去大半个屏（右侧内容不可见、
-       * 拖回来也费劲）。这里按**面板实测宽度**夹住右沿，保证整块面板始终可见。
+       * 面板宽度改为 620px（v0.15.1 需求3）后，`innerWidth - 60` 这种"左沿离右边 60px"
+       * 的旧口径会把面板右半截拖出视口（右侧内容不可见、拖回来也费劲）。
+       * 这里按**面板实测宽度**夹住右沿，保证整块面板始终可见。
        * 面板比视口还宽时（窄窗口 + max-width:92vw 已兜底，正常不会发生）夹到 0。
        */
       const panelW = containerRef.current?.offsetWidth || SEARCH_PANEL_FALLBACK_WIDTH;
@@ -604,17 +800,29 @@ export function SearchReplaceDialog({
   }, [searchFocusKey]);
 
   // 问题1修复：组件卸载时清除 ProseMirror 中的搜索高亮 Decoration
+  // v0.15.1 需求5：除当前项那一层，**全部命中**那一层与源码 overlay 也必须清干净，
+  // 否则关掉搜索面板后整篇文档还挂着黄框（用户会以为"高亮坏了"）。
   useEffect(() => {
     return () => {
       if (editorView && !isSourceMode) {
         try {
           const tr = editorView.state.tr;
           tr.setMeta(searchHighlightKey, null);
+          tr.setMeta(searchMatchesKey, null);
           editorView.dispatch(tr);
         } catch {
           // 忽略清除错误（editorView 可能已销毁）
         }
       }
+      // v0.15.1 需求5：移除源码模式的高亮 overlay 节点（懒创建，得自己收尸）
+      const overlay = sourceOverlayRef.current;
+      if (overlay) {
+        overlay.innerHTML = "";
+        overlay.remove();
+        sourceOverlayRef.current = null;
+      }
+      pmRangesRef.current = null;
+      sourceHighlightRangesRef.current = [];
       // v0.4.3 Issue 3：清除非 md 文件阅读模式的选区高亮
       if (!isMdFile) {
         window.getSelection()?.removeAllRanges();
@@ -739,6 +947,26 @@ export function SearchReplaceDialog({
    */
   const pendingJumpRef = useRef<{ key: string; target: SearchJumpTarget } | null>(null);
   /**
+   * v0.15.1 需求4 续修：**本次就地跳转要用的「逐处全文偏移」**（临时，用完即清）。
+   *
+   * 为什么需要：条幅是一行一条，同一行 4 处命中只产生**一条**结果，
+   * 行的 `line`/`column` 只描述首处。用户点行内第 2/3/4 个 `<mark>` 时要落到那一处，
+   * 唯一精确的坐标是 `SearchFileResult.hitOffsets[hitIndex]`。
+   * 它只对「算条幅时那份文本」有效（文本动过就作废，调用方会先校验
+   * `matchesTextRef === 当前文本` 再赋值，这里不再重复判断）。
+   */
+  const pendingHitOffsetsRef = useRef<number[] | null>(null);
+  /**
+   * `currentMatch` 的**同步**镜像（1 基；0 = 无当前项）。
+   *
+   * 为什么需要：`performSearch` 会被多条通道延迟重跑（换文档 effect 的双 rAF + 160ms 兜底、
+   * MutationObserver 的 150ms 防抖、替换后的 50ms 重算），而这些重跑发生在**用户点了
+   * 某处结果之后**。若结尾无条件 `setCurrentMatch(1)`，刚定位好的位置会被瞬间拽回第 1 处
+   * （实测：点第 2 个 `<mark>` → 2/4，几十毫秒后变回 1/4 —— 这正是"每一处都跳到第一个"
+   * 的另一半成因）。用 ref 读权威值才能在延迟重跑里保住它。
+   */
+  const currentMatchRef = useRef(0);
+  /**
    * `matchesRef` 对应的文本快照（见下方"匹配集是否已跟上当前文本"的判定）。
    * `null` = 还没算过任何匹配（等价于"不一致"）。
    */
@@ -767,17 +995,235 @@ export function SearchReplaceDialog({
     range: inSelection ? selectionRange ?? EMPTY_RANGE : null,
   }), [caseSensitive, useRegex, wholeWord, inSelection, selectionRange]);
 
+  // ─── v0.15.1 需求5：全部命中同时高亮 + 当前项醒目色 ─────────────────────
+  /**
+   * 命中数超过 `MAX_HIGHLIGHT_MATCHES` 时为 true → 计数处显示可见提示。
+   * **绝不静默截断**：用户必须知道"屏幕上没有全部标出来"是性能取舍，而不是没搜到。
+   */
+  const [highlightTruncated, setHighlightTruncated] = useState(false);
+
+  /**
+   * 清掉与高亮有关的**本地缓存与 overlay**（不 dispatch 任何事务）。
+   *
+   * 与 `clearHighlights` 分开的理由：`performSearch` 的空搜索词分支里要自己 dispatch
+   * 那两条 meta（保持既有代码形状与 v0.3.5 的结构断言），这里只负责"我们自己记的东西"。
+   */
+  const clearHighlightRefs = useCallback(() => {
+    pmRangesRef.current = null;
+    sourceHighlightRangesRef.current = [];
+    const overlay = sourceOverlayRef.current;
+    if (overlay) overlay.innerHTML = "";
+    setHighlightTruncated(false);
+  }, []);
+
+  /**
+   * 按当前缓存（`sourceHighlightRangesRef` + `matchesTextRef`）重绘 overlay 的**当前项**。
+   *
+   * 只改"哪一处用醒目色"，不重算匹配、不重建整个区间表 —— ↑/↓ 每次点击只走这一条，
+   * 成本是 O(命中数) 的字符串拼接 + 一次 innerHTML，与"点一次扫全文"完全不同量级。
+   */
+  const paintSourceOverlay = useCallback((current: number) => {
+    const ta = sourceTextareaRef?.current;
+    const overlay = sourceOverlayRef.current;
+    if (!ta || !overlay || !overlay.isConnected) return;
+    const ranges = sourceHighlightRangesRef.current;
+    if (ranges.length === 0) {
+      overlay.innerHTML = "";
+      return;
+    }
+    const text = matchesTextRef.current ?? ta.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    overlay.innerHTML = buildSearchOverlayHtml(text, ranges, current);
+    overlay.scrollTop = ta.scrollTop;
+  }, [sourceTextareaRef]);
+
+  /**
+   * v0.15.1 需求5：源码模式（textarea）搜索高亮的 **overlay 渲染**。
+   *
+   * ## 为什么源码模式必须用 overlay 而不是 Decoration
+   * textarea 是单元素纯文本控件，内部文字不是 DOM 文本节点，既挂不上 PM 的
+   * `Decoration`，也没法用 `<mark>` 包裹。唯一可行做法：在 textarea 之上叠一层与它
+   * 排版度量**完全同构**的 div（复刻全文、文字透明，只给命中区间上底色）。
+   * 这正是项目里 `source-ghost-overlay` 已验证的手法：`syncTextareaMetrics` 同步
+   * 字体/行高/内边距/宽高，`scrollTop` 跟随，视觉上等价于"高亮了 textarea 里的字"。
+   *
+   * ## 为什么懒创建、挂在 textarea 的父元素上
+   * 本组件的写入范围不含 EditorContainer，所以不能在它的 JSX 里加节点；
+   * 只能在首次需要时往 `.source-editor-wrapper` 里 append 一个绝对定位层。
+   * overlay 只承载"底色"，`pointer-events: none`（见 CSS），不影响 textarea 交互。
+   *
+   * @param text 计算匹配用的**归一化文本**（与 ranges 同一坐标空间）
+   * @param ranges 命中区间（已按上限截断）
+   * @param current 当前项在 `ranges` 里的下标（-1 = 无）
+   */
+  const renderSourceSearchOverlay = useCallback((
+    text: string,
+    ranges: ReadonlyArray<MatchRange>,
+    current: number,
+  ) => {
+    const ta = sourceTextareaRef?.current;
+    const wrapper = ta?.parentElement;
+    if (!ta || !wrapper) return;
+    let overlay = sourceOverlayRef.current;
+    if (!overlay || !overlay.isConnected || overlay.parentElement !== wrapper) {
+      overlay = document.createElement("div");
+      overlay.className = SOURCE_SEARCH_OVERLAY_CLASS;
+      overlay.setAttribute("aria-hidden", "true");
+      wrapper.appendChild(overlay);
+      sourceOverlayRef.current = overlay;
+    }
+    // 排版度量与 textarea 完全对齐（否则底色会和文字错位）。
+    // 只在"宽度变了"时重算：`syncTextareaMetrics` 内部要读 `getComputedStyle`，
+    // 那是强制样式重算，源码模式下每敲一个字符都会走到这里，不能无条件跑。
+    // 宽度是这里唯一会随窗口/分屏比例/滚动条出现而变的量，用它做变更闸门即可。
+    if (overlay.dataset.mw !== String(ta.clientWidth)) {
+      syncTextareaMetrics(ta, overlay);
+      overlay.dataset.mw = String(ta.clientWidth);
+    }
+    overlay.innerHTML = buildSearchOverlayHtml(text, ranges, current);
+    // 与 textarea 同步滚动（textarea 自己滚动时由下面的 scroll 监听同步）
+    overlay.scrollTop = ta.scrollTop;
+  }, [sourceTextareaRef]);
+
+  /**
+   * v0.15.1 需求5：**一算出匹配就推全部命中**（PM 两层 Decoration / 源码 overlay）。
+   *
+   * 两层设计见 `core/editor.ts` 的 `searchMatchesKey` 注释：
+   * 全部命中进 `searchMatchesKey`（class `search-match`），当前项进 `searchHighlightKey`
+   * （class `search-match-current`）。两层是**两个插件**，互不覆盖。
+   *
+   * 性能：
+   * - PM 路径的文本偏移 → PM 位置映射结果缓存进 `pmRangesRef`，↑/↓ 时不再重算；
+   * - 一次 `DecorationSet.create` 建最多 `MAX_HIGHLIGHT_MATCHES` 个 inline deco；
+   * - 超限只截前 N 处，但**保留当前项**（否则点了"下一个"看不到醒目色）。
+   *
+   * @param currentIdx 当前项在 `matchesRef.current` 里的下标（-1 = 无当前项）
+   */
+  const pushHighlights = useCallback((currentIdx: number) => {
+    const matches = matchesRef.current;
+    if (matches.length === 0) {
+      clearHighlightRefs();
+      if (editorView) {
+        try {
+          const tr = editorView.state.tr;
+          tr.setMeta(searchHighlightKey, null);
+          tr.setMeta(searchMatchesKey, null);
+          editorView.dispatch(tr);
+        } catch { /* 视图可能已销毁 */ }
+      }
+      return;
+    }
+
+    setHighlightTruncated(matches.length > MAX_HIGHLIGHT_MATCHES);
+
+    // ── 源码模式：overlay ──
+    if (isSourceMode || !editorView) {
+      const text = matchesTextRef.current
+        ?? (sourceContent || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const kept = matches.slice(0, MAX_HIGHLIGHT_MATCHES);
+      let current = currentIdx;
+      if (current < 0 || current >= kept.length) {
+        // 当前项落在截断之外：替换进最后一处，保证"当前项颜色"一定可见
+        const cur = matches[Math.max(0, Math.min(currentIdx, matches.length - 1))];
+        if (cur && kept.length > 0) {
+          kept[kept.length - 1] = cur;
+          current = kept.length - 1;
+        } else {
+          current = kept.length > 0 ? 0 : -1;
+        }
+      }
+      sourceHighlightRangesRef.current = kept;
+      renderSourceSearchOverlay(text, kept, current);
+      return;
+    }
+
+    // ── 阅读模式：两层 Decoration ──
+    const doc = editorView.state.doc;
+    const map = offsetMapRef.current ?? buildOffsetMap(doc);
+    offsetMapRef.current = map;
+    const mapped = mapRangesToPm(map.blocks, matches, doc.content.size);
+    pmRangesRef.current = { doc, ranges: mapped.ranges, currentOf: mapped.currentOf };
+    // 截断/跳过项会让"匹配下标"与"PM 区间下标"错位，必须经 currentOf 换算
+    const currentInPm = mapped.currentOf.get(currentIdx) ?? -1;
+    const built = buildHighlightPayload(mapped.ranges, currentInPm);
+    try {
+      const tr = editorView.state.tr;
+      tr.setMeta(searchMatchesKey, built.payload);
+      tr.setMeta(searchHighlightKey, built.payload);
+      editorView.dispatch(tr);
+    } catch { /* 视图可能已销毁 */ }
+  }, [clearHighlightRefs, editorView, isSourceMode, sourceContent, renderSourceSearchOverlay]);
+
+  /**
+   * 彻底清除高亮（两层 Decoration + 源码 overlay + 本地缓存）。
+   * 用在：卸载、关闭搜索、清空搜索词、换文档。
+   */
+  const clearHighlights = useCallback(() => {
+    clearHighlightRefs();
+    if (editorView) {
+      try {
+        const tr = editorView.state.tr;
+        tr.setMeta(searchHighlightKey, null);
+        tr.setMeta(searchMatchesKey, null);
+        editorView.dispatch(tr);
+      } catch { /* 视图可能已销毁 */ }
+    }
+  }, [clearHighlightRefs, editorView]);
+
+  /** `renderSourceSearchOverlay` 的稳定引用（给 scroll/resize effect 用，避免重复绑监听） */
+  const renderSourceSearchOverlayRef = useRef<typeof renderSourceSearchOverlay | null>(null);
+  renderSourceSearchOverlayRef.current = renderSourceSearchOverlay;
+
+  /**
+   * overlay 与 textarea 的滚动 / 尺寸同步。
+   *
+   * 不同步的后果：
+   * - 滚动：用户滚动 textarea 时底色留在原处 → 整篇"错行高亮"，比没有高亮更糟；
+   * - 尺寸：窗口缩放或分屏比例变化后 overall 换行位置与 textarea 不一致 → 底色错位。
+   *   `renderSourceSearchOverlay` 里按 `clientWidth` 做了闸门，这里把闸门清掉再重绘一次即可。
+   *
+   * 监听 `scroll` 必须绑在元素上（textarea 的滚动不冒泡到 window）。
+   */
+  useEffect(() => {
+    const ta = sourceTextareaRef?.current;
+    if (!ta) return;
+    const syncScroll = () => {
+      const overlay = sourceOverlayRef.current;
+      if (overlay && overlay.isConnected) overlay.scrollTop = ta.scrollTop;
+    };
+    const syncResize = () => {
+      const overlay = sourceOverlayRef.current;
+      const ranges = sourceHighlightRangesRef.current;
+      if (!overlay || !overlay.isConnected || ranges.length === 0) return;
+      // 当前项下标：从 overlay 里已有的醒目 mark 反推，省掉一份重复状态
+      const marks = Array.from(overlay.querySelectorAll("mark"));
+      const cur = marks.findIndex((m) => m.classList.contains(SEARCH_MATCH_CURRENT_CLASS));
+      const text = matchesTextRef.current ?? ta.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      if (overlay.dataset) overlay.dataset.mw = "";
+      renderSourceSearchOverlayRef.current?.(text, ranges, cur);
+    };
+    ta.addEventListener("scroll", syncScroll, { passive: true });
+    window.addEventListener("resize", syncResize);
+    return () => {
+      ta.removeEventListener("scroll", syncScroll);
+      window.removeEventListener("resize", syncResize);
+    };
+  }, [sourceTextareaRef, isSourceMode]);
+
   // 搜索
   const performSearch = useCallback(() => {
     if (!searchText) {
       setMatchCount(0);
       setCurrentMatch(0);
+      currentMatchRef.current = 0;
       matchesRef.current = [];
       matchesTextRef.current = null;
+      // v0.15.1 需求5：清空搜索词 → 两层 Decoration + overlay + 本地缓存全部清干净
+      clearHighlightRefs();
       // 问题1修复：清除 ProseMirror 中的搜索高亮 Decoration
       if (editorView && !isSourceMode) {
         const tr = editorView.state.tr;
         tr.setMeta(searchHighlightKey, null);
+        tr.setMeta(searchMatchesKey, null);
         editorView.dispatch(tr);
       }
       // v0.4.3 Issue 3：清除非 md 文件阅读模式的选区高亮
@@ -808,26 +1254,37 @@ export function SearchReplaceDialog({
     setRegexInvalid(ranges === null);
     const matches = ranges || [];
 
+    // 上一批匹配对应的文本（在覆盖 `matchesTextRef` **之前**取，用于下面判断"文本有没有变"）
+    const prevText = matchesTextRef.current;
     matchesRef.current = matches;
     // 记录这批匹配对应的文本（跨文件跳转的接收端据此判断"匹配集是否已跟上当前文本"）
     matchesTextRef.current = text;
     setMatchCount(matches.length);
+    // v0.15.1 需求5：匹配集换了 → PM 区间缓存必须作废（坐标属于上一版文本/上一批匹配）
+    pmRangesRef.current = null;
+    // 记录这批匹配基于哪一版 doc（highlightMatch 的过期闸门，见 matchesDocRef 注释）
+    matchesDocRef.current = editorView ? editorView.state.doc : null;
 
-    // v0.15.1 需求4：若有一条「刚打开文件」的跳转目标待兑现，优先落到它上面。
+    // v0.15.1 需求5：若有一条「刚打开文件 / 刚切过来」的跳转目标待兑现，优先落到它上面。
     //
-    // 为什么放在这里：跨文件跳转的接收端（docKey effect）消费 pending 时，目标文档的
-    // 文本/匹配集往往还没就绪，落点算不出来；本函数是"匹配集刷新"的唯一出口，
-    // 在这里用 occurrence 在新文本空间重算落点，才能保证用户看到的最终位置正确。
+    // 为什么放在这里：跳转接收端消费 pending 时，目标文档的文本/匹配集往往还没就绪，
+    // 落点算不出来；本函数是"匹配集刷新"的唯一出口，在这里用 occurrence 在新文本空间
+    // 重算落点，才能保证用户看到的最终位置正确。
     // 一次性消费（取完即清）：用户随后手动"下一个/上一个"不应被它拽回。
     // 文档键不一致时**直接丢弃**：换到别的文档了，旧目标毫无意义。
+    //
+    // ⚠️ 这条兜底路径只走 **occurrence**（跨文本空间稳定），不走 `hitOffsets`
+    // （逐处偏移属于"算条幅时那份文本"的坐标，此刻文本已换新，用它会跳到错位置）。
+    // 行内第几处由 `jumpOccurrenceOf` 把 `occurrence + hitIndex` 合成全局序号来体现。
     const pendingJump = pendingJumpRef.current;
     if (pendingJump !== null) {
       pendingJumpRef.current = null;
+      pendingHitOffsetsRef.current = null;
       if (sameJumpKey(pendingJump.key, docKeyRef.current)) {
         const offset = resolveJumpByOccurrence(
           text,
           pendingJump.target.query,
-          pendingJump.target.occurrence,
+          jumpOccurrenceOf(pendingJump.target),
           { caseSensitive, useRegex, wholeWord },
         );
         let pendingIdx =
@@ -837,6 +1294,9 @@ export function SearchReplaceDialog({
         }
         if (pendingIdx >= 0) {
           setCurrentMatch(pendingIdx + 1);
+          currentMatchRef.current = pendingIdx + 1;
+          // 全部命中一次推完（含 pending 落点作为"当前项"）
+          pushHighlights(pendingIdx);
           highlightMatch(pendingIdx);
           setJumpFailed(false);
           return;
@@ -849,13 +1309,39 @@ export function SearchReplaceDialog({
       }
     }
 
-    setCurrentMatch(matches.length > 0 ? 1 : 0);
+    /**
+     * v0.15.1 需求4 续修：**保住用户刚点选的那一处**。
+     *
+     * 为什么必须做：面板里有多条"重搜"通道（换文档 effect 的双 rAF + 160ms 兜底、
+     * MutationObserver 的 150ms 防抖、替换后的 50ms 重算）。用户点了第 2 处结果后，
+     * 这些通道随时可能再跑一次 `performSearch` —— 旧实现在结尾无条件
+     * `setCurrentMatch(1)` + `highlightMatch(0)`，于是**刚定位好的第 2 处被瞬间拽回第 1 处**。
+     * 实测（探针）：点第 2 个 `<mark>` 后计数同步变 2/4，几十毫秒后被重置回 1/4
+     * —— 这就是用户报告的「每一处都跳到第一个搜索」在"重搜覆盖"这一侧的成因。
+     *
+     * 判定条件（三者同时满足才保留）：
+     * 1. 文本没变（`matchesTextRef` 上一版文本 === 本版文本）：匹配集仍是同一批，
+     *    下标才有意义；换文档/内容被改时必须回到第 1 处。
+     * 2. 上一版有当前项（`currentMatchRef >= 1`）。
+     * 3. 下标没越界。
+     */
+    const prevCurrent = currentMatchRef.current;
+    const sameTextAsBefore = prevText === text;
+    const keepIdx =
+      sameTextAsBefore && prevCurrent >= 1 && prevCurrent <= matches.length ? prevCurrent - 1 : 0;
+    setCurrentMatch(matches.length > 0 ? keepIdx + 1 : 0);
+    currentMatchRef.current = matches.length > 0 ? keepIdx + 1 : 0;
 
-    // 高亮第一个匹配
+    // v0.15.1 需求5：**搜索一出结果就整篇标出所有命中**（用户不用点 ↑/↓），
+    // 当前项以醒目色单独标注。旧实现在这里只 highlightMatch(0)，所以只有 1 处高亮。
+    pushHighlights(keepIdx);
     if (matches.length > 0) {
-      highlightMatch(0);
+      highlightMatch(keepIdx);
     }
-  }, [searchText, searchOptions, isSourceMode, sourceContent, editorView, isMdFile, viewMode]);
+  }, [searchText, searchOptions, isSourceMode, sourceContent, editorView, isMdFile, viewMode, pushHighlights, clearHighlightRefs]);
+  // ⚠️ 依赖里**不能**写 `highlightMatch`：它在本函数之后才用 `useCallback` 定义，
+  // 而依赖数组在渲染期就被求值 → 会命中 const 的 TDZ。保持与旧实现一致（不列入依赖），
+  // 语义上它读的都是 ref，列入与否不影响行为。
 
   // 搜索文本变化时自动搜索
   useEffect(() => {
@@ -975,6 +1461,9 @@ export function SearchReplaceDialog({
     // v0.4.3 Issue 3：非 md 文件阅读模式下 textarea 隐藏（display:none），
     // 需要在 .plaintext-preview 容器中通过 Range 选区高亮匹配文本
     if (!isMdFile && viewMode === "preview") {
+      // v0.15.1 需求5 取舍：非 md 阅读面是 Prism 渲染的 HTML，既没有 PM Decoration
+      // 也没有 textarea overlay 可挂（改它的 DOM 会破坏 Prism 结构），因此这里
+      // **保持现状**（仅用 Range 选区标出当前项）。详见任务报告里的取舍说明。
       const previewEl = document.querySelector(".plaintext-preview");
       if (!previewEl) return;
       const range = matchesRef.current[index];
@@ -1032,52 +1521,96 @@ export function SearchReplaceDialog({
       const lines = textarea.value.substring(0, pos).split("\n");
       const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
       textarea.scrollTop = (lines.length - 1) * lineHeight;
+      // v0.15.1 需求5：源码模式的"当前项醒目色"在 overlay 里，随当前项一起挪。
+      // 这里不重建全量（全量只在 performSearch 时建），只改"哪一处用醒目色"。
+      const kept = sourceHighlightRangesRef.current;
+      const cur = kept.findIndex((r) => r.start === range.start && r.end === range.end);
+      if (cur >= 0) paintSourceOverlay(cur);
     } else if (editorView) {
       // ProseMirror 模式下，使用 offsetMapRef 中的 blocks 映射位置
       try {
         const offsetMap = offsetMapRef.current;
         if (!offsetMap) return;
+        // v0.15.1 需求5 过期闸门：`matchesRef`/`offsetMapRef` 是**某一版 doc 的坐标**。
+        // 用户在阅读模式里打字后 doc 立刻变了，而重算搜索走 150ms 防抖 —— 这段窗口里
+        // 点 ↑/↓ 若照旧把偏移套到新 doc 上，就会把醒目色框到**别的词**上（实测：
+        // "cat dog cat" 前面插一个 cat 后点「下一个」，"dog" 被框成当前项）。
+        // 宁可这一帧不上色（等防抖重搜），也不框错词。
+        if (matchesDocRef.current !== editorView.state.doc) return;
         const range = matchesRef.current[index];
-        const targetOffset = range.start;
 
-        // 查找匹配起始位置对应的 PM 位置
-        const pmStart = lookupPmPos(offsetMap.blocks, targetOffset);
-        if (pmStart !== undefined) {
-          // 查找匹配结束位置对应的 PM 位置（R4：区间终点 - 1）
-          const pmEnd = lookupPmPos(offsetMap.blocks, range.end - 1);
-          if (pmEnd !== undefined) {
-            const endPos = Math.min(pmEnd + 1, editorView.state.doc.content.size);
-            // 问题1修复：使用 ProseMirror Decoration 高亮匹配内容，不依赖编辑器焦点
-            // 通过 searchHighlightKey meta 更新 Plugin state，Decoration 始终可见
-            const tr = editorView.state.tr;
-            tr.setMeta(searchHighlightKey, { from: pmStart, to: endPos });
-            tr.scrollIntoView();
-            editorView.dispatch(tr);
+        // v0.15.1 需求5：优先用 performSearch 缓存好的 PM 区间（含下标换算），
+        // 缓存缺失（或被文档身份闸门判定过期）时才现算一份（等价于旧行为）。
+        // 两条路径用**同一个** mapRangesToPm，保证"当前项"与"全部命中"落在完全相同的字符上。
+        //
+        // 文档身份闸门：PM 位置是**某一版 doc 的坐标**。用户打字/撤销后 doc 换了对象，
+        // 而 performSearch 走 150ms 防抖还没跑完 —— 此时沿用旧缓存会把醒目色框到错字上。
+        let cached = pmRangesRef.current;
+        if (!cached || cached.doc !== editorView.state.doc) {
+          const mapped = mapRangesToPm(
+            offsetMap.blocks,
+            matchesRef.current,
+            editorView.state.doc.content.size,
+          );
+          cached = { doc: editorView.state.doc, ranges: mapped.ranges, currentOf: mapped.currentOf };
+          pmRangesRef.current = cached;
+        }
+        // `pmStart`/`pmEnd` 沿用旧命名（v0.3.4 的结构断言按 `view.coordsAtPos(pmStart)`
+        // 锁定"手动滚动到匹配位置"这一行为，改名会让那条防回退用例失效）
+        const pmIdx = cached.currentOf.get(index);
+        const pmRange = pmIdx === undefined ? undefined : cached.ranges[pmIdx];
+        const pmStart = pmRange?.from ?? lookupPmPos(offsetMap.blocks, range.start) ?? -1;
+        if (pmRange === undefined && pmStart < 0) return;
+        const pmEndOffset = lookupPmPos(offsetMap.blocks, range.end - 1);
+        const endPos = pmRange?.to
+          ?? (pmEndOffset === undefined ? undefined : Math.min(pmEndOffset + 1, editorView.state.doc.content.size));
+        const resolvedStart = pmRange?.from ?? pmStart;
 
-            // 阅读模式下 handleScrollToSelection 返回 true 会阻止自动滚动
-            // 手动滚动到匹配位置（使用 editor-container 作为滚动容器）
-            const view = editorView;
-            requestAnimationFrame(() => {
-              try {
-                const coords = view.coordsAtPos(pmStart);
-                const scrollContainer = view.dom.parentElement as HTMLElement | null;
-                if (scrollContainer) {
-                  const containerRect = scrollContainer.getBoundingClientRect();
-                  // 计算目标滚动位置，让匹配位置出现在容器中部
-                  const targetTop = coords.top - containerRect.top + scrollContainer.scrollTop - containerRect.height / 2;
-                  scrollContainer.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
-                }
-              } catch {
-                // 忽略滚动错误
-              }
-            });
+        if (endPos !== undefined && resolvedStart >= 0 && endPos > resolvedStart) {
+          // v0.15.1 需求5：只把**全部命中 + 当前项**的 payload 重推一次，
+          // 切当前项就是改 `current` 字段（不改 doc、不动全部命中那一层）。
+          //
+          // `pmIdx === undefined` 的情形：这条命中在 PM 空间里被跳过了（起点/终点
+          // 落在块间隙，例如跨段落的命中）。此时不能让它把"当前项"退回第 0 处
+          // （用户点"下一个"却发现醒目色跑回开头）—— 把这条单独补到末尾作为当前项。
+          let payload: { ranges: SearchHighlightRange[]; current: number };
+          if (pmIdx === undefined) {
+            payload = {
+              ranges: [...cached.ranges, { from: resolvedStart, to: endPos }],
+              current: cached.ranges.length,
+            };
+          } else {
+            payload = buildHighlightPayload(cached.ranges, pmIdx).payload;
           }
+          const tr = editorView.state.tr;
+          tr.setMeta(searchHighlightKey, payload);
+          tr.setMeta(searchMatchesKey, payload);
+          tr.scrollIntoView();
+          editorView.dispatch(tr);
+
+          // 阅读模式下 handleScrollToSelection 返回 true 会阻止自动滚动
+          // 手动滚动到匹配位置（使用 editor-container 作为滚动容器）
+          const view = editorView;
+          requestAnimationFrame(() => {
+            try {
+              const coords = view.coordsAtPos(pmStart);
+              const scrollContainer = view.dom.parentElement as HTMLElement | null;
+              if (scrollContainer) {
+                const containerRect = scrollContainer.getBoundingClientRect();
+                // 计算目标滚动位置，让匹配位置出现在容器中部
+                const targetTop = coords.top - containerRect.top + scrollContainer.scrollTop - containerRect.height / 2;
+                scrollContainer.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+              }
+            } catch {
+              // 忽略滚动错误
+            }
+          });
         }
       } catch {
         // 忽略位置计算错误
       }
     }
-  }, [isSourceMode, sourceTextareaRef, editorView, isMdFile, viewMode]);
+  }, [isSourceMode, sourceTextareaRef, editorView, isMdFile, viewMode, paintSourceOverlay]);
 
   // 上一个/下一个
   const goToMatch = useCallback((direction: 1 | -1) => {
@@ -1085,6 +1618,8 @@ export function SearchReplaceDialog({
     const newIdx = currentMatch - 1 + direction;
     const wrapped = ((newIdx % matchesRef.current.length) + matchesRef.current.length) % matchesRef.current.length;
     setCurrentMatch(wrapped + 1);
+    // 同步镜像：延迟重搜据此保住用户的位置（见 currentMatchRef 注释）
+    currentMatchRef.current = wrapped + 1;
     highlightMatch(wrapped);
   }, [currentMatch, highlightMatch]);
 
@@ -1210,6 +1745,23 @@ export function SearchReplaceDialog({
     // 超出部分直接不搜，并在汇总里标记「结果过多」让用户收窄条件。
     const limit = Math.min(files.length, MAX_FILES);
     if (files.length > MAX_FILES) truncated = true;
+    /**
+     * v0.15.1 需求4 续修（症状 3）：**条幅显示的行列必须与右下角状态栏同口径**。
+     *
+     * `collectFileResults` 的 `line`/`column` 是"对该份文本按 \n 数的行号"，而状态栏在
+     * 阅读模式用 PM **逻辑块**口径（`computeDocLine`）。实测差异（本任务探针）：
+     * ```
+     *   无序列表 3 项含 foo：条幅 2/3/4  vs 状态栏 1/2/3    （差 1）
+     *   表格 2 处 foo：      条幅 4/7    vs 状态栏 2/3      （表格被摊成多块）
+     * ```
+     * 所以对**当前文档且处于阅读模式**的行，额外算一份状态栏口径的 `statusLine/Column`
+     * 供显示用；`line`/`column` 继续作为文本空间坐标参与跳转计算（两者含义不同，不能混）。
+     *
+     * 其他文件没有 PM doc（未在当前视图里），无从换算，只能显示源码行 —— 这与"双击打开后
+     * 状态栏显示的是源码行"在切换完成前是一致的，不会出现更糟的错。
+     */
+    const pmDocForStatus = !isSourceMode && editorView ? editorView.state.doc : null;
+    const pmBlocksForStatus = pmDocForStatus ? buildOffsetMap(pmDocForStatus).blocks : null;
     for (let i = 0; i < limit; i++) {
       const f = files[i];
       const isCurrentDoc = f.fileKey === currentKey;
@@ -1227,13 +1779,28 @@ export function SearchReplaceDialog({
         counts[f.fileKey] = res.matchCount;
         total += res.matchCount;
       }
-      for (const r of res.results) results.push(r);
+      for (const r of res.results) {
+        if (isCurrentDoc && pmDocForStatus && pmBlocksForStatus) {
+          const hitOffset = r.hitOffsets?.[0];
+          const stamp =
+            hitOffset === undefined
+              ? null
+              : pmLineColumnOfOffset(pmDocForStatus, pmBlocksForStatus, hitOffset);
+          results.push(
+            stamp
+              ? { ...r, statusLine: stamp.line, statusColumn: stamp.column }
+              : r,
+          );
+          continue;
+        }
+        results.push(r);
+      }
     }
     setFileResults(results);
     setResultFileCounts(counts);
     setResultMatchTotal(total);
     setResultsTruncated(truncated);
-  }, [searchText, optionsForFile, docKey, readCurrentText]);
+  }, [searchText, optionsForFile, docKey, readCurrentText, isSourceMode, editorView]);
 
   /**
    * v0.14.0 需求4：把「查找所有打开文件」的结果**批量替换到所有命中的文件**。
@@ -1430,6 +1997,61 @@ export function SearchReplaceDialog({
 
   /** 工作区作用域是否可用（宿主传了 roots 且非空） */
   const workspaceAvailable = !!workspaceRoots && workspaceRoots.length > 0;
+
+  /**
+   * v0.15.1 需求4 续修（症状 3，工作区侧）：**当前文档**的工作区命中也按状态栏口径显示行列。
+   *
+   * 为什么需要单独一张表：工作区结果来自 Rust（磁盘源码空间），其 `line` 是源码行号；
+   * 而命中的文件若已打开并处于阅读模式，用户对照的是右下角的 PM 逻辑块行号。
+   * 两者在列表/表格/空行文档上会差好几行（实测数据见 `pmLineColumnOfOffset` 注释）。
+   *
+   * 键用 `rootId:occurrence`（文件归一化键 + 该命中的文件级 0 基序号）：
+   * - 不能用 `line:column` —— 脏文档覆盖/磁盘旧内容时行号会变，但 occurrence 稳定；
+   * - 可以用 occurrence —— Rust 的 occurrence 与本地 `collectFileResults` 的
+   *   occurrence 在同一份文本上同口径（都按出现顺序编号）。
+   *
+   * 换文档 / 换词 / 内容变化时重算（依赖已覆盖这些量）。
+   */
+  const [workspaceStatusStamps, setWorkspaceStatusStamps] = useState<
+    Record<string, { line: number; column: number }>
+  >({});
+  useEffect(() => {
+    const doc = !isSourceMode ? editorView?.state.doc ?? null : null;
+    if (!doc || workspaceFiles.length === 0 || !currentDocKey) {
+      setWorkspaceStatusStamps({});
+      return;
+    }
+    const curKey = jumpKeyOf(docKey);
+    const map = buildOffsetMap(doc);
+    const blocks = map.blocks;
+    // PM 文本空间的全部命中，用来把 occurrence 换算成偏移
+    const text = map.text;
+    const ranges = findMatchRangesEx(text, searchText, {
+      caseSensitive,
+      useRegex,
+      wholeWord,
+      range: null,
+    });
+    const out: Record<string, { line: number; column: number }> = {};
+    if (ranges) {
+      for (const g of workspaceFiles) {
+        if (jumpKeyOf(g.fileKey) !== curKey) continue;
+        for (const r of g.rows) {
+          const occ = jumpOccurrenceOf(r);
+          // occurrence 只在"源码出现次数与 PM 文本一致"时能直接索引；
+          // 越界就用该行首个命中的 occurrence 兜底（至少行号不会错到别的小节）
+          const at = occ < ranges.length ? ranges[occ] : ranges[0];
+          if (!at) continue;
+          const stamp = pmLineColumnOfOffset(doc, blocks, at.start);
+          if (stamp) out[`${curKey}:${occ}`] = stamp;
+        }
+      }
+    }
+    setWorkspaceStatusStamps(out);
+  }, [
+    workspaceFiles, docKey, currentDocKey, isSourceMode, editorView,
+    searchText, caseSensitive, useRegex, wholeWord, contentVersion,
+  ]);
 
   /**
    * 执行一次工作区搜索。
@@ -1631,6 +2253,25 @@ export function SearchReplaceDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docKey, contentVersion, searchText]);
 
+  /**
+   * v0.15.1 需求5：**换文档 / 切模式时先清干净残留高亮**。
+   *
+   * 为什么必须单独一条 effect：换文档的时序是「docKey 先变 → 文本后一步灌进来 →
+   * performSearch 再重算」。若不等重算就保留旧高亮，用户会看到**新文档**上挂着
+   * **上一个文档**的命中区间（Decoration 位置随新 doc 映射，纯属残影）。
+   * 这里在文档身份一变的瞬间清空，随后 `performSearch` 命中新内容时再重新铺。
+   *
+   * 用 `currentDocKey`（docKey + 源码/阅读模式）而不仅是 docKey：
+   * 切模式时 PM 层与 overlay 层要互换，旧那层必须撤掉，否则阅读面留着 overlay、
+   * 源码面留着 Decoration，两个面都脏。
+   */
+  useEffect(() => {
+    clearHighlights();
+    // 只按「文档身份」触发；clearHighlights 的身份变化不应再触发一次（它在依赖里会被 lint 要求，
+    // 但它只依赖 editorView / refs，实际是稳定的）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDocKey]);
+
 
   /** 「查找所有打开文件」按钮：展开 ↔ 收起 */
   const toggleResults = useCallback(() => {
@@ -1638,111 +2279,205 @@ export function SearchReplaceDialog({
   }, []);
 
   /**
+   * 在当前文本空间里定位到某个跳转目标并高亮（就地跳转，不派发切标签事件）。
+   *
+   * ## 落点优先级（v0.15.1 需求4 续修，顺序不可换）
+   * 1. **逐处偏移**（`hitOffsets[hitIndex]`）：条幅/工作区行是「一行一条」，同一行有
+   *    4 处命中时行/列只能描述首处。`hitOffsets` 是按命中原样记录的全文偏移，
+   *    在**同一文本空间**里是精确坐标 → 先命中它，且校验它确实落在某个匹配区间内
+   *    （条幅可能是上一版文本算的，文本已改就作废）。
+   * 2. **第 N 次出现**（`resolveJumpByOccurrence(occurrence + hitIndex)`）：跨文本空间
+   *    （源码 → PM 渲染文本）时唯一稳定口径。
+   * 3. **行/列 + 关键词**（`resolveJumpOffset`）：最后兜底，正则等场景下关键词不是字面文本。
+   *
+   * 为什么不再只用 `resolveJumpOffset`：它把落点钉在「该行首个命中」上
+   * （实测：同一行 4 处命中时，无论点第几条都返回行首偏移），这正是用户报告的
+   * 「每一处都跳到第一个搜索」在行内多命中时的直接成因。
+   *
+   * @returns 是否定位成功（失败时不改状态，由调用方给可见提示）
+   */
+  const jumpWithinCurrentText = useCallback(
+    (t: { query: string; line: number; column: number; occurrence: number; hitIndex?: number }) => {
+      const { text } = readCurrentText();
+      const matches = matchesRef.current;
+      if (matches.length === 0 || !t.query) return false;
+      const hitIndex = Math.max(0, t.hitIndex ?? 0);
+
+      const indexOfOffset = (offset: number | null | undefined): number => {
+        if (offset === null || offset === undefined || !Number.isFinite(offset)) return -1;
+        return matches.findIndex((m) => offset >= m.start && offset < m.end);
+      };
+
+      // ① 逐处偏移（精确，但只在"这份文本就是算条幅时那份文本"时成立 → 校验落在匹配内）
+      const hitOffsets = pendingHitOffsetsRef.current;
+      let idx = indexOfOffset(hitOffsets?.[hitIndex]);
+      // ② 第 N 次出现
+      if (idx < 0) {
+        idx = indexOfOffset(
+          resolveJumpByOccurrence(text, t.query, t.occurrence + hitIndex, {
+            caseSensitive,
+            useRegex,
+            wholeWord,
+          }),
+        );
+      }
+      // ③ 行/列兜底
+      if (idx < 0) {
+        const offset = resolveJumpOffset(text, { line: t.line, column: t.column, query: t.query });
+        idx = indexOfOffset(offset);
+        // 行列完全对不上（文本已变）时不要硬跳到"最近的匹配"以外的地方：
+        // 取该偏移之后的第一处匹配，仍优于"什么都不发生"
+        if (idx < 0) idx = matches.findIndex((m) => m.start >= offset);
+      }
+      if (idx < 0) return false;
+      setCurrentMatch(idx + 1);
+      // 同步镜像：否则随后的延迟重搜会把当前项重置回第 1 处（见 currentMatchRef 注释）
+      currentMatchRef.current = idx + 1;
+      highlightMatch(idx);
+      setJumpFailed(false);
+      return true;
+    },
+    [readCurrentText, caseSensitive, useRegex, wholeWord, highlightMatch],
+  );
+
+  /**
    * 点击某条结果 → 跳转。
    *
    * 两种分支：
-   * - 目标是当前文档：**就地跳转**，用「行/列 + 关键词」在同文本空间里定位，最精确
+   * - 目标是当前文档：**就地跳转**，用「逐处偏移 → 第 N 次出现 → 行/列」三级定位
    *   （不派发切标签事件，避免 App 多余地重建编辑器导致面板失焦）
-   * - 目标是别的文件：把目标（含 `occurrence`）写入跨组件跳转契约并派发事件让 App 切标签。
-   *   为什么跨文件不用行号：结果算在源码空间，跳过去可能是阅读模式（PM 文本空间），
-   *   行号会错位；用「第 N 次出现」定位见 resolveJumpByOccurrence。
-   *   定位闭环由下面的 docKey effect 在本文件内完成 —— 不依赖 EditorContainer 改定位逻辑。
+   * - 目标是别的文件：把目标（含 `occurrence` + `hitIndex`）写入跨组件跳转契约并派发
+   *   事件让 App 切标签。为什么跨文件不用行号：结果算在源码空间，跳过去可能是阅读模式
+   *   （PM 文本空间），行号会错位；用「第 N 次出现」定位见 resolveJumpByOccurrence。
+   *   定位闭环由接收端 effect / 事件监听在本文件内完成 —— 不依赖 EditorContainer 改定位逻辑。
+   *
+   * @param r 结果行（一行可能有多处命中）
+   * @param hitIndex 点的是该行第几处命中（0 基；条幅的每个 `<mark>` 各自可点）
    */
-  const handleResultClick = useCallback((r: SearchFileResult) => {
-    const length = Math.max(1, (r.ranges[0]?.end ?? 0) - (r.ranges[0]?.start ?? 0));
-    const target: SearchJumpTarget = {
-      fileKey: r.fileKey,
-      filePath: r.filePath,
-      line: r.line,
-      column: r.column,
-      length,
-      query: searchText,
-      occurrence: r.occurrence,
-    };
-    const currentKey = docKey ?? FALLBACK_FILE_KEY;
-    if (r.fileKey === currentKey) {
-      // 就地跳转：用「行/列 + 关键词」在当前文本里定位（三级降级，见 resolveJumpOffset）
-      const { text } = readCurrentText();
-      const offset = resolveJumpOffset(text, { line: r.line, column: r.column, query: searchText });
-      const matches = matchesRef.current;
-      let idx = matches.findIndex((m) => offset >= m.start && offset < m.end);
-      if (idx < 0) idx = matches.findIndex((m) => m.start >= offset);
-      if (idx < 0) idx = matches.length > 0 ? 0 : -1;
-      if (idx >= 0) {
-        setCurrentMatch(idx + 1);
-        highlightMatch(idx);
-        setJumpFailed(false);
-      } else {
-        // 找不到落点（例如文本刚被改过、命中已消失）：给出可见提示，而不是点了没反应
-        setJumpFailed(true);
-        if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
-        jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
+  const handleResultClick = useCallback(
+    (r: SearchFileResult, hitIndex = 0) => {
+      const hit = Math.max(0, Math.min(hitIndex, Math.max(0, r.ranges.length - 1)));
+      const range = r.ranges[hit] ?? r.ranges[0];
+      // 行内第 hit 处命中在原文该行内的偏移 → 1 基列号（`column` 只描述首处）
+      const column = range ? range.start + 1 : r.column;
+      const target: SearchJumpTarget = {
+        fileKey: r.fileKey,
+        filePath: r.filePath,
+        line: r.line,
+        column,
+        length: Math.max(1, (range?.end ?? 0) - (range?.start ?? 0)),
+        query: searchText,
+        occurrence: r.occurrence,
+        hitIndex: hit,
+      };
+      const currentKey = docKey ?? FALLBACK_FILE_KEY;
+      // v0.15.1：键比较必须归一化（工作区 fileKey 是 pathCompareKey 形态）
+      if (sameJumpKey(r.fileKey, currentKey)) {
+        // 逐处偏移只对「当前文本就是算条幅的那份文本」有效
+        pendingHitOffsetsRef.current =
+          matchesTextRef.current !== null && matchesTextRef.current === readCurrentText().text
+            ? r.hitOffsets ?? null
+            : null;
+        const ok = jumpWithinCurrentText(target);
+        pendingHitOffsetsRef.current = null;
+        if (!ok) {
+          // 找不到落点（例如文本刚被改过、命中已消失）：给出可见提示，而不是点了没反应
+          setJumpFailed(true);
+          if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
+          jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
+        }
+        return;
       }
-      return;
-    }
-    onJumpToFile?.(target);
-    requestSearchJump(target);
-  }, [docKey, readCurrentText, searchText, highlightMatch, onJumpToFile]);
+      onJumpToFile?.(target);
+      requestSearchJump(target);
+    },
+    [docKey, readCurrentText, searchText, jumpWithinCurrentText, onJumpToFile],
+  );
 
   /**
    * v0.15.0 R6b：点击**工作区**结果 → 跳转。
    *
-   * 口径与「打开的文件」完全一致（复用 `requestSearchJump`，occurrence 定位）：
-   * 工作区结果算在**磁盘源码空间**，跳过去后目标文档可能是阅读模式（PM 渲染文本），
-   * 行号必然错位；`occurrence`（第 N 次出现）才是跨文本空间稳定的。
+   * v0.15.1 需求4 续修：**目标就是当前文档时也走就地跳转**（与「打开的文件」完全一致）。
+   * 为什么必须补这条：旧实现无条件 `requestSearchJump`，而 App 的监听器在
+   * 「目标已是当前标签」时直接 `return`（不切标签）→ 面板的消费 effect 依赖的 `docKey`
+   * 没变 → 永远不跑 → pending 一直挂着，用户看到的就是「点了没反应」。
+   * 工作区命中的文件**本来就已经打开**（脏文档覆盖按内存重算命中）是常态，
+   * 所以这条分支不是边缘情况，而是主要路径。
    *
-   * 为什么不像 `handleResultClick` 那样对"当前文档"走就地跳转：
-   * 工作区结果可能来自**磁盘旧内容**（脏文档已被服务层覆盖过，但当前文档若未打开
-   * 在 collectFiles 里则仍是磁盘口径）。统一走 requestSearchJump 让 App 打开文件后
-   * 由接收端 `takeSearchJump` + `resolveJumpByOccurrence` 闭环 —— 与 v0.14.0 的
-   * 跨文件跳转同一条链路，行为一致且不用维护第二套定位逻辑。
+   * 跨文件（目标不是当前文档）仍走 requestSearchJump：由 App 打开/切换文件后，
+   * 接收端（事件监听 + docKey effect）用 occurrence 定位，跨文本空间才稳。
    */
   const handleWorkspaceResultClick = useCallback(
-    (group: WorkspaceFileResult, r: SearchFileResult) => {
+    (group: WorkspaceFileResult, r: SearchFileResult, hitIndex = 0) => {
+      const hit = Math.max(0, Math.min(hitIndex, Math.max(0, r.ranges.length - 1)));
+      /**
+       * 列的取法（工作区特有，别照抄「打开的文件」那条路）：
+       * 工作区行的 `ranges` 是 **snippet 内**的偏移（Rust 给的是裁剪过的行摘要，
+       * 可能带前导省略号），直接 `range.start + 1` 得到的不是原文列号。
+       * 只有一处命中时 Rust 的 `r.column` 就是该处的原文列号（精确）；
+       * 一处行内有多处命中时 Rust 也是**每处一条 hit**（各行一条 = 一条 = 一处），
+       * 因此 `hitIndex` 在这里恒为 0，`r.column` 始终正确。
+       */
       const target: SearchJumpTarget = {
         fileKey: r.fileKey,
         filePath: r.filePath || group.filePath,
         line: r.line,
         column: r.column,
-        length: Math.max(1, (r.ranges[0]?.end ?? 0) - (r.ranges[0]?.start ?? 0)),
+        length: Math.max(
+          1,
+          (r.ranges[hit]?.end ?? 0) - (r.ranges[hit]?.start ?? 0),
+        ),
         query: searchText,
         occurrence: r.occurrence,
+        hitIndex: hit,
       };
+      if (sameJumpKey(r.fileKey, docKey ?? FALLBACK_FILE_KEY)) {
+        pendingHitOffsetsRef.current =
+          matchesTextRef.current !== null && matchesTextRef.current === readCurrentText().text
+            ? r.hitOffsets ?? null
+            : null;
+        const ok = jumpWithinCurrentText(target);
+        pendingHitOffsetsRef.current = null;
+        if (!ok) {
+          setJumpFailed(true);
+          if (jumpTimerRef.current) clearTimeout(jumpTimerRef.current);
+          jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
+        }
+        return;
+      }
       onJumpToFile?.(target);
       requestSearchJump(target);
     },
-    [onJumpToFile, searchText],
+    [docKey, readCurrentText, searchText, jumpWithinCurrentText, onJumpToFile],
   );
 
   /**
-   * v0.14.0：跨文件跳转的「接收端」——切标签完成后由本面板自己完成定位闭环。
+   * 跳转接收端的**唯一实现**：判断「这条 pending 是不是我的」，是就消费并定位。
    *
-   * 时序：点击结果 → requestSearchJump 写入 pending + 派发 lightmd:search-jump →
-   * App 切标签 → `docKey` 变成目标文件的键 → 本 effect 触发。
+   * 抽成函数（而不是继续写在 effect 体里）的原因：v0.15.1 需求4 续修后有三条通道
+   * 会调用它 ——
+   * ① `SEARCH_JUMP_EVENT` 监听（目标**已经是**当前文档时唯一能立即生效的通道）；
+   * ② `docKey` effect（目标文档刚切/刚打开时的通道）；
+   * ③ 模式切换 effect（同一文档从源码面换到阅读面，文本空间变了要重定位）。
+   * 三处若各写一份，必然有一天只改一处（改漏的那侧会静默不跳）。
    *
-   * 为什么用 docKey 变化来触发而不是监听事件：
-   * 事件派发时目标文档还没加载好（内容/文本空间都还是旧的），此时定位必然算错。
-   * docKey 变化才是「目标文档已成为当前文档」的可靠信号。
-   *
-   * 为什么拿 peekSearchJump 再 take：
-   * 别的窗口/别的面板实例也可能有 pending，必须先确认 fileKey 与当前 docKey 一致才消费，
-   * 否则会把别人的跳转请求吃掉（表现为"点了结果但没反应"）。
-   *
-   * v0.15.1 需求4 修复（真因 a）：这里的比较**必须走归一化键**（`sameJumpKey`）。
-   * 工作区结果的 fileKey 是 `pathCompareKey(filePath)`（正斜杠 + 小写），而 docKey 是
-   * 宿主给的原始路径（可能反斜杠 + 原大小写）—— 旧代码直接 `!==` 比较，恒不相等，
-   * pending 永远不会被消费，于是「点了工作区结果没反应」。
+   * @param viaEvent 是否由事件通道触发。事件通道**必须在派发帧同步处理**：
+   *   此时目标已是当前文档（App 判断过），但 `matchesTextRef` 可能还是旧文本，
+   *   于是走"登记 pendingJumpRef → performSearch 兑现"的兜底路径（保留原设计）。
+   * @returns 是否消费了一条 pending
    */
-  useEffect(() => {
-    const key = docKey;
-    if (!key) return;
+  const consumePendingJump = useCallback((): boolean => {
+    const key = docKeyRef.current;
+    if (!key) return false;
     const pending = peekSearchJump();
-    if (!pending || !sameJumpKey(pending.fileKey, key)) return;
-    // 过滤条件用 pending 自己的键（take 内部是严格相等比较，传归一化后的键会失配）
-    const taken = takeSearchJump(pending.fileKey);
-    if (!taken) return;
+    if (!pending || !sameJumpKey(pending.fileKey, key)) return false;
+    // 过滤条件用 pending 自己的键 + 自己的 seq（take 内部是严格相等比较，
+    // 传归一化后的键会失配；带 seq 是为了让多条通道安全地"抢同一条请求"）
+    const taken = takeSearchJump(pending.fileKey, pending.seq);
+    if (!taken) return false;
+
     /**
-     * v0.15.1 需求4：**匹配集是否已跟上当前文本**。
+     * **匹配集是否已跟上当前文本**。
      *
      * `matchesRef` 是"上一次 performSearch 算出的匹配"，只有它对应的文本
      * （`matchesTextRef`）与当前文本一致时，才能拿它做落点判定。
@@ -1751,21 +2486,8 @@ export function SearchReplaceDialog({
     const { text } = readCurrentText();
     const matchesConsistent = matchesTextRef.current !== null && matchesTextRef.current === text;
     if (matchesConsistent) {
-      const offset = resolveJumpByOccurrence(text, taken.query, taken.occurrence, {
-        caseSensitive,
-        useRegex,
-        wholeWord,
-      });
-      const matches = matchesRef.current;
-      let idx =
-        offset === null ? -1 : matches.findIndex((m) => offset >= m.start && offset < m.end);
-      if (idx < 0 && offset !== null) idx = matches.findIndex((m) => m.start >= offset);
-      if (idx >= 0) {
-        setCurrentMatch(idx + 1);
-        highlightMatch(idx);
-        setJumpFailed(false);
-        return;
-      }
+      const ok = jumpWithinCurrentText(taken);
+      if (ok) return true;
     }
     // 文本/匹配集尚未就绪：只登记目标，由 performSearch 在匹配集刷新后兑现。
     pendingJumpRef.current = { key: jumpKeyOf(key), target: taken };
@@ -1778,10 +2500,73 @@ export function SearchReplaceDialog({
         jumpTimerRef.current = setTimeout(() => setJumpFailed(false), 2000);
       }
     }, 4000);
-    // 依赖里只放 docKey 与搜索选项：本 effect 的职责就是"文档就绪后消费一次 pending"，
-    // 把 matches 等易变引用放进来会重复触发消费（pending 已被 take，第二次为空但语义混淆）。
+    return true;
+  }, [readCurrentText, jumpWithinCurrentText]);
+
+  /**
+   * v0.15.1 需求4 续修（真因 A）：**同一个文档内连续点击结果时，接收端永远不会重跑**。
+   *
+   * ## 实测复现（修复前，探针日志）
+   * 工作区搜到同一文档的 4 处命中，依次点击：
+   * ```
+   *   click1 → pending=null  count=1/4   ← 第 1 次成功（App 切了标签，docKey 变了）
+   *   click2 → pending={...line:2} count=1/4 ← 点了没反应，pending 一直挂着
+   *   click3 → pending={...line:3} count=1/4
+   *   click4 → pending={...line:4} count=1/4
+   * ```
+   * 成因：App 的 `lightmd:search-jump` 监听器在「目标已是当前标签」时直接
+   * `if (idx === st.activeTabIdx) return;`（不切标签是正确的 —— 没必要重建编辑器），
+   * 于是 `docKey` 不变 → 下面那条 docKey effect 的依赖全没变 → 不重跑 →
+   * 没有任何人去 `takeSearchJump`。
+   *
+   * ## 修法
+   * 面板自己监听 `SEARCH_JUMP_EVENT`：只要这条请求的目标就是当前文档，就地消费。
+   * **不依赖 docKey 变化**，所以连点 4 次每次都能生效。
+   *
+   * ## 为什么不删掉那条 docKey effect
+   * 目标文档**还没打开 / 正在切换**时，事件到达的那一刻文本还是旧的（内容/坐标系都
+   * 还没就绪），此时消费必然算错；必须等 docKey 变成目标文件后再消费。
+   * 两条通道互补：事件管"已是当前文档"，effect 管"刚变成当前文档"。
+   * 二者都经 `consumePendingJump`，且 `takeSearchJump(seq)` 保证同一请求只被消费一次。
+   */
+  useEffect(() => {
+    const onJump = () => {
+      // 事件由 requestSearchJump 同步派发（先写 pending 再 dispatch），
+      // 因而这里能立刻读到 detail/pending；目标不是当前文档时静默返回（交给 App 切标签）
+      consumePendingJump();
+      // 若上一步因"匹配集还是旧文本"而走了 pendingJumpRef 兜底，这里再推一次重搜，
+      // 免得要等 MutationObserver 的 150ms 防抖（用户会觉得点了半天才动）
+      if (pendingJumpRef.current) performSearchRef.current();
+    };
+    window.addEventListener(SEARCH_JUMP_EVENT, onJump);
+    return () => window.removeEventListener(SEARCH_JUMP_EVENT, onJump);
+  }, [consumePendingJump]);
+
+  /**
+   * 接收端（**文档切换通道**）：目标文档刚成为当前文档时消费 pending。
+   *
+   * 为什么还要 seq 作为 effect 依赖的一部分（而不是只靠 docKey）：
+   * 目标**已经是**当前文档但上次因匹配集未就绪被登记进 `pendingJumpRef` 时，
+   * 用户再点同一文档的另一处 → docKey 仍不变 → 只有 seq 变了。把 seq 放进依赖，
+   * 保证每次点击都至少尝试一次消费（事件通道通常会先接住，这里是双保险）。
+   *
+   * 为什么拿 peekSearchJump 再 take：别的窗口/别的面板实例也可能有 pending，
+   * 必须先确认 fileKey 与当前 docKey 一致才消费，否则会把别人的跳转请求吃掉
+   * （表现为"点了结果但没反应"）。
+   *
+   * v0.15.1 需求4 修复（真因 a）：比较**必须走归一化键**（`sameJumpKey`）。
+   * 工作区结果的 fileKey 是 `pathCompareKey(filePath)`（正斜杠 + 小写），而 docKey 是
+   * 宿主给的原始路径（可能反斜杠 + 原大小写）—— 旧代码直接 `!==` 比较，恒不相等，
+   * pending 永远不会被消费，于是「点了工作区结果没反应」。
+   */
+  const jumpSeq = peekSearchJumpSeq();
+  useEffect(() => {
+    // 依赖里加 seq：同一文档连点时 docKey 不变，只有 seq 变化能触发（见上方注释）。
+    // 依赖里仍**不放** matches / readCurrentText：本 effect 的职责只是"尝试消费一次"，
+    // 把易变引用放进来会重复触发（pending 已被 take，第二次为空但语义混淆）。
+    consumePendingJump();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docKey, caseSensitive, useRegex, wholeWord]);
+  }, [docKey, caseSensitive, useRegex, wholeWord, jumpSeq]);
 
   // 键盘事件
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -1834,14 +2619,27 @@ export function SearchReplaceDialog({
               ? `${currentMatch}/${matchCount}`
               : t("search.noResult")}
         </span>
+        {/* v0.15.1 需求5：命中超过高亮上限时**必须可见地**告知（不静默截断）。
+            刻意与上面的 `search-count` 分开成两个节点：计数节点被既有测试按
+            `current/total` 原样解析，混进提示文案会让那些断言全挂。 */}
+        {highlightTruncated && matchCount > MAX_HIGHLIGHT_MATCHES && (
+          <span
+            className="search-highlight-limit"
+            data-testid="search-highlight-limit"
+            title={highlightLimitMessage(t, MAX_HIGHLIGHT_MATCHES)}
+          >
+            {highlightLimitMessage(t, MAX_HIGHLIGHT_MATCHES)}
+          </span>
+        )}
         <button className="search-toggle-btn" title={t("search.toggleReplace")} onClick={() => setShowReplace(!showReplace)}>
           ⟳
         </button>
       </div>
       {/* v0.14.0：4 个勾选框（默认全不勾）+ 右侧两个作用域按钮。
           v0.15.1 需求6：拆成「勾选组 + 右侧动作组」两段固定布局 —— 勾选组可压缩、
-          动作组固定尺寸贴右沿，保证面板放大（需求5 的 920px）与结果条幅出现/消失时，
-          两个按钮的位置**完全不动**、也不会因 flex-wrap 换行掉到第二行。
+          动作组固定尺寸贴右沿，保证结果条幅出现/消失时两个按钮的位置**完全不动**、
+          也不会因 flex-wrap 换行掉到第二行（面板宽度变化同理：v0.15.1 需求3 把面板
+          从 920px 收到 620px，这层布局语义不变）。
           结构断言见 v0150-search-workspace-ui.test.tsx。 */}
       <div className="search-options-row">
         <div className="search-options-checks" data-testid="search-options-checks">
@@ -1993,19 +2791,40 @@ export function SearchReplaceDialog({
                 className="search-result-item"
                 data-testid="search-result-item"
                 title={`${r.filePath || r.fileName}:${r.line}`}
-                onClick={() => handleResultClick(r)}
+                onClick={() => handleResultClick(r, 0)}
               >
                 <span className="search-result-file" data-testid="search-result-file" title={r.filePath}>
                   {r.fileName || r.filePath || "—"}
                   <span className="search-result-file-count">
                     ({resultFileCounts[r.fileKey] ?? r.ranges.length})
                   </span>
-                  <span className="search-result-file-line">:{r.line}</span>
+                  {/* v0.15.1 需求4：显示**状态栏口径**的行列（不是跳转用的文本空间行号），
+                      两者在列表/表格/空行文档上会差好几行 —— 用户对照右下角就会发现不一致 */}
+                  <span className="search-result-file-line">
+                    :{r.statusLine ?? r.line}
+                    {r.statusColumn !== undefined ? `:${r.statusColumn}` : ""}
+                  </span>
                 </span>
                 <span className="search-result-line" data-testid="search-result-line">
                   {r.segments.map((seg, si) =>
                     seg.match ? (
-                      <mark key={si} className="search-result-match" data-testid="search-result-match">
+                      /* v0.15.1 需求4 续修：**每个 `<mark>` 各自可点**，点哪一个就跳到
+                         该行第几处。条幅是一行一条，同一行有 4 处命中时只有这一条结果，
+                         若整条只认首处，用户点第 2/3/4 个高亮就只能回到行首
+                         （实测症状「每一处都跳到第一个搜索」）。
+                         事件要 stopPropagation，否则外层 onClick 又会按首处跳一次，
+                         把刚定位好的当前项覆盖掉。 */
+                      <mark
+                        key={si}
+                        className="search-result-match"
+                        data-testid="search-result-match"
+                        data-hit-index={seg.hitIndex ?? si}
+                        style={{ cursor: "pointer" }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleResultClick(r, seg.hitIndex ?? si);
+                        }}
+                      >
                         {seg.text}
                       </mark>
                     ) : (
@@ -2082,7 +2901,7 @@ export function SearchReplaceDialog({
                 className="search-result-item"
                 data-testid="search-workspace-result-item"
                 title={`${r.filePath || g.fileName}:${r.line}`}
-                onClick={() => handleWorkspaceResultClick(g, r)}
+                onClick={() => handleWorkspaceResultClick(g, r, 0)}
               >
                 <span
                   className="search-result-file"
@@ -2092,7 +2911,13 @@ export function SearchReplaceDialog({
                 >
                   {g.fileName || r.filePath || "—"}
                   <span className="search-result-file-count">({g.matchCount})</span>
-                  <span className="search-result-file-line">:{r.line}</span>
+                  {/* v0.15.1 需求4：当前文档的工作区命中显示状态栏口径行列（见上方 stamp 表） */}
+                  <span className="search-result-file-line">
+                    :{workspaceStatusStamps[`${jumpKeyOf(r.fileKey)}:${jumpOccurrenceOf(r)}`]?.line ?? r.line}
+                    {workspaceStatusStamps[`${jumpKeyOf(r.fileKey)}:${jumpOccurrenceOf(r)}`]?.column !== undefined
+                      ? `:${workspaceStatusStamps[`${jumpKeyOf(r.fileKey)}:${jumpOccurrenceOf(r)}`]!.column}`
+                      : ""}
+                  </span>
                   {workspaceRoots && workspaceRoots.length > 0
                     ? <span className="search-result-file-path">{relPathOf(r.filePath, workspaceRoots)}</span>
                     : null}
@@ -2100,7 +2925,18 @@ export function SearchReplaceDialog({
                 <span className="search-result-line" data-testid="search-result-line">
                   {r.segments.map((seg, si) =>
                     seg.match ? (
-                      <mark key={si} className="search-result-match" data-testid="search-result-match">
+                      /* 同「打开的文件」条幅：每个 `<mark>` 各自可点，落到行内第 hitIndex 处 */
+                      <mark
+                        key={si}
+                        className="search-result-match"
+                        data-testid="search-result-match"
+                        data-hit-index={seg.hitIndex ?? si}
+                        style={{ cursor: "pointer" }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleWorkspaceResultClick(g, r, seg.hitIndex ?? si);
+                        }}
+                      >
                         {seg.text}
                       </mark>
                     ) : (

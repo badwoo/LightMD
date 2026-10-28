@@ -485,6 +485,38 @@ export function crossFileEditMatches(recordText: string, currentText: string): b
 export const SCROLL_RESTORE_RETRY_MS = 60;
 export const SCROLL_RESTORE_MAX_RETRIES = 24;
 
+/**
+ * v0.15.1 需求3（二次修复）：模式切换后**滚动恢复保护窗**时长（ms）。
+ *
+ * 为什么需要它：一次滚动恢复不是"写一次就完"，而是「双 rAF 主写入 → rAF 校正 →
+ * 60ms×N 重试校正」的链条。若在第一次写入后就放开"正在恢复"标志，后续校正写入会被
+ * scroll 监听当成用户滚动，把**校正后的像素**缓存成新基准；下一轮切换以它重算 →
+ * 逐轮叠加 → 用户看到"先编辑面细微偏移、再传导到阅读面"。
+ *
+ * 取值：覆盖 60ms 重试链的前几拍即可（重试最多 24 次，但实际前 2~3 拍就成功；
+ * 400ms 足够覆盖，又不至于让用户主动滚动被误判成恢复）。
+ */
+export const SCROLL_RESTORE_GUARD_MS = 400;
+
+/**
+ * v0.15.1 需求3（第四次返修）：模式切换滚动链路的**诊断埋点**（无副作用、默认关闭）。
+ *
+ * 用法：在实机探针里先把 `window.__LMD_SCROLL_TRACE = []`，再触发模式切换；
+ * 之后把该数组读出来即可看到每一次"采锚点 / 反算 scrollTop / 实际写入"的现场。
+ * 没有这个数组时只是读一个属性（`undefined` → 直接返回），不产生日志也不攒内存。
+ */
+function traceScroll(event: string, data: Record<string, unknown>): void {
+  try {
+    const w = window as unknown as { __LMD_SCROLL_TRACE?: unknown[] };
+    const trace = w.__LMD_SCROLL_TRACE;
+    if (!Array.isArray(trace)) return;
+    if (trace.length > 4000) return;
+    trace.push({ event, t: Math.round(performance.now() * 10) / 10, ...data });
+  } catch {
+    /* 诊断埋点绝不影响功能 */
+  }
+}
+
 /** 滚动恢复目标的最小度量接口（HTMLElement / iframe 文档滚动元素都满足） */
 export interface ScrollRestoreTarget {
   scrollHeight: number;
@@ -855,6 +887,18 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     scrollTop: number | null;
     until: number;
   } | null>(null);
+  /**
+   * v0.15.1 需求6（撤销再审计抓出的缺陷）：撤销选区还原的**代际 token**。
+   *
+   * 缺陷（实测）：撤销后 60ms 内开始打字，字符本身插对了，但 250ms 后光标会被
+   * **撤销的兜底定时器**抢回撤销时的位置 → 下一个字符插到错误位置。
+   * 根因：`applyHistoryText` 里除了 pending ref 还排了
+   * `requestAnimationFrame(applySelection)` 与 `setTimeout(applySelection, 60)`
+   * 两个**定时器**，而 `handleSourceChange` 只清了 pending ref，管不到它们。
+   *
+   * 修法：用户一旦真实输入就 `++token`；定时器回调里比对代际号，过期即自觉退场。
+   */
+  const sourceSelectionRestoreTokenRef = useRef(0);
 
   // 自动保存：需要在 sourceContentRef 声明之后调用
   // v0.6.6 问题4：getter ref 拦截读取——自动保存/版本快照拿到 unmask 后的真实内容
@@ -995,6 +1039,22 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 打字机 effect 的初始 scrollToCenter 检查此标志，避免 smooth 滚动覆盖 applyScroll 的 scrollTop
   const isRestoringScrollRef = useRef(false);
   /**
+   * v0.15.1 需求3（二次修复）：滚动恢复的**代际**计数。
+   *
+   * 用途：恢复保护窗用 `setTimeout` 收尾，而期间用户可能又切了一次模式（新一代恢复开始）。
+   * 若旧一代的收尾定时器照样跑，它会把 `isRestoringScrollRef` 清成 false 并覆盖新一代的
+   * 几何缓存 → 又回到"校正值被当基准"的老问题。用代际号让旧定时器自觉退场。
+   */
+  const scrollRestoreGenRef = useRef(0);
+  /**
+   * v0.15.1 需求3：render 期锚点捕获的**去重标记**（记录已经捕获过锚点的那次 viewMode）。
+   *
+   * 为什么需要：render 可能因其它 state 变化重跑多次；若每次都捕获，后一次会覆盖前一次，
+   * 而后面真正用于恢复的那次可能已经落在 textarea 隐藏之后（采到 null）。
+   * 只让**第一次**（textarea 仍可见那一帧）生效。
+   */
+  const anchorCapturedForModeRef = useRef<string | null>(null);
+  /**
    * v0.15.0 需求（阅读↔编辑内容对齐）：模式切换**前**采集来源侧的内容锚点。
    *
    * 必须在切换前的 effect 里同步调用（此时来源面还有真实布局、块几何可量）；
@@ -1024,6 +1084,54 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     clientHeight: number;
     scrollHeight: number;
   } | null>(null);
+  /**
+   * v0.15.1 需求3（第三次返修）：为「阅读→编辑」取锚点。
+   *
+   * ## 为什么不能直接用 `pmGeomCacheRef.scrollTop`
+   *
+   * 缓存是**滚动时**写的，而恢复流程会在切换后再校正若干次（rAF / 60ms / 160ms）。
+   * 若锚点用缓存里的旧 `scrollTop`，下一轮就以"上一轮校正前"的位置当基准 →
+   * 每轮叠加一点（实测 ratio=0.2 时 +45/+103/+170，ratio=0.8 时 −78/−163/−274，
+   * 呈**单调同向累积** —— 正是用户报的"连续多次后阅读面开始跟着偏"）。
+   *
+   * 正确做法与源码面同款：**块几何取缓存（与滚动位置无关），滚动位置现读实时值**。
+   * 捕获发生在 render 期（此时阅读面仍可见），现读是可信的。
+   */
+  const captureReaderContentAnchor = useCallback((): ContentAnchor | null => {
+    const cache = pmGeomCacheRef.current;
+    const container = editorRef.current;
+    // 阅读面此刻仍可见（render 期）→ 现读实时几何；不可见时退回缓存快照
+    const live = container && container.clientHeight > 0 ? container : null;
+    const scrollTop = live ? live.scrollTop : cache ? cache.scrollTop : 0;
+    const clientHeight = live ? live.clientHeight : cache ? cache.clientHeight : 0;
+    const scrollHeight = live ? live.scrollHeight : cache ? cache.scrollHeight : 0;
+    // 实时可见时**重新量块几何**（比缓存更准：缓存可能是滚动中途采的）
+    const fresh = live ? collectPmBlockGeometry(live) : null;
+    const blocks = fresh ?? cache?.blocks ?? null;
+    if (!blocks) {
+      traceScroll("cap-reader", { ok: false, live: !!live });
+      return null;
+    }
+    const anchor = captureContentAnchor(blocks, scrollTop, clientHeight, {
+      contentHeight: scrollHeight,
+    });
+    traceScroll("cap-reader", {
+      ok: !!anchor,
+      live: !!live,
+      fresh: !!fresh,
+      top: scrollTop,
+      h: clientHeight,
+      sh: scrollHeight,
+      n: blocks.length,
+      idx: anchor?.blockIndex,
+      ratio: anchor?.ratioWithinBlock,
+      hid: anchor?.headingId,
+      atTop: anchor?.atTop,
+      atBottom: anchor?.atBottom,
+    });
+    return anchor;
+  }, []);
+
   /** 采一次当前阅读面几何并写入缓存（阅读面可见时调用） */
   const cachePmGeometry = useCallback(() => {
     const container = editorRef.current;
@@ -1038,31 +1146,63 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     };
   }, []);
   /**
-   * v0.15.1 需求3：**双向**采集模式切换前的「视口中央内容锚点」。
+   * v0.15.1 需求3（二次修复）：**双向**采集模式切换前的「视口中央内容锚点」。
    *
    * ## 缺陷（用户原话：「不断双击 Ctrl 键进行阅读模式和编辑模式切换时…屏幕不断会滚动位置偏移」）
    *
-   * v0.15.0 只给**阅读→编辑**这个方向采了内容锚点（`useLayoutEffect` 里判
-   * `prevViewMode === "preview" && viewMode !== "preview"`），反向的
-   * **编辑→阅读** 仍退回「滚动百分比」恢复。
+   * v0.15.0 只给**阅读→编辑**这个方向采了内容锚点，反向的 **编辑→阅读** 退回
+   * 「滚动百分比」恢复。两种排版几何完全不同（正文列宽 / 行高 / 块间距 / 软换行数），
+   * 同一百分比指向的是**不同内容** → 每轮偏差被当作下一轮基准 → 累积漂移。
    *
-   * 但两种排版的几何完全不同（正文列宽 / 行高 / 块间距 / 软换行数），
-   * **同一百分比指向的是不同内容**。于是每一轮 Ctrl 切换：
-   *   阅读(锚点恢复，内容对) → 编辑(百分比恢复，内容偏一点)
-   *   → 阅读(锚点恢复，但基准已被上一步的百分比偏移污染) → …
-   * 误差**单向累积**，几轮之后视口就明显跑掉（用户看到"屏幕不断滚动位置偏移"）。
+   * ## 为什么第一版「双向采集」没生效（实测抓出的真凶）
    *
-   * 修法：两个方向都采内容锚点。源码面没有子元素可量，用 `measureSourceLineAxis`
-   * 的实测按行轴还原块几何（`blockGeometryFromLineAxis`）—— 与
-   * `textareaTopFromContentAnchor` 恢复侧同一套坐标系，往返才自洽。
+   * 第一版在 `useLayoutEffect` 里对 textarea 现量块几何。但那个 effect 跑在
+   * **React 已把新 DOM 提交之后**：切到阅读模式时 textarea 已经是 `display: none`，
+   * 实测 `clientWidth === 0 && clientHeight === 0` → `measureSourceLineAxis` 首行
+   * 守卫 `if (!(textarea.clientWidth > 0) || !(textarea.clientHeight > 0)) return null`
+   * 直接返回 null → 锚点为 null → 该方向**始终**退回百分比。
+   * 也就是说「双向」只在纸面上成立，实际只有单向。
+   * （这与 PM 面当年踩的坑一模一样：语义地图 §4-30 记录的"切走之后量不到几何"。）
    *
-   * ⚠️ 必须在 `useLayoutEffect`（DOM commit 之后、绘制之前）里做：此时**来源面仍在**
-   * （普通 effect 跑的时候来源面已 display:none，块几何全是 0）。
+   * ## 修法：与 PM 面同款 —— **可见期间**缓存几何，切换瞬间只读缓存
+   *
+   * - `srcGeomCacheRef`：textarea 在**可见时**（滚动 / 布局变化）缓存
+   *   「按行轴还原的块几何 + scrollTop + clientHeight + scrollHeight」；
+   * - 切换瞬间（useLayoutEffect，textarea 已隐藏）只读缓存做 `captureContentAnchor`，
+   *   与恢复侧 `textareaTopFromContentAnchor` 用同一套 `blockGeometryFromLineAxis`
+   *   坐标系，往返才自洽；
+   * - 缓存键含 `scrollHeight`（字号/行高/宽度变化都会改变软换行位置，必须失效）。
    */
-  const captureSourceContentAnchor = useCallback((): ContentAnchor | null => {
+  const srcGeomCacheRef = useRef<{
+    blocks: import("../../utils/contentScrollMap").BlockGeometry[];
+    scrollTop: number;
+    clientHeight: number;
+    scrollHeight: number;
+    /** textarea.clientWidth：宽度变了软换行位置就变，块几何作废 */
+    clientWidth: number;
+    /** 缓存时的正文长度：内容变了行轴作废 */
+    textLength: number;
+  } | null>(null);
+
+  /**
+   * 现量源码面块几何（**只在 textarea 可见时**有效）。
+   *
+   * 为什么抽成独立函数：它有两个用途 —— ①滚动/切换期间刷新缓存；
+   * ②切换的那一帧（render 期，textarea 仍可见）**直接现量**取锚点。
+   * 后者最关键：`measureSourceLineAxis` 用镜像 div 实测软换行后的行轴，
+   * 与 `textareaTopFromContentAnchor` 恢复侧完全同一套坐标系，往返才自洽。
+   *
+   * 量不到（隐藏 / 空文档 / 只读 / 超长文本）返回 null，调用方自行兜底。
+   */
+  const measureSourceBlocks = useCallback((): {
+    blocks: import("../../utils/contentScrollMap").BlockGeometry[];
+    markdown: string;
+  } | null => {
     const textarea = sourceTextareaRef.current;
     if (!textarea) return null;
-    if (!(textarea.clientHeight > 0) || !(textarea.scrollHeight > 0)) return null;
+    // 不可见时高度/宽度为 0 → 量不出可信行轴
+    if (!(textarea.clientHeight > 0) || !(textarea.clientWidth > 0)) return null;
+    if (!(textarea.scrollHeight > 0)) return null;
     const markdown = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
     if (!markdown) return null;
     try {
@@ -1076,33 +1216,178 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         contentHeight: textarea.scrollHeight,
         maxScroll: Math.max(0, textarea.scrollHeight - textarea.clientHeight),
       });
-      if (!blocks) return null;
-      return captureContentAnchor(blocks, textarea.scrollTop, textarea.clientHeight, {
-        contentHeight: textarea.scrollHeight,
-      });
+      return blocks ? { blocks, markdown } : null;
     } catch {
       return null;
     }
   }, []);
 
+  /**
+   * 采一次源码面块几何并写入缓存（**只在 textarea 可见时调用**）。
+   * 量不到（隐藏 / 空文档 / 只读）就保持旧缓存不动，绝不写 null 把缓存打坏。
+   */
+  const cacheSourceGeometry = useCallback(() => {
+    const textarea = sourceTextareaRef.current;
+    if (!textarea) return;
+    const measured = measureSourceBlocks();
+    if (!measured) return;
+    srcGeomCacheRef.current = {
+      blocks: measured.blocks,
+      scrollTop: textarea.scrollTop,
+      clientHeight: textarea.clientHeight,
+      scrollHeight: textarea.scrollHeight,
+      clientWidth: textarea.clientWidth,
+      textLength: measured.markdown.length,
+    };
+  }, [measureSourceBlocks]);
+
+  /**
+   * 取「编辑→阅读」方向的锚点。
+   *
+   * ## 优先**现量**（v0.15.1 需求3 第四次返修）
+   *
+   * 捕获发生在 **render 期**（`viewMode` 已变成 "preview"、DOM 还没提交）——
+   * 这一帧 textarea 仍然可见，可以像滚动时那样直接量行轴。于是根本不必依赖
+   * 「编辑期间每敲一个字就重测一遍缓存」（那是 O(全文) 的镜像测量，大文档会卡输入）。
+   * 缓存只在"量不到的时候"兜底（例如 render 期已被别的原因隐藏）。
+   *
+   * @returns null = 无可用几何（调用方退回百分比——与旧行为一致，不会更差）
+   */
+  const captureSourceContentAnchor = useCallback((): ContentAnchor | null => {
+    const textarea = sourceTextareaRef.current;
+    const canMeasureLive = !!(textarea && textarea.clientHeight > 0 && textarea.clientWidth > 0);
+    if (canMeasureLive) {
+      const measured = measureSourceBlocks();
+      if (measured) {
+        // 顺手刷新缓存（下一次切换若量不到可直接用）
+        srcGeomCacheRef.current = {
+          blocks: measured.blocks,
+          scrollTop: textarea.scrollTop,
+          clientHeight: textarea.clientHeight,
+          scrollHeight: textarea.scrollHeight,
+          clientWidth: textarea.clientWidth,
+          textLength: measured.markdown.length,
+        };
+        const anchor = captureContentAnchor(
+          measured.blocks,
+          textarea.scrollTop,
+          textarea.clientHeight,
+          { contentHeight: textarea.scrollHeight },
+        );
+        traceScroll("cap-source", {
+          ok: !!anchor,
+          live: true,
+          fresh: true,
+          top: textarea.scrollTop,
+          h: textarea.clientHeight,
+          sh: textarea.scrollHeight,
+          n: measured.blocks.length,
+          idx: anchor?.blockIndex,
+          ratio: anchor?.ratioWithinBlock,
+          line: anchor?.sourceLine,
+          atTop: anchor?.atTop,
+          atBottom: anchor?.atBottom,
+        });
+        return anchor;
+      }
+    }
+    // ── 兜底：读可见期间缓存的块几何 ──
+    const cache = srcGeomCacheRef.current;
+    if (!cache) {
+      traceScroll("cap-source", { ok: false, why: "no-cache" });
+      return null;
+    }
+    // 缓存必须与当前正文一致：内容改过（行数/长度变）时行轴已失效。
+    // 用 unmask 后的真实文本长度比较（`sourceContentRef` 是 mask 后的展示文本）。
+    const markdown = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+    if (!markdown || markdown.length !== cache.textLength) {
+      traceScroll("cap-source", { ok: false, why: "text-changed", len: markdown.length, cached: cache.textLength });
+      return null;
+    }
+    /**
+     * ⚠️ v0.15.1 需求3（**第三次返修的关键点**）：`scrollTop` 必须取**实时值**，
+     * 不能用缓存里的快照。
+     *
+     * 踩过的坑（实机探针实测到的"交替漂移"）：缓存是滚动时写的，而恢复流程会在
+     * 切换之后**再校正**若干次（rAF / 60ms / 160ms）。若锚点用缓存里的旧 `scrollTop`，
+     * 第二轮切换就会以**上一轮校正前**的位置当基准 → 恢复值在新旧两个位置之间来回跳
+     * （实测 3179 → 7958 → 3179 → 7958），用户感知就是"每切一次偏一点"。
+     * 现在只从缓存取**块几何**（行轴与滚动位置无关），`scrollTop` / `clientHeight` 现读。
+     */
+    const liveScrollTop = textarea && textarea.clientHeight > 0 ? textarea.scrollTop : cache.scrollTop;
+    const liveClientHeight =
+      textarea && textarea.clientHeight > 0 ? textarea.clientHeight : cache.clientHeight;
+    const anchor = captureContentAnchor(cache.blocks, liveScrollTop, liveClientHeight, {
+      contentHeight: cache.scrollHeight,
+    });
+    traceScroll("cap-source", {
+      ok: !!anchor,
+      live: !!(textarea && textarea.clientHeight > 0),
+      fresh: false,
+      top: liveScrollTop,
+      h: liveClientHeight,
+      sh: cache.scrollHeight,
+      n: cache.blocks.length,
+      idx: anchor?.blockIndex,
+      ratio: anchor?.ratioWithinBlock,
+      line: anchor?.sourceLine,
+      atTop: anchor?.atTop,
+      atBottom: anchor?.atBottom,
+    });
+    return anchor;
+  }, [measureSourceBlocks]);
+
+  /**
+   * v0.15.1 需求3（**第四次返修**）：**两个方向**都在渲染期捕获锚点。
+   *
+   * ## 为什么不能用 `useLayoutEffect`（前三版都栽在这）
+   *
+   * `useLayoutEffect` 的语义是"React 已经把新 DOM 提交之后、绘制之前"。切到阅读模式时
+   * 那次提交已经把 textarea 设成 `display: none`；切到编辑模式时那次提交已经把
+   * `.editor-container` 设成 `display: none`。于是：
+   * - 「编辑→阅读」方向在 effect 里读 `textarea.clientHeight` 拿到 **0**，
+   *   `measureSourceLineAxis` 首行守卫直接返回 null → 该方向从来没拿到过内容锚点；
+   * - 「阅读→编辑」方向在 effect 里读 `.editor-container` 同样是 0 →
+   *   `collectPmBlockGeometry` 量出全 0 高度 → 只能退回**滚动期缓存**的旧快照，
+   *   而旧快照的块几何与真实布局有亚像素差 → 每轮往返叠一点点（探针实测
+   *   ratio=0.2 时 +45/+103/+170，ratio=0.8 时 −78/−163/−274，**单调同向累积**，
+   *   正是用户报的"连续多次双击后编辑面先偏、阅读面跟着偏"）。
+   *
+   * ## 做法
+   *
+   * 在 render 阶段（`viewMode` 已变、DOM 还没提交、**旧面仍可见**）当场捕获，存进
+   * `modeSwitchAnchorRef`；`useLayoutEffect` 只做"没采到就补一次"的兜底，恢复 effect
+   * 只读这个 ref。
+   *
+   * 为什么 render 期读 DOM 可以接受：这里只**读**布局（`clientHeight` / `scrollTop` /
+   * `getBoundingClientRect`），不写样式、不 setState —— 不会引起 reflow 环，也不改变
+   * 渲染输出。读的是"当前已提交的 DOM"（还是旧面），正是需要的那一帧。
+   * 用 `anchorCapturedForModeRef` 防止同一轮内因其它 state 重渲染而重复覆盖。
+   */
+  if (
+    typeof window !== "undefined" &&
+    prevViewModeRef.current !== viewMode &&
+    anchorCapturedForModeRef.current !== viewMode
+  ) {
+    anchorCapturedForModeRef.current = viewMode;
+    const anchor =
+      prevViewModeRef.current === "preview"
+        ? captureReaderContentAnchor()
+        : captureSourceContentAnchor();
+    modeSwitchAnchorRef.current = anchor ?? null;
+  }
+
   useLayoutEffect(() => {
     const prev = prevViewModeRef.current;
     if (prev === viewMode) return;
-    if (prev === "preview" && viewMode !== "preview") {
-      // 阅读 → 编辑：用滚动期缓存的 PM 块几何（阅读面此刻已被 display:none，现量全是 0）
-      const cache = pmGeomCacheRef.current;
-      modeSwitchAnchorRef.current = cache
-        ? captureContentAnchor(cache.blocks, cache.scrollTop, cache.clientHeight, {
-            contentHeight: cache.scrollHeight,
-          })
-        : null;
-      return;
-    }
-    if (prev !== "preview" && viewMode === "preview") {
-      // v0.15.1 需求3：编辑 → 阅读方向也必须采锚点（旧实现只走百分比 → 逐轮累积偏移）
-      modeSwitchAnchorRef.current = captureSourceContentAnchor();
-    }
-  }, [viewMode, captureSourceContentAnchor]);
+    // 正常路径：render 期已采到（此时旧面仍可见，几何可信），这里只兜底。
+    // 兜底时旧面已 display:none，只能读各自缓存 —— 比没锚点好，但不如 render 期准。
+    if (modeSwitchAnchorRef.current) return;
+    const anchor =
+      prev === "preview" ? captureReaderContentAnchor() : captureSourceContentAnchor();
+    if (anchor) modeSwitchAnchorRef.current = anchor;
+    traceScroll("cap-layout-fallback", { prev, mode: viewMode, ok: !!anchor });
+  }, [viewMode, captureReaderContentAnchor, captureSourceContentAnchor]);
 
   /**
    * v0.15.1 需求1：撤销/恢复落地后，在 **React 提交完 DOM、绘制之前** 恢复源码选区。
@@ -1242,7 +1527,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * 并把编辑前的光标/滚动作为 `beforeSelection`（撤销要回到这里）。
    */
   const recordDiscreteSourceEdit = useCallback(
-    (beforeMasked: string, afterMasked: string, caret: number, scrollTop: number) => {
+    (
+      beforeMasked: string,
+      afterMasked: string,
+      caret: number,
+      scrollTop: number,
+      /**
+       * 落点光标（可选，默认与 `caret` 相同）。翻译回写 / AI 润色这类"整段替换"里
+       * 撤销要回到**原选区起点**、重做要回到**译文末尾**，两者不是同一个位置。
+       */
+      afterCaret?: number,
+    ) => {
       const beforeReal = unmaskBase64Images(beforeMasked, base64TokensRef.current);
       const afterReal = unmaskBase64Images(afterMasked, base64TokensRef.current);
       if (beforeReal === afterReal) return;
@@ -1253,13 +1548,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (documentHistory.currentText(key) !== beforeReal) {
         documentHistory.rebaseText(key, beforeReal, { force: true });
       }
+      const after = typeof afterCaret === "number" ? afterCaret : caret;
       documentHistory.commit(
         {
           before: beforeReal,
           after: afterReal,
           origin: "source",
           beforeSelection: { start: caret, end: caret, scrollTop },
-          afterSelection: { start: caret, end: caret, scrollTop },
+          afterSelection: { start: after, end: after, scrollTop },
         },
         key,
       );
@@ -1857,10 +2153,22 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     return unsubscribe;
   }, []);
 
-  // ─── 持续追踪 textarea 滚动百分比 ──────────────
+  // ─── 持续追踪 textarea 滚动百分比 + **缓存源码面块几何** ──────────────
   useEffect(() => {
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
+    let raf = 0;
+    /** 滚动/尺寸变化后用 rAF 合并采样（滚动事件每帧可多次触发，测量不便宜） */
+    const scheduleCache = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        // v0.15.1 需求3（二次修复）：**在可见期间**缓存源码面块几何。
+        // 切换瞬间 textarea 已 display:none、clientWidth/Height 全 0 → 现量必得 null
+        // → 「编辑→阅读」方向会静默退回百分比（这正是漂移没根治的原因）。
+        if (!isRestoringScrollRef.current) cacheSourceGeometry();
+      });
+    };
     const handler = () => {
       const percent = computeScrollPercent(textarea.scrollHeight, textarea.clientHeight, textarea.scrollTop);
       // v0.15.1 需求1：记录"编辑前"的滚动位置，供撤销恢复现场用
@@ -1874,12 +2182,38 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           fileScrollProgress.set(progressKeyRef.current, percent);
         }
       }
+      scheduleCache();
     };
     // v0.8.3 WP5：passive 监听（滚动路径上无需 preventDefault）——浏览器无需等待
     // JS 返回即可提交合成帧，滚动同步更稳。
     textarea.addEventListener("scroll", handler, { passive: true });
-    return () => textarea.removeEventListener("scroll", handler);
-  }, []); // textarea 始终在 DOM 中，只需绑定一次
+    return () => {
+      textarea.removeEventListener("scroll", handler);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [cacheSourceGeometry]); // textarea 始终在 DOM 中，只需绑定一次
+
+  /**
+   * v0.15.1 需求3：源码面几何缓存的**主动刷新点**。
+   *
+   * ⚠️ 只在这些**低频**时机刷新，**不要**挂 `sourceContent`（每次按键都变）：
+   * `measureSourceBlocks` 会建一个覆盖全文的镜像 div 再逐块量 `getBoundingClientRect`
+   * —— 大文档上是 O(全文) 的强制布局，挂在输入路径上会直接拖慢打字。
+   * 输入后的新鲜几何在**切换的那一帧现量**就够了（见 `captureSourceContentAnchor`：
+   * render 期 textarea 仍可见 → 现量优先，缓存只是量不到时的兜底）。
+   */
+  useEffect(() => {
+    if (isSourceMode) {
+      // 刚切进编辑面：等两帧（React 提交 + 浏览器布局）后采一次
+      const r1 = requestAnimationFrame(() => {
+        const r2 = requestAnimationFrame(() => cacheSourceGeometry());
+        void r2;
+      });
+      return () => cancelAnimationFrame(r1);
+    }
+    // 切离编辑面：**保留**缓存（下次切换要用它做兜底锚点），不清理
+    return;
+  }, [isSourceMode, cacheSourceGeometry, viewMode]);
 
   // ─── v0.8.3 需求3：源码模式（textarea）光标行列 / 选中字符数 ──────────
   // textarea 的 selectionStart/End 是唯一真相源；用 rAF 合并同一帧内的多次事件
@@ -2338,7 +2672,21 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           if (newTop === null) {
             newTop = computeRestoreScrollTop(percent, container.scrollHeight, container.clientHeight);
           }
+          const prevTop = container.scrollTop;
           container.scrollTop = newTop ?? 0;
+          traceScroll("res-reader", {
+            before: prevTop,
+            after: container.scrollTop,
+            want: newTop,
+            pct: percent,
+            anchorIdx: contentAnchor?.blockIndex,
+            anchorRatio: contentAnchor?.ratioWithinBlock,
+            anchorSrcLine: contentAnchor?.sourceLine,
+            anchorAtTop: contentAnchor?.atTop,
+            anchorAtBottom: contentAnchor?.atBottom,
+            h: container.clientHeight,
+            sh: container.scrollHeight,
+          });
           // PM 焦点/选区映射可能让浏览器把光标滚入视口 → 下一帧再校正一次
           if (newTop !== null) {
             requestAnimationFrame(() => {
@@ -2353,11 +2701,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
                   });
                   if (again !== null) {
                     c.scrollTop = again;
+                    traceScroll("res-reader-raf", { after: c.scrollTop, want: again });
                     return;
                   }
                 }
               }
               c.scrollTop = newTop as number;
+              traceScroll("res-reader-raf", { after: c.scrollTop, want: newTop, pct: true });
             });
           }
         }
@@ -2394,8 +2744,21 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           // 现在改为：可滚动才写；不可滚动且期望非顶部 → 短间隔重试（见
           // planScrollRestore / SCROLL_RESTORE_RETRY_MS 的注释）。
           const anchorTop = textareaTopFromContentAnchor(textarea, contentAnchor);
+          traceScroll("res-source", {
+            before: textarea.scrollTop,
+            want: anchorTop,
+            pct: percent,
+            anchorIdx: contentAnchor?.blockIndex,
+            anchorRatio: contentAnchor?.ratioWithinBlock,
+            anchorSrcLine: contentAnchor?.sourceLine,
+            anchorAtTop: contentAnchor?.atTop,
+            anchorAtBottom: contentAnchor?.atBottom,
+            h: textarea.clientHeight,
+            sh: textarea.scrollHeight,
+          });
           if (anchorTop !== null) {
             textarea.scrollTop = anchorTop;
+            traceScroll("res-source-after", { after: textarea.scrollTop, want: anchorTop });
             // 布局稳定后校正一次（内容可能刚写入，scrollHeight 还在变）
             requestAnimationFrame(() => {
               const t2 = sourceTextareaRef.current;
@@ -2440,8 +2803,28 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           restorePendingIframeScroll();
         }
       }
-      // 恢复完成，允许打字机 effect 后续的 scrollToCenter
-      isRestoringScrollRef.current = false;
+      // v0.15.1 需求3（二次修复）：**恢复窗口要覆盖全部校正写入**，不能在这里立刻放开。
+      //
+      // 旧实现到这里就 `isRestoringScrollRef.current = false`，但恢复动作不止一次：
+      // 上面还有 rAF 校正、`textareaTopFromContentAnchor` 的二次校正、以及
+      // `restoreScrollWithRetry` 的 60ms×N 重试。这些**后续写入**发生时标志已经是 false
+      // → scroll 监听把它们当成"用户滚动"→ `cacheSourceGeometry()` /
+      // `cachePmGeometry()` 把**校正后的像素**当成新基准缓存下来。
+      // 下一轮切换以这个（已被上轮校正偏过的）基准重算 → 每轮叠加一点点 → 用户看到的
+      // 「先编辑面细微偏移，然后阅读面跟着偏」。
+      //
+      // 修法：给恢复动作留一个**短保护窗**（覆盖 60/160ms 校正链），窗口内不写几何缓存、
+      // 不写阅读进度；窗口结束由最后一次校正的写入成为新基准。
+      const restoreGeneration = ++scrollRestoreGenRef.current;
+      window.setTimeout(() => {
+        // 期间又发生过切换（新一代）→ 由新一代负责收尾，本次不再动标志
+        if (scrollRestoreGenRef.current !== restoreGeneration) return;
+        isRestoringScrollRef.current = false;
+        // 窗口结束后**主动**采一次几何：此时布局已稳定，采到的是"最终真值"，
+        // 而不是中途某次校正的中间值。
+        if (viewMode === "preview") cachePmGeometry();
+        else cacheSourceGeometry();
+      }, SCROLL_RESTORE_GUARD_MS);
     };
 
     // 双重 rAF：第一帧等 React 渲染完成，第二帧等浏览器布局完成
@@ -2455,6 +2838,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     // v0.15.1 需求1：真实用户输入 = 选区保护窗立即失效（否则撤销后的光标还原
     // 会跟用户的输入抢光标）。
     pendingSourceSelectionRef.current = null;
+    // v0.15.1 需求6（再审计缺陷 1）：连带让撤销时排下的 rAF / 60ms 兜底定时器退场，
+    // 否则它们会在 250ms 后把光标抢回撤销位置（实测：输入后 selectionStart 9 → 又被拽回 8）。
+    sourceSelectionRestoreTokenRef.current++;
     // v0.7.3 改进10(U3)：任何用户编辑（含自动配对/粘贴/撤销）都会使 source
     // 续写 ghost 位置语义失效——取消任务并清除 overlay（与 PM 模式 docChanged 失效一致）
     sourceGhostHandlersRef.current.invalidate();
@@ -2693,7 +3079,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         // 变化 → 再 setSourceContent」这条二次受控提交链（实测需要 ~100ms）。
         until: Date.now() + 250,
       };
+      /**
+       * v0.15.1 需求6（再审计缺陷 1）：这两个定时器必须能被**用户输入作废**。
+       *
+       * 实测：撤销后 60ms 内打字 → 字符插对了，但 250ms 后光标被这里抢回撤销时的
+       * 位置（`selectionStart` 8 → 9 → 又回到 8）→ 下一个字符插到错误位置。
+       * `handleSourceChange` 会 `++sourceSelectionRestoreTokenRef`，这里比对代际号即可。
+       */
+      const restoreToken = ++sourceSelectionRestoreTokenRef.current;
       const applySelection = () => {
+        if (sourceSelectionRestoreTokenRef.current !== restoreToken) return;
         const ta = sourceTextareaRef.current;
         if (!ta) return;
         const len = ta.value.length;
@@ -3826,6 +4221,21 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       if (!rewrite) return;
       // v0.6.1 问题2：记录回写前全文快照（取消翻译恢复用）
       const original = sourceContentRef.current;
+      /**
+       * v0.15.1 需求6（再审计缺陷 2）：翻译回写**必须进统一时间线**。
+       *
+       * 旧实现只 `setSourceContent` → ① Ctrl+Z 撤不回译文（只能靠「取消翻译」气泡）；
+       * ② 更隐蔽：时间线 `knownText` 停在回写前 → 下一次打字 commit 的 before 失配 →
+       * 协调器 `rebaseText(force:true)` → **静默 truncateRedo**（用户只是打了个字，
+       * 却把 redo 分支整段丢了）。走 `recordDiscreteSourceEdit` 一并解决基线纠偏。
+       */
+      recordDiscreteSourceEdit(
+        original,
+        rewrite.content,
+        ctx.start,
+        sourceTextareaRef.current?.scrollTop ?? 0,
+        rewrite.cursor,
+      );
       setSourceContent(rewrite.content);
       onContentChangeRef.current?.(rewrite.content);
       setDirtyRef.current(true);
@@ -4257,6 +4667,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }
     const pos = Math.min(sourceGhostPosRef.current, textarea.value.length);
     const newContent = textarea.value.slice(0, pos) + ghost + textarea.value.slice(pos);
+    // v0.15.1 需求6（再审计缺陷 2）：AI 续写 ghost 的 Tab 采纳同样是外部写回，
+    // 不进时间线就撤不回、并会把 knownText 推偏（后续打字 force-rebase 清掉 redo）。
+    recordDiscreteSourceEdit(textarea.value, newContent, pos, textarea.scrollTop, pos + ghost.length);
     setSourceContent(newContent);
     onContentChangeRef.current?.(newContent);
     setDirtyRef.current(true);
@@ -4347,6 +4760,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (task === "polish" && ctx.sourceMode === "source" && ctx.start !== undefined && ctx.end !== undefined) {
       const rewrite = buildSourceRewrite(sourceContentRef.current, ctx.start, ctx.end, text, "replace");
       if (!rewrite) return;
+      // v0.15.1 需求6（再审计缺陷 2）：AI 润色的源码回写同样必须进统一时间线，
+      // 否则既撤不回、又会把时间线 knownText 推偏（下次打字 force-rebase 清掉 redo 分支）。
+      recordDiscreteSourceEdit(
+        sourceContentRef.current,
+        rewrite.content,
+        ctx.start,
+        sourceTextareaRef.current?.scrollTop ?? 0,
+        rewrite.cursor,
+      );
       setSourceContent(rewrite.content);
       onContentChangeRef.current?.(rewrite.content);
       setDirtyRef.current(true);
@@ -4383,6 +4805,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const pos = ctx.insertPos ?? textarea?.selectionStart ?? sourceContentRef.current.length;
       const content = sourceContentRef.current;
       const newContent = content.slice(0, pos) + text + content.slice(pos);
+      // v0.15.1 需求6（再审计缺陷 2）：AI 续写 / 摘要的源码插入也是"外部写回"，
+      // 同样要进统一时间线（可撤销 + 让 knownText 跟上，避免后续打字 force-rebase）。
+      recordDiscreteSourceEdit(
+        content,
+        newContent,
+        pos,
+        textarea?.scrollTop ?? 0,
+        pos + text.length,
+      );
       setSourceContent(newContent);
       onContentChangeRef.current?.(newContent);
       setDirtyRef.current(true);
@@ -5032,6 +5463,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const ta = sourceTextareaRef.current;
       const pos = Math.min(ctx.insertPos ?? ta?.selectionStart ?? content.length, content.length);
       const newContent = content.slice(0, pos) + text + content.slice(pos);
+      // v0.15.1 需求6（再审计缺陷 2）：AI 对话「插入光标处」（源码通道）也是外部写回，
+      // 不进时间线就会"撤不回 + 下次打字 force-rebase 静默清掉 redo"。
+      recordDiscreteSourceEdit(content, newContent, pos, ta?.scrollTop ?? 0, pos + text.length);
       setSourceContent(newContent);
       onContentChangeRef.current?.(newContent);
       setDirtyRef.current(true);
@@ -5121,6 +5555,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const rewrite = buildSourceRewrite(sourceContentRef.current, ctx.srcStart, ctx.srcEnd, text, "replace");
     if (!rewrite) return;
     const original = sourceContentRef.current;
+    // v0.15.1 需求6（再审计缺陷 2）：AI 对话「替换选区」的源码回写同样进统一时间线。
+    recordDiscreteSourceEdit(
+      original,
+      rewrite.content,
+      ctx.srcStart,
+      sourceTextareaRef.current?.scrollTop ?? 0,
+      rewrite.cursor,
+    );
     setSourceContent(rewrite.content);
     onContentChangeRef.current?.(rewrite.content);
     setDirtyRef.current(true);

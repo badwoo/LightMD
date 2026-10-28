@@ -3528,7 +3528,7 @@ function App() {
       k.startsWith(UNTITLED_PROGRESS_PREFIX) ? k : pathCompareKey(k);
 
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ fileKey?: string; filePath?: string }>).detail;
+      const detail = (e as CustomEvent<{ fileKey?: string; filePath?: string; hitIndex?: number }>).detail;
       const fileKey = detail?.fileKey;
       if (!fileKey) return;
       const key = toJumpKey(fileKey);
@@ -3539,7 +3539,12 @@ function App() {
           : !!tab.path && pathCompareKey(tab.path) === key,
       );
       if (idx >= 0) {
-        if (idx === st.activeTabIdx) return; // 已是当前文档：由 SearchReplace 就地定位
+        // 已是当前文档：本层**不做任何事**是正确的（没必要为了跳转重建编辑器）。
+        // v0.15.1 需求4 续修：定位由 SearchReplace 自己的 `lightmd:search-jump` 监听器
+        // 当场完成（它不再依赖 docKey 变化）。旧实现之所以在这里 return 就"点了没反应"，
+        // 是因为面板当时只在 docKey 变化时才消费 pending —— 同一文档连点 2/3/4 处时
+        // docKey 一直不变，pending 永远挂着。
+        if (idx === st.activeTabIdx) return;
         handleTabSwitchRef.current(st.openTabs[idx]);
         return;
       }

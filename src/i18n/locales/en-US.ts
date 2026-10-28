@@ -1085,6 +1085,8 @@ export const enUS: Record<string, string> = {
   "search.previous": "Previous",
   "search.next": "Next",
   "search.noResult": "No results",
+  // v0.15.1 req5: visible hint when matches exceed the highlight cap (never silent)
+  "search.highlightTruncated": "highlighting first {count} only",
   "search.replace": "Replace",
   "search.replacePlaceholder": "Replace with...",
   "search.replaceCurrent": "Replace current",

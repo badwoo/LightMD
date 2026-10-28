@@ -644,12 +644,12 @@ export const FOLD_IFRAME_CSS = `
   /* ① 展开方向：所有正文块的高度 / 透明度 / 间距过渡 */
   body > * {
     transition:
-      height 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      opacity 220ms ease,
-      margin-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      margin-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      padding-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      padding-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1);
+      height 440ms cubic-bezier(0.2, 0, 0.2, 1),
+      opacity 440ms ease,
+      margin-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+      margin-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
+      padding-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+      padding-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1);
   }
 
   /* ② 折叠方向：高度收起 + 立刻裁切 + 收完再隐藏 */
@@ -669,14 +669,14 @@ export const FOLD_IFRAME_CSS = `
     opacity: 0;
     pointer-events: none;
     transition:
-      height 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      opacity 220ms ease,
-      margin-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      margin-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      padding-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-      padding-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
+      height 440ms cubic-bezier(0.2, 0, 0.2, 1),
+      opacity 440ms ease,
+      margin-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+      margin-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
+      padding-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+      padding-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
       overflow 0s linear 0s,
-      visibility 0s linear 220ms;
+      visibility 0s linear 440ms;
   }
 
   /* ③ 退化路径：不支持 height 关键字插值 → 瞬时显隐（功能不失效，只是没动画） */
@@ -710,7 +710,7 @@ export const FOLD_IFRAME_CSS = `
     display: inline-block;
     transform: rotate(0deg);
     transform-origin: 50% 50%;
-    transition: transform 180ms cubic-bezier(0.2, 0, 0.2, 1);
+    transition: transform 360ms cubic-bezier(0.2, 0, 0.2, 1);
   }
   [${FOLD_COLLAPSED_ATTR}="true"] .${FOLD_BTN_CLASS}::before { transform: rotate(-90deg); }
 

@@ -1326,12 +1326,12 @@ describe("v0.15.1 需求2：折叠动效 · CSS 关键声明", () => {
   it("PM 面：折叠 / 展开两个方向都有 height 与 opacity 过渡", () => {
     const css = readCss();
     // 展开方向（.ProseMirror > * 基态）
-    expect(css).toMatch(/\.ProseMirror > \*\s*\{[\s\S]*?height 220ms/);
-    expect(css).toMatch(/\.ProseMirror > \*\s*\{[\s\S]*?opacity 220ms/);
+    expect(css).toMatch(/\.ProseMirror > \*\s*\{[\s\S]*?height 440ms/);
+    expect(css).toMatch(/\.ProseMirror > \*\s*\{[\s\S]*?opacity 440ms/);
     // 折叠方向（.lmd-fold-hidden 自身）
     const hiddenRule = /\.ProseMirror \.lmd-fold-hidden\s*\{([\s\S]*?)\}/.exec(css)![1];
-    expect(hiddenRule).toMatch(/height 220ms/);
-    expect(hiddenRule).toMatch(/opacity 220ms/);
+    expect(hiddenRule).toMatch(/height 440ms/);
+    expect(hiddenRule).toMatch(/opacity 440ms/);
   });
 
   it("PM 面：overflow / visibility 用「0s 时长 + delay」做延迟翻转", () => {
@@ -1339,11 +1339,11 @@ describe("v0.15.1 需求2：折叠动效 · CSS 关键声明", () => {
     const hiddenRule = /\.ProseMirror \.lmd-fold-hidden\s*\{([\s\S]*?)\}/.exec(css)![1];
     // 折叠：立刻裁切、收完才隐藏
     expect(hiddenRule).toMatch(/overflow\s+0s\s+linear\s+0s/);
-    expect(hiddenRule).toMatch(/visibility\s+0s\s+linear\s+220ms/);
+    expect(hiddenRule).toMatch(/visibility\s+0s\s+linear\s+440ms/);
     // 展开（基态）：先保持裁切，长完再放开；立刻可见
     const baseRule = /\.ProseMirror > :not\([^{]*\{([\s\S]*?)\}/.exec(css);
     expect(baseRule, "缺少展开方向的 overflow/visibility 延迟规则").toBeTruthy();
-    expect(baseRule![1]).toMatch(/overflow\s+0s\s+linear\s+220ms/);
+    expect(baseRule![1]).toMatch(/overflow\s+0s\s+linear\s+440ms/);
     expect(baseRule![1]).toMatch(/visibility\s+0s\s+linear\s+0s/);
   });
 
@@ -1362,9 +1362,9 @@ describe("v0.15.1 需求2：折叠动效 · CSS 关键声明", () => {
       expect(css, `PM 面缺少「${label}」`).toContain(needle);
       expect(FOLD_IFRAME_CSS, `iframe 面缺少「${label}」`).toContain(needle);
     }
-    // 两面都必须声明 height 过渡时长一致（这里写死 220ms，两处同值）
-    expect(css).toContain("height 220ms");
-    expect(FOLD_IFRAME_CSS).toContain("height 220ms");
+    // 两面都必须声明 height 过渡时长一致（这里写死 440ms，两处同值）
+    expect(css).toContain("height 440ms");
+    expect(FOLD_IFRAME_CSS).toContain("height 440ms");
   });
 
   it("退化路径：不支持 allow-keywords 时退回 display:none（功能不失效）", () => {
@@ -1384,7 +1384,7 @@ describe("v0.15.1 需求2：折叠动效 · CSS 关键声明", () => {
     expect(css).not.toContain('content: "▾";\n}\n\n.ProseMirror .lmd-fold-toggle[aria-expanded');
     // 必须有 rotate 过渡声明
     expect(css).toMatch(/\.lmd-fold-toggle::before\s*\{[\s\S]*?transform:\s*rotate\(0deg\)/);
-    expect(css).toMatch(/transform\s+180ms/);
+    expect(css).toMatch(/transform\s+360ms/);
     // iframe 面同口径
     expect(FOLD_IFRAME_CSS).toContain('content: "▾"');
     expect(FOLD_IFRAME_CSS).not.toContain('content: "▸"');

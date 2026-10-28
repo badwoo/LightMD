@@ -24,8 +24,8 @@
  *    里的 transition 决定，因此折叠与展开方向必须各写一份。
  *    `height` 在展开态恒为 `auto`，计算值不变 → 打字、换行、块内容变化都不触发动画。
  * 3. `overflow` / `visibility` 用 **0s 时长 + delay** 做「延迟翻转」：
- *    - 折叠：`overflow 0s 0s`（立刻裁切）+ `visibility 0s 220ms`（收起后再隐藏）
- *    - 展开：`overflow 0s 220ms`（长完才放开裁切）+ `visibility 0s 0s`（立刻可见）
+ *    - 折叠：`overflow 0s 0s`（立刻裁切）+ `visibility 0s 440ms`（收起后再隐藏）
+ *    - 展开：`overflow 0s 440ms`（长完才放开裁切）+ `visibility 0s 0s`（立刻可见）
  *    时长 0 的过渡在 delay 结束时翻转取值，**不依赖** `transition-behavior:
  *    allow-discrete`（少一个特性依赖，退化面更小）。
  *
@@ -48,34 +48,34 @@
    → 打字、换行、块内容变化都不会触发动画。 */
 .ProseMirror > * {
   transition:
-    height 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    opacity 220ms ease,
-    margin-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    margin-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    padding-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    padding-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    border-top-width 220ms ease,
-    border-bottom-width 220ms ease;
+    height 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    opacity 440ms ease,
+    margin-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    margin-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    border-top-width 440ms ease,
+    border-bottom-width 440ms ease;
 }
 
 /* ── ② 普通块额外加「展开后放开裁切」的延迟翻转 ────────────────
    为什么排除四个 wrapper（代码块 / 图表 / 公式 / 表格）：它们 base 就是
    `overflow: hidden`，且 hover / 选中态会切到 `visible`（左侧手柄需要溢出可见，
-   见 editor.css 的 v0.12.0 返修）。若给它们也加 220ms 延迟的 overflow 过渡，
+   见 editor.css 的 v0.12.0 返修）。若给它们也加 440ms 延迟的 overflow 过渡，
    hover 时手柄会出现延迟 —— 真机可感知的回归。它们的展开本来就被 base 的
    `overflow: hidden` 裁切，不需要这一步。 */
 .ProseMirror > :not(.code-block-wrapper):not(.mermaid-block-wrapper):not(.math-block-wrapper):not(.table-wrapper) {
   transition:
-    height 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    opacity 220ms ease,
-    margin-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    margin-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    padding-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    padding-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    border-top-width 220ms ease,
-    border-bottom-width 220ms ease,
-    /* 展开：先保持裁切，等高度动画结束（220ms）再放开 */
-    overflow 0s linear 220ms,
+    height 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    opacity 440ms ease,
+    margin-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    margin-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    border-top-width 440ms ease,
+    border-bottom-width 440ms ease,
+    /* 展开：先保持裁切，等高度动画结束（440ms）再放开 */
+    overflow 0s linear 440ms,
     /* 展开：立刻可见，长高过程中就能看到内容 */
     visibility 0s linear 0s;
 }
@@ -107,16 +107,16 @@
   pointer-events: none;
   /* 折叠方向：overflow 立刻裁切；visibility 等高度动画走完再隐藏 */
   transition:
-    height 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    opacity 220ms ease,
-    margin-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    margin-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    padding-top 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    padding-bottom 220ms cubic-bezier(0.2, 0, 0.2, 1),
-    border-top-width 220ms ease,
-    border-bottom-width 220ms ease,
+    height 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    opacity 440ms ease,
+    margin-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    margin-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-top 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    padding-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1),
+    border-top-width 440ms ease,
+    border-bottom-width 440ms ease,
     overflow 0s linear 0s,
-    visibility 0s linear 220ms;
+    visibility 0s linear 440ms;
 }
 
 /* ── ④ 退化路径：不支持 `height: auto` 关键字插值的引擎 ──────────
@@ -196,7 +196,7 @@
   display: inline-block;
   transform: rotate(0deg);
   transform-origin: 50% 50%;
-  transition: transform 180ms cubic-bezier(0.2, 0, 0.2, 1);
+  transition: transform 360ms cubic-bezier(0.2, 0, 0.2, 1);
 }
 
 [data-lmd-fold-collapsed="true"] > .lmd-fold-toggle::before {

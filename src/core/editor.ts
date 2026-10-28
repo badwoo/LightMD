@@ -56,11 +56,104 @@ import { createReadingFoldPlugin, readingFold, type ReadingFoldController } from
 // v0.7.0：AI 续写幽灵文本装饰（meta 驱动，无回调依赖）
 import { aiGhostPlugin } from "./plugins/ai-ghost";
 
-// ─── 搜索高亮 Plugin（问题1修复）──────────────────────
-// 使用 ProseMirror Decoration 管理搜索高亮，不依赖编辑器焦点
-// 通过 tr.setMeta(searchHighlightKey, { from, to }) 更新高亮位置
-// 通过 tr.setMeta(searchHighlightKey, null) 清除高亮
+// ─── 搜索高亮 Plugin（问题1修复；v0.15.1 需求5 扩展为多区间 + 当前项）──────
+// 使用 ProseMirror Decoration 管理搜索高亮，不依赖编辑器焦点。
+//
+// v0.15.1 需求5（用户原话「只要搜索到那么所有内容都高亮，但点击上一个下一个
+// 定位到具体高亮内容时可以换个其他醒目的颜色」）：
+//   旧实现只能带**一个**区间 `{ from, to }`，所以必须点 ↑/↓ 才有一处高亮。
+//   现在 meta 升级为 `{ ranges: [{from,to}...], current: number }`（一次推全部命中），
+//   并拆成**两层 Decoration**（两个插件、两个 class）：
+//     · searchMatchesKey  → 全部命中，class `search-match`（常态淡黄）
+//     · searchHighlightKey→ 仅当前项，class `search-match-current`（醒目的橙红）
+//
+// 为什么拆两层而不是一层里给当前项换个 class：
+//   ① 既有测试契约按 `searchHighlightKey.getState(state).find()` 读「当前高亮覆盖的
+//      文本/区间」（v0140-search-undo-refresh 的多条断言就这么读），一层装全部命中
+//      会把 "cat" 读成 "cat | cat"。两层后该 key 仍然**只**含当前项，读取方式不变，
+//      断言无需弱化；
+//   ② 两层的 class 互不重叠，CSS 不会出现「后加载样式覆盖前一条」的层叠竞态。
+//
+// 高亮**绝不进 doc**：全部走 Decoration，不产生 tr.replace/insertText，
+// 因此不影响序列化、不进撤销栈（撤销栈只记录 doc 变更）。
+export interface SearchHighlightRange {
+  from: number;
+  to: number;
+}
+
+/** 搜索高亮 meta 载荷（兼容旧的单区间 `{ from, to }` 形状） */
+export interface SearchHighlightPayload {
+  ranges?: SearchHighlightRange[];
+  /** 当前项在 `ranges` 里的下标；-1 = 无当前项 */
+  current?: number;
+  /** @deprecated 旧形状：单个区间（等价于 ranges 只有一项） */
+  from?: number;
+  to?: number;
+}
+
+/** 全部命中的 class */
+const SEARCH_MATCH_CLASS = "search-match";
+/** 当前项的 class（与 SEARCH_MATCH_CLASS 刻意不重叠，见上方注释） */
+const SEARCH_MATCH_CURRENT_CLASS = "search-match-current";
+
+/**
+ * 归一化 meta 载荷 → `{ ranges, current }`。
+ *
+ * 兼容性：老的 `{ from, to }` 形状（没有任何调用方了，但保留避免第三方/测试代码
+ * 直接 setMeta 时静默失效）按"只有一项、当前项即它"处理；`null` / 非法值 → null（清除）。
+ */
+function normalizeSearchPayload(
+  meta: SearchHighlightPayload | null | undefined,
+): { ranges: SearchHighlightRange[]; current: number } | null {
+  if (meta === null || meta === undefined) return null;
+  let ranges: SearchHighlightRange[];
+  if (Array.isArray(meta.ranges)) {
+    ranges = meta.ranges.filter(
+      (r) => !!r && Number.isFinite(r.from) && Number.isFinite(r.to) && r.to > r.from,
+    );
+  } else if (typeof meta.from === "number" && typeof meta.to === "number" && meta.to > meta.from) {
+    ranges = [{ from: meta.from, to: meta.to }];
+  } else {
+    ranges = [];
+  }
+  if (ranges.length === 0) return null;
+  const current = typeof meta.current === "number" ? meta.current : 0;
+  return { ranges, current };
+}
+
+/**
+ * 由 meta 构建 DecorationSet。
+ * @param onlyCurrent true = 只渲染当前项（给 searchHighlightKey）；false = 渲染全部命中
+ */
+function buildSearchDecorations(
+  doc: PMNode,
+  meta: SearchHighlightPayload | null | undefined,
+  onlyCurrent: boolean,
+): DecorationSet {
+  const norm = normalizeSearchPayload(meta);
+  if (!norm) return DecorationSet.empty;
+  const size = doc.content.size;
+  const decos: Decoration[] = [];
+  const push = (from: number, to: number, cls: string) => {
+    const f = Math.max(0, Math.min(from, size));
+    const t = Math.max(0, Math.min(to, size));
+    if (t <= f) return;
+    decos.push(Decoration.inline(f, t, { class: cls }));
+  };
+  if (onlyCurrent) {
+    const r = norm.ranges[norm.current];
+    if (r) push(r.from, r.to, SEARCH_MATCH_CURRENT_CLASS);
+  } else {
+    for (const r of norm.ranges) push(r.from, r.to, SEARCH_MATCH_CLASS);
+  }
+  return decos.length ? DecorationSet.create(doc, decos) : DecorationSet.empty;
+}
+
+/** 当前项高亮（单区间，供既有测试/调用方按 `.find()` 读取"当前高亮"） */
 export const searchHighlightKey = new PluginKey<DecorationSet>("searchHighlight");
+/** 全部命中高亮（v0.15.1 需求5 新增） */
+export const searchMatchesKey = new PluginKey<DecorationSet>("searchMatches");
+
 const searchHighlightPlugin = new Plugin<DecorationSet>({
   key: searchHighlightKey,
   state: {
@@ -69,20 +162,33 @@ const searchHighlightPlugin = new Plugin<DecorationSet>({
     },
     apply(tr, old) {
       const meta = tr.getMeta(searchHighlightKey);
-      if (meta !== undefined) {
-        // null 表示清除高亮
-        if (meta === null) return DecorationSet.empty;
-        // { from, to } 表示设置高亮
-        const deco = Decoration.inline(meta.from, meta.to, { class: "search-highlight" });
-        return DecorationSet.create(tr.doc, [deco]);
-      }
+      if (meta !== undefined) return buildSearchDecorations(tr.doc, meta, true);
       // 文档变化时映射 decoration 位置
       return old.map(tr.mapping, tr.doc);
     },
   },
   props: {
     decorations(state) {
-      return searchHighlightKey.getState(state);
+      return searchHighlightKey.getState(state) ?? DecorationSet.empty;
+    },
+  },
+});
+
+const searchMatchesPlugin = new Plugin<DecorationSet>({
+  key: searchMatchesKey,
+  state: {
+    init() {
+      return DecorationSet.empty;
+    },
+    apply(tr, old) {
+      const meta = tr.getMeta(searchMatchesKey);
+      if (meta !== undefined) return buildSearchDecorations(tr.doc, meta, false);
+      return old.map(tr.mapping, tr.doc);
+    },
+  },
+  props: {
+    decorations(state) {
+      return searchMatchesKey.getState(state) ?? DecorationSet.empty;
     },
   },
 });
@@ -387,6 +493,8 @@ export function createEditor(options: EditorOptions): EditorView | null {
       // v0.11.0 B4-9：图片灯箱（仅阅读模式生效）
       imageLightboxPlugin(),
       searchHighlightPlugin,
+      // v0.15.1 需求5：全部命中高亮（与当前项分两层，见 searchMatchesKey 处注释）
+      searchMatchesPlugin,
       autoPairPlugin(),
       smartPastePlugin(),
       // v0.6.0：AI 翻译选区浮动按钮（未传回调时不注册；enabled getter 动态响应设置开关）

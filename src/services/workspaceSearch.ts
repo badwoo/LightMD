@@ -362,6 +362,18 @@ function rowFromHit(hit: WorkspaceHit, query: string, caseSensitive: boolean): S
     lineText: snippet,
     segments,
     ranges: [{ start: matchStart, end: matchEnd }],
+    /**
+     * ⚠️ 本行**不填** `hitOffsets`（逐处全文偏移），这是有意的。
+     *
+     * Rust 只给 `line`/`column`/`snippet`，**没有**全文偏移；而 snippet 是按命中处裁剪
+     * 过的摘要（可能带前后省略号），`matchStart` 只是 snippet 内坐标 —— 拿它冒充全文
+     * 偏移会让「就地跳转」落到完全无关的位置（比不跳更糟）。
+     *
+     * 所以工作区行只靠两条定位：
+     * 1. 跨文本空间 → `occurrence`（Rust 的文件级 0 基序号）+ 本行 `hitIndex`；
+     * 2. 同一文本空间 → `line`/`column`（Rust 每处命中一条 hit，`column` 是**逐处**的，
+     *    不像「打开的文件」那样一行一条、只给首处）。
+     */
     occurrence: hit.occurrence,
   };
 }

@@ -13,6 +13,7 @@
  * - 「范围」= 用户在「选取范围内」勾选瞬间捕获的文本区间 [start, end)，随替换增量平移。
  */
 import type { Node as PMNode } from "prosemirror-model";
+import { computeDocLine, computeBlockColumn } from "./cursorPosition";
 
 // ─── 基础类型 ─────────────────────────────────────────────
 
@@ -378,6 +379,14 @@ export function pmPosToTextOffset(blocks: OffsetBlock[], pmPos: number): number 
 export interface SearchLineSegment {
   text: string;
   match: boolean;
+  /**
+   * 该高亮段对应「本行第几处命中」（0 基，仅 `match === true` 时才有意义）。
+   *
+   * 为什么挂在段上：条幅一行一条、行内多处命中各自是一个 `<mark>`。用户点第 3 个
+   * `<mark>` 时要能跳到第 3 处，而 `segments` 是唯一按命中切好、且顺序稳定的结构
+   * （`ranges` 在超长行裁剪后会丢窗口外的项）。挂在这里就不必再反查下标。
+   */
+  hitIndex?: number;
 }
 
 /**
@@ -394,6 +403,9 @@ export interface SearchLineSegment {
  * - `segments`：按 `lineText` 切好的分段，`match=true` 的段渲染成 `<mark>`
  * - `ranges`：该行**所有**命中在原文该行内的偏移（不含裁剪）；需要原文全局偏移时
  *   用 `行首偏移 + ranges[i].start` 换算
+ * - `hitOffsets`：该行**每处**命中在**整篇文本**中的起始偏移（与 `ranges` 同序）。
+ *   跳转必须用它而不是行列：条幅是一行一条，同一行有 4 处命中时 `line`/`column`
+ *   只描述首处，用行列定位会让「点第 2/3/4 处」全部落回行首（实测症状）。
  */
 export interface SearchFileResult {
   fileKey: string;
@@ -406,6 +418,19 @@ export interface SearchFileResult {
   lineText: string;
   segments: SearchLineSegment[];
   ranges: MatchRange[];
+  /** 该行每处命中在整篇文本中的起始偏移（与 `ranges` 同序；磁盘命中可能缺省） */
+  hitOffsets?: number[];
+  /**
+   * **显示用**行号（与右下角状态栏同口径）。缺省 = 用 `line`。
+   *
+   * 为什么需要另一套（实测数据见 `pmLineColumnOfOffset` 的注释）：`line` 是"对某份文本
+   * 按 \n 数的行号"，而状态栏在阅读模式显示的是 PM **逻辑块**行号。两者在
+   * 「列表 / 表格 / 引用 / 有空行」的文档上会差好几行，用户对照两者就会认为行号是错的。
+   * 因此 `line` 继续用于跳转计算（它属于文本空间坐标），显示改用本字段。
+   */
+  statusLine?: number;
+  /** **显示用**列号（与状态栏同口径）；缺省 = 用 `column` */
+  statusColumn?: number;
   /**
    * 该行**首个**命中在本文件全部命中中的序号（0 基）。
    *
@@ -447,14 +472,24 @@ export interface CollectFileResults {
 /**
  * 把一行按命中区间切成「普通段 / 高亮段」。
  * 重叠区间（理论上不该出现）直接跳过后一个，避免同段文本被渲染两次。
+ *
+ * @param origins 可选：与 `ranges` 同序的「原始命中下标」（0 基，指该区间在本行**全部**
+ *   命中中的位置）。超长行裁剪会丢掉窗口外的区间，因此不能用 `ranges` 的下标当命中序号
+ *   ——那会让「点第 3 个 `<mark>`」跳到裁剪后的第 3 段（可能已是原文第 5 处）。
+ *   不传时按 `ranges` 下标回填（短行未裁剪时两者等价）。
  */
-function buildSegments(text: string, ranges: MatchRange[]): SearchLineSegment[] {
+function buildSegments(
+  text: string,
+  ranges: MatchRange[],
+  origins?: number[],
+): SearchLineSegment[] {
   const segments: SearchLineSegment[] = [];
   let cursor = 0;
-  for (const r of ranges) {
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
     if (r.start < cursor) continue;
     if (r.start > cursor) segments.push({ text: text.slice(cursor, r.start), match: false });
-    segments.push({ text: text.slice(r.start, r.end), match: true });
+    segments.push({ text: text.slice(r.start, r.end), match: true, hitIndex: origins?.[i] ?? i });
     cursor = r.end;
   }
   if (cursor < text.length) segments.push({ text: text.slice(cursor), match: false });
@@ -465,6 +500,8 @@ function buildSegments(text: string, ranges: MatchRange[]): SearchLineSegment[] 
 interface ClipResult {
   displayText: string;
   ranges: MatchRange[];
+  /** 与 `ranges` 同序：每个保留区间在**原始** ranges 里的下标 */
+  origins: number[];
   clippedHead: boolean;
 }
 
@@ -477,7 +514,12 @@ interface ClipResult {
 function clipLineInternal(lineText: string, ranges: MatchRange[], maxLen: number): ClipResult {
   const limit = Math.max(8, maxLen);
   if (lineText.length <= limit) {
-    return { displayText: lineText, ranges: ranges.map((r) => ({ ...r })), clippedHead: false };
+    return {
+      displayText: lineText,
+      ranges: ranges.map((r) => ({ ...r })),
+      origins: ranges.map((_, i) => i),
+      clippedHead: false,
+    };
   }
   const focus = ranges[0] ?? { start: 0, end: 0 };
   const matchLen = Math.max(1, focus.end - focus.start);
@@ -492,13 +534,19 @@ function clipLineInternal(lineText: string, ranges: MatchRange[], maxLen: number
   const tailMarker = clippedTail ? "…" : "";
   const displayText = `${headMarker}${lineText.slice(sliceStart, sliceEnd)}${tailMarker}`;
   const shift = (clippedHead ? 1 : 0) - sliceStart;
-  const mapped = ranges
-    .map((r) => ({
-      start: Math.max(0, Math.min(displayText.length, r.start + shift)),
-      end: Math.max(0, Math.min(displayText.length, r.end + shift)),
-    }))
-    .filter((r) => r.end > r.start);
-  return { displayText, ranges: mapped, clippedHead };
+  const mapped: MatchRange[] = [];
+  const origins: number[] = [];
+  // 用下标循环而不是 map+filter：filter 会把「原始命中下标」丢掉，而跳转必须知道
+  // 保留下来的这一段原本是行内第几处（否则「点第 2 个高亮」会跳到第 1 处）。
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    const start = Math.max(0, Math.min(displayText.length, r.start + shift));
+    const end = Math.max(0, Math.min(displayText.length, r.end + shift));
+    if (end <= start) continue;
+    mapped.push({ start, end });
+    origins.push(i);
+  }
+  return { displayText, ranges: mapped, origins, clippedHead };
 }
 
 /** 行裁剪结果（UI 可直接用：高亮偏移已是 displayText 内的坐标） */
@@ -616,8 +664,13 @@ export function collectFileResults(
       matchStart: first.start,
       matchEnd: first.end,
       lineText: clipped.displayText,
-      segments: buildSegments(clipped.displayText, clipped.ranges),
+      // origins 把「保留下来的显示段」映射回**行内原始命中下标**（裁剪会丢窗口外区间）
+      segments: buildSegments(clipped.displayText, clipped.ranges, clipped.origins),
       ranges: lineRanges,
+      // v0.15.1 需求4 续修：逐处命中的全文偏移。条幅一行一条，行的 line/column 只描述
+      // **首处**命中；没有这份偏移，用户点同一行里的第 2/3 处就只能落回行首
+      // （实测症状「每一处都跳到第一个搜索」）。
+      hitOffsets: lineRanges.map((r) => lineStart + r.start),
       occurrence: lineFirstOccurrence,
     });
   }
@@ -710,4 +763,63 @@ export function resolveJumpByOccurrence(
   if (ranges.length === 1) return ranges[0].start;
   // ③ 次序越界且有多处 → 不猜，交给调用方提示
   return null;
+}
+
+// ─── 与状态栏一致的行列口径（v0.15.1 需求4 续修）───────────────
+
+/**
+ * 把「PM 文本偏移」换成与**右下角状态栏完全相同**的 1 基行列。
+ *
+ * ## 为什么必须单独有这么一个函数（实测数据，见任务报告）
+ * 条幅行号来自 `collectFileResults` 对**某份文本**按 "\n" 数的行号；而状态栏在阅读
+ * 模式用的是 `computeDocLine` / `computeBlockColumn`（PM **逻辑块**口径，实现在
+ * utils/cursorPosition.ts）。两者在"看起来一样"的文档上就会分叉：
+ * ```
+ *   md = "- 第一项 foo\n- 第二项 foo\n- 第三项 foo"（无序列表）
+ *     banner 行号(按 \n 数)   = 2 / 3 / 4
+ *     状态栏行号(PM 逻辑块)    = 1 / 2 / 3      ← 一律差 1
+ *   md = "| a | b |\n| --- | --- |\n| foo | x |\n| y | foo |"（表格）
+ *     banner = 4 / 7      状态栏 = 2 / 3      ← 表格被摊成多个块
+ * ```
+ * 这就是用户报告的「搜索结果行号跟右下角显示的行列不一致」。CRLF 不是主因
+ * （实测 CRLF 与 LF 的条幅行列**完全一致**，因为 `collectFileResults` 先做了
+ * `normalizeNewlines`，且 `computeTextareaCursorPosition` 按 `\n` 数行、`\r` 不计入列宽）。
+ *
+ * ## 边界（调用方必须知道）
+ * 只有**当前文档且处于阅读模式**才算得出来（需要 PM doc）。未打开的文件、或源码模式下的
+ * 其他标签，只有源码行号可用 —— 那里状态栏显示的是源码行，两侧本来就同口径。
+ *
+ * @param doc 当前 PM 文档
+ * @param blocks `buildOffsetMap(doc).blocks`
+ * @param textOffset 该文本空间里的命中起始偏移
+ * @returns 1 基 `{line, column}`；无法映射（落在块间隙/越界）时返回 null
+ */
+export function pmLineColumnOfOffset(
+  doc: PMNode,
+  blocks: OffsetBlock[],
+  textOffset: number,
+): { line: number; column: number } | null {
+  const pmPos = lookupPmPos(blocks, textOffset);
+  if (pmPos === undefined) return null;
+  try {
+    return lineColumnOfPmPos(doc, pmPos);
+  } catch {
+    // pos 越界（文档刚被替换/销毁）→ 无法换算，调用方保留原行号
+    return null;
+  }
+}
+
+/**
+ * 由 PM 位置算 1 基行列，公式与 `core/editor.ts` 的 `onSelectionChange` **逐字一致**
+ * （同一个 `computeDocLine` / `computeBlockColumn`）。
+ *
+ * 单独留一个函数是为了让本文件不直接 import cursorPosition（避免纯函数层与
+ * "光标相关的 UI 语义"耦合）；两者的等价性由 `v0151` 的用例锁住。
+ */
+export function lineColumnOfPmPos(
+  doc: PMNode,
+  pmPos: number,
+): { line: number; column: number } {
+  const $pos = doc.resolve(pmPos);
+  return { line: computeDocLine($pos), column: computeBlockColumn($pos) };
 }

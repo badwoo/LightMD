@@ -829,6 +829,85 @@ describe("需求7 · blockGeometryFromLineAxis：从实测行轴还原块几何"
   });
 });
 
+// ═══════════ ⑪ 块间空隙：往返幂等（v0.15.1 需求3 第四次返修） ═══════════
+//
+// 真实阅读面每块都是元素 rect（高度**不含**外边距），块与块之间自然留有空隙；
+// 而源码面按实测行轴把「空行/margin」算进上一块的高度（块与块首尾相接）。
+// 于是"块内比例"在两套排版的空隙区间里不可比：`findBlockAtY` 把空隙里的比例钳到
+// 前一块的 1，空隙里那段真实偏移就被抹掉了。
+//
+// 实机后果（v0.15.1 探针，用户报"连续双击 Ctrl 后视野偏移"）：把视口停在段落空隙里
+// 再往返切换一次，阅读面 scrollTop 一次性跳 11px（不累积，但"切一下视野挪了一行"）。
+// 修法：采集/恢复改用「块顶 → 下一块顶」的**连续区域**取比例，空隙算进前一块的区域。
+describe("需求7 · 块间空隙：往返幂等（v0.15.1 需求3 第四次返修）", () => {
+  /** 模拟阅读面：块高 80、块间空隙 40（如段落 margin 塌陷后的间距） */
+  const GAPPED: BlockGeometry[] = [
+    { index: 0, top: 0, height: 80, visible: true },
+    { index: 1, top: 120, height: 80, visible: true },
+    { index: 2, top: 240, height: 80, visible: true },
+  ];
+  const G_VH = 100;
+  const G_CONTENT = 320;
+
+  it("中央落在空隙里：按区域取比例，同一几何往返**像素级**幂等", () => {
+    // 中央 = scrollTop + 50；取 scrollTop=50 → 中央 100（第 0 块 [0,80) 之后的空隙里）
+    const scrollTop = 50;
+    const anchor = captureContentAnchor(GAPPED, scrollTop, G_VH, { contentHeight: G_CONTENT })!;
+    expect(anchor.blockIndex).toBe(0);
+    // 区域 0 = [0,120)（本块 80 + 空隙 40）→ 比例 100/120，不再被钳成 1
+    expect(anchor.ratioWithinBlock).toBeCloseTo(100 / 120, 6);
+    const back = restoreContentAnchor(GAPPED, anchor, G_VH, { contentHeight: G_CONTENT })!;
+    expect(back).toBeCloseTo(scrollTop, 6);
+  });
+
+  it("中央落在块内：比例按整个区域归一（口径与源码面一致）", () => {
+    // 视口高 60、停在顶部 → 中央 30 → 区域 0 内 30/120
+    const anchor = captureContentAnchor(GAPPED, 0, 60, { contentHeight: G_CONTENT })!;
+    expect(anchor.blockIndex).toBe(0);
+    expect(anchor.ratioWithinBlock).toBeCloseTo(30 / 120, 6);
+  });
+
+  it("区域比例跨越排版仍单调：目标侧空隙更窄时落点不会被推过下一块", () => {
+    // 目标侧空隙更小（块 0 高 80、空隙只有 4px → 区域 0 = [0,84)）
+    const tightGap: BlockGeometry[] = [
+      { index: 0, top: 0, height: 80, visible: true },
+      { index: 1, top: 84, height: 80, visible: true },
+      { index: 2, top: 204, height: 80, visible: true },
+    ];
+    const anchor = captureContentAnchor(GAPPED, 50, G_VH, { contentHeight: G_CONTENT })!;
+    const got = restoreContentAnchor(tightGap, anchor, G_VH, { contentHeight: G_CONTENT })!;
+    // 比例 100/120 → 0 + (100/120)*84 = 70 → 70 − 50 = 20（仍落在块 0 区域里）
+    expect(got).toBeCloseTo((100 / 120) * 84 - G_VH / 2, 6);
+    expect(got).toBeLessThan(tightGap[1].top - G_VH / 2 + 1);
+  });
+
+  it("块被折叠改指祖先标题时按目标块自身区域换算（不套用旧块比例）", () => {
+    const withHiddenFirst: BlockGeometry[] = [
+      { index: 0, top: 0, height: 0, visible: false }, // 被折叠：不占空间
+      { index: 1, top: 100, height: 80, visible: true },
+      { index: 2, top: 220, height: 80, visible: true },
+    ];
+    const got = restoreContentAnchor(
+      withHiddenFirst,
+      // 目标块已不可见 → 只能落到最近可见块，比例按 ratio=0 落在块顶
+      { blockIndex: 0, ratioWithinBlock: 1 },
+      G_VH,
+      { contentHeight: G_CONTENT },
+    )!;
+    // 落到 index=1 的块顶：100 − 50 = 50
+    expect(got).toBeCloseTo(50, 6);
+  });
+
+  it("往返后视口中央仍是同一处的同一个比例关系（内容点不漂）", () => {
+    const scrollTop = 130; // 中央 180 → 第 1 块内部
+    const anchor = captureContentAnchor(GAPPED, scrollTop, G_VH, { contentHeight: G_CONTENT })!;
+    const back = restoreContentAnchor(GAPPED, anchor, G_VH, { contentHeight: G_CONTENT })!;
+    expect(back).toBeCloseTo(scrollTop, 6);
+    const now = centerOf(GAPPED, back, G_VH);
+    expect(now.block.index).toBe(anchor.blockIndex);
+  });
+});
+
 // ═══════════ ⑧ 纯函数纪律：无 React / 无 DOM 依赖（源码级门禁） ═══════════
 
 describe("需求7 · 纯函数纪律（读源码断言，防接线时被污染）", () => {

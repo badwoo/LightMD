@@ -25,7 +25,7 @@
  * 用法：node scripts/v0151-probe-mode-toggle-drift.mjs
  * 环境变量：
  *   V0151_PORT     CDP 端口（默认 9297）
- *   V0151_ROUNDS   切换轮数（默认 10，即 20 次双击 Ctrl）
+ *   V0151_ROUNDS   切换轮数（默认 20，即 40 次双击 Ctrl；用户实测"连续多次"要够长才能暴露累积）
  *   V0151_EXE      打包产物路径（默认 src-tauri/target/release/lightmd.exe）
  *
  * ⚠️ 探针必须跑**打包产物**（`npx tauri build --no-bundle`），只 `npx vite build` 时
@@ -39,7 +39,16 @@ import path from "node:path";
 
 const EXE = process.env.V0151_EXE || "D:\\AI\\markdown view\\lightmd\\src-tauri\\target\\release\\lightmd.exe";
 const PORT = Number(process.env.V0151_PORT || 9297);
-const ROUNDS = Number(process.env.V0151_ROUNDS || 10);
+const ROUNDS = Number(process.env.V0151_ROUNDS || 20);
+/**
+ * FAST=1：模拟用户**快速连按**双击 Ctrl（不等恢复链 0/60/160/400ms 跑完就切下一次）。
+ * 这是合成探针最容易漏掉的真实条件 —— 恢复窗口未收敛时下一次切换会拿"中间态几何"
+ * 当锚点，误差才会逐轮累积（慢速切换每轮都等稳态，自然测不出累积）。
+ */
+const FAST = process.env.V0151_FAST === "1";
+const WAIT_SETTLE_EDIT = FAST ? 180 : 950;
+const WAIT_SETTLE_READ = FAST ? 180 : 1100;
+const SAMPLE_TIMES = FAST ? [0, 40] : [0, 60, 160, 400];
 const OUT_DIR = "D:\\AI\\markdown view\\_verify-out";
 const OUT_TXT = path.join(OUT_DIR, "v0151-probe-mode-toggle-drift.txt");
 const OUT_JSON = path.join(OUT_DIR, "v0151-probe-mode-toggle-drift.json");
@@ -382,12 +391,44 @@ const main = async () => {
 
   try {
     // ── 1. 打开文档（默认阅读模式）──
-    await ev(`
-      window.dispatchEvent(new CustomEvent("lightmd:openFile", { detail: {
-        path: ${JSON.stringify(docFile)}, content: ${JSON.stringify(docText)} } }));
-      return true;
-    `);
-    await sleep(1600);
+    //
+    // ⚠️ 必须**重试直到文档真的装进编辑器**：应用刚启动时 App 的
+    // `lightmd:openFile` 监听器可能还没挂上（React effect 未跑完），
+    // 派发一次就没了 —— 探针随后测到的是"开始输入 Markdown…"欢迎空文档，
+    // 于是所有 scrollTop 恒为 0、漂移恒为 0，**看起来全 PASS 其实什么也没测**。
+    // （这个坑真实踩过：判定 8/8 PASS 但内容块是欢迎占位段落。）
+    // ⚠️ 校验用**渲染后的可见文本**，不能用 Markdown 原文前缀：
+    // PM 的 textContent 去掉了所有语法记号与空行（实测 "# T\n\n## 小节 0…" 在 DOM 里是
+    // "T小节 0正文 0…"），拿 "# T" 去 indexOf 永远匹配不到 → 会误判"文档没装入"。
+    // 这里取正文里稳定的一段中文（与语法无关），并去掉空白后比较。
+    // 文档实际结构是 "# 模式切换漂移取证" + 每节 "## 小节 N" + "第 i.j 段：…"。
+    // 取一个**必然出现在正文段落里**的稳定片段（与 Markdown 语法无关）。
+    const docProbe = JSON.stringify("第 5.1 段");
+    let loaded = false;
+    for (let attempt = 0; attempt < 25 && !loaded; attempt++) {
+      await ev(`
+        window.dispatchEvent(new CustomEvent("lightmd:openFile", { detail: {
+          path: ${JSON.stringify(docFile)}, content: ${JSON.stringify(docText)} } }));
+        return true;
+      `);
+      await sleep(600);
+      loaded = await ev(`
+        const sc = document.querySelector(".editor-container");
+        const pm = sc && sc.querySelector(".ProseMirror");
+        const want = ${docProbe};
+        if (!pm) return false;
+        const txt = (pm.textContent || "").replace(/\s+/g, "");
+        return txt.indexOf(String(want).replace(/\s+/g, "")) >= 0;
+      `);
+      if (!loaded) log(`  [probe] 文档尚未装入（第 ${attempt + 1} 次重试）…`);
+    }
+    if (!loaded) {
+      throw new Error(
+        "文档没能装进编辑器（25 次重试后仍是欢迎空文档）—— 本探针的判定会全部失真，必须中止而非报 PASS",
+      );
+    }
+    log("  [probe] 文档已装入编辑器");
+    await sleep(800);
 
     const setup = await ev(`
       const scroller = document.querySelector(".editor-container");
@@ -410,6 +451,24 @@ const main = async () => {
     `);
     await sleep(900);
 
+    // ── 诊断：编辑→阅读方向到底有没有采到「内容锚点」 ──
+    // 若 captureSourceContentAnchor 在 useLayoutEffect 里跑时 textarea 已 display:none，
+    // 则 clientWidth/clientHeight 为 0 → measureSourceLineAxis 返回 null → 锚点为 null
+    // → 该方向永远退回百分比 → 这就是"编辑面先漂、再传染阅读面"的根源。
+    const anchorDiag = await ev(`
+      const ta = document.querySelector("textarea.source-editor");
+      const scroller = document.querySelector(".editor-container");
+      return {
+        taClientW: ta ? ta.clientWidth : null,
+        taClientH: ta ? ta.clientHeight : null,
+        taExists: !!ta,
+        taDisplay: ta ? getComputedStyle(ta).display : null,
+        scrollerClientH: scroller ? scroller.clientHeight : null,
+        scrollerDisplay: scroller ? getComputedStyle(scroller).display : null,
+      };
+    `);
+    log("  [诊断] 当前（阅读模式）textarea 状况：" + JSON.stringify(anchorDiag));
+
     const baseline = await snap("baseline");
     log("");
     log("════════ 基线（阅读面 50%）════════");
@@ -420,25 +479,121 @@ const main = async () => {
       !!baseline.reader?.center?.text,
       JSON.stringify(baseline.reader?.center ?? null),
     );
+    // 探针前置条件：文档必须真的可滚动，否则"零漂移"是无意义的假绿灯
+    check(
+      "基线：文档已真正装入且可滚动（防止测到欢迎空文档导致假 PASS）",
+      (baseline.reader?.max ?? 0) > 200,
+      `scrollTop=${baseline.reader?.scrollTop} max=${baseline.reader?.max}`,
+    );
     const baseCenterText = baseline.reader?.center?.text ?? "";
     const baseCenterIndex = baseline.reader?.center?.index ?? -1;
 
+    // ── 2b. 任意滚动位置下的**往返幂等性**（用户是在任意位置切换的）──
+    // 用户报的是"连续多次切换后开始偏"。这里在 3 个不同位置各做 4 轮往返，
+    // 每轮都检查「回到同一位置时 scrollTop 是否与离开前一致」——这是真正的幂等判据，
+    // 而不是"从固定基线出发不累积"。
+    log("");
+    log("════════ 2b. 任意位置往返幂等性 ════════");
+    const idemChecks = [];
+    const traces = [];
+    for (const ratio of [0.2, 0.5, 0.8]) {
+      await ev(`
+        window.__LMD_SCROLL_TRACE = [];
+        const sc = document.querySelector(".editor-container");
+        sc.scrollTop = Math.round((sc.scrollHeight - sc.clientHeight) * ${ratio});
+        sc.dispatchEvent(new Event("scroll", { bubbles: false }));
+        return sc.scrollTop;
+      `);
+      await sleep(500);
+      const p0 = (await snap("pos-base")).reader?.scrollTop ?? NaN;
+      const seq = [p0];
+      const srcSeq = [];
+      for (let k = 0; k < 4; k++) {
+        await doubleCtrl(); await sleep(WAIT_SETTLE_EDIT);
+        const eSnap = await snap("pos-" + k + "-edit");
+        srcSeq.push(eSnap.source?.scrollTop ?? NaN);
+        await doubleCtrl(); await sleep(Math.max(WAIT_SETTLE_READ, 700));
+        seq.push((await snap("pos-" + k)).reader?.scrollTop ?? NaN);
+      }
+      const back = seq.slice(1);
+      const drift = back.map((v) => (Number.isFinite(v) ? v - p0 : NaN));
+      const maxAbs = Math.max(...drift.filter(Number.isFinite).map(Math.abs));
+      log(`  ratio=${ratio}  基线=${p0.toFixed(1)}  4 轮后序列=${seq.map((v) => (Number.isFinite(v) ? v.toFixed(1) : "n/a")).join(" → ")}`);
+      log(`            漂移=${drift.map((d) => (Number.isFinite(d) ? (d >= 0 ? "+" : "") + d.toFixed(1) : "n/a")).join(", ")}`);
+      log(`            编辑面 scrollTop=${srcSeq.map((v) => (Number.isFinite(v) ? v.toFixed(1) : "n/a")).join(" → ")}`);
+      const traceJson = await ev(`return JSON.stringify(window.__LMD_SCROLL_TRACE || []);`);
+      let trace = [];
+      try {
+        trace = JSON.parse(traceJson || "[]");
+      } catch {
+        trace = [];
+      }
+      traces.push({ ratio, p0, seq, srcSeq, trace });
+      // 精简打印：只打"锚点/恢复"的关键字段，便于直接看出哪一步在漂
+      for (const e of trace) {
+        log(
+          `     · ${e.event}  ` +
+            JSON.stringify(
+              Object.fromEntries(Object.entries(e).filter(([k]) => k !== "event" && k !== "t")),
+            ),
+        );
+      }
+      idemChecks.push({ ratio, p0, seq, srcSeq, maxAbs });
+    }
+    fs.writeFileSync(
+      path.join(OUT_DIR, "v0151-scroll-trace.json"),
+      JSON.stringify(traces, null, 2),
+      "utf-8",
+    );
+    const idemWorst = Math.max(...idemChecks.map((c) => (Number.isFinite(c.maxAbs) ? c.maxAbs : 0)));
+    check(
+      "任意滚动位置往返 4 次后 scrollTop 幂等（偏移 ≤ 2px，用户报的核心症状）",
+      idemWorst <= 2,
+      `三个位置的最大偏移 = ${idemWorst.toFixed(2)}px`,
+    );
+
     // ── 3. 连续 N 轮「双击 Ctrl 进编辑 → 双击 Ctrl 回阅读」──
+    await ev(`
+      const sc = document.querySelector(".editor-container");
+      sc.scrollTop = Math.round((sc.scrollHeight - sc.clientHeight) * 0.5);
+      sc.dispatchEvent(new Event("scroll", { bubbles: false }));
+      return sc.scrollTop;
+    `);
+    await sleep(500);
     const track = [];
     for (let r = 1; r <= ROUNDS; r++) {
       await doubleCtrl();
-      await sleep(950); // 进编辑模式（含右侧预览渲染）
+      // 时间序列采样：切换后的 0 / 60 / 160 / 400ms 各读一次（看"是谁在什么时候写的"）
+      const sampleTimes = SAMPLE_TIMES;
+      const editSeries = [];
+      let last = 0;
+      for (const t of sampleTimes) {
+        if (t > last) await sleep(t - last);
+        last = t;
+        const sn = await snap(`R${r}-edit-t${t}`);
+        editSeries.push({ t, scrollTop: sn.source?.scrollTop ?? null, center: sn.source?.center ?? null });
+      }
+      await sleep(FAST ? 60 : 400); // 让异步渲染彻底稳定后再取稳态
       const editSnap = await snap(`R${r}-edit`);
 
       await doubleCtrl();
-      await sleep(1100); // 回阅读模式（PM 布局 + 异步渲染）
+      const readSeries = [];
+      last = 0;
+      for (const t of sampleTimes) {
+        if (t > last) await sleep(t - last);
+        last = t;
+        const sn = await snap(`R${r}-read-t${t}`);
+        readSeries.push({ t, scrollTop: sn.reader?.scrollTop ?? null, center: sn.reader?.center ?? null });
+      }
+      await sleep(FAST ? 60 : 400);
       const readSnap = await snap(`R${r}-read`);
-      track.push({ round: r, edit: editSnap, read: readSnap });
+      track.push({ round: r, edit: editSnap, read: readSnap, editSeries, readSeries });
 
       log(
-        `  R${String(r).padStart(2)}  编辑: 源码中央行=${editSnap.source?.center?.line?.toFixed(1) ?? "n/a"}` +
+        `  R${String(r).padStart(2)}  编辑: ta.scrollTop=${(editSnap.source?.scrollTop ?? NaN).toFixed(1)}` +
+          ` 中央行=${editSnap.source?.center?.line?.toFixed(1) ?? "n/a"}` +
           ` ${JSON.stringify(editSnap.source?.center?.text ?? "")}` +
-          `  →  阅读: scrollTop=${readSnap.reader?.scrollTop?.toFixed(1)}` +
+          `  →  阅读: scrollTop=${(readSnap.reader?.scrollTop ?? NaN).toFixed(1)}` +
           ` 中央块=${readSnap.reader?.center?.index}` +
           ` ${JSON.stringify(readSnap.reader?.center?.text ?? "")}`,
       );
@@ -447,6 +602,7 @@ const main = async () => {
     // ── 4. 判定 ──
     log("");
     log("════════ 判定 ════════");
+    log(`  模式：${FAST ? "FAST（快速连按，不等恢复收敛）" : "慢速（每轮等稳态）"}`);
     const reads = track.map((t) => t.read);
     const tops = reads.map((r) => r.reader?.scrollTop ?? NaN);
     const centers = reads.map((r) => r.reader?.center?.text ?? "");
@@ -455,6 +611,38 @@ const main = async () => {
     log(`  阅读面 scrollTop 序列：${tops.map((v) => (Number.isFinite(v) ? v.toFixed(1) : "n/a")).join(" → ")}`);
     const baseTop = baseline.reader?.scrollTop ?? 0;
     const drift = tops.map((v) => (Number.isFinite(v) ? v - baseTop : NaN));
+
+    // ── 编辑面（textarea）稳态漂移：用户报"先漂的是编辑模式" ──
+    const editTops = track.map((t) => t.edit?.source?.scrollTop ?? NaN);
+    const baseEditTop = track[0]?.edit?.source?.scrollTop ?? NaN;
+    const editDrift = editTops.map((v) => (Number.isFinite(v) ? v - baseEditTop : NaN));
+    log(`  编辑面 ta.scrollTop 序列：${editTops.map((v) => (Number.isFinite(v) ? v.toFixed(1) : "n/a")).join(" → ")}`);
+    log(`  编辑面相对第 1 轮漂移：${editDrift.map((d) => (Number.isFinite(d) ? (d >= 0 ? "+" : "") + d.toFixed(1) : "n/a")).join(", ")}`);
+
+    const finiteEditDrift = editDrift.filter((d) => Number.isFinite(d));
+    const maxAbsEditDrift = finiteEditDrift.length ? Math.max(...finiteEditDrift.map(Math.abs)) : NaN;
+    const netEditDrift = finiteEditDrift.length ? finiteEditDrift[finiteEditDrift.length - 1] : NaN;
+
+    // 编辑面单调同向累积
+    let editMonotone = 0;
+    for (let i = 1; i < editTops.length; i++) {
+      const step = editTops[i] - editTops[i - 1];
+      if (Number.isFinite(step) && Math.abs(step) > 0.5) {
+        if (editMonotone === 0) editMonotone = Math.sign(step) > 0 ? 1 : -1;
+        else if (Math.sign(step) !== editMonotone) editMonotone = 999;
+      }
+    }
+
+    // 时间序列：每轮切换后 4 个时刻的写入幅度（诊断"谁在什么时候写"）
+    const seriesWidth = (arr, field) => {
+      const vals = arr.map((x) => (x[field] == null ? NaN : Number(x[field]))).filter(Number.isFinite);
+      if (vals.length < 2) return NaN;
+      return Math.max(...vals) - Math.min(...vals);
+    };
+    const editWriteSpan = track.map((t) => seriesWidth(t.editSeries ?? [], "scrollTop"));
+    const readWriteSpan = track.map((t) => seriesWidth(t.readSeries ?? [], "scrollTop"));
+    log(`  编辑面切换窗口内写入幅度（max-min，4 时刻）：${editWriteSpan.map((v) => (Number.isFinite(v) ? v.toFixed(1) : "n/a")).join(", ")}`);
+    log(`  阅读面切换窗口内写入幅度（max-min，4 时刻）：${readWriteSpan.map((v) => (Number.isFinite(v) ? v.toFixed(1) : "n/a")).join(", ")}`);
     log(`  相对基线漂移：${drift.map((d) => (Number.isFinite(d) ? (d >= 0 ? "+" : "") + d.toFixed(1) : "n/a")).join(", ")}`);
 
     const finiteDrift = drift.filter((d) => Number.isFinite(d));
@@ -501,6 +689,26 @@ const main = async () => {
         return st > 1 && st < max - 1;
       }),
       reads.map((r) => `${r.reader?.scrollTop?.toFixed(0)}/${r.reader?.max?.toFixed(0)}`).join(" "),
+    );
+
+    check(
+      `编辑面（textarea）反复切换 ${ROUNDS} 轮不得有单调同向累积`,
+      editMonotone !== 1 && editMonotone !== -1,
+      editMonotone === 999
+        ? "方向不一致"
+        : editMonotone === 0
+          ? "无显著步进"
+          : `同向累积，最大偏移=${Number.isFinite(maxAbsEditDrift) ? maxAbsEditDrift.toFixed(2) : "n/a"}px，净偏移=${Number.isFinite(netEditDrift) ? netEditDrift.toFixed(2) : "n/a"}px`,
+    );
+    check(
+      `编辑面 scrollTop 净漂移 ≤ 2px（对照用户"编辑模式先开始细微偏移"）`,
+      Number.isFinite(netEditDrift) && Math.abs(netEditDrift) <= 2,
+      `净偏移=${Number.isFinite(netEditDrift) ? netEditDrift.toFixed(2) : "n/a"}px，最大=${Number.isFinite(maxAbsEditDrift) ? maxAbsEditDrift.toFixed(2) : "n/a"}px`,
+    );
+    check(
+      `阅读面 scrollTop 净漂移 ≤ 2px（不允许被编辑面传导）`,
+      Number.isFinite(netDrift) && Math.abs(netDrift) <= 2,
+      `净偏移=${Number.isFinite(netDrift) ? netDrift.toFixed(2) : "n/a"}px，最大=${Number.isFinite(maxAbsDrift) ? maxAbsDrift.toFixed(2) : "n/a"}px`,
     );
 
     const failed = checks.filter((c) => !c.ok).length;
