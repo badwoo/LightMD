@@ -641,7 +641,9 @@ export const FOLD_IFRAME_CSS = `
   /* 插值开关（Chromium 129+）：让 height:auto ↔ 0 可过渡 */
   html { interpolate-size: allow-keywords; }
 
-  /* ① 展开方向：所有正文块的高度 / 透明度 / 间距过渡 */
+  /* ① 展开方向：所有正文块的高度 / 透明度 / 间距过渡
+     ⚠️ v0.15.2 需求2：这里**不要**写 max-height 过渡（展开态两个终值都是 none，
+     没有变化可插值；写了纯属噪音，还会误导后来者以为折起靠 max-height 收）。 */
   body > * {
     transition:
       height 440ms cubic-bezier(0.2, 0, 0.2, 1),
@@ -652,12 +654,17 @@ export const FOLD_IFRAME_CSS = `
       padding-bottom 440ms cubic-bezier(0.2, 0, 0.2, 1);
   }
 
-  /* ② 折叠方向：高度收起 + 立刻裁切 + 收完再隐藏 */
+  /* ② 折叠方向：高度收起 + 立刻裁切 + 收完再隐藏
+     ⚠️⚠️ v0.15.2 需求2（主因，反事实 C4/C5 证实）：折叠态**绝对不能**声明
+     \`max-height: 0\`。展开态没有 max-height（= none），\`none → 0\` **不可插值**，
+     即使列进 transition 也不会被插值（浏览器按离散属性处理，第一帧取终值）——
+     而 max-height 是 height 的上限，于是 height:auto→0 的过渡第一帧就被钳死
+     （实测 t90=1.4~2.6ms，观感"折起瞬间完成"；展开方向不受钳制所以正常）。
+     正确做法：**彻底不写 max-height / min-height**，靠 height:0 + overflow:hidden 收起
+     （反事实 C5：删掉后 t90=261.9ms，恢复平滑）。 */
   .${FOLD_HIDDEN_CLASS} {
     box-sizing: border-box !important;
     height: 0 !important;
-    min-height: 0 !important;
-    max-height: 0 !important;
     margin-top: 0 !important;
     margin-bottom: 0 !important;
     padding-top: 0 !important;
@@ -668,6 +675,7 @@ export const FOLD_IFRAME_CSS = `
     visibility: hidden !important;
     opacity: 0;
     pointer-events: none;
+    /* ⚠️ 不允许出现 max-height / min-height（见上） */
     transition:
       height 440ms cubic-bezier(0.2, 0, 0.2, 1),
       opacity 440ms ease,

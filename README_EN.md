@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.15.1**
+**Current Version: v0.15.2**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -348,10 +348,10 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.15.1 installers:
+Visit the [Releases](../../releases) page to download the 0.15.2 installers:
 
-- **`LightMD_0.15.1_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.15.1_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.15.2_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.15.2_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -402,6 +402,21 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.15.2 (2026-10-28)
+
+**Polish release — slide animation when switching reading ↔ edit mode, plus a fix for “fold animation is too fast when collapsing”.**
+
+| Request | Feedback | Implementation |
+| --- | --- | --- |
+| Mode-switch slide | “Add a sliding effect when switching between reading and edit mode so the switch is less jarring. Reading → Edit: the edit panes slide in from the left; Edit → Reading: the document slides back from the right.” | New `modeSwitchSlide.css`: only the **incoming** surface animates, with a mirrored **380 ms** translation — entering edit mode the source pane *and* the preview pane together go `translateX(-100%) → 0` (slide in from the left); returning to reading the document goes `translateX(+100%) → 0` (slide in from the right). It only animates `transform` (never `width/height/scrollTop`), so the content-anchor scroll alignment fixed in v0.15.1 is untouched. The internal “preview open” width transition is suppressed for the animation window so the two don’t fight; a generation token keeps rapid toggling idempotent; `prefers-reduced-motion` disables the slide |
+| Fold animation too fast | “Heading folding still has a small flaw, same as the sidebar folder expand/collapse: **collapsing is too fast**, while the expanding duration is what I want.” | **Two independent causes.** ① **Primary**: the collapsed state declared `max-height: 0` — `none → 0` is not interpolable, so even listing it in `transition` does nothing, and since `max-height` caps `height` the `height: auto → 0` transition was clamped on the very first frame (measured collapse t90 = **2.2 ms** vs expand 260 ms) → **removed** `max-height`/`min-height` entirely; `height: 0 + overflow: hidden` is enough to collapse. ② **Secondary**: the expanded base rule used a `:not(.a):not(.b):not(.c):not(.d)` chain whose specificity is (0,5,0), beating the collapsed rule at (0,2,0), so `visibility` flipped immediately on collapse → changed to `:not(:where(...))` which drops it to (0,1,0). After the fix: collapse t90 **266.9 ms** ≈ expand **267.2 ms** (ratio **1.00**), `visibility` deferred to 447 ms, identical on the PM reading surface and the iframe preview |
+
+Verification: `tsc --noEmit` exit 0 (strict); **339 test files / 6199 cases all pass** (v0.15.1 baseline 6190, +9); real-machine probes: mode-switch slide **22/22 PASS**, fold timing **22/22 PASS** (including five counterfactuals that prove causality), double-Ctrl scroll drift still **0.00 px**; versions = **0.15.2** in all four files.
+
+Known trade-offs: (1) only the incoming surface animates — the two mode surfaces are mutually exclusive, the outgoing one is already invisible at commit time and mounting both would break anchor capture; (2) the internal preview width transition is briefly disabled during the slide (restored automatically); (3) the fold animation still needs `interpolate-size` and degrades to instant show/hide without it; (4) both animations are skipped under `prefers-reduced-motion` (functionality unaffected).
+
+---
 
 ### v0.15.1 (2026-10-28)
 

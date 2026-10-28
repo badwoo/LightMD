@@ -1,0 +1,118 @@
+/**
+ * v0.15.2 需求1：阅读 ↔ 编辑模式切换的**滑入**动画。
+ *
+ * 用户原话：「增加阅读模式和编辑模式切换时的一个滑动效果，让模式切换时文档显得不那么
+ * 突兀。当阅读模式切换到编辑模式时，编辑模式的左右屏有一个顺滑的**由左往右滑过来**的
+ * 动画，而从编辑模式切换为阅读模式时，动画效果则为文档**从右往左滑回**的。」
+ *
+ * ## 落地方案：只让**进场的那一面**做平移，方向随目标模式取反
+ *
+ * | 切换方向 | 进场的那一面 | 位移 | 对应原话 |
+ * |---|---|---|---|
+ * | 阅读 → 编辑 | 编辑区（`.source-editor-wrapper` 左栏 + `.split-preview-shell` 右屏） | `translateX(-100%) → 0`（从左滑到最终位置） | 「左右屏由左往右滑过来」 |
+ * | 编辑 → 阅读 | 阅读面（`.editor-container` / `.plaintext-preview`） | `translateX(+100%) → 0`（从右滑到最终位置） | 「文档从右往左滑回」 |
+ *
+ * 两者互为镜像：去程整体"向右推开"，回程整体"向左滑回"。这比"两个方向都用同一个
+ * 位移"更符合用户的直述，也不会出现"回去的时候还是从左边冒出来"的错位感。
+ *
+ * ## 为什么只动进场、不动退场
+ * 两个模式面在 React 里是**互斥**的（`.editor-container` 用 `display:none` 隐藏，
+ * 编辑区同理），退场的那一面在提交时就已不可见，没有可动画的载体。若为了退场动画
+ * 把两面同时挂载，会同时满足"阅读面可见"与"编辑面可见"——而本项目整套滚动锚点
+ * （`captureReaderContentAnchor` / `captureSourceContentAnchor`）正是靠
+ * `clientHeight > 0` 判断"哪一面是可见面"的，双面同时可见会让锚点采集取错面。
+ * 代价（退场瞬切）在 380ms 的进场位移下观感上被完全覆盖，且用户描述也只提进场方向。
+ *
+ * ## 为什么用 `transform`（不是 width / margin / left）
+ * - 只触发合成（composite），不触发布局 → 长文档上不掉帧；
+ * - **不改 `clientWidth` / `clientHeight` / `scrollHeight` / `scrollTop`**，
+ *   而本项目的内容锚点链路（`contentScrollMap.collectPmBlockGeometry`、
+ *   `measureSourceLineAxis`、`measureOffsetViewportY`）读的都是这些布局值、
+ *   或 rect 之间的**相对差**（父级整体平移时 `rect.top - scrollerRect.top` 恰好抵消）。
+ *   因此动画窗口内发生的滚动恢复不会因为"正在位移"而偏差 —— 这点由
+ *   `scripts/v0152-probe-mode-slide.mjs` 实机复验（动画期间 0 漂移）。
+ *
+ * ## 与「预览开合」那套 0.42s 宽度过渡的关系（必须互相让路）
+ * 进入编辑模式时右侧预览会**同时被打开**，它自带 0.42s 宽度过渡。两套动画同帧起跑
+ * 会互相冲淡（一半在横移、一半在长宽），观感更乱。所以动画窗口内给编辑区内部
+ * **临时关掉宽度过渡**，让这一段只呈现一次干净的平移；窗口结束（JS 移除属性）
+ * 宽度过渡自动恢复，之后再开合预览仍是原来那套顺滑动画。
+ *
+ * ## 幂等 / 竞态
+ * 快速连按（双击 Ctrl 连切）时上一轮的收尾定时器必须作废，否则会把新一轮动画腰斩。
+ * JS 侧用自增 token 管理（旧 token 到期直接返回），与 v0.15.1 滚动恢复的"代际"同套路。
+ *
+ * ## 无障碍
+ * `prefers-reduced-motion: reduce` 时完全不位移（模式照常切换）。
+ */
+
+/* ── 时长/曲线（与 TS 侧 `MODE_SLIDE_MS` 严格一致；单测锁死两者相等）── */
+:root {
+  --lmd-mode-slide-duration: 380ms;
+  --lmd-mode-slide-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* ── 阅读 → 编辑：编辑区从左滑入 ───────────────────────────── */
+.editor-main-area[data-lmd-mode-anim="to-edit"] > .source-editor-wrapper,
+.editor-main-area[data-lmd-mode-anim="to-edit"] > .split-preview-shell {
+  animation: lmd-mode-slide-in-from-left var(--lmd-mode-slide-duration) var(--lmd-mode-slide-ease) both;
+  will-change: transform;
+}
+
+/* ── 编辑 → 阅读：文档从右滑回 ─────────────────────────────── */
+.editor-main-area[data-lmd-mode-anim="to-preview"] > .editor-container,
+.editor-main-area[data-lmd-mode-anim="to-preview"] > .plaintext-preview {
+  animation: lmd-mode-slide-in-from-right var(--lmd-mode-slide-duration) var(--lmd-mode-slide-ease) both;
+  will-change: transform;
+}
+
+@keyframes lmd-mode-slide-in-from-left {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes lmd-mode-slide-in-from-right {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+/* ── 动画期间的基础色：进场面从屏外滑入，先铺底色避免"露出空白/闪白"── */
+.editor-main-area[data-lmd-mode-anim] {
+  background: var(--bg-primary);
+}
+
+/* ── 动画期间临时屏蔽编辑区内部的宽度过渡（见文件头"互相让路"）────
+   v0.14.0 需求1/3 的 0.42s 宽度过渡在这三个元素上。 */
+.editor-main-area[data-lmd-mode-anim] > .source-editor-wrapper,
+.editor-main-area[data-lmd-mode-anim] > .split-preview-shell,
+.editor-main-area[data-lmd-mode-anim] > .split-divider {
+  transition: none !important;
+}
+
+/* ── 动画期间裁掉进场面滑出容器外的部分 ────────────────────────
+   `.editor-main-area` 本身已是 `overflow: hidden`（见 editor.css），但进场面在位移
+   过程中会先落在容器左右边界外，这里补一层裁切，避免任何主题下露出残影。
+   `contain: paint` 只是绘制隔离，不改布局（不影响锚点测量）。 */
+.editor-main-area[data-lmd-mode-anim] > .source-editor-wrapper,
+.editor-main-area[data-lmd-mode-anim] > .split-preview-shell,
+.editor-main-area[data-lmd-mode-anim] > .editor-container,
+.editor-main-area[data-lmd-mode-anim] > .plaintext-preview {
+  contain: paint;
+  overflow: hidden;
+}
+
+/* ── 减少动效偏好：不位移（模式照常切换）─────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .editor-main-area[data-lmd-mode-anim="to-edit"] > .source-editor-wrapper,
+  .editor-main-area[data-lmd-mode-anim="to-edit"] > .split-preview-shell,
+  .editor-main-area[data-lmd-mode-anim="to-preview"] > .editor-container,
+  .editor-main-area[data-lmd-mode-anim="to-preview"] > .plaintext-preview {
+    animation: none;
+  }
+  .editor-main-area[data-lmd-mode-anim] > .source-editor-wrapper,
+  .editor-main-area[data-lmd-mode-anim] > .split-preview-shell,
+  .editor-main-area[data-lmd-mode-anim] > .editor-container,
+  .editor-main-area[data-lmd-mode-anim] > .plaintext-preview {
+    contain: none;
+  }
+}

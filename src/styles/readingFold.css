@@ -63,8 +63,26 @@
    `overflow: hidden`，且 hover / 选中态会切到 `visible`（左侧手柄需要溢出可见，
    见 editor.css 的 v0.12.0 返修）。若给它们也加 440ms 延迟的 overflow 过渡，
    hover 时手柄会出现延迟 —— 真机可感知的回归。它们的展开本来就被 base 的
-   `overflow: hidden` 裁切，不需要这一步。 */
-.ProseMirror > :not(.code-block-wrapper):not(.mermaid-block-wrapper):not(.math-block-wrapper):not(.table-wrapper) {
+   `overflow: hidden` 裁切，不需要这一步。
+
+   ⚠️⚠️ v0.15.2 需求2（用户：「折起来的动画太快，展开的时间符合要求」）——**两个独立原因**，
+   实机帧采样（`scripts/v0152-probe-fold-timing.mjs`）逐个证实：
+
+   **次因（本规则的选择器写法）**：旧写法 `:not(.a):not(.b):not(.c):not(.d)` 的特异性是
+   （0,5,0）—— `:not()` 会把**参数的特异性计入**，四个类 = 4，加上 `.ProseMirror` 的 1；
+   而折叠态规则 ③ `.ProseMirror .lmd-fold-hidden` 只有（0,2,0）。于是折起时 ② 反而压过 ③，
+   实际生效的是 ② 的 `visibility 0s linear 0s` → 内容第一帧就变 invisible。
+   `:where()` 特异性恒为 0，本规则降到（0,1,0）：仍压过 ①（同分靠源码顺序），
+   但输给 ③ 的（0,2,0）→ 折起正确采用 ③ 的 `visibility 0s linear 440ms`。
+   （iframe 面 ① 是 `body > *`（0,0,1），折叠规则（0,1,0）本来就赢，所以它没有这个次因。）
+
+   **主因（③ 里的 `max-height: 0`）**：`max-height` 不参与过渡时**瞬间生效**，而它是
+   `height` 的上限 → 第一帧就把 `height: auto→0` 的过渡钳死（实测折起 t90=2.2ms，第 0 帧
+   就到终值；展开方向 `max-height` 恢复 none 不受钳制，所以能走满 440ms —— 这正是
+   "折起快、展开正常"）。修法：③ 把 `max-height` 一起写进 transition，本规则（展开方向）
+   也声明 `max-height`，两头对称。
+   反事实已验证：只解 `max-height` → 折起 t90 2ms→266ms；两条都改 → 折起 273ms / 展开 268ms。 */
+.ProseMirror > *:not(:where(.code-block-wrapper, .mermaid-block-wrapper, .math-block-wrapper, .table-wrapper)) {
   transition:
     height 440ms cubic-bezier(0.2, 0, 0.2, 1),
     opacity 440ms ease,
@@ -79,19 +97,37 @@
     /* 展开：立刻可见，长高过程中就能看到内容 */
     visibility 0s linear 0s;
 }
+/* ⚠️ 展开方向**不要**声明 `max-height` 过渡：两个终态都是 `none`，没有变化可插值，
+   写了纯属噪音（且会误导后来者以为"折起也要靠 max-height 收"，那是错的 —— 见 ③）。 */
 
 /* ── ③ 被折叠的顶层块：高度收起 + 裁切 + 不可见 ────────────────
    全部 `!important` 是必要的：被折叠的块里可能有内联
    `style="display/height/..."` 的原始 HTML / 图片包裹（htmlBlockDisabled
    已转义大部分，但表格合并等路径会带样式），普通特异性不足以稳定压住。
    `box-sizing: border-box` 保证 padding/border 不再撑出高度（下面也已归零）。
-   ⚠️ 本规则的 transition 必须排在 ①② 之后：选择器特异性与 ② 相同（0,2,0），
-   靠源码顺序取胜（折叠方向要用 `overflow 0s 0s` 立刻裁切）。 */
+   ⚠️ 本规则的 transition **必须能压过 ②**：v0.15.2 起 ② 已改用 `:not(:where(...))`
+   降到（0,1,0），本规则（0,2,0）稳定胜出；若将来有人把 ② 改回 `:not(类)` 链
+   （0,5,0），折起会重新变成"内容瞬间消失、只剩空白在收"。见 ② 的注释。
+
+   ⚠️⚠️ v0.15.2 需求2 的**主因**（实机帧采样 + 反事实 C4/C5 证实，别再踩）：
+   折叠态**绝对不能**声明 `max-height: 0`。
+
+   机制：展开态没有 `max-height` 声明 → 计算值是 `none`；`none → 0` **不可插值**。
+   不可插值的属性即使**列进 `transition` 也不会被插值**（浏览器按离散属性处理，
+   第一帧直接取终值）。而 `max-height` 是 `height` 的上限 → 第一帧就被钳到 0，
+   `height: auto → 0` 的过渡整体失效（实测折起 t90 = 2.2ms，即第 0 帧到终值）。
+   展开方向没有 `.lmd-fold-hidden`、不受钳制，所以能走满 440ms —— 这正是用户说的
+   "折起来太快、展开时间符合要求"。
+
+   ⚠️ 关键教训（我第一版修错的地方）：**把 `max-height` 写进 transition 是无效的** ——
+   起点 `none` 不可插值，写了也等于没写（反事实 C4：`max-height:0` + 列进 transition
+   → t90 仍 1.6ms）。正确做法是**彻底不声明 `max-height`**（反事实 C5：删掉后
+   t90 = 261.9ms，恢复平滑）。收起高度靠 `height: 0 + overflow: hidden` 已经足够。
+   `min-height: 0` 同理删除（也是不可插值，且 `height` 已定死高度）。
+   （`box-sizing/padding/border` 归零仍保留：那些是**可插值**的数值属性。） */
 .ProseMirror .lmd-fold-hidden {
   box-sizing: border-box !important;
   height: 0 !important;
-  min-height: 0 !important;
-  max-height: 0 !important;
   margin-top: 0 !important;
   margin-bottom: 0 !important;
   padding-top: 0 !important;
@@ -105,7 +141,8 @@
   visibility: hidden !important;
   opacity: 0;
   pointer-events: none;
-  /* 折叠方向：overflow 立刻裁切；visibility 等高度动画走完再隐藏 */
+  /* 折叠方向：overflow 立刻裁切；visibility 等高度动画走完再隐藏。
+     ⚠️ 这里**不允许**出现 max-height / min-height（见上方注释：不可插值 → 钳死 height）。 */
   transition:
     height 440ms cubic-bezier(0.2, 0, 0.2, 1),
     opacity 440ms ease,

@@ -280,6 +280,8 @@ import { createIframeFoldBridge, readingFold } from "./readingFold";import { cre
 import { setHostUndoRedo } from "../../core/keymap";
 import type { SearchableFile } from "./SearchReplace";
 import "../../styles/editor.css";
+// v0.15.2 需求1：阅读 ↔ 编辑模式切换的滑入动画（独立文件，避免动 editor.css 热点）
+import "../../styles/modeSwitchSlide.css";
 
 /**
  * v0.11.0 B4-9 返修 / v0.13.2 需求10：阅读模式点击图片时的**接管判定**。
@@ -497,6 +499,18 @@ export const SCROLL_RESTORE_MAX_RETRIES = 24;
  * 400ms 足够覆盖，又不至于让用户主动滚动被误判成恢复）。
  */
 export const SCROLL_RESTORE_GUARD_MS = 400;
+
+/**
+ * v0.15.2 需求1：模式切换滑入动画时长（ms）。
+ *
+ * ⚠️ 必须与 `src/styles/modeSwitchSlide.css` 的 `--lmd-mode-slide-duration` 相等，
+ * 否则 JS 会在动画还没播完时就移除 `data-lmd-mode-anim` → 动画被腰斩（画面"跳"一下）。
+ * 由单测锁死两者一致（`v0152-mode-slide.test.ts`）。
+ *
+ * 取 380ms 的理由：要"顺滑、不突兀"，但也不能拖到影响操作节奏；参考本应用既有的
+ * 预览开合 420ms（那是宽度变化，观感更慢），位移类动画 380ms 已有足够缓冲。
+ */
+export const MODE_SLIDE_MS = 380;
 
 /**
  * v0.15.1 需求3（第四次返修）：模式切换滚动链路的**诊断埋点**（无副作用、默认关闭）。
@@ -1054,6 +1068,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * 只让**第一次**（textarea 仍可见那一帧）生效。
    */
   const anchorCapturedForModeRef = useRef<string | null>(null);
+  /**
+   * v0.15.2 需求1：模式切换滑入动画的**方向**（null = 不播）。
+   *
+   * 值直接写进 `.editor-main-area` 的 `data-lmd-mode-anim`，由
+   * `styles/modeSwitchSlide.css` 按方向选择 keyframes：
+   * - `"to-edit"`：编辑区（左栏 + 右屏）从**左**滑入；
+   * - `"to-preview"`：阅读面从**右**滑回。
+   */
+  const [modeAnim, setModeAnim] = useState<"to-edit" | "to-preview" | null>(null);
+  /**
+   * 动画收尾定时器的**代际**：快速连切时旧定时器必须作废，否则会把新一轮动画腰斩
+   * （与 scrollRestoreGenRef 同一套路）。
+   */
+  const modeAnimGenRef = useRef(0);
   /**
    * v0.15.0 需求（阅读↔编辑内容对齐）：模式切换**前**采集来源侧的内容锚点。
    *
@@ -2433,6 +2461,26 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const view = viewRef.current;
     const prevMode = prevViewModeRef.current;
     prevViewModeRef.current = viewMode;
+
+    /**
+     * v0.15.2 需求1：模式切换滑入动画。
+     *
+     * 必须在**模式真的变了**时才播（不能因为其它 state 引起 effect 重跑就重播），
+     * 且要在 `if (!view) return` 之前挂上 —— 非 md 文件（纯文本阅读面）没有 PM view，
+     * 但同样应该看到滑动（`.plaintext-preview` 也接了 keyframes）。
+     *
+     * 收尾用代际 token：快速连切时旧定时器自觉退场，避免把新一轮动画腰斩。
+     */
+    if (prevMode !== viewMode) {
+      const dir: "to-edit" | "to-preview" =
+        prevMode === "preview" ? "to-edit" : "to-preview";
+      const gen = ++modeAnimGenRef.current;
+      setModeAnim(dir);
+      window.setTimeout(() => {
+        if (modeAnimGenRef.current !== gen) return;
+        setModeAnim(null);
+      }, MODE_SLIDE_MS);
+    }
 
     if (!view) return;
 
@@ -8830,7 +8878,12 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       )}
 
       {/* ─── 主内容区域 ──────────────────────────── */}
-      <div className="editor-main-area" ref={mainAreaRef}>
+      <div
+        className="editor-main-area"
+        ref={mainAreaRef}
+        /* v0.15.2 需求1：模式切换滑入动画的方向（CSS 按它选 keyframes；null 时不播） */
+        data-lmd-mode-anim={modeAnim ?? undefined}
+      >
         {/* v0.12.0 需求5：右下角缩放尺（hover 显现；拖动/点击调整 docZoom） */}
         <ZoomRuler value={docZoom} onChange={setDocZoom} />
         {/* v0.6.1 问题5：模式切换悬浮按钮（阅读=羽毛笔→编辑 / 编辑=书本→阅读）

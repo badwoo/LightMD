@@ -1323,6 +1323,73 @@ describe("v0.15.1 需求2：折叠动效 · CSS 关键声明", () => {
     expect(body).not.toContain("display: none");
   });
 
+  /**
+   * v0.15.2 需求2 **主因**回归锁（实机帧采样 + 反事实 C4/C5 证实，纯读 CSS 极易踩）：
+   *
+   * 机制：展开态**没有** `max-height` 声明 → 计算值是 `none`；`none → 0` **不可插值**。
+   * 不可插值的属性即使**列进 `transition` 也不会被插值**（浏览器按离散属性处理，
+   * 第一帧直接取终值）。而 `max-height` 是 `height` 的上限 → 第一帧就被钳到 0，
+   * `height: auto → 0` 的过渡整体失效（实测折起 t90 = 2.2ms，第 0 帧即终值）；
+   * 展开方向没有 `.lmd-fold-hidden`、不受钳制，照常走满 440ms —— 这正是用户说的
+   * "折起来太快、展开时间符合要求"。
+   *
+   * ⚠️ 这里锁的是**"不能出现 max-height"**，而不是"必须过渡 max-height"。
+   * 我第一版曾以为"写进 transition 就能插值"→ 反事实 C4 证明无效（t90 仍 1.6ms）；
+   * C5 证明**彻底删掉**才对（t90 = 261.9ms）。所以本用例反过来断言：
+   *   · 折叠态**不得**声明 `max-height` / `min-height`（否则折起瞬间完成）；
+   *   · 折叠态 transition 里**不得**出现 `max-height`（写了也没用，只会误导后来者）；
+   *   · 收起靠 `height: 0 + overflow: hidden`，两者必须在场。
+   * 两个阅读面（PM CSS / iframe 注入 CSS）同口径。
+   */
+  it("★ 折叠态不得声明 max-height（不可插值会钳死 height 过渡 = 折起瞬间完成）", () => {
+    for (const [label, source] of [
+      ["PM 面", readCss()],
+      ["iframe 面", FOLD_IFRAME_CSS],
+    ] as Array<[string, string]>) {
+      const hiddenRule = /\.lmd-fold-hidden\s*\{([\s\S]*?)\}/.exec(source)?.[1] ?? "";
+      expect(hiddenRule, `${label}缺少折叠态规则`).toBeTruthy();
+
+      // ① 核心：折叠态不允许出现 max-height / min-height（不可插值 → 钳死 height）
+      expect(
+        hiddenRule,
+        `${label}：折叠态不得声明 max-height（none→0 不可插值，会把 height 过渡第一帧钳死）`,
+      ).not.toMatch(/max-height\s*:/);
+      expect(
+        hiddenRule,
+        `${label}：折叠态不得声明 min-height（同样不可插值，且 height 已定死高度）`,
+      ).not.toMatch(/min-height\s*:/);
+
+      // ② transition 里也不许出现 max-height（写了不生效，只会误导后来者）
+      const transitionBlock = /transition:\s*([\s\S]*?);/.exec(hiddenRule)?.[1] ?? "";
+      expect(
+        transitionBlock,
+        `${label}：折叠态 transition 不应包含 max-height（不可插值，写了等于没写）`,
+      ).not.toMatch(/max-height/);
+
+      // ③ 收起仍然要可靠：height: 0 + overflow: hidden
+      expect(hiddenRule, `${label}：必须 height: 0`).toMatch(/height:\s*0\s*!important/);
+      expect(hiddenRule, `${label}：必须 overflow: hidden`).toMatch(
+        /overflow:\s*hidden\s*!important/,
+      );
+      // ④ height 必须过渡（否则折起/展开都没有动画）
+      expect(transitionBlock, `${label}：height 过渡必须在场`).toMatch(/height\s+440ms/);
+
+      // ⑤ 展开方向同样不要声明 max-height 过渡（两终态都是 none，无变化可插值）
+      const baseTransition =
+        label === "PM 面"
+          ? /\.ProseMirror > \*?:not\([^{]*\{[\s\S]*?transition:\s*([\s\S]*?);/.exec(source)?.[1]
+          : /body > \*\s*\{[\s\S]*?transition:\s*([\s\S]*?);/.exec(source)?.[1];
+      expect(baseTransition, `${label}：找不到展开方向的 transition`).toBeTruthy();
+      expect(
+        baseTransition!,
+        `${label}：展开方向也不应声明 max-height 过渡（无变化可插值）`,
+      ).not.toMatch(/max-height/);
+      expect(baseTransition!, `${label}：展开方向 height 过渡必须在场`).toMatch(
+        /height\s+440ms/,
+      );
+    }
+  });
+
   it("PM 面：折叠 / 展开两个方向都有 height 与 opacity 过渡", () => {
     const css = readCss();
     // 展开方向（.ProseMirror > * 基态）
@@ -1340,11 +1407,72 @@ describe("v0.15.1 需求2：折叠动效 · CSS 关键声明", () => {
     // 折叠：立刻裁切、收完才隐藏
     expect(hiddenRule).toMatch(/overflow\s+0s\s+linear\s+0s/);
     expect(hiddenRule).toMatch(/visibility\s+0s\s+linear\s+440ms/);
-    // 展开（基态）：先保持裁切，长完再放开；立刻可见
-    const baseRule = /\.ProseMirror > :not\([^{]*\{([\s\S]*?)\}/.exec(css);
+    // 展开（基态）：先保持裁切，长完再放开；立刻可见。
+    // v0.15.2 需求2：选择器已从 `:not(.a):not(.b):not(.c):not(.d)` 改为
+    // `*:not(:where(...))`（特异性 0,5,0 → 0,1,0，见下方专门用例），
+    // 这里按语义抓「以 .ProseMirror > 开头的过滤规则」，不写死选择器文本。
+    const baseRule = /\.ProseMirror > \*?:not\([^{]*\{([\s\S]*?)\}/.exec(css);
     expect(baseRule, "缺少展开方向的 overflow/visibility 延迟规则").toBeTruthy();
     expect(baseRule![1]).toMatch(/overflow\s+0s\s+linear\s+440ms/);
     expect(baseRule![1]).toMatch(/visibility\s+0s\s+linear\s+0s/);
+  });
+
+  /**
+   * v0.15.2 需求2（用户：「折起来的动画太快，展开的时间符合要求」）。
+   *
+   * 这是**特异性陷阱**的回归锁：不是时长没改够，而是折起方向的 transition
+   * 被另一条规则覆盖了。必须锁住两条事实，否则后来者很容易改回去：
+   *   ① 展开基态规则的 `:not()` 里必须用 `:where()`（否则 `:not(类)` 会各计 1，
+   *      四个类 → 该规则特异性 0,5,0，压过折叠规则的 0,2,0）；
+   *   ② 折叠规则必须能在折起瞬间胜出（它有 `visibility 0s linear 440ms`）。
+   */
+  it("★ 折起方向的 transition 不被展开基态压过（特异性陷阱回归锁）", () => {
+    const css = readCss();
+
+    // 计算一条选择器的特异性（只覆盖本文件用到的语法：类 / 元素 / > / :not / :where / :has）
+    const specificityOf = (sel: string): [number, number, number] => {
+      let ids = 0;
+      let classes = 0;
+      let types = 0;
+      // :where() 恒计 0 —— 先整体抹掉，避免在 :not() 里被误计
+      let rest = sel.replace(/:where\([^)]*\)/g, " ");
+      rest = rest.replace(/:not\(([^)]*)\)/g, (_m, inner: string) => {
+        const [a, b, c] = specificityOf(inner);
+        ids += a;
+        classes += b;
+        types += c;
+        return " ";
+      });
+      ids += (rest.match(/#[\w-]+/g) ?? []).length;
+      classes += (rest.match(/\.[\w-]+/g) ?? []).length;
+      types += (rest.match(/(?:^|[\s>+~])([a-zA-Z][\w-]*)/g) ?? []).length;
+      return [ids, classes, types];
+    };
+    const cmp = (x: [number, number, number], y: [number, number, number]): number =>
+      x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+
+    // 取出展开基态规则的选择器（.ProseMirror > 后面带 :not 的那条）
+    const baseSel = /(\.ProseMirror > \*?:not\([^{]*)\{/.exec(css)?.[1]?.trim();
+    expect(baseSel, "找不到展开基态规则").toBeTruthy();
+    // ① 必须用 :where() 包住排除项 —— 这是把特异性压回 0,1,0 的唯一手段
+    expect(baseSel!, "排除项必须用 :not(:where(...))，不能写成 :not(.a):not(.b) 链").toContain(
+      ":where(",
+    );
+    expect(baseSel!, "不允许出现裸的 :not(.<class>) 链（会把特异性拉到 0,5,0）").not.toMatch(
+      /:not\(\s*\./,
+    );
+
+    // ② 折叠规则必须**严格大于**展开基态规则的特异性，折起瞬间才会采用
+    //    「visibility 0s linear 440ms」（内容收完才隐藏）而不是「立刻隐藏」
+    const hiddenSel = ".ProseMirror .lmd-fold-hidden";
+    expect(
+      cmp(specificityOf(hiddenSel), specificityOf(baseSel!)),
+      `折叠规则 ${specificityOf(hiddenSel).join(",")} 必须 > 展开基态 ${specificityOf(baseSel!).join(",")}`,
+    ).toBeGreaterThan(0);
+
+    // ③ 折叠规则确实把 visibility 推迟到动画结束（否则即使特异性赢了也会瞬间消失）
+    const hiddenRule = /\.ProseMirror \.lmd-fold-hidden\s*\{([\s\S]*?)\}/.exec(css)![1];
+    expect(hiddenRule).toMatch(/visibility\s+0s\s+linear\s+440ms/);
   });
 
   it("两个阅读面（PM 面 CSS 文件 / iframe 注入 CSS）关键声明一致", () => {
