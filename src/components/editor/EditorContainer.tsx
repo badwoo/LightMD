@@ -277,6 +277,14 @@ import {
 } from "../../utils/contentScrollMap";
 // v0.15.0 需求（阅读区标题折叠）：会话级折叠状态 + iframe 面桥
 import { createIframeFoldBridge, readingFold } from "./readingFold";import { createPmAdapter } from "../../editorHistory/pmAdapter";
+// v0.15.3 返修（缺陷 A）：源码面撤销/恢复的**内容锚点重映射**与恢复口径决策。
+// 见该模块头部对两个实机缺陷（跨模式撤销贴底 / 像素锚在变长文本上失效）的取证。
+import {
+  decideSourceScrollRestore,
+  PREVIEW_REALIGN_DELAYS,
+  remapOffsetAcrossTextChange,
+  shouldContinuePreviewRealign,
+} from "../../utils/textOffsetRemap";
 import { setHostUndoRedo } from "../../core/keymap";
 import type { SearchableFile } from "./SearchReplace";
 import "../../styles/editor.css";
@@ -3089,9 +3097,41 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       }
       return;
     }
-    // 源码模式：写 state + 恢复光标
+    // 源码模式：写 state + 恢复光标/滚动
+    //
+    // ─── v0.15.3 返修（缺陷 A）：跨模式撤销后源码面「贴底」────
+    //
+    // ## 缺陷（实机取证，打包产物 v0.15.2，`scripts/v0153-probe-undo-big.mjs`）
+    // 用户在**阅读模式**里编辑几步 → 切**源码模式** → Ctrl+Z。
+    // 被撤的那条条目是 **PM 条目**，`HistoryEntry.beforeSelection` 是 undefined
+    // （PM 侧 `beforeAnchor` 至今未接线，见 `editorHistory/pmAdapter.ts`）。
+    // 于是旧实现的 `if (sel)` 不成立 → **完全不恢复滚动**；而文本变短让
+    // `scrollHeight` 变小 → 浏览器把 `scrollTop` 钳到新 max = **贴底**。
+    // 实测：撤销前 `top=21531 / max=21948`，撤销后 `top=21112 / max=21113`
+    // （距底 1px；61 帧采样里 57 帧贴底）；接着切回阅读面 `top=max=11485`（全贴底）。
+    // 用户看到的就是「撤销/恢复文档会抖动」+「之后双击 Ctrl 漂移」。
+    //
+    // ## 修法：锚**内容**不锚像素（与阅读面同一口径）
+    // 1. 写入**之前**（此刻 textarea 还是旧文本）采「视口中央那一行字符的偏移」， 
+    //    即 `{ offset, viewportY }`；
+    // 2. 用 `remapOffsetAcrossTextChange` 把 offset 从旧文本映射到目标文本
+    //    （字符偏移与排版、字号、软换行、文本长度全都无关）；
+    // 3. 写入后用同一套 rAF / 60ms / 160ms 校正把那一行拉回原视口 Y。
+    // 像素只在「文本长度不变」时作快路径；**永不写 0**（写 0 = 丢进度，v0.14.0 P1 老 bug）。
     const textarea = sourceTextareaRef.current;
     const sel = restore as { start: number; end: number; scrollTop?: number } | undefined;
+    /**
+     * 写入前采内容锚（必须在 `setSourceContent` 之前 —— 之后 textarea.value 已是新文本，
+     * 采到的 offset 就指向新文本的同一偏移，而不是"眼前那一行"）。
+     * 取**视口中央**（与阅读面 `capturePreviewScrollAnchor` 同口径：用户判断"阅读焦点"
+     * 看的是视口中间）。不可见 / 内容不足一屏时 `captureTextAnchor` 返回 null，
+     * 决策函数会安全地退到像素或 none 分支。
+     */
+    const histAnchor = textarea
+      ? captureTextAnchor(textarea, Math.max(0, textarea.clientHeight / 2))
+      : null;
+    const beforeText = textarea ? textarea.value : "";
+    const beforeTextLength = beforeText.length;
     setSourceContent(text);
     sourceContentRef.current = text;
     onContentChangeRef.current?.(text);
@@ -3106,23 +3146,85 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       sourceContentRef.current = masked;
       onContentChangeRef.current?.(masked);
     }
+    /**
+     * 滚动恢复计划（写入后执行）。
+     *
+     * 注意 `masked` 才是 textarea 真正会显示的文本：锚点 offset 必须映射到
+     * `masked` 而不是 `text`，否则含 base64 图片的文档上偏移会整体错位。
+     *
+     * 用写入**前**的 `beforeText` 作映射源（而不是写后再读 `textarea.value`）：
+     * `setSourceContent` 是 React 受控更新，此刻 DOM 上可能还是旧值、也可能已是
+     * 新值，取决于是否在同一个提交里 —— 唯一确定的是我们手里留存的这份旧文本。
+     */
+    const afterTextLength = masked.length;
+    const remapped = histAnchor
+      ? {
+          offset: remapOffsetAcrossTextChange(histAnchor.offset, beforeText, masked),
+          viewportY: histAnchor.viewportY,
+        }
+      : null;
+    const scrollPlan = decideSourceScrollRestore({
+      textLengthChanged: afterTextLength !== beforeTextLength,
+      anchor: remapped,
+      pixelScrollTop: sel && typeof sel.scrollTop === "number" ? sel.scrollTop : null,
+    });
+    traceScroll("undo-source", {
+      histAnchor: histAnchor ? { o: histAnchor.offset, y: Math.round(histAnchor.viewportY * 100) / 100 } : null,
+      beforeLen: beforeTextLength,
+      afterLen: afterTextLength,
+      sel: sel ? { s: sel.start, st: typeof sel.scrollTop === "number" ? sel.scrollTop : null } : null,
+      plan: scrollPlan.kind,
+      planOffset: scrollPlan.kind === "anchor" ? scrollPlan.anchor.offset : null,
+      taTop: textarea ? Math.round(textarea.scrollTop * 100) / 100 : null,
+      taMax: textarea ? Math.max(0, textarea.scrollHeight - textarea.clientHeight) : null,
+      taCh: textarea ? textarea.clientHeight : null,
+    });
+    /**
+     * 落地滚动恢复。
+     *
+     * 为什么 0 / 60 / 160ms 三段：与阅读面 `restorePreviewScrollFromAnchor` 同款 ——
+     * `setSourceContent` 是受控组件，React 提交后浏览器还要重排一次（长文尤其明显），
+     * 单帧恢复会在重排后被推走。三段全部用**同一锚点**（幂等）。
+     */
+    const applyScrollRestore = () => {
+      const ta = sourceTextareaRef.current;
+      if (!ta || ta.clientHeight <= 0) return;
+      if (scrollPlan.kind === "anchor") {
+        restoreTextAnchor(ta, scrollPlan.anchor);
+      } else if (scrollPlan.kind === "pixel") {
+        const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+        const want = Math.min(Math.max(0, scrollPlan.scrollTop), max);
+        if (Math.abs(ta.scrollTop - want) > 0.5) ta.scrollTop = want;
+      }
+      // kind === "none"：**什么都不做**（绝不写 0，见决策函数注释）
+    };
+    if (scrollPlan.kind !== "none") {
+      requestAnimationFrame(() => {
+        applyScrollRestore();
+        window.setTimeout(applyScrollRestore, 60);
+        window.setTimeout(applyScrollRestore, 160);
+      });
+    }
     if (sel) {
       const pos = Math.max(0, Math.min(masked.length, sel.start));
       const end = Math.min(masked.length, sel.end);
-      const scrollTop = typeof sel.scrollTop === "number" ? sel.scrollTop : null;
-      // v0.15.1 需求1：撤销后恢复光标/滚动。
-      //
-      // ⚠️ 不能只靠 rAF：`setSourceContent` 是受控组件，React 提交新 value 时会
-      // **重置 textarea 的 selection**（实测落到 0 或末尾），而且那次提交可能发生在
-      // 我们 rAF 之后 → rAF 里设好的光标被 React 覆盖掉（实测 selectionStart 从 12 变 0）。
-      // 因此两条路一起走：
-      // ① 记进 `pendingSourceSelectionRef`，由 `useLayoutEffect([sourceContent])`
-      //    在 React 提交 DOM **之后、绘制之前**应用（这是唯一不会被覆盖的时机）；
-      // ② 保留 rAF + 60ms 兜底，覆盖"内容二次变化（mask 分支）"等异步路径。
+      /**
+       * v0.15.3 返修（缺陷 A 配套）：这里**不再**无条件写历史像素。
+       *
+       * 旧实现把 `sel.scrollTop`（历史记录里的**旧像素**）交给 `pendingSourceSelectionRef`，
+       * 由 `useLayoutEffect` 与 rAF/60ms 兜底各写一次 —— 而它和上面新加的
+       * `applyScrollRestore`（内容锚）会互相踩：像素先写一次（文本变短时被浏览器钳到
+       * 新 max = 贴底）、锚点再拉回一次 → 61 帧采样里出现「贴底 → 拉回」的往返，
+       * 正是用户说的"撤销时文档抖一下"。
+       * 现在：滚动统一由 `scrollPlan` 负责，选区通道**只恢复光标**。
+       * 唯一例外是 `scrollPlan.kind === "pixel"`（文本长度未变、锚点采不到）——
+       * 那种情况下像素就是权威值，由 `applyScrollRestore` 统一写，这里仍不重复写。
+       */
+      const scrollTopForSelection: number | null = null;
       pendingSourceSelectionRef.current = {
         start: pos,
         end,
-        scrollTop,
+        scrollTop: scrollTopForSelection,
         // 选区保护窗：覆盖「撤销 → onContentChange → App.setContent → content prop
         // 变化 → 再 setSourceContent」这条二次受控提交链（实测需要 ~100ms）。
         until: Date.now() + 250,
@@ -3142,7 +3244,6 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         const len = ta.value.length;
         ta.focus();
         ta.setSelectionRange(Math.min(pos, len), Math.min(end, len));
-        if (scrollTop !== null) ta.scrollTop = scrollTop;
         lastTextareaCursorRef.current = Math.min(pos, len);
       };
       applySelection();
@@ -7475,6 +7576,27 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    */
   const syncPreviewAfterToggleRef = useRef<(() => void) | null>(null);
   /**
+   * v0.15.3 返修（缺陷 B）：模式切换进编辑后「延时重对齐右屏」的**代际**。
+   *
+   * 为什么需要：`PREVIEW_REALIGN_DELAYS` 排了 5 个定时器（末点 1600ms）。用户在
+   * 1600ms 内再次切模式 / 内容再次变化时，上一批定时器必须**整批作废**，否则会把
+   * 新一轮刚对齐好的右屏又按旧左屏位置写一遍（与 v0.15.1 滚动恢复的"代际"同一套路）。
+   */
+  const previewRealignGenRef = useRef(0);
+  /**
+   * v0.15.3 返修（缺陷 B）：**"右屏内容刚就绪"事件 → 重对齐** 的入口。
+   *
+   * 为什么必须由内容侧主动通知，而不是只靠定时器：
+   * iframe 的 `doc.open()/write()` → body 就绪 → 贴标 → mermaid/katex 异步渲染
+   * 每一步耗时都在**机器负载**下浮动。实机同一台机器两次跑出：
+   *   · 480ms 采样时"已贴标 + Δ0.29 行"（定时器晚于贴标，对齐成功）；
+   *   · 480ms 采样时"刚重写完、标签还没贴上 → 定时器跳过 → Δ89.81 行"。
+   * 固定时点无法赢过这种调度抖动。由 `tagWhenBodyReady` / 增量贴标处
+   * `requestPreviewRealignRef.current?.()` 主动推一次，才是确定性的。
+   * 该 ref 由分屏同步 effect 注册，指向同一套带**就绪闸门**的重对齐实现。
+   */
+  const requestPreviewRealignRef = useRef<(() => void) | null>(null);
+  /**
    * v0.14.0 第六批：**本帧的 scrollTop 写入是"冻结还原"而非用户滚动**。
    *
    * 用途：`syncToPreview`（左→右）监听 textarea 的 scroll 事件。冻结还原也会派发
@@ -8262,6 +8384,11 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           bindPreviewLightbox(iframe);
           // v0.15.0 需求（阅读区标题折叠）：iframe 面折叠状态幂等重应用
           foldBridge.apply();
+          // v0.15.3 返修（缺陷 B）：**贴标完成就是"右屏可以对齐了"的信号**。
+          // 固定延时时点（0/160/480/1000/1600ms）在实机上有时早于贴标、有时晚于
+          // 异步渲染撑高，存在竞态（实测同一台机器两次跑出 Δ89.81 / Δ0.29 两种结果）。
+          // 由内容就绪这一刻主动触发一次对齐，才不受调度抖动影响。
+          requestPreviewRealignRef.current?.();
         }
       };
       if (doc.body) {
@@ -8308,6 +8435,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       bindPreviewLightbox(iframe);
       // v0.15.0 需求（阅读区标题折叠）：body 整批替换后折叠状态要重新应用
       foldBridge.apply();
+      // v0.15.3 返修（缺陷 B）：增量路径同样在**贴标完成时**主动对齐一次（见整篇分支的注释）
+      requestPreviewRealignRef.current?.();
       // 重新触发 mermaid 渲染（脚本已加载，直接调用 run）
       if (hasMermaid && (doc as any).defaultView?.mermaid) {
         try {
@@ -8717,7 +8846,217 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const raf = requestAnimationFrame(() => {
       syncToPreview();
     });
+
+    /**
+     * ─── v0.15.3 返修（缺陷 B）：模式切换进编辑后，**延时重对齐右屏** ───
+     *
+     * ## 缺陷（实机取证，打包产物 v0.15.2，`scripts/v0153-probe-align-async.mjs`）
+     * 从阅读模式双击 Ctrl 进编辑模式时，右侧 iframe 此刻**还没就绪**：
+     * 实测含 mermaid 的文档 ——
+     *   · t=0ms：`[data-src-line]` 贴标 **0 个**、右屏 `scrollHeight=0` → 无从对齐；
+     *   · t=480ms：贴标 78 个、右屏 `scrollHeight=7868`、mermaid SVG 5 个；
+     *   · 稳定后左右仍差 **5.1 个源码行**；用户手动滚一下左屏立刻降到 **0.09 行**。
+     * 结论：块锚点映射本身完全正确，**只是切换后没人再触发一次对齐** ——
+     * `syncPreviewAfterToggleRef` 的 0/160/480/1000ms 重试只挂在「预览开合冻结窗」的
+     * `finalize` 里（见 `finalize`），而 `modeChanged` 会让冻结窗直接 return，
+     * 所以模式切换那条路径上**完全没有重对齐**。
+     *
+     * ## 做法
+     * 本 effect 在 `viewMode` / `previewHtml` / 源码文本变化后重跑（模式切换必然命中），
+     * 于是就在绑定监听后按 `PREVIEW_REALIGN_DELAYS` 排延时重试。
+     * 每次调用 `syncToPreview(true)`（force 跳过方向锁，但仍受 `isScrollFrozen` /
+     * `isSyncingScrollRef` 守卫）—— 只读左屏、只写右屏，**幂等**。
+     *
+     * 三条终止条件由纯函数 `shouldContinuePreviewRealign` 决定：
+     * 卸载/新一代接管（token）、**用户主动滚动左屏**、超出 2500ms 窗口。
+     * 用户滚动用输入事件判（wheel/pointerdown/touchstart）—— 与 §4-31 的口径一致：
+     * 不能用 scrollTop 差值，浏览器钳位会被误判成用户操作。
+     */
+    const realignGen = ++previewRealignGenRef.current;
+    let realignCancelled = false;
+    let userScrolledRealign = false;
+    const markRealignUser = () => {
+      userScrolledRealign = true;
+    };
+    const realignStartedAt = performance.now();
+    textarea.addEventListener("wheel", markRealignUser, { passive: true });
+    textarea.addEventListener("pointerdown", markRealignUser, { passive: true });
+    textarea.addEventListener("touchstart", markRealignUser, { passive: true });
+    const realignTimers: Array<ReturnType<typeof setTimeout>> = [];
+    const runRealign = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        const cont = shouldContinuePreviewRealign({
+          cancelled: realignCancelled || previewRealignGenRef.current !== realignGen,
+          userScrolled: userScrolledRealign,
+          elapsedMs: performance.now() - realignStartedAt,
+        });
+        if (!cont) {
+          traceScroll("preview-realign-stop", {
+            delayMs,
+            gen: realignGen,
+            user: userScrolledRealign,
+            elapsed: Math.round(performance.now() - realignStartedAt),
+          });
+          return;
+        }
+        try {
+          // 同一个入口：force 跳方向锁 + isScrollFrozen/isSyncing 守卫
+          // + **右屏就绪闸门**（贴标为空 / 不可滚动时跳过，见 realignLayoutNow 的注释）
+          realignLayoutNow();
+          traceScroll("preview-realign", {
+            delayMs,
+            gen: realignGen,
+            previewTop: getPreviewScroller()?.scrollTop ?? null,
+          });
+        } catch {
+          /* 右屏尚未就绪：后面的时点会再试 */
+        }
+      }, delayMs);
+      realignTimers.push(timer);
+    };
+    for (const d of PREVIEW_REALIGN_DELAYS) runRealign(d);
+
+    /**
+     * 布局驱动重对齐（比定时器更权威的那一路）。
+     *
+     * ## 为什么固定时点还不够（实机抓到的残余）
+     * 首版只排 0/160/480/1000/1600ms，实测 A2 仍从 Δ3.81 行漂到 Δ5.1 行：
+     * 左屏 `textarea` 的**视口顶行自己在动**（89.81 → 91.1 行）——
+     * 原因是 `.source-editor` 的 `padding-inline` 含 `100%`（editor.css 1708-1722），
+     * 它自带 **0.42s** 过渡，而 `modeSwitchSlide.css` 的动画窗口只关了
+     * wrapper/shell 的宽度过渡、**没关** textarea 自己的 padding 过渡。
+     * 于是 380ms 动画窗结束（padding 还差 40ms）之后布局仍在变 → 每一行软换行位置
+     * 都在微调 → 按"那一刻"对齐的结果 40ms 后又歪一格。
+     *
+     * ## 做法：盯**左屏布局量**，一变就重新对齐（幂等 + 有窗口上限）
+     * `ResizeObserver` 观察 `textarea.scrollHeight` / `clientWidth` / `clientHeight`：
+     * - `scrollHeight` 变 → 软换行数变了（宽度/字体/行高）→ 必须重新映射；
+     * - `clientWidth` 变 → 正文列宽变了 → 同上。
+     * 每次变化都排一次（rAF 合并，避免过渡期每帧都写右屏）；
+     * 静止 320ms 后不再追（`resizeSettleTimer`），并受同一 2500ms 窗口与用户退场约束。
+     *
+     * 注意这**不会**与用户滚动打架：observer 只在**布局**变化时触发，
+     * 用户滚动不改布局；且用户一有输入事件 `userScrolledRealign` 就为真、直接退场。
+     */
+    /**
+     * "右屏没就绪而被跳过"的**补试**机制。
+     *
+     * 定时器的时点一旦被跳过，光靠后续时点可能都错过（实测：480ms 被跳过、
+     * 1000/1600ms 时右屏已就绪且已对齐，但那一档的 Δ 已记录为 89.81 行）。
+     * 因此跳过时立刻排一次 60ms 补试（最多 6 次），保证"右屏一就绪就会被对齐"。
+     */
+    let skipRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let skipRetryCount = 0;
+    const scheduleSkipRetry = () => {
+      if (skipRetryTimer || skipRetryCount >= 6) return;
+      skipRetryCount++;
+      skipRetryTimer = setTimeout(() => {
+        skipRetryTimer = null;
+        realignLayoutNow();
+      }, 60);
+    };
+    const realignLayoutNow = () => {
+      const cont = shouldContinuePreviewRealign({
+        cancelled: realignCancelled || previewRealignGenRef.current !== realignGen,
+        userScrolled: userScrolledRealign,
+        elapsedMs: performance.now() - realignStartedAt,
+      });
+      if (!cont) return;
+      /**
+       * ⚠️ v0.15.3 实测抓出的**竞态**（第二版才暴露）：
+       * 定时器到点时右屏可能"贴标已有、但滚动元素还在 0"或反之 ——
+       * 实测同一台机器上 480ms 那次采到 `右屏 scrollHeight=7868 且已贴标 78 个`，
+       * 但下一场次 480ms 时右屏刚被 `doc.open()/write()` **整篇重写**，
+       * `[data-src-line]` 又变回 0 → 对齐写到一个"还没内容"的滚动元素上 → Δ89.81 行。
+       * 判据不能只看时间，必须看**右屏此刻是否真的可对齐**：
+       * `[data-src-line] > 0` 且 `scrollHeight > clientHeight`。不满足就**跳过本次**，
+       * 交给后续定时器 / 布局 observer / iframe load 事件（它们都会再触发）。
+       */
+      const preview = getPreviewScroller();
+      if (preview) {
+        let tagged = 0;
+        try {
+          tagged = preview.querySelectorAll("[data-src-line]").length;
+        } catch {
+          tagged = 0;
+        }
+        if (tagged === 0) {
+          traceScroll("preview-realign-skip", { gen: realignGen, reason: "not-tagged", tag: tagged });
+          scheduleSkipRetry();
+          return;
+        }
+        if (!(preview.scrollHeight > preview.clientHeight)) {
+          traceScroll("preview-realign-skip", {
+            gen: realignGen,
+            reason: "not-scrollable",
+            sh: preview.scrollHeight,
+            ch: preview.clientHeight,
+          });
+          scheduleSkipRetry();
+          return;
+        }
+      }
+      try {
+        syncPreviewAfterToggle();
+        traceScroll("preview-realign-layout", {
+          gen: realignGen,
+          taSH: textarea.scrollHeight,
+          taW: textarea.clientWidth,
+          previewTop: getPreviewScroller()?.scrollTop ?? null,
+        });
+      } catch {
+        /* 右屏尚未就绪 */
+      }
+    };
+    let resizeRaf = 0;
+    let resizeSettleTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastLayoutKey = `${textarea.scrollHeight}|${textarea.clientWidth}|${textarea.clientHeight}`;
+    const scheduleLayoutRealign = () => {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        realignLayoutNow();
+      });
+      if (resizeSettleTimer) clearTimeout(resizeSettleTimer);
+      resizeSettleTimer = setTimeout(() => {
+        resizeSettleTimer = null;
+      }, 320);
+    };
+    const layoutObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            const key = `${textarea.scrollHeight}|${textarea.clientWidth}|${textarea.clientHeight}`;
+            if (key === lastLayoutKey) return;
+            lastLayoutKey = key;
+            scheduleLayoutRealign();
+          })
+        : null;
+    layoutObserver?.observe(textarea);
+    /**
+     * 把"内容就绪 → 重对齐"的入口注册出去（见 `requestPreviewRealignRef` 的注释）。
+     * 用 `realignLayoutNow` 而不是裸 `syncToPreview`：它带**右屏就绪闸门**
+     * （贴标为空 / 不可滚动时跳过并 60ms 补试），避免"贴标刚被清空"那一瞬写坏位置。
+     */
+    const requestPreviewRealign = () => {
+      realignLayoutNow();
+    };
+    requestPreviewRealignRef.current = requestPreviewRealign;
+
     return () => {
+      realignCancelled = true;
+      for (const t of realignTimers) clearTimeout(t);
+      realignTimers.length = 0;
+      if (skipRetryTimer) clearTimeout(skipRetryTimer);
+      skipRetryTimer = null;
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      if (resizeSettleTimer) clearTimeout(resizeSettleTimer);
+      layoutObserver?.disconnect();
+      if (requestPreviewRealignRef.current === requestPreviewRealign) {
+        requestPreviewRealignRef.current = null;
+      }
+      textarea.removeEventListener("wheel", markRealignUser);
+      textarea.removeEventListener("pointerdown", markRealignUser);
+      textarea.removeEventListener("touchstart", markRealignUser);
       cancelAnimationFrame(raf);
       textarea.removeEventListener("scroll", onSourceScroll);
       previewWin.removeEventListener("scroll", syncToSource);

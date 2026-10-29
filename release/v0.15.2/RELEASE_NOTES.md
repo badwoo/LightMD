@@ -1,175 +1,246 @@
-# LightMD v0.15.2 交付说明
+# LightMD v0.15.2 交付说明（第二轮返修 · 2026-10-29）
 
-> 构建时间：2026-10-28
+> 构建时间：2026-10-29（第二轮）
 > 产物目录：`lightmd/release/v0.15.2/`
 > 基线：v0.15.1
-> 定位：**体验优化版**。新增「阅读 ↔ 编辑模式切换的滑入动画」，并修掉标题折叠「折起比展开快」的动效瑕疵。不新增功能面、不改数据格式。
+> 定位：**返修版**（同一版本号重新打包）。在首轮（模式切换滑入动画 + 折叠动效）基础上，
+> 修掉用户本轮反馈的两个**真缺陷**：①「文档编辑后双击 Ctrl 漂移 / 文档对齐」；
+> ②「跨模式撤销栈修改撤销或恢复文档会抖动」。不新增功能面、不改数据格式。
+
+> ⚠️ **本轮换了产物**：首轮 v0.15.2 的三个安装包已作废，请以本文件底部的
+> SHA256 为准（文件名相同、内容不同）。
 
 ---
 
-## 一、安装包与校验值
+## 一、安装包与校验值（本轮）
 
 | 文件 | 大小 | SHA256 |
 |---|---:|---|
-| `LightMD_0.15.2_x64-setup.exe`（NSIS 安装包，推荐） | 7.54 MB | `AAF52C8551514175D62904BA759207917E5B7F179886FD0FB8F6D9B795F765D2` |
-| `LightMD_0.15.2_x64_en-US.msi`（MSI 安装包） | 10.87 MB | `EFEA124018A98842D24043C6B6A10C20DE62FB6CEBF54103EAE451056A950C55` |
-| `lightmd.exe`（免安装单文件，可直接双击） | 23.16 MB | `BE3B64A91F8F7C5B4AA5A836E61EE36AF72A1D5E28D0A7390E80799DD8F38988` |
+| `LightMD_0.15.2_x64-setup.exe`（NSIS 安装包，推荐） | 7.54 MB | `F5B605B9CCFBBC7C02562EC826FB23937D0E30D952B2BF630F7EF367E10D7FA1` |
+| `LightMD_0.15.2_x64_en-US.msi`（MSI 安装包） | 10.87 MB | `980B66C01B7FBFEF86D2DF0E4E5D2C589211EC24D5122B8F3711F71DD406FE68` |
+| `lightmd.exe`（免安装单文件，可直接双击） | 23.16 MB | `462F40BE5C78ECEBC974B6E1CA79537FEED4526B78266FE7DAE648C2DF20D95C` |
 
 **产物已验证**：
-- 三者都内联本次构建的最新前端产物（`dist/index.html` 指向 `index-CwAk2Zz6.js`，在 exe 字节流中实测命中）。
-- 版本号四处一致：`package.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock` / `tauri.conf.json` 均为 `0.15.2`。
-- 两个实机探针都直接跑这个 exe（见第四节）。
+- 三者都内联本次构建的前端产物（`dist/index.html` 指向 `index-DmxunjPq.js`，在 exe 字节流中实测命中）。
+- 版本号四处一致：`package.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock` / `tauri.conf.json` 均为 `0.15.2`（**同一个版本号重新打包**，沿用首轮口径）。
+- 所有实机探针都直接跑这个 exe（内置 dist hash 校验，测到旧代码会中止）。
+- 全部探针在**最终这一个 exe** 上跑完：模式切换漂移 10/10、编辑后漂移 14/14、
+  漂移矩阵 5/5、撤销抖动 13/13、异步对齐 7/7（对齐连跑 3 次均 7/7，排除偶发）。
 
 ---
 
-## 二、需求1：模式切换的滑入动画
+## 二、首轮交付内容（保留，未改动）
 
-用户原话：「增加阅读模式和编辑模式切换时的一个滑动效果，让模式切换时文档显得不那么突兀。当阅读模式切换到编辑模式时，编辑模式的左右屏有一个顺滑的**由左往右滑过来**的动画，而从编辑模式切换为阅读模式时，动画效果则为文档**从右往左滑回**的。」
+### 2.1 模式切换滑入动画（新增功能）
 
-### 实现
-
-新增 `src/styles/modeSwitchSlide.css`（**独立文件**，不改 `editor.css` 这个多人共用的热点）；宿主在 `.editor-main-area` 上挂 `data-lmd-mode-anim="to-edit" | "to-preview"`，CSS 按方向选 `@keyframes`：
+用户原话：「增加阅读模式和编辑模式切换时的一个滑动效果，让模式切换时文档显得不那么
+突兀。当阅读模式切换到编辑模式时，编辑模式的左右屏有一个顺滑的**由左往右滑过来**的
+动画，而从编辑模式切换为阅读模式时，动画效果则为文档**从右往左滑回**的。」
 
 | 切换方向 | 进场的那一面 | 位移 | 时长 |
 |---|---|---|---|
-| 阅读 → 编辑 | 编辑区左栏 `.source-editor-wrapper` + 右屏 `.split-preview-shell`（两栏同时动） | `translateX(-100%) → 0`（从左滑入） | 380ms |
-| 编辑 → 阅读 | 阅读面 `.editor-container` / `.plaintext-preview` | `translateX(+100%) → 0`（从右滑回） | 380ms |
+| 阅读 → 编辑 | 编辑区左栏 `.source-editor-wrapper` + 右屏 `.split-preview-shell` | `translateX(-100%) → 0` | 380ms |
+| 编辑 → 阅读 | 阅读面 `.editor-container` / `.plaintext-preview` | `translateX(+100%) → 0` | 380ms |
 
-两者互为镜像：去程整体"向右推开"、回程整体"向左滑回"。
+关键取舍：只做进场（两面互斥挂载，退场面已不可见）；用 `transform` 而非 width/margin
+（不改布局值与 scrollTop，不破坏内容锚点链路）；动画窗口内临时关闭编辑区内部宽度过渡；
+快速连切用代际 token 收尾；时长单源（`MODE_SLIDE_MS=380` 与 CSS 变量相等，单测锁死）；
+`prefers-reduced-motion` 下不位移但模式照常切换。
 
-### 关键设计决策（都有实机数据支撑）
+### 2.2 标题折叠「折起比展开快」（两个独立原因）
 
-1. **只动进场、不动退场**：两个模式面在 React 里互斥（`display:none`），退场那一面在提交时已不可见，没有可动画的载体。若为退场动画让两面同时挂载，会破坏整套滚动锚点（锚点采集正是靠 `clientHeight > 0` 判断"哪一面可见"，双面可见会采错面）。
-2. **用 `transform` 而不是 `width/margin/left`**：`transform` 只触发合成、不触发布局；且**不改 `clientWidth/clientHeight/scrollHeight/scrollTop`**——而 v0.15.1 刚修好的内容锚点链路（`collectPmBlockGeometry` / `measureSourceLineAxis` / `measureOffsetViewportY`）读的就是这些布局值、或 rect 之间的**相对差**（父级整体平移时 `rect.top - scrollerRect.top` 恰好抵消）。实机验证：动画期间与结束后滚动位置 **0.00px** 波动。
-3. **与「预览开合」那套 0.42s 宽度过渡互相让路**：进入编辑模式时右屏会同时被打开，两套动画同帧起跑会互相冲淡。动画窗口内（`data-lmd-mode-anim` 存在期）临时把编辑区内部的宽度过渡设为 `none`，窗口结束由 JS 移除属性自动恢复。
-4. **快速连切幂等**：收尾定时器带自增 token，旧一轮到期先比对 token，不一致直接返回（避免把新一轮动画腰斩）。与 v0.15.1 滚动恢复的"代际"同一套路。
-5. **时长单源**：`MODE_SLIDE_MS = 380`（TS）与 `--lmd-mode-slide-duration`（CSS）必须相等，由单测锁死——否则 JS 会在动画播完前摘掉属性，画面会跳一下。
-6. **`prefers-reduced-motion`**：完全不位移，模式照常切换。
+- **主因**：折叠态声明 `max-height: 0` → 展开态是 `none`，`none → 0` 不可插值，
+  即使列进 transition 也不会被插值，而 max-height 是 height 的上限 → `height:auto→0`
+  第一帧就被钳死（实测折起 t90 = 2.2ms，展开 260ms）。**修法：彻底删除 max-height/min-height**。
+  （踩过的弯路：第一版把 max-height 写进 transition，无效 —— 已记录为反事实 C4。）
+- **次因**：展开基态 `:not(.a):not(.b)...` 链特异性 (0,5,0) 压过折叠态 (0,2,0)，
+  导致折起时生效的是 `visibility 0s linear 0s`（内容第一帧就不可见）。
+  **修法：改 `*:not(:where(...))`**，特异性降到 (0,1,0)。
+- 两处同改：`src/styles/readingFold.css` 与 `readingFold.ts` 的 `FOLD_IFRAME_CSS`。
+- 实测：折起 t90 266.9ms ≈ 展开 267.2ms（比值 1.00）。
 
 ---
 
-## 三、需求2：标题折叠「折起比展开快」
+## 三、需求1（本轮）：文档编辑后「双击 Ctrl 漂移」与「文档对齐」
 
-用户原话：「标题折叠还有点小瑕疵，这个和之前左侧栏子文件夹展开和折起有同样的问题，就是**折起来的动画太快**，而展开的动画时间是符合我要求的。」
+用户原话：「我在进行文档编辑后，发现双击 Ctrl 漂移和文档对齐的问题又出现了，要返修和测试。」
 
-这是**两个独立原因叠加**，实机帧采样 + 五条反事实逐条证实：
+### 先说结论：这不是一个 bug，是**两个**
 
-### 主因：折叠态的 `max-height: 0` 把 `height` 过渡钳死
+首轮 v0.15.1 的漂移探针（打开文档 → 滚动 → 反复双击 Ctrl、**全程不编辑**）在 v0.15.2 上
+仍是 10/10 PASS、两面 0.00px。用户之所以"又出现了"，是因为**编辑**带进了两条新路径。
+新增三支探针把它们分离变量跑清（`scripts/v0153-probe-edit-then-toggle.mjs` /
+`-drift-matrix.mjs` / `-align-async.mjs`）：
 
-- 展开态**没有** `max-height` 声明 → 计算值是 `none`；`none → 0` **不可插值**。
-- 不可插值的属性**即使列进 `transition` 也不会被插值**（浏览器按离散属性处理，第一帧直接取终值）。
-- 而 `max-height` 是 `height` 的上限 → 第一帧就被钳到 0，`height: auto → 0` 的过渡**整体失效**。
-- 实测：折起 **t90 = 2.2ms（第 0 帧即终值）**，而展开方向没有这个钳制、能走满 440ms（t90 = 260ms）——正是"折起快、展开正常"。
-
-**修法：彻底不声明 `max-height` / `min-height`**（收起靠 `height: 0 + overflow: hidden` 已足够）。
-
-> ⚠️ **踩过并已记录的弯路**：第一版以为是"没参与过渡"，于是把 `max-height` 写进 `transition` —— **无效**（反事实 C4：`max-height:0` + 列进 transition → t90 仍 1.6ms）。起点 `none` 不可插值，写了等于没写。必须**彻底删掉**（反事实 C5：t90 = 259~264ms）。
-
-### 次因：CSS 特异性让折起时的 `visibility` 延迟被覆盖
-
-- 展开基态规则用 `:not(.a):not(.b):not(.c):not(.d)` 链 —— `:not()` 会把**参数的特异性计入**，四个类 → 该规则特异性 **(0,5,0)**；而折叠态规则 `.ProseMirror .lmd-fold-hidden` 只有 **(0,2,0)**。
-- 于是折起时前者压过后者，实际生效的是它的 `visibility 0s linear 0s` → 内容第一帧就 invisible（只剩一块空白在收）。
-- 修法：改用 `*:not(:where(.a, .b, .c, .d))`（`:where()` 特异性恒为 0）→ 该规则降到 **(0,1,0)**，折叠态 (0,2,0) 稳定胜出，正确采用 `visibility 0s linear 440ms`。
-- 附带修掉两面不一致：iframe 面的基态是 `body > *`（0,0,1），折叠规则本来就赢，所以**只有 PM 面**是这个次因。
-
-### 实机前后对比（`scripts/v0152-probe-fold-timing.mjs`）
-
-| 项 | 修复前 | 修复后 | 期望 |
+| 变体 | 文档 | 编辑位置 | 结果 |
 |---|---|---|---|
-| 折起 t90 | 2.2ms | **266.9ms** | ~260ms ✅ |
-| 展开 t90 | 260.4ms | **267.2ms** | ~260ms ✅ |
-| 折起/展开 比值 | **0.01** | **1.00** | ≈1 ✅ |
-| 折起 visibility 翻转 | 第 0 帧 / 3ms | **第 27 帧 / 447.1ms** | ~440ms ✅ |
-| 折起 height 稳定 | 第 0 帧 | **第 24 帧 / 396.4ms** | 有过渡 ✅ |
-| 折起态生效规则 | `.ProseMirror > *:not(...)` (0,5,0) | **`.lmd-fold-hidden` (0,2,0)** | ③ ✅ |
-| 折起态 max-height 声明 | `0 !important` | **无** | 不得声明 ✅ |
-| iframe 面 折起 t90 | 1.4ms（钳死） | **270.4ms** | ~260ms ✅ |
+| V1 | 单空行 | 视口中央 | 首轮一次性 −38.5px，之后 20 轮 **0.00px 幂等** |
+| V2 | 单空行 | **文档末尾（远离视口）** | **0.00px** |
+| V3 | **双空行 `\n\n\n`** | 不编辑 | 0.00px |
+| V4 | **双空行** | 视口中央 | 0.00px |
+
+**V1 的 −38.5px 不是缺陷**：编辑改变了视口中央那一行的排版，左右两种排版的软换行数不同，
+按内容锚点对齐后阅读面必须位移一次才能让"同一处内容"仍在视口中央 —— 这是**正确重对齐**，
+且**不累积**（用户报的历史真 bug 是单调同向累计 +45/+103/+170）。V2 远端编辑 0.00px 反证了这一点。
+
+### 真缺陷 A：模式切换进编辑后，右屏**从不**延时重对齐（"文档对齐"的真因）
+
+- **取证**（`scripts/v0153-probe-align-async.mjs`，含 mermaid/katex 的真实文档）：
+  - t=0ms：右屏 `[data-src-line]` 贴标 **0 个**、`scrollHeight=0` → 根本无从对齐；
+  - t=480ms：贴标 78 个、`scrollHeight=7868`、mermaid SVG 5 个；
+  - **稳定后左右仍差 5.1 个源码行**（旧口径：拿「右屏命中块的**起始**行」直接比「左屏视口顶行」）；
+    用户手动滚一下左屏立刻降到 0.09 行 —— 说明**映射本身完全正确，只是没人再触发一次对齐**。
+- **根因**：`syncPreviewAfterToggleRef` 的 0/160/480/1000ms 重试只挂在「预览开合冻结窗」的
+  `finalize` 里；而模式切换时冻结窗按 `modeChanged` 直接 return（这是正确行为，
+  否则会吃掉模式切换的进度恢复）→ **模式切换这条路径上零重对齐**。
+- **修法（三层，缺一不可）**：
+  1. **固定时点**：`PREVIEW_REALIGN_DELAYS = [0,160,480,1000,1600]`（单一来源常量），
+     末点取 1600ms 覆盖 mermaid/katex 异步撑高（实测到 1427ms 仍有几何动作）；
+  2. **布局驱动**：`ResizeObserver` 盯 `textarea.scrollHeight/clientWidth/clientHeight`，
+     一变就重对齐 —— 因为 `.source-editor` 的 `padding-inline` 含 `100%`、自带 **0.42s**
+     过渡，而 `modeSwitchSlide.css` 只关了 wrapper/shell 的宽度过渡、**没关** textarea 的
+     padding 过渡 → 380ms 动画窗结束后布局仍在变（实测左屏视口顶行 89.81 → 91.1，
+     每行软换行都在微调）；
+  3. **内容就绪驱动**：在 `tagWhenBodyReady` / 增量贴标**完成的那一刻**主动推一次 ——
+     固定时点赢不过调度抖动（实测同一台机器两次跑出 Δ89.81 与 Δ0.29）。
+- **就绪闸门 + 补试**：右屏"贴标为空"或"不可滚动"时**跳过本次**并 60ms 补试（最多 6 次），
+  否则刚被 `doc.open()/write()` 整篇重写的 iframe 会把对齐写到一个空滚动元素上。
+- **终止条件**（纯函数 `shouldContinuePreviewRealign`）：卸载/新一代接管（代际 token）、
+  **用户主动滚动左屏**（wheel/pointerdown/touchstart —— 绝不用 scrollTop 差值，浏览器钳位会被误判）、
+  超出 2500ms 窗口。
+- **实测（最终 exe）**：Δ行 **0.11 / 0.4 / 0.4**（就绪后每次采样），A4 编辑后末态 **0.36**；
+  连跑 3 次均 7/7 PASS。
+
+> ⚠️ 本轮同时修正了**探针自己**的两个度量错误（这也是为什么前几轮"改了没用"）：
+> ① 右屏锚点不能用 `element.top - scrollingElement.rect.top`（根元素 rect 等于 `-scrollTop`，
+> 再减一次 = `rect.top + scrollTop`，实测让"视口顶命中块"恒为第 0 块，Δ行恒 89.81）；
+> ② 对齐误差必须按**块内比例**插值（右屏视口顶可能落在高块中间，落后块起始行好几行是
+> **正确的**），不用比例会看到 Δ5.1 行的假缺陷。
 
 ---
 
-## 四、验证结果
+## 四、需求2（本轮）：跨模式撤销栈「撤销/恢复会抖动」
+
+用户原话：「跨模式撤销栈修改撤销或恢复文档会抖动。」
+
+### 真缺陷 B：源码模式下撤销一条**阅读模式**产生的条目 → 文档被写到**贴底**
+
+- **取证**（`scripts/v0153-probe-undo-big.mjs`，打包产物 v0.15.2）：
+  - 用户在阅读模式编辑几步 → 切源码模式 → Ctrl+Z；
+  - 撤销前 `ta.scrollTop=21531 / max=21948`（约 98%，正常）；
+  - 撤销后 `top=21112 / max=21113` → **距底 1px**，61 帧采样里 **57 帧贴底**；
+  - 接着切回阅读面：`top=11485 / max=11485` → **全贴底**；
+  - 源码撤销的 3 次 `scrollTop` 写入调用栈都在同一条历史像素恢复路径上。
+- **根因（两层）**：
+  1. 被撤的条目是 **PM 条目**，`HistoryEntry.beforeSelection` 为 `undefined`
+     （PM 侧 `beforeAnchor` 至今未接线）→ `applyHistoryText` 的源码分支 `if (sel)` **不成立**
+     → **完全没有滚动恢复**；文本变短 → `scrollHeight` 变小 → 浏览器把 `scrollTop`
+     钳到新 max = **贴底**；
+  2. 即便有 `sel`，它带的是**历史记录的旧像素** —— 文本变短后同一像素指向完全不同的内容
+     （语义地图已踩过同款，实测同像素偏移 1152/3744px）。
+- **修法：锚内容不锚像素**（与阅读面同一口径）：
+  1. 写入**之前**采 `captureTextAnchor(textarea, clientHeight/2)` → `{offset, viewportY}`
+     （字符偏移，与排版/字号/软换行/文本长度全都无关；
+     且必须在 `setSourceContent` 之前采，之后 textarea 已是新文本）；
+  2. 用纯函数 `remapOffsetAcrossTextChange(offset, beforeText, maskedText)` 把偏移从旧文本
+     映射到目标文本（公共前后缀定义唯一变更区间；落在被替换区间内则贴到区间起点）；
+  3. 写入后用 **rAF / 60ms / 160ms 三段**同一锚点恢复（幂等，覆盖 React 受控提交后的重排）；
+  4. 决策由纯函数 `decideSourceScrollRestore` 给出：**有内容锚永远优先**；否则仅当
+     "文本长度未变"才用像素；否则 `none` —— **绝不写 0**（写 0 是 v0.14.0 的丢进度老 bug）；
+  5. 连带修掉一处**双写互踩**：源码分支原来把历史像素交给 `pendingSourceSelectionRef`，
+     由 `useLayoutEffect` + rAF + 60ms 再各写一次 → 与新的内容锚恢复互相覆盖，
+     形成"像素先写（被钳到底）→ 锚点再拉回"的往返，正是用户说的"抖一下"。
+     现在选区通道**只恢复光标**，滚动统一由 `scrollPlan` 负责。
+- **实测（最终 exe，改动发生在视口**上方**的真实场景）**：
+  - 撤销前视口中央行 196「第 25.1 段…」→ 撤销后**仍是行 196 同一句**（**内容不跳走**）；
+  - 两次撤销期间 `span=0.00px`、`clampSamples=0`（**无贴底中间态**）；
+  - 撤销后距底 9549px（仍在文档中部，不再贴底）；
+  - 切回阅读面 `top=6372 / max=11485`（距底 5113px，不再全贴底）。
+
+> ⚠️ 探针口径同样被修正过：上一版把改动放在**视口中央/下方**，文本变短后"视口中央那行"
+> 已不存在，变成贴底是**语义正确**的结果 —— 那种断言测的是错的东西。真正要验的形态是
+> 「改动在视口**上方**、眼前内容必须一动不动」。
+
+---
+
+## 五、验证结果（最终 exe 上）
 
 | 项目 | 结果 |
 |---|---|
-| 前端测试 | **339 文件 / 6199 用例全部通过**（v0.15.1 基线 6190，净增 9） |
+| 前端测试 | **342 文件 / 6260 用例全部通过**（首轮基线 6199，净增 61） |
 | `tsc --noEmit` | **0 错误**（strict） |
-| 折叠动效用例 | `v0150-reading-fold` **104 条全绿**（新增/反转 3 条特异性与 max-height 回归锁） |
-| 模式切换动画用例 | 新增 `v0152-mode-slide` **7 条全绿**（时长单源、双方向镜像、只动 transform、reduced-motion 降级） |
-| 实机探针 · 模式切换动画 | **22 PASS / 0 FAIL** |
-| 实机探针 · 折叠计时 | **22 PASS / 0 FAIL** |
-| 实机探针 · 双击 Ctrl 漂移（回归） | 两面漂移 **0.00px**（v0.15.1 成果未被本轮改动破坏） |
+| 新增单测 | `v0153-text-offset-remap` **23** + `v0153-undo-anchor-restore` **21** + `v0153-preview-realign` **17** = **61** |
+| 实机探针 · 模式切换漂移（v0.15.1 回归） | **10 PASS / 0 FAIL**，两面 **0.00px** |
+| 实机探针 · 编辑后双击 Ctrl 漂移 | **14 PASS / 0 FAIL** |
+| 实机探针 · 漂移判别矩阵（4 变体 × 8 轮） | **5 PASS / 0 FAIL** |
+| 实机探针 · 跨模式撤销抖动 | **13 PASS / 0 FAIL** |
+| 实机探针 · 异步渲染文档左右对齐 | **7 PASS / 0 FAIL**（连跑 3 次均通过） |
 | 打包产物 | NSIS + MSI + 单文件 exe，均内联最新 dist（探针内置 hash 校验） |
 
-### 模式切换动画实测（`scripts/v0152-probe-mode-slide.mjs`）
-
-采样方法：**Web Animations API 确定性步进**（`pause()` + `currentTime` 设到 0/25/50/75/100%），不受帧率与 iframe 重写影响。
+### 关键实测数字
 
 ```
-阅读 → 编辑（由左往右）
-  .source-editor-wrapper  animationName=lmd-mode-slide-in-from-left  duration=380ms
-    0%    left=-729     tx=-1008
-    25%   left=-130     tx=-408.99
-    50%   left=150.88   tx=-128.12
-    75%   left=254.43   tx=-24.57
-    100%  left=279      tx=0
-  .split-preview-shell 同动画同曲线（左右屏一起滑）
+编辑后漂移（14/14）
+  右侧预览就绪前：Δ行 n/a（贴标 0）
+  就绪后 1600ms 内：Δ行 0.57 / 0.77 / 0.86（三个滚动位置）
+  反复往返 20 轮：阅读面 0.00px、编辑面 0.00px、中央块 20/20 完全一致
 
-编辑 → 阅读（由右往左）
-  .editor-container  animationName=lmd-mode-slide-in-from-right  duration=380ms
-    0%    left=2301     tx=2022
-    25%   left=1099.43  tx=820.43
-    50%   left=536.01   tx=257.01
-    75%   left=328.29   tx=49.29
-    100%  left=279      tx=0
+跨模式撤销（13/13）
+  撤销前 行196「第 25.1 段…」 → 撤销后 行196「第 25.1 段…」   ← 内容不跳走
+  贴底中间态样本 0（两次撤销共 61×2 帧）
+  撤销后距底 9549px；切回阅读面距底 5113px
 
-滚动对齐：连切 5 轮，阅读面 5/5、编辑面 5/5，最大偏移 0.00px，无单调累积
-属性清理：切换瞬间 to-edit → +200ms 仍 to-edit → +700ms hasAttribute=false
-reduced-motion：transform 全程 none、动画实例 0，模式照常切换
+异步对齐（7/7）
+  未编辑：t480ms Δ0.11 → t1000/1600ms Δ0.4
+  编辑后：t160ms Δ9.36（公式尚未渲染，几何未定型）→ t480ms 起 Δ0.36 并收敛
 ```
-
-### 五条反事实（证明因果，不是"改完碰巧好了"）
-
-| 场景 | 折起 height | 折起 visibility | 判定 |
-|---|---|---|---|
-| C1 旧 bug 基线（`max-height:0` + visibility 立刻） | 稳定帧 0 / t90 1.7ms | 3ms | bug 复现 |
-| C2 只修次因（`max-height:0` + visibility 延迟） | 稳定帧 0 / t90 1.8ms | 438ms | 次因非主因 |
-| C3 只修主因（不写 max-height + visibility 立刻） | 稳定帧 24 / t90 258ms | 1.7ms | 主因=height 钳死 |
-| C4 **错误修法**（`max-height:0` 且写进 transition） | 稳定帧 0 / t90 2.4ms | 438ms | **无效** |
-| C5 **正确修法**（不写 max-height + visibility 延迟） | 稳定帧 24 / t90 259ms | 439ms | **全对** |
 
 ---
 
-## 五、改动文件
+## 六、改动文件（本轮）
 
 ### 源码
 | 文件 | 改动 |
 |---|---|
-| `src/styles/modeSwitchSlide.css` | **新增**：两个方向的 `@keyframes`、时长变量、动画期屏蔽内部宽度过渡、裁切、reduced-motion 降级 |
-| `src/components/editor/EditorContainer.tsx` | `MODE_SLIDE_MS = 380` 常量；`modeAnim` 状态 + 代际 token；模式切换 effect 里按方向启动与收尾；`.editor-main-area` 挂 `data-lmd-mode-anim` |
-| `src/styles/readingFold.css` | ② 规则改 `:not(:where(...))`（特异性 0,5,0 → 0,1,0）；③ 规则**删除** `max-height` / `min-height` 及其 transition 项 |
-| `src/components/editor/readingFold.ts` | `FOLD_IFRAME_CSS` 折叠态同样删除 `max-height` / `min-height`；展开方向不写 max-height 过渡 |
+| `src/utils/textOffsetRemap.ts` | **新增**：`remapOffsetAcrossTextChange` / `clampOffset` / `decideSourceScrollRestore` / `PREVIEW_REALIGN_DELAYS` / `PREVIEW_REALIGN_WINDOW_MS` / `shouldContinuePreviewRealign`（全纯函数） |
+| `src/components/editor/EditorContainer.tsx` | ① 源码分支撤销/恢复改「内容锚点 + 偏移重映射」三段恢复，选区通道只恢复光标；② 分屏同步 effect 增加三层延时重对齐（固定时点 + `ResizeObserver` 布局驱动 + 贴标就绪主动触发），含就绪闸门/补试/代际/用户退场/清理；③ `traceScroll` 增加 `undo-source` / `preview-realign` / `-skip` / `-layout` 埋点 |
 
-### 测试
-- 新增：`src/__tests__/v0152-mode-slide.test.ts`（7）
-- 追加/反转：`src/__tests__/v0150-reading-fold.test.ts`（+2，102 → 104）：新增「折起方向 transition 不被展开基态压过（特异性回归锁）」与「折叠态不得声明 max-height」
+### 测试（全部新增）
+- `src/__tests__/v0153-text-offset-remap.test.ts`（23）
+- `src/__tests__/v0153-undo-anchor-restore.test.tsx`（21）
+- `src/__tests__/v0153-preview-realign.test.ts`（17）
 
-### 探针
-- 新增：`scripts/v0152-probe-mode-slide.mjs`（动画确定性步进验证）
-- 新增：`scripts/v0152-probe-fold-timing.mjs`（折叠按帧计时 + 五条反事实）
+### 探针（全部新增）
+- `scripts/v0153-probe-edit-then-toggle.mjs`（先编辑再往返 + 左右对齐 + 内容保真）
+- `scripts/v0153-probe-drift-matrix.mjs`（4 变体 × 8 轮，分离"重对齐"与"真漂移"）
+- `scripts/v0153-probe-undo-big.mjs`（阅读/源码两种撤销 + 逐帧 setter hook 抓栈）
+- `scripts/v0153-probe-align-async.mjs`（含 mermaid/katex 的对齐时序 + 块内比例口径）
+- `scripts/v0153-probe-scrollwriter.mjs`（诊断：谁在写 scrollTop）
 
 ---
 
-## 六、安装与重点试用
+## 七、安装与重点试用
 
 1. 优先用 NSIS 安装包覆盖安装；也可直接双击 `lightmd.exe` 免安装试用。
-2. **重点体验这两项**：
-   - **模式切换**：双击 Ctrl 在阅读 ↔ 编辑间切换。进入编辑时左栏 + 右屏应"从左往右滑过来"（380ms）；回阅读时文档"从右往左滑回"。反复连按应始终顺滑、不抖、不残留位移。
-   - **标题折叠**：点标题左侧三角。折起与展开应**一样慢、一样顺**（都是 440ms），内容应可见地收完再消失（不再"啪一下没了、只剩空白在收"）。编辑模式右侧预览里的折叠按钮同样如此。
+2. **重点验这两项**（都是用户本轮的原话场景）：
+   - **编辑后双击 Ctrl**：打开一份长文档 → 双击 Ctrl 进编辑 → **在正文里打几个字** →
+     双击 Ctrl 回阅读 → 反复切换多次。阅读焦点应始终停在同一处内容；
+     进编辑后右侧预览应在**一秒内**自动与左屏对齐（不需要手动滚一下）。
+   - **跨模式撤销**：阅读模式里改几处 → 切到编辑模式 → 再改几处 → 按 Ctrl+Z / Ctrl+Y
+     来回撤。文档**不应跳到底部、也不应来回抖**；眼前那一段内容应基本停在原处。
+     建议在含**公式 / 流程图 / 表格**的文档上也试一遍（这些内容异步渲染，对齐链路更吃紧）。
+3. 首轮的两项（模式切换滑入动画、标题折叠动效）保持不变，可一并回归。
 
-## 七、已知取舍（诚实声明）
+## 八、已知取舍（诚实声明）
 
-1. **只做进场动画、退场瞬间切换**：两个模式面互斥挂载，退场面在提交时已不可见。强行同时挂载会破坏滚动锚点采集（靠可见性判断当前面）。380ms 的进场位移已足以覆盖观感。
-2. **动画期间编辑区内部的宽度过渡被临时关闭**：避免与"右屏打开"的 0.42s 宽度过渡互相冲淡。窗口结束后自动恢复，之后开合预览仍是原来那套动画。
-3. **折叠动效仍依赖 `interpolate-size: allow-keywords`**（Chromium 129+ / 本机 WebView2 156 支持）；不支持的引擎退化为瞬时显隐。
-4. **`prefers-reduced-motion` 下两个动画都不播**（模式切换仍正常、折叠仍正确收放，只是没有过渡）。
-5. 沿用 v0.15.1 的全部既有取舍（撤销选区保护窗、阅读面撤销不恢复光标、全文翻译不入撤销栈、搜索高亮上限 2000 处等）。
+1. **本轮沿用同一个版本号 `0.15.2` 重新打包**（用户要求"继续打包到 0.15.2"）。文件名相同、
+   内容不同 → **装机/分发以本文件 SHA256 为准**，首轮旧包作废。
+2. **模式切换的退场仍是瞬切**（进场面 380ms 滑入）；这是首轮已声明的取舍，本轮未改。
+3. **右屏对齐是"最终收敛"，不是"全程逐帧无损"**：异步渲染（mermaid/katex/图片）期间几何本就不定型，
+   实测编辑后 160ms 仍可能有 ~9 行偏差，但 **480ms 内必收敛到 <0.5 行**且此后保持。
+   若把判据收成"任何时刻 ≤3 行"就要求等渲染完成才切换，会牺牲切换手感。
+4. **PM 侧 `beforeAnchor` 仍未接线**：阅读模式撤销后的**光标**不回现场（内容/滚动已由内容锚保住）。
+   这是 v0.15.1 就存在的既有取舍，本轮只补齐了滚动与内容，未补 PM 光标位。
+5. **源码面内容锚恢复是"视口中央那一行"粒度**：若撤销把那一行本身删掉，会贴到变更区间起点
+   （此时视口会向删除点靠拢 —— 这是正确行为，否则会凭空造一个位置）。
+6. 沿用 v0.15.1 的全部既有取舍（撤销选区保护窗、全文翻译不入撤销栈、搜索高亮上限 2000 处等）。
