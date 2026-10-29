@@ -21,10 +21,12 @@
 | `lightmd.exe`（免安装单文件，可直接双击） | 23.16 MB | `462F40BE5C78ECEBC974B6E1CA79537FEED4526B78266FE7DAE648C2DF20D95C` |
 
 **产物已验证**：
-- 三者都内联本次构建的前端产物（`dist/index.html` 指向 `index-DmxunjPq.js`，在 exe 字节流中实测命中）。
+- 三者都内联本次构建的前端产物（`dist/index.html` 指向 `index-BFnFLH4D.js`，在 exe 字节流中实测命中）。
 - 版本号四处一致：`package.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock` / `tauri.conf.json` 均为 `0.15.2`（**同一个版本号重新打包**，沿用首轮口径）。
 - 所有实机探针都直接跑这个 exe（内置 dist hash 校验，测到旧代码会中止）。
-- 全部探针在**最终这一个 exe** 上跑完：模式切换漂移 10/10、编辑后漂移 14/14、
+- **`release/v0.15.2/lightmd.exe`（实际分发的那一个文件）已单独重跑关键探针**：
+  异步对齐 7/7、撤销抖动 13/13，均 0 FAIL（内联校验命中 `index-BFnFLH4D.js`）。
+- 全部探针在最终 exe 上跑完：模式切换漂移 10/10、编辑后漂移 14/14、
   漂移矩阵 5/5、撤销抖动 13/13、异步对齐 7/7（对齐连跑 3 次均 7/7，排除偶发）。
 
 ---
