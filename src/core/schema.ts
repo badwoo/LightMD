@@ -231,10 +231,53 @@ const nodeSpecs: Record<string, NodeSpec> = {
        * （`v0.7.0-fix2-trailing-newline` 锁定了该往返行为），不能一刀切。
        */
       pad: { default: false },
+      /**
+       * v0.15.3 返修（缺陷 C）：**解析期还原的空行段落**（结构填充，不是用户内容）。
+       *
+       * ## 为什么必须能与"真实块"区分
+       * 解析器为**还原原文空行**会在顶层插入空段落（`parser.ts` 的两处：
+       * "头部/块间空段落还原"与"末尾空行还原"）。判据是 markdown-it 的 token 间距：
+       * 段间 **1 个空行** → `gap = 1` → 不插；段间 **2 个空行**（即 `\n\n\n`）→
+       * `gap = 2` → **插 1 个空段落**。所以一份用 `\n\n\n` 分段或 `---` 分段的文档，
+       * 顶层会多出成百个空段落。
+       * 而另一侧的块表（`topLevelBlockStartLines` / iframe 的 `data-src-line` /
+       * 源码 textarea 的行轴块表）只统计**真实渲染块**、不含这些空段落。
+       *
+       * 于是 `collectPmBlockGeometry` 数出来的下标与另一侧**系统性错位**
+       * （实测用户文档 `LightMD开发需求.md`：PM 顶层 **429** 块、其中 **126** 个是空行
+       * 段落，另一侧只有 **303** 块）。错位不是常数而是**逐块累积**，跨面按
+       * `blockIndex` 定位必然越走越偏；`blockIndex` 越界后又只能退回百分比
+       * → 用户看到「双击 Ctrl 切模式文档没有对齐」。
+       *
+       * ## 语义（与 `pad` 刻意相反）
+       * `emptyLine: true` 表示"这个空段落是解析器为还原原文空行造出来的"：
+       * - 它**必须参与序列化**（原文空行不能丢，凡丢掉就是内容损失 —— 与 `pad` 相反）；
+       * - 但它**不参与跨面块索引**（`collectPmBlockGeometry` 跳过它），
+       *   这样两侧下标口径一致；
+       * - 用户一旦在里面打字，插件清掉标记，它就成为普通段落（与 `pad` 同款做法，
+       *   见 `stripEmptyLineFlags`）。
+       */
+      emptyLine: { default: false },
     },
     parseDOM: [{ tag: "p" }],
-    toDOM(): DOMOutputSpec {
-      return ["p", 0];
+    toDOM(node: Node): DOMOutputSpec {
+      /**
+       * v0.15.3 返修（缺陷 C）：把**结构填充段落**的身份输出到 DOM，
+       * 让 `collectPmBlockGeometry` 能把它们从跨面块索引里剔除。
+       *
+       * 为什么用 DOM 属性而不是让几何采集函数去读 PM 节点：
+       * 采集函数只拿到 `Element`（`root.children`），拿不到 PM Node；
+       * 而 PM 的 `toDOM` 是唯一能把节点属性带到 DOM 的官方位置
+       * （与 heading 的 `id` 同款做法）。
+       *
+       * 两种结构段落都要标（口径必须一致，否则只跳过一种会让另一类继续错位）：
+       * - `emptyLine`：解析期还原原文空行造的空段落（参与序列化，不参与块索引）；
+       * - `pad`：末尾补位段落（不参与序列化，也不参与块索引）。
+       */
+      const attrs: Record<string, string> = {};
+      if (node.attrs.emptyLine === true) attrs["data-lmd-empty-line"] = "1";
+      if (node.attrs.pad === true) attrs["data-lmd-pad"] = "1";
+      return Object.keys(attrs).length > 0 ? ["p", attrs, 0] : ["p", 0];
     },
   },
 

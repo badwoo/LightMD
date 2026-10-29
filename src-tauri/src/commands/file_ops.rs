@@ -349,6 +349,40 @@ pub async fn exists(path: String) -> bool {
     PathBuf::from(&path).exists()
 }
 
+/// 构造 Windows `explorer.exe` 的 `/select,` 参数。
+///
+/// ## v0.15.3 修复：`/select,` 后面必须**紧跟**一个**带引号**的路径
+///
+/// explorer 不接受"把 `/select,` 与路径分开成两个参数"，也不接受
+/// `std::process::Command::arg()` 自动加的那层引号 —— 因为 `arg()` 生成的是
+/// `"/select,C:\dir with space\a.md"`：**引号把 `/select,` 一起包住了**，
+/// explorer 于是把整个字符串当成**一个路径**，既不是选项也不是有效路径，
+/// 结果是**静默失败**：spawn 返回 Ok、无错误提示、资源管理器什么都不做
+/// （这正是用户报的"点了没反应"）。
+///
+/// ### 触发条件：路径**含空格**（实测边界，别扩大也别缩小）
+/// `Command::arg()` 走 MSVCRT 引用规则，**只有参数含空格/制表符才加引号**。
+/// 所以在旧实现下：
+/// - 路径**不含空格**（含纯中文目录）→ 不加引号 → `/select,C:\...` 能work ✅
+/// - 路径**含空格**（`D:\AI\markdown view\...`、`LightMD 测试 目录`、
+///   `Program Files` 等）→ 整串加引号 → **静默失败** ❌ ← 用户踩的就是这种
+///
+/// 实测四种形态（目标 `...\LightMD 测试 目录\中文 文件.md`，用 Shell.Application
+/// 枚举窗口 + SelectedItems 判定，而非看进程名）：
+/// - `arg("/select,"+path)`（旧实现）  → spawn Ok，无窗口、无选中  ❌
+/// - `arg("/select,").arg(path)` 两参   → spawn Ok，无窗口、无选中  ❌
+/// - `/select,C:\space path`（无引号）  → 空格切断路径            ❌
+/// - **`raw_arg("/select,\"path\"")`**  → 打开父目录并选中目标文件 ✅
+///
+/// 且该形态对「含空格/中文的 `\` 路径」「正斜杠路径」「无空格路径」均有效。
+///
+/// 因此这里必须用 `raw_arg`：它按字面量塞进命令行，**不**做 MSVCRT 引用，
+/// 保证 explorer 收到的是 `/select,"<路径>"`（引号只包住路径本身）。
+#[cfg(target_os = "windows")]
+fn explorer_select_arg(path: &std::path::Path) -> String {
+    format!("/select,\"{}\"", path.display())
+}
+
 /// 在系统资源管理器中显示并选中指定文件（N5：右键菜单"打开文件所在目录"）
 #[tauri::command]
 pub async fn reveal_in_folder(path: String) -> Result<(), String> {
@@ -358,9 +392,12 @@ pub async fn reveal_in_folder(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // explorer /select,<path>：打开父目录并选中该文件
+        use std::os::windows::process::CommandExt;
+        // v0.15.3：必须用 raw_arg —— 见 explorer_select_arg 的实测记录。
+        // 旧写法 `.arg(format!("/select,{}", ...))` 会让 explorer 静默失败
+        // （含空格的路径尤其必踩：引号把 `/select,` 也包进去了）。
         std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path.display()))
+            .raw_arg(explorer_select_arg(&path))
             .spawn()
             .map_err(|e| format!("打开资源管理器失败: {}", e))?;
     }
@@ -401,6 +438,40 @@ pub struct FileEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.15.3 修复：explorer 的 `/select,` 参数必须是 **`/select,"<路径>"`** 形态
+    /// （`/select,` 后紧跟一个带引号的路径，引号只包住路径本身）。
+    ///
+    /// 回归意义：旧实现 `.arg(format!("/select,{}", path))` 让 Command 按 MSVCRT
+    /// 规则把**整串**（含 `/select,`）包进引号 → explorer 把整串当路径 → 静默失败
+    /// （用户报的"右键打开文件所在目录没反应"）。本测试锁死参数形态，防止改回去。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn explorer_select_arg_quotes_only_the_path() {
+        // 含空格 + 中文的真实场景路径
+        let p = std::path::PathBuf::from(r"C:\Users\x\Temp\LightMD 测试 目录\中文 文件.md");
+        let arg = explorer_select_arg(&p);
+        assert_eq!(
+            arg,
+            r#"/select,"C:\Users\x\Temp\LightMD 测试 目录\中文 文件.md""#,
+            "explorer 参数必须是 /select,\"<path>\"（引号只包路径）"
+        );
+        // 关键契约：`/select,` 后立刻是引号，且引号成对包住整条路径
+        assert!(arg.starts_with("/select,\""), "必须紧跟引号: {}", arg);
+        assert!(arg.ends_with('"'), "必须以引号收尾: {}", arg);
+        // 不得出现「引号把 /select, 也包进去」的错误形态
+        assert!(
+            !arg.starts_with("\"/select,"),
+            "引号不得包住 /select, 本身（旧 bug 的形态）: {}",
+            arg
+        );
+        // 不得出现无引号的裸路径形态（含空格必被切断）
+        assert!(
+            !arg.starts_with("/select,C:"),
+            "路径必须带引号（含空格的路径无引号会被切断）: {}",
+            arg
+        );
+    }
 
     /// v0.8.2 修复：Windows 扩展长度前缀必须被剥掉，
     /// 否则前端相对路径图片会被编码成 `%3F%2F...` 导致渲染失败。

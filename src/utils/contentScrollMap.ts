@@ -452,7 +452,7 @@ export function resolveAnchorBlock(
     ? clamp(anchor.ratioWithinBlock, 0, 1)
     : 0;
 
-  // ① headingId 优先
+  // ① headingId 优先（内容编辑后仍稳定；sourceLine 会被前面插入的内容推偏）
   if (anchor.headingId) {
     const matches = vis.filter((b) => b.headingId === anchor.headingId);
     if (matches.length > 0) {
@@ -466,7 +466,17 @@ export function resolveAnchorBlock(
     }
   }
 
-  // ② blockIndex
+  /**
+   * ② blockIndex（主力），命中后由 `finalizeIndexMatch` 用 `sourceLine` 做纠偏。
+   *
+   * v0.15.3 返修（缺陷 C）的**真正修法在这里的前置条件**：
+   * 之前 PM 面采不到 `sourceLine`（`collectPmBlockGeometry` 没填），
+   * 于是 `finalizeIndexMatch` 的校验**永远在第一步 `if (!isNum(...)) return direct`
+   * 就放行** —— 纠偏形同虚设；一旦两侧下标口径不同（阅读面多出 126 个还原空行的
+   * 结构段落），跨面定位就整体位移、再也纠不回来。
+   * 现在 PM 面由 `src-line-tag` 贴标、且结构段落被剔除，双向都有 sourceLine，
+   * 这条纠偏路径才真正生效（见下面 ⑤ 兜底）。
+   */
   const direct = isNum(anchor.blockIndex)
     ? blocks.find((b) => b && b.index === anchor.blockIndex)
     : undefined;
@@ -756,9 +766,45 @@ export function restoreContentAnchor(
 //   `.mermaidTooltip` 等），否则下标与 `topLevelBlockStartLines` 错位 —— 复用
 //   `blockScrollAlign.isAnchorablePreviewChild` 的同一判据，不再复制一份。
 
+/**
+ * v0.15.3 返修（缺陷 C）：结构段落（解析期还原空行 / 尾部补位）在 DOM 上的标记属性。
+ *
+ * 与 `schema.ts` 的 `paragraph.toDOM` 和 `trailing-paragraph.ts` 的补位段落
+ * 保持同一份字符常量（避免拼写漂移）。
+ */
+const EMPTY_LINE_ATTR = "data-lmd-empty-line";
+/** 末尾补位段落（`trailing-paragraph.ts` 的 `pad`）在 DOM 上的标记属性 */
+const PAD_ATTR = "data-lmd-pad";
+/** 顶层块的源码起始行（`src-line-tag.ts` 贴标写入；iframe 面用 `data-src-line`） */
+const SRC_LINE_ATTR = "data-src-line";
+
+/** 该顶层元素是否"结构填充段落"（不参与跨面块索引） */
+function isStructuralFillElement(el: Element): boolean {
+  return el.hasAttribute(EMPTY_LINE_ATTR) || el.hasAttribute(PAD_ATTR);
+}
+
 /** PM 阅读面：把顶层块量成 BlockGeometry[]（scrollTop 为 0 时的内容坐标） */
 export function collectPmBlockGeometry(
   scroller: Element | null | undefined,
+  opts?: {
+    /**
+     * v0.15.3 返修（缺陷 C）：**是否跳过结构填充段落**（默认 `true`）。
+     *
+     * ## 为什么必须跳过（「双击 Ctrl 切模式文档没有对齐」的真因）
+     * 解析器为还原原文空行会在顶层插空段落（段间 `\n\n\n` → 多 1 个；
+     * 末尾空行同理），而另一侧的块表（`topLevelBlockStartLines` /
+     * iframe `data-src-line` / 源码行轴块表）**只统计真实渲染块**。
+     * 若不跳过，两侧 `index` 会**逐块累积错位**：
+     * 实测用户文档 `LightMD开发需求.md` —— PM 顶层 **429** 块（其中 **126** 个是
+     * 空行段落），另一侧只有 **303** 块。跨面按 `blockIndex` 定位必然越走越偏，
+     * 越界后只能退回百分比（实测阅读面 `scrollTop` 31330 → 21898，偏 9432px）。
+     *
+     * 判据用 DOM 上的 `data-lmd-empty-line` / pad 标记（`toDOM` 写入），
+     * **不用"是否空段落"** —— 用户自己敲出来的空段落也是"空"，但它**是真实块**
+     * （另一侧同样会渲染出一个空块），不能排除。
+     */
+    skipStructuralFill?: boolean;
+  },
 ): BlockGeometry[] | null {
   if (!scroller) return null;
   const root = scroller.querySelector?.(".ProseMirror") as HTMLElement | null;
@@ -766,14 +812,28 @@ export function collectPmBlockGeometry(
   const scrollerRect = scroller.getBoundingClientRect();
   // 内容坐标 = 元素相对 scroller 视口的 top + 当前 scrollTop
   const scrollTop = Number((scroller as HTMLElement).scrollTop) || 0;
+  const skipFill = opts?.skipStructuralFill !== false;
   const out: BlockGeometry[] = [];
   let index = 0;
   for (const el of Array.from(root.children) as HTMLElement[]) {
+    // v0.15.3（缺陷 C）：跳过结构填充段落（emptyLine / pad）—— 它们不参与跨面块索引
+    if (skipFill && isStructuralFillElement(el)) continue;
     const rect = el.getBoundingClientRect();
     if (!(rect.height >= 0)) continue;
     const top = rect.top - scrollerRect.top + scrollTop;
     const headingId = el.getAttribute("data-lmd-fold-id") || el.id || undefined;
     const levelRaw = el.tagName && /^H([1-6])$/.exec(el.tagName);
+    /**
+     * v0.15.3（缺陷 C 配套）：**给 PM 面补上 `sourceLine`**。
+     *
+     * 之前只有 iframe 面有（`data-src-line`）、源码面有（`blockGeometryFromLineAxis`），
+     * PM 面没有 → 从阅读面采集的锚点缺这道跨面权威坐标：
+     * `finalizeIndexMatch` 的校验永远直接放行、④ `resolveBySourceLine` 兜底永远不可用。
+     * 补上之后，一旦 `blockIndex` 口径不一致（例如上面那些结构段落），
+     * 两条纠偏路径都能按**源码行**把位置拉回来。
+     */
+    const srcLineRaw = el.getAttribute(SRC_LINE_ATTR);
+    const srcLine = srcLineRaw === null ? undefined : Number(srcLineRaw);
     out.push({
       index,
       top,
@@ -783,6 +843,7 @@ export function collectPmBlockGeometry(
       visible: !el.hasAttribute("data-lmd-fold-hidden") && rect.height > 0,
       headingId,
       headingLevel: levelRaw ? Number(levelRaw[1]) : undefined,
+      sourceLine: Number.isFinite(srcLine as number) ? (srcLine as number) : undefined,
     });
     index++;
   }

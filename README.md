@@ -450,6 +450,19 @@ npm run tauri build
 
 已知取舍：① 本轮**沿用 0.15.2 版本号重新打包**（用户要求），文件名相同、内容不同，以 `release/v0.15.2/RELEASE_NOTES.md` 的 SHA256 为准；② 右屏对齐是**最终收敛**（异步渲染期间几何不定型，实测编辑后 160ms 仍可能差 ~9 行，但 480ms 内收敛到 <0.5 行）；③ PM 侧 `beforeAnchor` 仍未接线，阅读模式撤销后的**光标**不回现场（内容/滚动已保住）。
 
+#### v0.15.2 第三轮返修（2026-10-29 晚，同版本号重新打包）
+
+**返修版 —— 又修掉两个真缺陷（用户以真实文档/真实操作报的）**
+
+| 问题 | 用户反馈 | 根因与修复 |
+| --- | --- | --- |
+| 用 `LightMD开发需求.md` 双击 Ctrl 切模式文档没对齐 | 「以这个文档为例，这个文档双击 ctrl 进行模式切换时文档就没有对齐」 | **跨面块定位用了两把尺子**：阅读面 `collectPmBlockGeometry` 数 `root.children` = **429 块**，另一侧（markdown 顶层块 / iframe `data-src-line` / 源码行轴）只数真实渲染块 = **303 块**，差的 **126** 个是解析器为还原原文空行造的空段落（段间 `\n\n\n` 或 `---` 处 `gap=2` → 多插 1 个）。错位**逐块累积**，而 PM 面恰好**没有 `sourceLine`** → `finalizeIndexMatch` 的纠偏永远放行、`resolveBySourceLine` 兜底永远不可用 → 只能退回百分比。实测阅读面 `scrollTop` 31330 → 21898（**偏 9432px**）。修法三层：① `schema` 加 attr `emptyLine`、`toDOM` 输出 `data-lmd-empty-line`/`data-lmd-pad`，`parser` 四处空段落标记，`collectPmBlockGeometry` 默认跳过 → PM 面 429 变 **303 === 303**；② 新增 `src-line-tag.ts` 用解析期 `blockSourceMap` 给每个顶层块贴 `data-src-line`（与 iframe 面**同名同义**），三面首次有了同源坐标系；③ `collectPmBlockGeometry` 读取它填 `BlockGeometry.sourceLine`。修复后：31330 → **31330**（完全回原处），左右视口顶 Δ行 **0.16/0.37/0.30** |
+| 左侧栏右键「打开文件所在目录」失效 | 「左侧栏打开的文件夹中打开的文件，右键'打开文件所在目录'失效了，没有跳转到对应的目录」 | **`explorer.exe` 的 `/select,` 参数被 MSVCRT 引用规则包住了**：旧代码 `.arg(format!("/select,{}", path))`，而 `Command::arg()` 在 Windows 上**参数含空格就整串加引号** → explorer 收到 `"/select,C:\...\a.md"`（引号把 `/select,` 也包进去）→ 整串被当路径 → **静默失败**（spawn 返回 Ok、无错误提示、资源管理器不动）。**只有路径含空格才挂**（本仓库 `D:\AI\markdown view` 自带空格，故必踩）。修法：新增 `explorer_select_arg()` 返回 `/select,"<路径>"`（引号只包路径）+ 改用 `.raw_arg()`（不做自动引用）+ Rust 回归单测。前端零改动（探针已确认 node.path 绝对、菜单正常、0 个 error toast、invoke 返回 Ok）。实测 5/5，关键判据：点击前 0 新窗口 → 点击后**恰好 1 个**且 `sel=["中文 文件.md"]` |
+
+验证（本轮最终 exe）：`tsc --noEmit` exit 0、`cargo check` exit 0、`cargo test` 通过；前端 **344 文件 / 6279 用例全绿**（净增 80）；实机探针 —— **用户实际文档对齐 12/12**、跨模式撤销 13/13、编辑后漂移 14/14、漂移矩阵 5/5、异步对齐 7/7、模式切换漂移回归 10/10、打开文件所在目录 5/5。
+
+已知取舍补充：① `data-src-line` / `data-lmd-empty-line` 是**纯渲染属性**，从不写回 Markdown（`\n\n\n` 空行由 `emptyLine` 段落照常序列化，往返逐字节相等有测试锁定）；② 跨面定位优先级仍为 `headingId` → `blockIndex`（+ `sourceLine` 纠偏）→ 按 `sourceLine` 兜底 —— 本轮只补"PM 面也有 sourceLine"这个**前置条件**，未改顺序（既有用例锁定 `via === "index"`）；③ 左右「视口中央」差几行是**度量口径差异**（左按逻辑行、右按视觉高度插值，长段落软换行时必然有差值，实测 6.84 行），故主判据用"视口顶 ≤3 行"；④ `reveal_in_folder` 修复只覆盖 Windows（`raw_arg` 是 Windows 专有 API）。
+
 ---
 
 ### v0.15.1（2026-10-28）

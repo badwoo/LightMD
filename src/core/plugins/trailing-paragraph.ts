@@ -69,6 +69,19 @@ export function isPadParagraph(node: PMNode): boolean {
   return node.type.name === "paragraph" && node.attrs.pad === true;
 }
 
+/**
+ * v0.15.3 返修（缺陷 C）：该段落是否为"解析期还原原文空行"造出来的结构段落。
+ *
+ * 与 `pad` 的区别（生命周期不同，别混）：
+ * - `pad`：**末尾补位**段落，**不写进 Markdown**（serializer 跳过）；
+ * - `emptyLine`：**还原原文空行**的段落，**必须写进 Markdown**（丢它就是丢内容）。
+ * 共同点：都**不参与跨面块索引**（`collectPmBlockGeometry` 跳过），
+ * 因为它们不对应 markdown-it 的顶层渲染块。
+ */
+export function isEmptyLineParagraph(node: PMNode): boolean {
+  return node.type.name === "paragraph" && node.attrs.emptyLine === true;
+}
+
 /** 创建一个带 pad 标记的空段落 */
 function createPadParagraph(): PMNode | null {
   const para = lightMDSchema.nodes.paragraph;
@@ -93,6 +106,24 @@ export function trailingParagraphPlugin(): Plugin {
         if (!isPadParagraph(node)) return true;
         if (node.content.size === 0) return true; // 仍是空的 → 保留标记
         tr.setNodeMarkup(pos, undefined, { ...node.attrs, pad: false });
+        changed = true;
+        return true;
+      });
+
+      /**
+       * ①b v0.15.3 返修（缺陷 C）：清掉"已经有内容"的 `emptyLine` 标记。
+       *
+       * 解析期只有**空**段落才会被打上 `emptyLine`。用户一旦在里面打字，
+       * 它就从"还原空行的结构段落"变成**真实的用户内容段落** ——
+       * 此时它必须重新进入跨面块索引（否则阅读面会漏掉这段内容，
+       * 左右对齐/撤销定位都会少一块）。
+       * 与 ① 的区别：`emptyLine` **参与序列化**，所以这里**不能**像 pad 那样丢弃，
+       * 只需把标记摘掉、让它变普通段落。
+       */
+      newState.doc.descendants((node, pos) => {
+        if (!isEmptyLineParagraph(node)) return true;
+        if (node.content.size === 0) return true; // 仍是空的 → 保留标记
+        tr.setNodeMarkup(pos, undefined, { ...node.attrs, emptyLine: false });
         changed = true;
         return true;
       });

@@ -627,12 +627,27 @@ const main = async () => {
           while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (tops[mid] <= centerY) lo = mid; else hi = mid - 1; }
         }
         const lines = ta.value.split("\\n");
+        /**
+         * ⚠️ 视口中央行**可能落在空行**上（段落之间本来就有空行）。
+         * 拿空行文本比较等于比较两个空串，既测不出"内容跳走"，
+         * 也会被 centerText 非空守卫误判（实测：撤销前 194 行 / 撤销后 171 行，
+         * 两者都是空行 —— 内容其实**完全没动**，差 23 行只因为上方删掉了 23 行）。
+         * 正确做法：从中心行向两侧找**最近的非空行**作内容标识
+         * （行号会因上方增删平移，文本不会）。
+         */
+        let probeLine = lo;
+        for (let k = 0; k <= 40; k++) {
+          const down = lo + k, up = lo - k;
+          if (down < lines.length && (lines[down] || "").trim()) { probeLine = down; break; }
+          if (up >= 0 && (lines[up] || "").trim()) { probeLine = up; break; }
+        }
         return {
           top: ta.scrollTop, max: Math.max(0, ta.scrollHeight - ta.clientHeight),
-          centerLine: lo, centerText: (lines[lo] || "").trim().slice(0, 24),
+          centerLine: lo, centerProbeLine: probeLine,
+          centerText: (lines[probeLine] || "").trim().slice(0, 24),
         };
       `);
-      log(`  撤销前视口（源码面 50%）：top=${viewBefore.top} max=${viewBefore.max} 中央行=${viewBefore.centerLine} "${viewBefore.centerText}"`);
+      log(`  撤销前视口（源码面 50%）：top=${viewBefore.top} max=${viewBefore.max} 中央行=${viewBefore.centerLine} 探针行=${viewBefore.centerProbeLine} "${viewBefore.centerText}"`);
 
       await ev(`window.__LMD_SCROLL_TRACE = []; return true;`);
       const undo1 = await measureAction(`__uKey("z", "KeyZ", true); return true;`);
@@ -689,9 +704,25 @@ const main = async () => {
           while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (tops[mid] <= centerY) lo = mid; else hi = mid - 1; }
         }
         const lines = ta.value.split("\\n");
+        /**
+         * ⚠️ 视口中央行**可能落在空行**上（段落之间本来就有空行）。
+         * 拿空行文本比较等于拿 "" === ""，既测不出"内容跳走"，也会被
+         * "centerText !== ''" 守卫误判为失败（实测：撤销前 194 行 / 撤销后 171 行，
+         * 两者都是空行 —— 内容其实**完全没动**，差 23 行只是因为上方删掉了 23 行）。
+         * 正确做法：从中心行向两侧找**最近的非空行**，用它的文本作内容标识
+         * （行号会因上方增删而平移，文本不会）。
+         */
+        let probeLine = lo;
+        for (let k = 0; k <= 40; k++) {
+          const up = lo - k, down = lo + k;
+          if (down < lines.length && (lines[down] || "").trim()) { probeLine = down; break; }
+          if (up >= 0 && (lines[up] || "").trim()) { probeLine = up; break; }
+        }
         return {
           top: ta.scrollTop, max: Math.max(0, ta.scrollHeight - ta.clientHeight),
-          centerLine: lo, centerText: (lines[lo] || "").trim().slice(0, 24),
+          centerLine: lo,
+          centerProbeLine: probeLine,
+          centerText: (lines[probeLine] || "").trim().slice(0, 24),
           gapToBottom: Math.max(0, ta.scrollHeight - ta.clientHeight) - ta.scrollTop,
         };
       `);

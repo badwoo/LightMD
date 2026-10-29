@@ -55,6 +55,8 @@ import { trailingParagraphPlugin, withTrailingParagraph } from "./plugins/traili
 import { createReadingFoldPlugin, readingFold, type ReadingFoldController } from "../components/editor/readingFold";
 // v0.7.0：AI 续写幽灵文本装饰（meta 驱动，无回调依赖）
 import { aiGhostPlugin } from "./plugins/ai-ghost";
+// v0.15.3 返修（缺陷 C）：阅读面顶层块 `data-src-line` 贴标（跨面块定位的权威坐标）
+import { srcLineTagPlugin } from "./plugins/src-line-tag";
 
 // ─── 搜索高亮 Plugin（问题1修复；v0.15.1 需求5 扩展为多区间 + 当前项）──────
 // 使用 ProseMirror Decoration 管理搜索高亮，不依赖编辑器焦点。
@@ -518,6 +520,10 @@ export function createEditor(options: EditorOptions): EditorView | null {
       // （折叠操作只 dispatch 空事务，docChanged=false）。
       // 未启用时 props.decorations 返回 DecorationSet.empty，常驻注册零开销。
       createReadingFoldPlugin({ controller: options.foldController ?? readingFold }),
+      // v0.15.3 返修（缺陷 C）：给阅读面顶层块贴 `data-src-line`，使
+      // `collectPmBlockGeometry` 也能拿到 `sourceLine` —— 跨面定位由此有了
+      // 「同源坐标系」兜底。不碰 doc、不进历史（纯 Decoration.node）。
+      srcLineTagPlugin(),
     ],
   });
 

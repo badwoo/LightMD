@@ -317,14 +317,18 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
       anchorMap = [token.map[0], endLine];
       if (prevEndLine === null) {
         for (let k = 0; k < token.map[0]; k++) {
-          const p = schema.nodes.paragraph.create();
+          // v0.15.3 返修（缺陷 C）：解析期还原的空行段落必须**标记**出来，
+          // 否则它会混进跨面块索引，让 PM 面与另一侧（markdown 顶层块 / iframe 的
+          // data-src-line / 源码行轴块表）系统性错位。见 schema 的 emptyLine 注释。
+          const p = schema.nodes.paragraph.create({ emptyLine: true });
           recordBlock(p, k, k + 1); // B6：头部空段落记录（每个对应 1 个空行）
           nodes.push(p);
         }
       } else {
         const gap = token.map[0] - prevEndLine;
         for (let k = 1; k < gap; k++) {
-          const p = schema.nodes.paragraph.create();
+          // v0.15.3 返修（缺陷 C）：同上，标记为"还原空行的结构段落"
+          const p = schema.nodes.paragraph.create({ emptyLine: true });
           recordBlock(p, prevEndLine + k, prevEndLine + k + 1); // B6：块间空段落记录
           nodes.push(p);
         }
@@ -402,14 +406,16 @@ function parseBlockTokens(tokens: Token[], start: number, end: number, headings?
       // 注：首个换行是最后一块的行终止符（"abc\n" → 0 空段，标准结尾无空行）。
       const tail = totalLines - prevEndLine;
       for (let k = 0; k < tail; k++) {
-        const p = schema.nodes.paragraph.create();
+        // v0.15.3 返修（缺陷 C）：末尾空行还原的段落同样标记（口径统一）
+        const p = schema.nodes.paragraph.create({ emptyLine: true });
         setBlockSource(p, { start: prevEndLine + k, end: prevEndLine + k + 1, source });
         nodes.push(p);
       }
     } else if (totalLines > 0) {
       // 无任何块 token：全空白文档，空行数 = 空段落数
       for (let k = 0; k < totalLines; k++) {
-        const p = schema.nodes.paragraph.create();
+        // v0.15.3 返修（缺陷 C）：全空白文档的空段落全部是"还原空行"，同样标记
+        const p = schema.nodes.paragraph.create({ emptyLine: true });
         setBlockSource(p, { start: k, end: k + 1, source });
         nodes.push(p);
       }
