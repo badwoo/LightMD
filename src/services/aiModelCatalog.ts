@@ -57,7 +57,15 @@ export const LOCAL_DEPLOYMENT_PRESETS: readonly LocalDeploymentPreset[] = Object
   {
     kind: "llamacpp",
     nameKey: "settings.ai.model.local.llamacpp",
-    baseUrl: "http://127.0.0.1:8080/v1",
+    /**
+     * v0.15.4：与 `aiProviderPresets.ts` 的 `llama-cpp` 预设**必须是同一个端口**。
+     *
+     * 上游 `tools/server/README.md` 的 `--port` 编译期默认值是 9931（Docker 示例惯用 8080）。
+     * 若这里写 8080，会与 LocalAI 撞 baseUrl —— 而 `inferProviderId`（本文件下方）是按
+     * `normalizedBase(preset.baseUrl) === base` 做端点精确匹配的，于是「用户自建的
+     * llama.cpp 档案」会被误判成 LocalAI 档案，服务商下拉里显示错名字。
+     */
+    baseUrl: "http://127.0.0.1:9931/v1",
     protocol: "openai-chat",
     authMode: "none",
     hintKey: "settings.ai.model.localHint.generic",

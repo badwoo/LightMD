@@ -22,6 +22,7 @@ import {
 import { aiConnectionService } from "../services/aiConnectionService";
 import {
   createCustomProfileDraft,
+  LOCAL_DEPLOYMENT_PRESETS,
   mergeModelCatalog,
   upsertProviderProfile,
 } from "../services/aiModelCatalog";
@@ -105,6 +106,54 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+describe("需求1 不变量：本地部署预设与「服务商」预设必须自洽", () => {
+  /**
+   * 为什么钉这条：`inferProviderId` 用端点**精确匹配**来反推 Provider。
+   * 两个本地运行时共用同一 baseUrl 时（llama.cpp 与 LocalAI 都曾写 8080），
+   * 用户自建档案会被判成另一个 Provider → 服务商下拉显示错名字。
+   */
+  it("LOCAL_DEPLOYMENT_PRESETS 的 baseUrl 互不重复", () => {
+    const seen = new Map<string, string>();
+    for (const preset of LOCAL_DEPLOYMENT_PRESETS) {
+      const base = preset.baseUrl.replace(/\/+$/, "").toLowerCase();
+      const dup = seen.get(base);
+      expect(dup, `baseUrl 重复：${preset.kind} 与 ${dup} 都是 ${base}`).toBeUndefined();
+      seen.set(base, preset.kind);
+    }
+  });
+
+  it("本地部署预设与 AI_PROVIDER_PRESETS 的同名运行时端点一致（llama.cpp 取上游默认 9931）", () => {
+    const pairs: Array<[string, string]> = [
+      ["ollama", "ollama"],
+      ["lmstudio", "lmstudio"],
+      ["vllm", "vllm"],
+      ["llamacpp", "llama-cpp"],
+      ["localai", "localai"],
+    ];
+    for (const [kind, presetId] of pairs) {
+      const local = LOCAL_DEPLOYMENT_PRESETS.find((p) => p.kind === kind);
+      const preset = findAiProviderPreset(presetId);
+      expect(local, `缺少本地部署预设 ${kind}`).toBeTruthy();
+      expect(preset, `缺少服务商预设 ${presetId}`).toBeTruthy();
+      expect(local!.baseUrl.replace(/\/+$/, "")).toBe(preset!.baseUrl.replace(/\/+$/, ""));
+    }
+  });
+
+  it("本地部署预设一律 authMode=none（本地服务无 API Key，optional 会白跑一次凭据解析）", () => {
+    for (const preset of LOCAL_DEPLOYMENT_PRESETS) {
+      expect(preset.authMode, `${preset.kind} 应为 none`).toBe("none");
+    }
+  });
+
+  it("服务商预设里的本地运行时同样 authMode=none", () => {
+    for (const presetId of ["ollama", "lmstudio", "vllm", "llama-cpp", "localai", "textgen-webui", "jan", "xinference", "sglang"]) {
+      const preset = findAiProviderPreset(presetId);
+      expect(preset, `缺少预设 ${presetId}`).toBeTruthy();
+      expect(preset!.authMode, `${presetId} 应为 none`).toBe("none");
+    }
+  });
+});
 
 describe("需求1：本地部署类型", () => {
   it("自定义页签提供本地部署类型，选中 Ollama 预填端点/协议/鉴权", () => {
@@ -217,6 +266,75 @@ describe("需求3：服务商下拉不泄漏自定义项", () => {
     expect(screen.getByRole("tab", { name: "settings.ai.model.tabs.provider" }).getAttribute("aria-selected"))
       .toBe("true");
     expect(screen.queryByTestId("ai-model-provider-custom-hint")).toBeNull();
+  });
+});
+
+describe("task-4：服务商下拉按 optgroup 分组", () => {
+  it("下拉有 3 个 optgroup（本地/国内/国际），label 走 i18n 且互不相同", () => {
+    setAi([presetProfile("deepseek")]);
+    mount();
+
+    const select = screen.getByTestId("ai-model-provider") as HTMLSelectElement;
+    const groups = Array.from(select.querySelectorAll("optgroup"));
+    expect(groups.map((group) => group.dataset.testid)).toEqual([
+      "ai-model-provider-group-local",
+      "ai-model-provider-group-cn",
+      "ai-model-provider-group-intl",
+    ]);
+    // 本文件 mock 了 useT 为恒等函数，所以 label 就是 i18n key 本身。
+    expect(groups.map((group) => group.label)).toEqual([
+      "settings.ai.model.providerGroup.local",
+      "settings.ai.model.providerGroup.cn",
+      "settings.ai.model.providerGroup.intl",
+    ]);
+  });
+
+  it("optgroup 内的 option 仍覆盖全部预设（既有「只含预设 id」断言在新结构下成立）", () => {
+    setAi([presetProfile("ollama")]);
+    mount();
+
+    const select = screen.getByTestId("ai-model-provider") as HTMLSelectElement;
+    // 每条 option 都必须挂在某个 optgroup 下，不能散落在 select 顶层。
+    const strayOptions = Array.from(select.children).filter((child) => child.tagName === "OPTION");
+    expect(strayOptions).toHaveLength(0);
+
+    const groupedIds = Array.from(select.querySelectorAll("optgroup option")).map(
+      (option) => (option as HTMLOptionElement).value,
+    );
+    expect(groupedIds.sort()).toEqual(AI_PROVIDER_PRESETS.map((preset) => preset.id).sort());
+  });
+
+  it("分组数量与预设的 group 字段一致（不另写第二份 id→分组清单）", () => {
+    setAi([presetProfile("ollama")]);
+    mount();
+
+    const select = screen.getByTestId("ai-model-provider") as HTMLSelectElement;
+    for (const group of Array.from(select.querySelectorAll("optgroup"))) {
+      const key = group.dataset.testid!.replace("ai-model-provider-group-", "") as
+        "local" | "cn" | "intl";
+      const expected = AI_PROVIDER_PRESETS.filter((preset) => preset.group === key).map(
+        (preset) => preset.id,
+      );
+      const actual = Array.from(group.querySelectorAll("option")).map(
+        (option) => (option as HTMLOptionElement).value,
+      );
+      expect(actual, `分组 ${key} 的成员应与 preset.group 字段一致`).toEqual(expected);
+    }
+  });
+
+  it("切换分组内任一项仍能正确建立档案（optgroup 不影响 onChange 取值）", () => {
+    setAi([presetProfile("ollama")]);
+    mount();
+
+    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "xai" } });
+    expect(currentAi().activeProfileId).toBe("xai");
+    expect(activeProfile().providerId).toBe("xai");
+    expect(activeProfile().baseUrl).toBe("https://api.x.ai/v1");
+
+    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "vllm" } });
+    expect(currentAi().activeProfileId).toBe("vllm");
+    expect(activeProfile().authMode).toBe("none");
+    expect(activeProfile().baseUrl).toBe("http://127.0.0.1:8000/v1");
   });
 });
 

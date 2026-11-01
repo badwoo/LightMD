@@ -16,8 +16,8 @@ import {
 } from "../../services/aiModelCatalog";
 import {
   AI_DEFAULT_PROVIDER_ID,
-  AI_PROVIDER_PRESETS,
   findAiProviderPreset,
+  groupAiProviderPresets,
 } from "../../services/aiProviderPresets";
 import {
   isLocalDeploymentKind,
@@ -548,7 +548,9 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
   const providerId = activeProfile ? inferProviderId(activeProfile) : AI_DEFAULT_PROVIDER_ID;
   const providerPreset = findAiProviderPreset(providerId);
   const activeIsCustom = Boolean(activeProfile && isCustomProfile(activeProfile));
-  // v0.15.4 需求 3：服务商下拉只列 AI_PROVIDER_PRESETS，自定义档案不会混进来。
+  // v0.15.4 需求 3：服务商下拉只列内置预设，自定义档案不会混进来。
+  // v0.15.4 task-4：按 preset 自带的 group 字段分 optgroup，不另写「id → 分组」清单。
+  const providerGroups = useMemo(() => groupAiProviderPresets(), []);
   const providerSelectValue = providerPreset ? providerId : AI_DEFAULT_PROVIDER_ID;
   const providerEditable = Boolean(activeProfile) && !activeIsCustom;
   const selectedModel = activeProfile?.modelCatalog?.find((entry) => entry.id === activeProfile.model);
@@ -645,8 +647,16 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
                 onChange={(event) => handleProviderChange(event.target.value)}
                 data-testid="ai-model-provider"
               >
-                {AI_PROVIDER_PRESETS.map((preset) => (
-                  <option key={preset.id} value={preset.id}>{t(preset.nameKey)}</option>
+                {providerGroups.map((section) => (
+                  <optgroup
+                    key={section.group}
+                    label={t(section.labelKey)}
+                    data-testid={`ai-model-provider-group-${section.group}`}
+                  >
+                    {section.presets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>{t(preset.nameKey)}</option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
               {activeIsCustom && (
