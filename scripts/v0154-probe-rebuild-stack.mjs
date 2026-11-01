@@ -1,16 +1,24 @@
 /**
- * LightMD v0.15.4 —— **归因探针**：抓「整篇 ProseMirror 重建」的 JS 调用栈。
+ * LightMD v0.15.4 —— **归因探针**：抓「ProseMirror DOM 更新」的 JS 调用栈。
  *
- * 上游探针（`v0154-probe-rebuild.mjs`）已确认：阅读模式下**输入 1 个字符**或**按一次 Ctrl+Z**，
- * `.editor-container .ProseMirror` 的 161 个顶层子节点**全部被换掉**（存活 0/161）。
- * 这就是用户说的「文档自动刷新抖动一下」。
+ * ## ⚠️ 已废弃的早期结论（不要据此下判断）
+ * 本轮排查中曾有一个名为 `v0154-probe-rebuild.mjs` 的探针报告「输入 1 个字符就让
+ * 161 个顶层子节点全部被换掉（存活 0/161）」。**那个结论是探针自身缺陷造成的假阳性**：
+ * 它给 `.ProseMirror` 的子节点写 `data-rb-id` 属性，而 `attributes: true` 的
+ * MutationObserver 把 PM 自己的属性维护也记了进去，再配合"按 id 比对存活率"的算法，
+ * 得出"全灭"。同一手法在 jsdom 里对同一份 doc 直接验证是「6 → 6，同引用 6」，
+ * 即正常编辑只替换被改动的那一个块。该探针已删除。
  *
- * 本探针用最直接的办法归因：hook `Node.prototype.insertBefore / removeChild / replaceChild`，
- * 只对 `.ProseMirror` 目标的调用记录 `new Error().stack`。整篇重建时第一个到达的调用栈
- * 就是真凶（PM 的 DOM 更新器在 `updateState` 内同步跑，栈里能直接看到调用者）。
+ * ## 本探针的真实用途（保留能力，不再作为验收依据）
+ * 它 hook `Node.prototype.insertBefore / removeChild / replaceChild`，对
+ * `.editor-container .ProseMirror` 目标的调用记录调用栈 —— 用来回答"**是谁**在写
+ * 滚动/更新 DOM"，而不是"换了多少个节点"。本轮真正定位到的两个抖动写入者
+ * （`restorePreviewScrollFromAnchor` 的 apply 与 keyup 的 `scrollToVisible`）
+ * 就是用同类手法抓出来的，验收依据是
+ * `scripts/v0154-probe-real-keys.mjs` 的**内容坐标**序列（它不受 DOM 重建影响）。
  *
  * 用法：node scripts/v0154-probe-rebuild-stack.mjs
- * 环境变量：V0154S_PORT（默认 9305）、V0154S_EXE、V0154S_ACTION=type|undo
+ * 环境变量：V0154S_PORT（默认 9305）、V0154S_EXE、V0154S_ACTION=type|undo|union
  */
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
