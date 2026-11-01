@@ -20,11 +20,13 @@ import {
   groupAiProviderPresets,
 } from "../../services/aiProviderPresets";
 import {
+  isAiProfileSource,
   isLocalDeploymentKind,
   LOCAL_DEPLOYMENT_KINDS,
   validateAiConnectionProfile,
   type AiConnectionProfile,
   type AiModelCatalogEntry,
+  type AiProfileSource,
   type AiSettings,
   type ApiProtocol,
   type LocalDeploymentKind,
@@ -74,8 +76,41 @@ function asCustomDraft(profile: AiConnectionProfile): AiConnectionProfile {
   return { ...cloneProfile(profile), providerId: inferProviderId(profile) };
 }
 
+/**
+ * v0.15.5 问题1：判定档案是否属于「自定义」页签。
+ *
+ * **以 `source` 标记为准，而不是 providerId 是否撞预设 id**。
+ * 0.15.4 的旧口径 `!findAiProviderPreset(inferProviderId(profile))` 会让
+ * 「Provider ID 恰好写成 deepseek 的自定义档案」被判成预设 → 配置在两个页签都消失
+ * （这正是用户反馈的「配置完就看不到这条记录」）。
+ *
+ * 没有 `source` 的老档案（0.15.5 之前写入 persist 的）走下面的兼容推断：
+ * - 有 providerId：与 0.15.4 完全一致（providerId 是用户显式写的，尊重它）；
+ * - 无 providerId 且端点命中某预设：**只有预设建档才会用的 id 形态**才算预设
+ *   （`upsertProviderProfile` 用 `preset.id` 或 `preset.id-<随机后缀>` 作为档案 id，
+ *   旧迁移用 `ai-default` + name 命中），否则视为「用户手填端点撞预设」的自定义档案——
+ *   这类档案 0.15.4 会被判成预设，从而在自定义列表里彻底消失。
+ * - 其它（端点不命中任何预设）→ 自定义。
+ */
 function isCustomProfile(profile: AiConnectionProfile): boolean {
-  return !findAiProviderPreset(inferProviderId(profile));
+  if (isAiProfileSource(profile.source)) return profile.source === "custom";
+  if (profile.providerId) return !findAiProviderPreset(inferProviderId(profile));
+  const inferred = inferProviderId(profile);
+  const preset = findAiProviderPreset(inferred);
+  if (!preset) return true;
+  // 无 providerId 但端点撞预设：按「id 是否像预设建档产物」区分。
+  if (profile.id === preset.id) return false;
+  if (profile.id.startsWith(`${preset.id}-`)) return false;
+  if (profile.id === "ai-default" && profile.name === preset.id) return false;
+  return true;
+}
+
+/** 把某条档案标记为来源；已带合法 source 时原样返回（不覆盖）。 */
+function withProfileSource(
+  profile: AiConnectionProfile,
+  source: AiProfileSource,
+): AiConnectionProfile {
+  return isAiProfileSource(profile.source) ? profile : { ...profile, source };
 }
 
 function clampOutputTokens(maxOutputTokens: number, contextWindowTokens: number): number {
@@ -169,7 +204,14 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
     const latest = useSettingsStore.getState().ai ?? emptyAiSettings();
     if (latest.profiles.length > 0) return;
     const next = upsertProviderProfile(latest, preset, t(preset.nameKey));
-    setAiSettings(next.settings);
+    // v0.15.5：内置预设建出的档案必须打 source:"preset"，否则「撞预设 id 的自定义档案」
+    // 与「真预设档案」在旧口径下无法区分。
+    setAiSettings({
+      ...next.settings,
+      profiles: next.settings.profiles.map((profile) =>
+        profile.id === next.profile.id ? withProfileSource(profile, "preset") : profile
+      ),
+    });
   }, [profiles.length, setAiSettings, t]);
 
   const effectiveCustomCredentialId = customDraft.credentialId?.trim()
@@ -221,7 +263,14 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
     if (!preset) return;
     const latest = useSettingsStore.getState().ai ?? emptyAiSettings();
     const next = upsertProviderProfile(latest, preset, t(preset.nameKey));
-    setAiSettings(next.settings);
+    // v0.15.5 问题1：只有「从服务商下拉切过来」这条路径才可能是预设在用，
+    // 因此这里显式打 source:"preset"（已有合法 source 的档案保持原值）。
+    setAiSettings({
+      ...next.settings,
+      profiles: next.settings.profiles.map((profile) =>
+        profile.id === next.profile.id ? withProfileSource(profile, "preset") : profile
+      ),
+    });
     setProviderKeyDraft({ credentialId: "", value: "" });
     setProviderNotice(null);
   }, [setAiSettings, t]);
@@ -307,20 +356,89 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
     }
   }, [activeProfile, providerKeyBusy, store]);
 
-  const loadCustomDraft = useCallback((profileId: string) => {
-    if (!profileId) {
-      setCustomDraft(createCustomProfileDraft());
-    } else {
-      const latest = useSettingsStore.getState().ai ?? emptyAiSettings();
-      const profile = latest.profiles.find((item) => item.id === profileId);
-      if (profile && isCustomProfile(profile)) setCustomDraft(asCustomDraft(profile));
+  const patchCustom = useCallback((patch: Partial<AiConnectionProfile>) => {
+    setCustomDraft((previous) => ({ ...previous, ...patch }));
+    setCustomNotice(null);
+  }, []);
+
+  /**
+   * v0.15.5 问题1（需求3）：删除一条自定义档案。
+   *
+   * 三条不变量（缺一条都会让 UI 出现悬空/幽灵状态）：
+   * 1. 若删的是当前启用档案，`activeProfileId` 必须移交——优先回落到本地 Ollama
+   *    档案（与 `AI_DEFAULT_PROVIDER_ID` 兜底一致）；没有 Ollama 档案就现场建一个；
+   * 2. 若正编辑的草稿就是被删档案，草稿重置为「新建」，避免继续编辑一条已不存在的记录；
+   * 3. 清掉该档案的凭据槽（`store.clear`），失败只记日志不阻断（凭据管理器不可用时
+   *    删除配置仍应成功）。
+   */
+  const handleDeleteCustomProfile = useCallback(async (profileId: string) => {
+    const latest = useSettingsStore.getState().ai ?? emptyAiSettings();
+    const target = latest.profiles.find((profile) => profile.id === profileId);
+    if (!target || !isCustomProfile(target)) return;
+
+    const remaining = latest.profiles.filter((profile) => profile.id !== profileId);
+    let nextProfiles = remaining;
+    let nextActiveProfileId = latest.activeProfileId;
+
+    if (latest.activeProfileId === profileId) {
+      const ollama = remaining.find((profile) =>
+        inferProviderId(profile) === AI_DEFAULT_PROVIDER_ID
+      );
+      if (ollama) {
+        nextActiveProfileId = ollama.id;
+      } else {
+        const preset = findAiProviderPreset(AI_DEFAULT_PROVIDER_ID);
+        if (preset) {
+          const created = upsertProviderProfile(
+            { ...latest, profiles: remaining, activeProfileId: "" },
+            preset,
+            t(preset.nameKey),
+          );
+          nextProfiles = created.settings.profiles.map((profile) =>
+            profile.id === created.profile.id ? withProfileSource(profile, "preset") : profile
+          );
+          nextActiveProfileId = created.profile.id;
+        } else {
+          // 兜底：没有任何可用档案时清空，绝不留悬空 id。
+          nextActiveProfileId = remaining[0]?.id ?? "";
+        }
+      }
     }
+
+    setAiSettings({ ...latest, profiles: nextProfiles, activeProfileId: nextActiveProfileId });
+
+    // 草稿正指向被删档案 → 回到「新建」。
+    if (customDraft.id === profileId) {
+      setCustomDraft(createCustomProfileDraft());
+      setCustomKeyDraft({ credentialId: "", value: "" });
+    }
+    setCustomNotice(null);
+
+    // 凭据槽清理：失败容错，绝不阻断删除。
+    if (store.clear && target.authMode !== "none") {
+      try {
+        await store.clear(target.credentialId);
+        setKeyConfigured((previous) => ({ ...previous, [target.credentialId]: false }));
+      } catch {
+        /* 凭据管理器不可用 / 条目不存在：删除配置本身已经成功，忽略即可 */
+      }
+    }
+  }, [customDraft.id, setAiSettings, store, t]);
+
+  /** v0.15.5：新建自定义配置 —— 只换草稿，不落库（保存时才建档案）。 */
+  const handleNewCustomProfile = useCallback(() => {
+    setCustomDraft(createCustomProfileDraft());
     setCustomKeyDraft({ credentialId: "", value: "" });
     setCustomNotice(null);
   }, []);
 
-  const patchCustom = useCallback((patch: Partial<AiConnectionProfile>) => {
-    setCustomDraft((previous) => ({ ...previous, ...patch }));
+  /** 点击列表行 → 载入该档案到编辑区。 */
+  const handleSelectCustomProfile = useCallback((profileId: string) => {
+    const latest = useSettingsStore.getState().ai ?? emptyAiSettings();
+    const profile = latest.profiles.find((item) => item.id === profileId);
+    if (!profile || !isCustomProfile(profile)) return;
+    setCustomDraft(asCustomDraft(profile));
+    setCustomKeyDraft({ credentialId: "", value: "" });
     setCustomNotice(null);
   }, []);
 
@@ -504,6 +622,8 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
       baseUrl: customDraft.baseUrl.trim(),
       model: customDraft.model.trim(),
       modelCatalog: catalog,
+      // v0.15.5 问题1：自定义页签保存 → 永远算自定义，与 Provider ID 是否撞预设 id 无关。
+      source: "custom",
     };
     normalized = applyModelSelection(normalized, normalized.model);
     if (validateAiConnectionProfile(normalized).length > 0) {
@@ -575,19 +695,6 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
   const localHint = localKindValue
     ? t(`settings.ai.model.localHint.${localKindValue === "ollama" ? "ollama" : "generic"}`)
     : "";
-
-  /** v0.15.4 需求 6：「当前启用模型」= 服务商 - 模型名称 - 推理等级。 */
-  const activeSummary = useMemo(() => {
-    if (!activeProfile) return null;
-    const providerLabel = providerPreset
-      ? t(providerPreset.nameKey)
-      // 自定义 Provider 用「显示名称」，缺失退到 Provider ID。
-      : (activeProfile.name || activeProfile.providerId || activeProfile.id);
-    const modelLabel = activeProfile.modelCatalog?.find((entry) => entry.id === activeProfile.model)?.name
-      || activeProfile.model;
-    const reasoning = activeProfile.requestPolicy.reasoningEffort ?? "off";
-    return { providerLabel, modelLabel, reasoning };
-  }, [activeProfile, providerPreset, t]);
 
   const providerTabId = `${idPrefix}-provider-tab`;
   const customTabId = `${idPrefix}-custom-tab`;
@@ -846,23 +953,6 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
               {t(providerNotice.key)}
             </p>
           )}
-          {/* v0.15.4 需求 6：当前启用模型（服务商 - 模型名称 - 推理等级）。 */}
-          <div className="ai-model-active-summary" data-testid="ai-model-active-summary">
-            <span className="ai-model-active-summary-label">{t("settings.ai.model.active.title")}</span>
-            {activeSummary ? (
-              <span className="ai-model-active-summary-value">
-                <span data-testid="ai-model-active-provider">{activeSummary.providerLabel}</span>
-                <span className="ai-model-active-separator">-</span>
-                <span data-testid="ai-model-active-model">{activeSummary.modelLabel || t("settings.ai.model.active.empty")}</span>
-                <span className="ai-model-active-separator">-</span>
-                <span data-testid="ai-model-active-reasoning">{activeSummary.reasoning}</span>
-              </span>
-            ) : (
-              <span className="ai-model-active-summary-value is-empty" data-testid="ai-model-active-empty">
-                {t("settings.ai.model.active.none")}
-              </span>
-            )}
-          </div>
         </div>
       ) : (
         <div
@@ -872,31 +962,73 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
           className="ai-model-panel"
           data-testid="ai-model-custom-panel"
         >
-          <div className="ai-model-custom-picker">
-            <label htmlFor={`${idPrefix}-custom-profile`}>{t("settings.ai.model.custom.profile")}</label>
-            <div className="ai-model-inline">
-              <select
-                id={`${idPrefix}-custom-profile`}
-                className="settings-select"
-                value={customDraft.id}
-                onChange={(event) => loadCustomDraft(event.target.value)}
-                data-testid="ai-model-custom-profile"
-              >
-                <option value="">{t("settings.ai.model.custom.new")}</option>
-                {customProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>
-                ))}
-              </select>
+          {/* v0.15.5 问题1：下拉改为**条目列表**（名称 + Provider ID/端点摘要、点击载入、
+              行尾删除、当前启用行右侧绿色圆点）。 */}
+          <div className="ai-model-custom-list-block">
+            <div className="ai-model-custom-list-heading">
+              <span className="ai-model-custom-list-title">{t("settings.ai.model.custom.listTitle")}</span>
               <button
                 type="button"
                 className="ai-btn"
-                onClick={() => loadCustomDraft("")}
+                onClick={handleNewCustomProfile}
                 disabled={customIsNew}
                 data-testid="ai-model-custom-new"
               >
                 {t("settings.ai.model.custom.new")}
               </button>
             </div>
+            {!customProfiles.length ? (
+              <p className="ai-model-custom-list-empty" data-testid="ai-model-custom-list-empty">
+                {t("settings.ai.model.custom.listEmpty")}
+              </p>
+            ) : (
+              <ul className="ai-model-custom-list" data-testid="ai-model-custom-list">
+                {customProfiles.map((profile) => {
+                  const isActive = profile.id === activeProfile?.id;
+                  const isEditing = profile.id === customDraft.id;
+                  const summary = profile.name || profile.providerId || profile.id;
+                  return (
+                    <li
+                      key={profile.id}
+                      className={`ai-model-custom-item${isActive ? " is-active" : ""}${isEditing ? " is-editing" : ""}`}
+                      data-testid={`ai-model-custom-item-${profile.id}`}
+                    >
+                      <button
+                        type="button"
+                        className="ai-model-custom-item-button"
+                        onClick={() => handleSelectCustomProfile(profile.id)}
+                        aria-pressed={isEditing}
+                        data-testid={`ai-model-custom-item-select-${profile.id}`}
+                      >
+                        <span className="ai-model-custom-item-name">{summary}</span>
+                        <span className="ai-model-custom-item-meta">
+                          <span className="ai-model-custom-item-provider">{profile.providerId || profile.id}</span>
+                          <span className="ai-model-custom-item-endpoint">{profile.baseUrl}</span>
+                        </span>
+                      </button>
+                      {isActive && (
+                        <span
+                          className="ai-model-custom-item-active-dot"
+                          role="img"
+                          aria-label={t("settings.ai.model.custom.activeDotLabel")}
+                          title={t("settings.ai.model.custom.activeDotLabel")}
+                          data-testid={`ai-model-custom-item-active-${profile.id}`}
+                        />
+                      )}
+                      <button
+                        type="button"
+                        className="ai-btn ai-model-icon-button"
+                        onClick={() => handleDeleteCustomProfile(profile.id)}
+                        aria-label={t("settings.ai.model.custom.deleteProfile")}
+                        data-testid={`ai-model-custom-item-delete-${profile.id}`}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
 
           <div className="ai-model-tree">
@@ -1188,25 +1320,6 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
               {t(customNotice.key)}
             </p>
           )}
-          {/* 自定义页签同样展示当前启用模型（服务商显示名称 - 模型名称 - 推理等级）。 */}
-          <div className="ai-model-active-summary" data-testid="ai-model-custom-active-summary">
-            <span className="ai-model-active-summary-label">{t("settings.ai.model.active.title")}</span>
-            {activeSummary ? (
-              <span className="ai-model-active-summary-value">
-                <span data-testid="ai-model-custom-active-provider">{activeSummary.providerLabel}</span>
-                <span className="ai-model-active-separator">-</span>
-                <span data-testid="ai-model-custom-active-model">
-                  {activeSummary.modelLabel || t("settings.ai.model.active.empty")}
-                </span>
-                <span className="ai-model-active-separator">-</span>
-                <span data-testid="ai-model-custom-active-reasoning">{activeSummary.reasoning}</span>
-              </span>
-            ) : (
-              <span className="ai-model-active-summary-value is-empty">
-                {t("settings.ai.model.active.none")}
-              </span>
-            )}
-          </div>
         </div>
       )}
     </section>

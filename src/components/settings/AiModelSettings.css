@@ -304,6 +304,144 @@
   border: 1px solid color-mix(in srgb, var(--border-color) 65%, var(--error-color, #d9534f) 35%);
 }
 
+/* ── v0.15.5 问题1：自定义配置条目列表 ─────────────────────────
+ *
+ * 为什么不再用 <select>：用户明确要求「每个自定义配置对应一个条目，
+ * 可以点击编辑/删除，当前启用的条目右侧有绿色小亮点」——下拉无法承载删除与状态点。
+ */
+
+.ai-model-custom-list-block {
+  min-width: 0;
+  margin: 0 0 18px;
+}
+
+.ai-model-custom-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 9px;
+}
+
+.ai-model-custom-list-title {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.ai-model-custom-list-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.ai-model-custom-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-model-custom-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--bg-primary) 97%, var(--text-secondary) 3%);
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.ai-model-custom-item.is-editing {
+  border-color: var(--accent-color);
+}
+
+.ai-model-custom-item.is-active {
+  background: color-mix(in srgb, var(--bg-primary) 94%, var(--accent-color) 6%);
+}
+
+.ai-model-custom-item-button {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 4px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-model-custom-item-button:hover {
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--accent-color) 12%);
+}
+
+.ai-model-custom-item-button:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+.ai-model-custom-item-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-model-custom-item-meta {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ai-model-custom-item-provider {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+}
+
+.ai-model-custom-item-endpoint {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  opacity: 0.85;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 当前启用条目右侧的绿色小圆点（不只靠颜色：同时带 aria-label/role/图例文案）。 */
+.ai-model-custom-item-active-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  background: var(--success-color, #3c8b64);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success-color, #3c8b64) 24%, transparent);
+}
+
+.ai-model-custom-item .ai-model-icon-button {
+  flex: 0 0 auto;
+}
+
 .ai-model-custom-picker {
   min-width: 0;
   margin: 0 0 18px;

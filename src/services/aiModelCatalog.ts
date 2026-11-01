@@ -8,7 +8,7 @@ import {
   type LocalDeploymentKind,
 } from "./aiProfiles";
 import type { AiProviderPreset } from "./aiProviderPresets";
-import { AI_PROVIDER_PRESETS } from "./aiProviderPresets";
+import { AI_PROVIDER_PRESETS, findAiProviderPreset } from "./aiProviderPresets";
 
 export const CUSTOM_PROVIDER_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
@@ -257,5 +257,66 @@ export function createCustomProfileDraft(): AiConnectionProfile {
       includeStreamUsage: true,
     },
     modelCatalog: [],
+  };
+}
+
+/**
+ * v0.15.5 问题 3：「当前启用模型」摘要的**唯一**计算口径。
+ *
+ * 由 `AiModelSettings`（页签内旧位置，另一 teammate 会删）与
+ * `SettingsDialog`（「启用 AI 功能」总开关下方新位置）共用，
+ * 避免四处渲染各自算一遍导致文案漂移。
+ *
+ * 纯函数：不读 React、不读 store、不做 i18n 查表。i18n 由调用方负责——
+ * 内置服务商的名称是 `t(preset.nameKey)`，所以这里返回 `providerNameKey`，
+ * 调用方有 `t` 就 `t(providerNameKey)`，没有就退回 `providerLabel`（英文兜底名）。
+ */
+export interface ActiveProfileDescription {
+  /** 当前档案本身，便于调用方追加别的维度。 */
+  profile: AiConnectionProfile;
+  /** 内置服务商：i18n key（调用方想自己翻译时用）；自定义服务商为 undefined。 */
+  providerNameKey?: string;
+  /** 摘要第一段（已翻译的最终文案）：内置取 translate(nameKey)，自定义取显示名称。 */
+  providerLabel: string;
+  /** 摘要第二段：目录里的 name 优先，落回模型 id；无模型为空串（调用方显示占位）。 */
+  modelLabel: string;
+  /** 摘要第三段：`requestPolicy.reasoningEffort ?? "off"`，off 明确显示。 */
+  reasoning: string;
+}
+
+/**
+ * 从 `AiSettings` 解析「当前启用档案」并给出摘要三段。
+ *
+ * - 无档案 / 找不到 activeProfileId → 返回 null（UI 显示 `settings.ai.model.active.none`）
+ * - 自定义 Provider 的 providerLabel = `profile.name || profile.providerId || profile.id`
+ *   （需求口径是「显示名称」；缺失逐级退到 Provider ID、再退到档案 id）
+ * - 模型名优先目录 `name`（用户可改），落回 `model` 原始 id
+ * - 模型为空串时不编造名字，`modelLabel` 保持空串，由 UI 显示 `settings.ai.model.active.empty`
+ *
+ * `translate` 是可选的 `t` 注入：纯函数本身不 import i18n、不碰 React，
+ * 无 translator 时内置服务商退到 provider id（机器可读但不会崩）。
+ */
+export function describeActiveProfile(
+  settings: Pick<AiSettings, "profiles" | "activeProfileId"> | null | undefined,
+  translate?: (key: string) => string,
+): ActiveProfileDescription | null {
+  if (!settings || !Array.isArray(settings.profiles)) return null;
+  const profile = settings.profiles.find((item) => item.id === settings.activeProfileId);
+  if (!profile) return null;
+
+  const preset = findAiProviderPreset(inferProviderId(profile));
+  const providerLabel = preset
+    ? (translate ? translate(preset.nameKey) : preset.id)
+    : (profile.name || profile.providerId || profile.id);
+  const model = (profile.model ?? "").trim();
+  const modelLabel = model
+    ? (profile.modelCatalog?.find((entry) => entry.id === model)?.name || model)
+    : "";
+  return {
+    profile,
+    ...(preset ? { providerNameKey: preset.nameKey } : {}),
+    providerLabel,
+    modelLabel,
+    reasoning: profile.requestPolicy?.reasoningEffort ?? "off",
   };
 }

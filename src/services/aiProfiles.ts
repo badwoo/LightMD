@@ -32,6 +32,27 @@ export function isLocalDeploymentKind(value: unknown): value is LocalDeploymentK
   return typeof value === "string" && (LOCAL_DEPLOYMENT_KINDS as readonly string[]).includes(value);
 }
 
+/**
+ * v0.15.5 问题1：档案的**来源**标记。
+ *
+ * 为什么需要它：0.15.4 的 `isCustomProfile()` 靠 `providerId` 是否命中预设 id 来判定，
+ * 于是用户在自定义页签把 Provider ID 填成 `deepseek`（很容易，因为刚从服务商页签选过）
+ * 时，保存后会命中 `findAiProviderPreset("deepseek")` → 被判为非自定义 →
+ * 既不在自定义列表、服务商下拉又不列自定义项 → **配置在任何入口都看不到**。
+ * 同理，老档案 `providerId` 为空但 baseUrl 恰好等于某预设端点也会被误判。
+ *
+ * `source` 记录「这条档案当初是怎么建出来的」，与端点/providerId 无关：
+ * - `"preset"`：由内置服务商预设创建（切换服务商下拉产生）；
+ * - `"custom"`：由自定义页签保存产生。
+ * - 缺失 = 0.15.5 之前的老档案，回退到旧的端点推断口径（无需数据迁移）。
+ */
+export type AiProfileSource = "preset" | "custom";
+
+/** 宽松判定：持久化数据被改坏时按「未设置」处理，回退旧口径。 */
+export function isAiProfileSource(value: unknown): value is AiProfileSource {
+  return value === "preset" || value === "custom";
+}
+
 export interface AiRequestPolicy {
   tokenField: TokenField;
   /** undefined = 请求中不发送 temperature。 */
@@ -77,6 +98,11 @@ export interface AiConnectionProfile {
    * 该字段只影响模型列表探测，不影响请求组装。
    */
   localKind?: LocalDeploymentKind;
+  /**
+   * v0.15.5 问题1：档案来源（可选）。缺失的老档案由推断逻辑兜底。
+   * 详见 `AiProfileSource` 上的说明。
+   */
+  source?: AiProfileSource;
 }
 
 export interface AiSettings {
@@ -124,7 +150,8 @@ export type AiProfileValidationError =
   | "profile.temperature.invalid"
   | "profile.providerId.invalid"
   | "profile.modelCatalog.invalid"
-  | "profile.localKind.invalid";
+  | "profile.localKind.invalid"
+  | "profile.source.invalid";
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -250,6 +277,9 @@ export function validateAiConnectionProfile(profile: AiConnectionProfile): AiPro
   }
   if (profile.localKind !== undefined && !isLocalDeploymentKind(profile.localKind)) {
     errors.push("profile.localKind.invalid");
+  }
+  if (profile.source !== undefined && !isAiProfileSource(profile.source)) {
+    errors.push("profile.source.invalid");
   }
   if (!text(profile.baseUrl)) errors.push("profile.baseUrl.required");
   if (!text(profile.model)) errors.push("profile.model.required");

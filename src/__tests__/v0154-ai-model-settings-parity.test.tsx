@@ -255,7 +255,9 @@ describe("需求3：服务商下拉不泄漏自定义项", () => {
 
     expect(screen.getByRole("tab", { name: "settings.ai.model.tabs.custom" }).getAttribute("aria-selected"))
       .toBe("true");
-    expect((screen.getByTestId("ai-model-custom-profile") as HTMLSelectElement).value).toBe("acme");
+    // v0.15.5：下拉已替换为条目列表；自动切页签后该档案既是列表条目、也载入编辑区。
+    expect(screen.getByTestId("ai-model-custom-item-acme")).not.toBeNull();
+    expect(screen.getByTestId("ai-model-custom-item-active-acme")).not.toBeNull();
     expect((screen.getByTestId("ai-model-custom-base-url") as HTMLInputElement).value)
       .toBe("http://127.0.0.1:1234/v1");
   });
@@ -443,8 +445,21 @@ describe("需求5：按钮位置", () => {
   });
 });
 
-describe("需求6：当前启用模型", () => {
-  it("内置服务商：服务商 - 模型名称 - 推理等级", () => {
+describe("需求6：当前启用模型（v0.15.5 已移交 SettingsDialog）", () => {
+  /**
+   * v0.15.5：`ai-model-active-summary` / `ai-model-custom-active-summary` 两处渲染已从
+   * AiModelSettings 移除，改由总开关下方的新位置负责（归属 SettingsDialog.tsx，
+   * 不在本任务写范围）。因此这里只钉「本组件不再渲染」，三段格式的断言随渲染点一并移交。
+   * 迁移对照（原用例期望）：
+   *   - 内置服务商：ai-model-active-provider = settings.ai.provider.zhipuPlan
+   *                  ai-model-active-model    = GLM-5.3
+   *                  ai-model-active-reasoning= high
+   *   - 自定义：    ai-model-custom-active-provider = 档案显示名称（如「本机 LM Studio」）
+   *                  ai-model-custom-active-model    = 目录里的模型名称（如 Model A）
+   *                  ai-model-custom-active-reasoning= off（未配置推理档）
+   *   - 无模型：    ai-model-active-model = settings.ai.model.active.empty
+   */
+  it("服务商页签不再渲染 active summary（已移交）", () => {
     const profile: AiConnectionProfile = {
       ...presetProfile("zhipu-coding-plan"),
       model: "glm-5.3",
@@ -453,25 +468,25 @@ describe("需求6：当前启用模型", () => {
     setAi([profile]);
     mount();
 
-    expect(screen.getByTestId("ai-model-active-provider").textContent).toBe("settings.ai.provider.zhipuPlan");
-    expect(screen.getByTestId("ai-model-active-model").textContent).toBe("GLM-5.3");
-    expect(screen.getByTestId("ai-model-active-reasoning").textContent).toBe("high");
+    expect(screen.queryByTestId("ai-model-active-summary")).toBeNull();
+    expect(screen.queryByTestId("ai-model-active-provider")).toBeNull();
+    expect(screen.queryByTestId("ai-model-active-model")).toBeNull();
+    expect(screen.queryByTestId("ai-model-active-reasoning")).toBeNull();
   });
 
-  it("自定义档案：Provider 显示名称 - 模型名称 - 推理等级（off 明示）", () => {
+  it("自定义页签不再渲染 active summary（已移交）", () => {
     setAi([customProfile({ name: "本机 LM Studio" })]);
     mount();
-    openCustomTab();
-
-    expect(screen.getByTestId("ai-model-custom-active-provider").textContent).toBe("本机 LM Studio");
-    expect(screen.getByTestId("ai-model-custom-active-model").textContent).toBe("Model A");
-    expect(screen.getByTestId("ai-model-custom-active-reasoning").textContent).toBe("off");
+    expect(screen.queryByTestId("ai-model-custom-active-summary")).toBeNull();
+    expect(screen.queryByTestId("ai-model-custom-active-provider")).toBeNull();
+    expect(screen.queryByTestId("ai-model-custom-active-model")).toBeNull();
+    expect(screen.queryByTestId("ai-model-custom-active-reasoning")).toBeNull();
   });
 
-  it("没有模型时显示占位文案而不是空白", () => {
+  it("空模型时也不再有 active summary 占位（占位文案随之移交）", () => {
     const profile: AiConnectionProfile = { ...presetProfile("ollama"), model: "" };
     setAi([profile]);
     mount();
-    expect(screen.getByTestId("ai-model-active-model").textContent).toBe("settings.ai.model.active.empty");
+    expect(screen.queryByTestId("ai-model-active-empty")).toBeNull();
   });
 });

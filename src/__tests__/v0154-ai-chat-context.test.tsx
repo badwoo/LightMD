@@ -209,14 +209,23 @@ describe("v0.15.4 需求9：EditorContainer 接线契约", () => {
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 
-  it("【回归锁定】selectionchange 不再因焦点在对话窗内而整体 return", () => {
-    // 旧缺陷：`if (active?.closest?.(".ai-chat-dialog")) return;`
-    // 取对话接线区（约 5120~5480）而非全文件：其他功能区可能合法使用 activeElement
+  it("【回归锁定】selectionchange 不再因焦点/窗内 DOM 选区而整体 return", () => {
+    // 旧缺陷一：`if (active?.closest?.(".ai-chat-dialog")) return;`
+    // 取对话接线区而非全文件：其他功能区可能合法使用 activeElement
     const start = code.indexOf("AI 对话接线");
     const region = start >= 0 ? code.slice(start, start + 30000) : code;
     expect(region).not.toMatch(/active\?*\.closest\?*\.\("\.ai-chat-dialog"\)/);
-    // 新实现：只跳过「窗内自己的 DOM 选区」（isSelectionInsideChatDialog）
-    expect(code).toMatch(/isSelectionInsideChatDialog/);
+    /**
+     * 旧缺陷二（v0.15.5 用户实测再修）：
+     * v0.15.4 换成 `isSelectionInsideChatDialog()` 守卫后仍有问题 ——
+     * 它检查 DOM 选区，而用户「选完正文后点一下输入框」会让 DOM 选区落进对话窗，
+     * 于是回调整体 return，已经选好的正文永远不被应用（chip 停在「全文」）。
+     * 实机探针 M3 场景 100% 复现。因此该守卫也必须不存在：
+     * 正确判据是编辑器自己的选区签名（readChatSelection → planChatSelectionChange），
+     * 窗内拖选回答时编辑器签名不变，决策函数自然返回 null。
+     */
+    expect(code).not.toMatch(/isSelectionInsideChatDialog/);
+    expect(code).not.toMatch(/closest\?*\("\.ai-chat-dialog"\)/);
   });
 
   it("selectionchange 用 readChatSelection 读编辑器选区（与焦点无关）", () => {

@@ -12,7 +12,7 @@
  * CSS 变量），文档立刻可见效果；同时给 overlay 加 `.previewing`，弹窗变"玻璃透明"，
  * 不遮挡文档。点「保存设置」才写进持久化设置；取消 / ✕ / 遮罩 / Esc 只清预览 → 立即还原。
  */
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useSettingsStore, THEMES, type Theme, type TranslateSettings } from "../../stores/useSettingsStore";
 import { useTypographyPreviewStore } from "../../stores/useTypographyPreviewStore";
 import { useT } from "../../i18n";
@@ -30,6 +30,8 @@ import {
 // v0.15.3：模型配置双页签 + 指令库（各自读写 settings.ai，无需数据 props）
 import { AiModelSettings } from "../settings/AiModelSettings";
 import { AiInstructionEditor } from "../settings/AiInstructionEditor";
+// v0.15.5 问题 3：「当前启用模型」摘要的纯函数口径（与 AiModelSettings 共用一份实现）
+import { describeActiveProfile } from "../../services/aiModelCatalog";
 import "./SettingsDialog.css";
 
 /** v0.6.0：翻译服务商预设（切换时自动填充 baseUrl/默认模型；models 供模型角色下拉选择） */
@@ -106,6 +108,17 @@ const SETTINGS_CLOSE_MS = 540;
 export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const settings = useSettingsStore();
   const t = useT();
+
+  /**
+   * v0.15.5 问题 3：AI 总开关下方的「当前启用模型」摘要。
+   * 与 AiModelSettings 共用 `describeActiveProfile` 这一份口径；这里只负责把
+   * 纯函数返回的结构渲染成 `服务商 - 模型名称 - 推理等级`。
+   * 注意：不依赖 `settings.aiEnabled`，总开关关闭时摘要照常显示。
+   */
+  const activeModelSummary = useMemo(
+    () => describeActiveProfile(settings.ai, t),
+    [settings.ai, t],
+  );
 
   // ─── v0.9.1 需求3：打开/关闭淡入淡出（关闭走延迟卸载） ──────────────────
   /** 关闭动画播放中：overlay 切换为 closing 类，动画结束后才真正卸载 */
@@ -810,6 +823,34 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 <option value="on">{t("settings.on")}</option>
                 <option value="off">{t("settings.off")}</option>
               </select>
+            </div>
+
+            {/* v0.15.5 问题 3：当前启用模型摘要紧跟总开关，**总开关关闭时也常显**
+                （它描述的是"配置结果"，与 AI 功能开关无关；用户在关开关时也要能看到
+                当前配的是哪个模型）。计算口径统一来自 aiModelCatalog::describeActiveProfile。 */}
+            <div className="ai-active-model-summary" data-testid="ai-active-model-summary">
+              <span className="ai-active-model-summary-label">{t("settings.ai.model.active.title")}</span>
+              {activeModelSummary ? (
+                <span
+                  className="ai-active-model-summary-value"
+                  data-testid="ai-active-model-value"
+                >
+                  <span data-testid="ai-active-provider">{activeModelSummary.providerLabel}</span>
+                  <span className="ai-active-model-separator">-</span>
+                  <span data-testid="ai-active-model">
+                    {activeModelSummary.modelLabel || t("settings.ai.model.active.empty")}
+                  </span>
+                  <span className="ai-active-model-separator">-</span>
+                  <span data-testid="ai-active-reasoning">{activeModelSummary.reasoning}</span>
+                </span>
+              ) : (
+                <span
+                  className="ai-active-model-summary-value is-empty"
+                  data-testid="ai-active-model-empty"
+                >
+                  {t("settings.ai.model.active.none")}
+                </span>
+              )}
             </div>
 
             {settings.aiEnabled && (

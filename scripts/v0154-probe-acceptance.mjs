@@ -526,14 +526,18 @@ const main = async () => {
       check("E1 获取模型列表 / 测试连接 与模型名称同容器（同一行）", !!rowInfo?.sameParent, JSON.stringify(rowInfo));
       check("E2 模型名称输入框紧邻按钮", !!rowInfo?.nameNextToFetch, JSON.stringify(rowInfo));
 
-      // F：当前启用模型
-      const active = await ev(`
-        const el = document.querySelector('[data-testid="ai-model-active-summary"]');
-        return el ? { text: el.textContent.trim() } : null;
+      // F：v0.15.5 起「当前启用模型」已移到「启用 AI 功能」总开关下方（见 L 组），
+      // 模型配置区内不再重复渲染 —— 这里断言「区内确实没有」，位置/格式由 L 组判定。
+      const insideModel = await ev(`
+        const panel = document.querySelector('[data-testid="ai-model-provider-panel"]');
+        const inPanel = panel ? !!panel.querySelector('[data-testid="ai-model-active-summary"]') : false;
+        const globalSummary = !!document.querySelector('[data-testid="ai-active-model-summary"]');
+        return { inPanel, globalSummary };
       `);
-      log(`  当前启用模型：${JSON.stringify(active)}`);
-      check("F1 模型配置区下方有「当前启用模型」", !!active, JSON.stringify(active));
-      check("F2 文本为「服务商 - 模型 - 推理等级」三段", !!active && active.text.split("-").length >= 3, active?.text);
+      log(`  摘要归属：${JSON.stringify(insideModel)}`);
+      check("F1 模型配置区内不再重复渲染摘要（已上移到总开关下方）",
+        insideModel?.inPanel === false, JSON.stringify(insideModel));
+      check("F2 全局摘要存在（位置由 L 组判定）", insideModel?.globalSummary === true, JSON.stringify(insideModel));
 
       // D：自定义页签对等能力
       await openCustomTab();
@@ -576,6 +580,201 @@ const main = async () => {
       check("D3 自定义页签有测试连接", !!customUi?.test, JSON.stringify(customUi));
       check("D4 自定义页签有上下文滑条", !!customUi?.slider, JSON.stringify(customUi));
       runs.customTab = customUi;
+    }
+
+    // ── K：问题1（v0.15.5）自定义配置条目列表 + 「配置完看不到」修复 ──
+    if (want("K")) {
+      log("");
+      log("════════ K 问题1：自定义配置条目列表 ════════");
+      // 确保设置窗开着（前面 C/D/E/F 段可能已关）
+      if (!(await ev(`return !!document.querySelector('[data-testid="ai-tree"]');`))) {
+        await openSettings();
+        await ensureAiOn();
+      }
+      await openCustomTab();
+      await sleep(500);
+      // 造一条 providerId 撞预设 id（deepseek）的自定义档案 —— 用户原话场景
+      const created = await ev(`
+        const store = window.__LMD_TEST_STORE__;
+        const setVal = (el, v) => {
+          if (!el) return;
+          const proto = el.tagName === "SELECT" ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+          setter.call(el, v);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        };
+        const q = (id) => document.querySelector('[data-testid="' + id + '"]');
+        // 新建草稿，确保从干净状态开始（D 段可能已往草稿里加过模型行）
+        q("ai-model-custom-new")?.click();
+        await new Promise((r) => setTimeout(r, 500));
+        // 逐项填值，每项之间留出 React 提交时间
+        setVal(q("ai-model-custom-provider-id"), "deepseek");
+        await new Promise((r) => setTimeout(r, 250));
+        setVal(q("ai-model-custom-name"), "我的 DeepSeek 自定义");
+        await new Promise((r) => setTimeout(r, 250));
+        setVal(q("ai-model-custom-base-url"), "https://my-deepseek.test/v1");
+        await new Promise((r) => setTimeout(r, 250));
+        // 本地部署类型选「不指定」，避免它覆盖 baseUrl
+        const lk = q("ai-model-custom-local-kind");
+        if (lk) setVal(lk, "");
+        await new Promise((r) => setTimeout(r, 300));
+        // 目录先清空到只有一行（确保没有 D 段遗留的空行）
+        let guard = 0;
+        while (document.querySelectorAll('[data-testid^="ai-model-custom-remove-"]').length > 0 && guard++ < 8) {
+          document.querySelector('[data-testid^="ai-model-custom-remove-"]').click();
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        q("ai-model-custom-add-model")?.click();
+        await new Promise((r) => setTimeout(r, 400));
+        setVal(q("ai-model-custom-model-id-0"), "my-model");
+        await new Promise((r) => setTimeout(r, 250));
+        setVal(q("ai-model-custom-model-name-0"), "My Model");
+        await new Promise((r) => setTimeout(r, 250));
+        setVal(q("ai-model-custom-model-context-0"), "32768");
+        await new Promise((r) => setTimeout(r, 350));
+        q("ai-model-custom-select-0")?.click();
+        await new Promise((r) => setTimeout(r, 400));
+        // 记录保存前的草稿快照（便于失败定位）
+        const pre = {
+          providerId: q("ai-model-custom-provider-id")?.value,
+          name: q("ai-model-custom-name")?.value,
+          baseUrl: q("ai-model-custom-base-url")?.value,
+          rows: document.querySelectorAll('[data-testid^="ai-model-custom-model-id-"]').length,
+          modelId0: q("ai-model-custom-model-id-0")?.value,
+          modelName0: q("ai-model-custom-model-name-0")?.value,
+          ctx0: q("ai-model-custom-model-context-0")?.value,
+          radioChecked: q("ai-model-custom-select-0")?.checked,
+        };
+        q("ai-model-custom-save")?.click();
+        await new Promise((r) => setTimeout(r, 1200));
+        const notice = q("ai-model-custom-notice");
+        return { notice: notice ? notice.textContent.trim() : null, pre };
+      `);
+      log(`  保存结果：${JSON.stringify(created)}`);
+
+      const listState = await ev(`
+        const list = document.querySelector('[data-testid="ai-model-custom-list"]');
+        const items = list ? Array.from(list.querySelectorAll('[data-testid^="ai-model-custom-item-"]'))
+          .map((el) => el.getAttribute("data-testid"))
+          .filter((id) => !/-(select|active|delete)$/.test(id) || /item-[^-]+$/.test(id)) : [];
+        const dots = Array.from(document.querySelectorAll('[data-testid^="ai-model-custom-item-active-"]'))
+          .map((e) => e.getAttribute("data-testid"));
+        const deletes = Array.from(document.querySelectorAll('[data-testid^="ai-model-custom-item-delete-"]'))
+          .map((e) => e.getAttribute("data-testid"));
+        const rows = list ? Array.from(list.querySelectorAll("li")).map((li) => li.getAttribute("data-testid")) : [];
+        return { rows, dots, deletes, empty: !!document.querySelector('[data-testid="ai-model-custom-list-empty"]') };
+      `);
+      log(`  列表状态：${JSON.stringify(listState)}`);
+      const hasDeepseekRow = (listState?.rows || []).some((r) => r === "ai-model-custom-item-deepseek");
+      check("K1 providerId 撞预设 id（deepseek）的自定义档案出现在条目列表里（不再「配置完看不到」）",
+        hasDeepseekRow, `rows=${JSON.stringify(listState?.rows)}`);
+      check("K2 每个自定义条目有删除按钮", (listState?.deletes || []).length === (listState?.rows || []).length,
+        `rows=${(listState?.rows || []).length} deletes=${(listState?.deletes || []).length}`);
+      check("K3 当前启用的条目有绿色圆点标记（且仅一个）",
+        (listState?.dots || []).length === 1, `dots=${JSON.stringify(listState?.dots)}`);
+
+      // 点击条目 → 载入编辑区
+      const selected = await ev(`
+        const btn = document.querySelector('[data-testid="ai-model-custom-item-select-deepseek"]');
+        if (btn) btn.click();
+        await new Promise((r) => setTimeout(r, 500));
+        const idEl = document.querySelector('[data-testid="ai-model-custom-provider-id"]');
+        const nameEl = document.querySelector('[data-testid="ai-model-custom-name"]');
+        return { providerId: idEl ? idEl.value : null, name: nameEl ? nameEl.value : null };
+      `);
+      log(`  点击条目后编辑区：${JSON.stringify(selected)}`);
+      check("K4 点击条目能把该配置载入编辑区", selected?.name === "我的 DeepSeek 自定义", JSON.stringify(selected));
+
+      // 删除该条目
+      const afterDel = await ev(`
+        const del = document.querySelector('[data-testid="ai-model-custom-item-delete-deepseek"]');
+        if (del) del.click();
+        await new Promise((r) => setTimeout(r, 800));
+        const list = document.querySelector('[data-testid="ai-model-custom-list"]');
+        const rows = list ? Array.from(list.querySelectorAll("li")).map((li) => li.getAttribute("data-testid")) : [];
+        const raw = localStorage.getItem("lightmd-settings");
+        const parsed = raw ? JSON.parse(raw) : null;
+        const ai = parsed && parsed.state ? parsed.state.ai : null;
+        return {
+          rows,
+          stillThere: rows.indexOf("ai-model-custom-item-deepseek") >= 0,
+          activeId: ai ? ai.activeProfileId : null,
+          profileIds: ai ? ai.profiles.map((p) => p.id) : [],
+        };
+      `);
+      log(`  删除后：${JSON.stringify(afterDel)}`);
+      check("K5 删除条目生效（列表里不再有它）", afterDel?.stillThere === false, JSON.stringify(afterDel?.rows));
+      check("K6 删除当前启用档案后 activeProfileId 不悬空（仍是已存在档案）",
+        !!(afterDel?.activeId) && (afterDel?.profileIds || []).includes(afterDel.activeId),
+        `active=${afterDel?.activeId} profiles=${JSON.stringify(afterDel?.profileIds)}`);
+      runs.customList = { created, listState, selected, afterDel };
+    }
+
+    // ── L：问题3（v0.15.5）当前启用模型摘要位于「启用 AI 功能」下方 ──
+    if (want("L")) {
+      log("");
+      log("════════ L 问题3：摘要位置 + 常显 ════════");
+      // 确保打开设置（前面可能已关）
+      const opened = await ev(`return !!document.querySelector('[data-testid="ai-tree"]');`);
+      if (!opened) {
+        await openSettings();
+        await ensureAiOn();
+      }
+      const place = await ev(`
+        const summary = document.querySelector('[data-testid="ai-active-model-summary"]');
+        const master = document.querySelector('[data-testid="ai-enabled"]');
+        const children = document.querySelector(".ai-tree-children");
+        if (!summary || !master) return { found: summary, master: master };
+        const masterField = master.closest(".settings-field") || master.parentElement;
+        // 断言摘要位于 master-field 之后、children 之前
+        const afterMaster = !!(masterField.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING);
+        const beforeChildren = children
+          ? !!(summary.compareDocumentPosition(children) & Node.DOCUMENT_POSITION_FOLLOWING)
+          : null;
+        return {
+          text: summary.textContent.trim(),
+          disabled: summary.getAttribute("aria-disabled"),
+          visible: summary.offsetHeight > 0,
+          afterMaster,
+          beforeChildren,
+          hasProvider: !!summary.querySelector('[data-testid="ai-active-provider"]'),
+          hasModel: !!summary.querySelector('[data-testid="ai-active-model"], [data-testid="ai-active-model-empty"]'),
+          hasReasoning: !!summary.querySelector('[data-testid="ai-active-reasoning"]'),
+        };
+      `);
+      log(`  摘要位置：${JSON.stringify(place)}`);
+      check("L1 摘要存在且可见", !!place?.visible, JSON.stringify(place));
+      check("L2 摘要位于「启用 AI 功能」控件之后", place?.afterMaster === true, JSON.stringify(place));
+      check("L3 摘要位于 AI 子树（ai-tree-children）之前", place?.beforeChildren === true, JSON.stringify(place));
+      check("L4 摘要为三段结构（服务商 / 模型 / 推理等级）",
+        place?.hasProvider && place?.hasModel && place?.hasReasoning, JSON.stringify(place));
+
+      // 关闭总开关后摘要仍可见
+      const offState = await ev(`
+        const en = document.querySelector('[data-testid="ai-enabled"]');
+        en.value = "off";
+        en.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 500));
+        const summary = document.querySelector('[data-testid="ai-active-model-summary"]');
+        return {
+          summaryVisible: summary ? summary.offsetHeight > 0 : false,
+          text: summary ? summary.textContent.trim() : null,
+          childrenGone: !document.querySelector(".ai-tree-children"),
+        };
+      `);
+      log(`  关闭总开关后：${JSON.stringify(offState)}`);
+      check("L5 总开关关闭时摘要仍可见（AI 子树收起不影响摘要）",
+        offState?.summaryVisible === true, JSON.stringify(offState));
+
+      // 恢复开启
+      await ev(`
+        const en = document.querySelector('[data-testid="ai-enabled"]');
+        if (en) { en.value = "on"; en.dispatchEvent(new Event("change", { bubbles: true })); }
+        await new Promise((r) => setTimeout(r, 400));
+        return true;
+      `);
+      runs.activeSummaryPlacement = { place, offState };
     }
 
     // ── C：服务商下拉不含自定义项 ──

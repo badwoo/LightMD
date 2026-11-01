@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.15.4**
+**Current Version: v0.15.5**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -402,6 +402,21 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.15.5 (2026-11-01)
+
+**Three experience fixes — custom profiles become visible and manageable, quick text selection stops failing, and the active-model summary moves under the AI master switch**
+
+| # | Issue | Fix |
+| --- | --- | --- |
+| 1 | A custom model configuration had no effect and the record disappeared after saving | Root cause: "is this a custom profile?" was decided solely by whether the Provider ID collides with a preset id. A user who just picked DeepSeek on the Providers tab naturally types `deepseek` as the custom Provider ID too — the profile saves, but it appears neither in the custom list nor in the provider dropdown (which only lists presets), so **it is invisible in every entry point**. Profiles now carry an optional `source: "preset" \| "custom"` marker used as the authority (older profiles fall back to compatible inference, no data migration needed). The custom tab is now a **list of entries**: each row shows name + Provider ID + endpoint, clicking loads it for editing, each row has a delete button, the enabled entry gets a **green dot**, and deleting the enabled entry safely falls back |
+| 2 | Quickly selecting text often failed to show the selection in the chip | Root cause: the guard added in v0.15.4 to ignore "selecting AI answers" inspected the **DOM selection** — when the user selects body text and then **clicks the input box** (the most common action), the DOM selection lands inside the chat window, the callback returns early, and the text that was just selected is never applied. Now only the **editor's own selection signature** is consulted (PM `state.selection` / textarea `selectionStart/End`), fully decoupled from focus; and the 250ms debounce became "120ms coalescing while dragging + immediate flush on release", so the chip follows as soon as you let go |
+| 3 | The enabled-model text should sit under the "Enable AI" button | The active-model summary moved out of the model tabs to **directly below the AI master switch** as a globally visible row (`provider - model name - reasoning level`). It stays **visible even when the master switch is off**, since it describes which model is enabled regardless of the switch. The computation was extracted into the pure function `describeActiveProfile()` so both call sites share one definition |
+
+Verification: `tsc --noEmit` exit 0; **354 frontend files / 6429 cases pass** (1 pre-existing skip); the real-machine probe
+`scripts/v0154-probe-acceptance.mjs` now reports **52/52 PASS**; the dedicated probe
+`scripts/v0155-probe-quick-selection.mjs` runs 7 quick-selection scenarios plus 20 round-trip drags with a
+**0% failure rate** (scenarios M3/M6/M7 failed 100% of the time before the fix).
 
 ### v0.15.4 (2026-11-01)
 

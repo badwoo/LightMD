@@ -312,7 +312,9 @@ describe("v0.15.3 模型配置双页签", () => {
     mount();
     openCustomTab();
 
-    expect(screen.getByTestId("ai-model-custom-profile")).toHaveProperty("value", "acme");
+    // v0.15.5：自定义配置改为条目列表（下拉已移除）；该档案既是列表条目、也载入编辑区。
+    expect(screen.getByTestId("ai-model-custom-item-acme")).not.toBeNull();
+    expect(screen.getByTestId("ai-model-custom-item-select-acme").getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByTestId("ai-model-custom-provider-id")).toHaveProperty("readOnly", true);
 
     fireEvent.change(screen.getByTestId("ai-model-custom-name"), {

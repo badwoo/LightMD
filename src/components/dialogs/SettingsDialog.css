@@ -768,6 +768,52 @@ label.settings-switch {
   margin-bottom: 16px;
 }
 
+/* v0.15.5 问题 3：「当前启用模型」摘要紧跟「启用 AI 功能」总开关。
+   对齐总开关左侧（不额外缩进），窄窗口靠 flex-wrap + overflow-wrap 换行，
+   不挤压 label 也不撑破容器。总开关关闭时同样显示（不随 .ai-tree-children 隐藏）。 */
+.ai-active-model-summary {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: -8px 0 16px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--bg-primary) 96%, var(--accent-color) 4%);
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-active-model-summary-label {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.ai-active-model-summary-value {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ai-active-model-summary-value.is-empty {
+  color: var(--text-secondary);
+  font-family: inherit;
+}
+
+.ai-active-model-separator {
+  color: var(--text-secondary);
+}
+
 .ai-tree-children {
   position: relative;
   margin-left: 7px;

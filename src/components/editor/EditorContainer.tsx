@@ -5413,8 +5413,30 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * 2. 只刷新预览、不改范围 → chip 一直显示上次算出的范围。
    *    现在按 `planChatSelectionChange` 决策：真实选区变化 → 自动切「选区」；
    *    选区消失且处于自动跟随 → 回落全文；手动锁定则保持不动。
-   * 3. 无节流的连续性：仍用 250ms 防抖（用户拖选时高频触发），
-   *    发送那一刻会再提取一次，预览滞后不影响实际发送内容。
+   * 3. v0.15.4：250ms 防抖，用户拖选时高频触发只落地最后一次。
+   *
+   * v0.15.5（用户实测「快速选中文字会经常失效，没有显示选区文字」）再修两处：
+   *
+   * ## 缺陷 A：`isSelectionInsideChatDialog()` 吞掉了真实选区变化
+   *
+   * v0.15.4 加的那个 guard 本意是忽略「拖选 AI 回答文本」，但它检查的是 **DOM 选区**。
+   * 而「DOM 选区落在哪里」与「编辑器选区有没有变」是两件事：
+   * 用户选完正文后**点一下对话输入框**（最常见的动作：选完就去打字），
+   * DOM 选区立刻落进 `.ai-chat-dialog` 的 textarea → 下一次回调被 early return
+   * → **已经选好的正文永远没被应用**，chip 停在「全文」。
+   * 实机探针 `scripts/v0155-probe-quick-selection.mjs` 的 M3 场景 100% 复现：
+   * 选中 16 字 → 点输入框 → chip 仍是「全文 4,773 字」。
+   *
+   * 正确判据是**编辑器自己的选区签名**：`readChatSelection()` 读 PM 的
+   * `state.selection` / textarea 的 `selectionStart/End`，与焦点、与 DOM 选区无关。
+   * 窗内拖选 AI 回答时编辑器签名**根本不变** → `planChatSelectionChange` 返回 null
+   * （只刷新预览、不动范围），原语义自动保留，因此 guard 已删除。
+   *
+   * ## 缺陷 B：防抖让「手快」看不到反馈
+   *
+   * 拖选松手后要等 250ms 才更新，观感就是「没生效」。
+   * 现在 `selectionchange` 用 120ms 短防抖（合并拖选过程中的连续事件），
+   * 但**真实手势结束（mouseup / pointerup / keyup）立刻落地**，松手那一帧 chip 就跟随。
    */
   useEffect(() => {
     if (!chatOpen) return;
@@ -5422,61 +5444,72 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     chatSelSigRef.current = currentChatSelectionSignature();
     let timer: ReturnType<typeof setTimeout> | null = null;
 
-    /** 当前 DOM 选区是否落在对话窗内部（拖选/双击 AI 回答文本） */
-    const isSelectionInsideChatDialog = (): boolean => {
-      const domSel = document.getSelection();
-      if (!domSel || domSel.rangeCount === 0) return false;
-      const anchor = domSel.anchorNode;
-      const node = anchor instanceof Element ? anchor : anchor?.parentElement ?? null;
-      return !!node?.closest?.(".ai-chat-dialog");
+    /** 应用一次「编辑器选区 → chip」决策（唯一出口） */
+    const applyDecision = () => {
+      const store = useAiChatStore.getState();
+      if (!store.open) return;
+      const nextSig = currentChatSelectionSignature();
+      const sel = readChatSelection();
+      const hasSel = hasUsableContext(sel.text);
+      const planned = planChatSelectionChange({
+        prevSignature: chatSelSigRef.current,
+        nextSignature: nextSig,
+        hasSelection: hasSel,
+      });
+      chatSelSigRef.current = nextSig;
+      // planned=null → 不是真实选区变化（光标移动 / 窗内拖选回答 / 同一选区的重复事件）：
+      // 只刷新预览字数，绝不动用户手动锁定的范围
+      if (planned === null) {
+        refreshChatPreview(store.contextScope);
+        return;
+      }
+      // 真实选区变化 → **解锁**并自动跟随。
+      // 「手动点 chip 的锁定」只保持到下一次真实选区变化为止（用户口径），
+      // 因此在锁定态下也要把 planned 应用下去，同时把 contextAuto 恢复为 true。
+      if (planned !== store.contextScope || !store.contextAuto) {
+        store.setContextScopeWithAuto(planned, true);
+      }
+      refreshChatPreview(planned);
     };
 
+    const cancelPending = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    /** selectionchange 的短防抖：合并拖选过程中的高频事件 */
     const schedule = () => {
-      if (timer) clearTimeout(timer);
+      cancelPending();
       timer = setTimeout(() => {
         timer = null;
-        const store = useAiChatStore.getState();
-        if (!store.open) return;
-        // 窗内选字（拖选 AI 回答）不是编辑器选区变化：保持 chip 原样
-        if (isSelectionInsideChatDialog()) return;
-
-        const nextSig = currentChatSelectionSignature();
-        const sel = readChatSelection();
-        const hasSel = hasUsableContext(sel.text);
-        const planned = planChatSelectionChange({
-          prevSignature: chatSelSigRef.current,
-          nextSignature: nextSig,
-          hasSelection: hasSel,
-        });
-        chatSelSigRef.current = nextSig;
-        // planned=null → 不是真实选区变化（光标移动 / 同一选区的重复事件）：
-        // 只刷新预览字数，绝不动用户手动锁定的范围
-        if (planned === null) {
-          refreshChatPreview(store.contextScope);
-          return;
-        }
-        // 真实选区变化 → **解锁**并自动跟随。
-        // 「手动点 chip 的锁定」只保持到下一次真实选区变化为止（用户口径），
-        // 因此在锁定态下也要把 planned 应用下去，同时把 contextAuto 恢复为 true。
-        if (planned !== store.contextScope || !store.contextAuto) {
-          store.setContextScopeWithAuto(planned, true);
-        }
-        refreshChatPreview(planned);
-      }, 250);
+        applyDecision();
+      }, 120);
     };
+
+    /** 真实手势结束 → 立刻落地，不等防抖（chip 松手即跟随） */
+    const flush = () => {
+      cancelPending();
+      applyDecision();
+    };
+
     document.addEventListener("selectionchange", schedule);
+    // capture 阶段挂 window：确保先于其它 handler 跑，且覆盖整个文档的手势
+    window.addEventListener("mouseup", flush, true);
+    window.addEventListener("pointerup", flush, true);
+    window.addEventListener("keyup", flush, true);
     // 源码通道兜底：部分 WebView2 版本里 textarea 的选区变化不一定派发 document
-    // 级 selectionchange，这里额外挂 textarea 自身的 select / keyup / mouseup。
+    // 级 selectionchange（保留兜底，不重复 flush）。
     const ta = sourceTextareaRef.current;
     ta?.addEventListener("select", schedule);
-    ta?.addEventListener("keyup", schedule);
-    ta?.addEventListener("mouseup", schedule);
     return () => {
       document.removeEventListener("selectionchange", schedule);
+      window.removeEventListener("mouseup", flush, true);
+      window.removeEventListener("pointerup", flush, true);
+      window.removeEventListener("keyup", flush, true);
       ta?.removeEventListener("select", schedule);
-      ta?.removeEventListener("keyup", schedule);
-      ta?.removeEventListener("mouseup", schedule);
-      if (timer) clearTimeout(timer);
+      cancelPending();
     };
   }, [chatOpen, refreshChatPreview, currentChatSelectionSignature, readChatSelection]);
 
