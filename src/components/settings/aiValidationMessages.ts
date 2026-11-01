@@ -34,6 +34,10 @@ export function validationErrorKey(code: AiProfileValidationError | string): str
       return "settings.ai.error.requestPolicyInvalid";
     case "profile.temperature.invalid":
       return "settings.ai.error.temperatureInvalid";
+    case "profile.providerId.invalid":
+      return "settings.ai.error.providerIdInvalid";
+    case "profile.modelCatalog.invalid":
+      return "settings.ai.error.modelCatalogInvalid";
     default:
       return "settings.ai.error.generic";
   }

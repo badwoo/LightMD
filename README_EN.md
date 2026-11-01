@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.15.2**
+**Current Version: v0.15.3**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -402,6 +402,26 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.15.3 (2026-10-30)
+
+**Deeper AI configuration — a 50% wider settings dialog, a tree layout, tabbed model settings, three wire protocols and vendor plans.**
+
+| Request | Implementation |
+| --- | --- |
+| Widen the settings dialog by 50% | `SettingsDialog.css`: 520px → **780px**, with `max-width: calc(100vw - 32px)` keeping a 16px safety margin on small windows; measured **780px** on the real app |
+| Tree layout for AI | “Enable AI” is the master switch; when on, the tree nests **Model configuration → AI translation → AI instructions**. Turning the master switch off collapses the whole subtree; the translation sub-switch collapses only its own children. `SettingsDialog` no longer duplicates model fields — the translation node keeps language, tone, result mode, bubble color and custom prompt |
+| Tabs for model configuration | New `AiModelSettings`: left “Providers” (provider, API key, base URL, model, temperature, fetch models, test connection), right “Custom model API” (Provider ID, display name, base URL, protocol, API key, model catalog). Tabs expose `role=tab` and arrow-key navigation |
+| Context-window slider | After fetching/selecting a model that reports context metadata, a slider appears **defaulting to the maximum**; models at 1M+ gain a middle **600K** stop (others offer “app lower bound / model maximum”). Metadata comes only from what the endpoint really returns (OpenAI `/models` fields, or Ollama's native `/api/tags` `details.context_length`) — never guessed from model names |
+| Ollama by default + vendor plans | Fresh installs default to local `http://127.0.0.1:11434/v1` with `authMode=none` (no Authorization header). Added **Kimi Plan** (`api.kimi.com/coding`, Anthropic Messages), **Volcengine Coding Plan** (`/api/plan/v3`), **Zhipu GLM Coding Plan** (`/api/coding/paas/v4`) and **Alibaba Cloud Token Plan**; all four `/models` endpoints returned 401 when probed unauthenticated (path valid, auth required) |
+| Custom model API | Provider ID follows the DSH rule `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$` and doubles as the credential slot, so switching providers never reuses the wrong key. Protocols: OpenAI Chat Completions / OpenAI Responses / Anthropic Messages. Model catalog carries ID, name, context window and reasoning effort `off/low/medium/high/xhigh/max` (with `off` normalised to “send no reasoning parameter”) |
+| AI instruction library | The existing instruction editor is kept and moved to the last node of the AI tree, still backed by `settings.ai.instructions` |
+
+This release also closes a real 0.15.0 gap: `ai_chat`, `ai_assist_text` and `translate_text` used to accept protocol, reasoning effort and budget at the command boundary but still always spoke OpenAI Chat. They now share `AiRequest` with three-protocol HTTP/SSE; translation keeps `build_prompt`, `{{N}}` placeholder mask/unmask and its concurrency slots. Translation now runs on the **current AI profile**; legacy `translate` connection fields remain only for migration.
+
+Verification: `tsc --noEmit` exit 0; **347 frontend files / 6269 cases pass** (1 pre-existing skip); `cargo test` **270 passed / 0 failed** (3 ignored); `npx tauri build --no-bundle` produced the 0.15.3 exe; real-machine probe `scripts/v0153-probe-ai-settings.mjs` **10/10 PASS** (780px, tree order, Ollama default, fetching qwen3-vl:8b and 8b-instruct, 262K slider at maximum, connection test, master-switch collapse, three protocols, six reasoning levels).
+
+Known trade-offs: (1) vendor plan catalogs only list models with published catalog data, everything else comes from “fetch models”; (2) Anthropic has no standard `/models` endpoint, so models must be typed in when a vendor does not provide one; (3) `contextWindowTokens` is profile metadata (slider + budget validation) and the Rust request layer does not trim context based on it.
 
 ### v0.15.2 (2026-10-28)
 

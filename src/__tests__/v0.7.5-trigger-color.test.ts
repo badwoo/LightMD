@@ -154,7 +154,8 @@ describe("v0.7.5 功能3：两处设置入口读写同一字段（单源）", ()
   beforeEach(() => {
     localStorage.clear();
     useSettingsStore.setState({
-      translate: { ...DEFAULT_TRANSLATE_SETTINGS },
+      // v0.15.3：翻译子项在子开关关闭时会折叠，这里显式开启以覆盖设置页入口。
+      translate: { ...DEFAULT_TRANSLATE_SETTINGS, translateEnabled: true },
       aiEnabled: true,
     });
   });

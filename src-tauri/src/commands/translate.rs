@@ -15,9 +15,17 @@
 use tauri::ipc::Channel;
 use tauri::State;
 
-use crate::translate::credential::{authorization_header, resolve_credential_with, AuthMode, Credential};
+use crate::translate::ai_client::stream_ai_request;
+use crate::translate::ai_request::{
+    merge_system_prompt, AiRequest, ApiProtocol, ChatMessage as AiChatMessage, ReasoningEffort,
+    RequestPolicy, TokenField,
+};
+use crate::translate::credential::{resolve_credential_with, AuthMode, Credential};
 use crate::translate::prompt::build_prompt;
-use crate::translate::provider::{OpenAiCompatibleProvider, TranslateError, TranslateResult};
+use crate::translate::provider::{
+    estimate_max_tokens, OpenAiCompatibleProvider, TranslateError, TranslateResult,
+};
+use crate::translate::segment;
 use crate::translate::TranslateState;
 
 /// keyring 条目（Windows 凭据管理器）
@@ -70,18 +78,50 @@ fn entry_password(entry: keyring::Entry) -> Result<Option<String>, String> {
 /// - 兼容回退：provider 条目不存在时读 v0.7.2 及之前的全局条目
 ///   （升级后老 Key 无需重填；用户为该厂商保存新 Key 后即固化到独立条目）
 /// - v0.7.0：改为 pub(crate)，AI 助手命令（ai_assist.rs）复用（一个 Key 服务全部 AI 功能）
+fn read_legacy_api_key(provider: &str) -> Result<Option<String>, String> {
+    if let Some(key) = keyring_entry(provider).and_then(entry_password)? {
+        return Ok(Some(key));
+    }
+    legacy_keyring_entry().and_then(entry_password)
+}
+
 pub(crate) async fn read_api_key(provider: &str) -> Result<String, String> {
     let provider = sanitize_provider(provider);
     tauri::async_runtime::spawn_blocking(move || {
-        // 1. 厂商独立条目
-        if let Some(key) = keyring_entry(&provider).and_then(entry_password)? {
-            return Ok(key);
+        read_legacy_api_key(&provider)?.ok_or_else(|| "NO_KEY|未设置 API Key".to_string())
+    })
+    .await
+    .map_err(|e| format!("AUTH|{}", e))?
+}
+
+/// AI profile 凭据：优先 ai_credential::{credentialId}，未命中才回退旧 provider 槽。
+/// 旧调用没有 credentialId 时直接走旧槽；none 完全不读 Key，也不会发认证头。
+pub(crate) async fn read_ai_credential(
+    credential_id: Option<String>,
+    provider: String,
+    auth_mode: AuthMode,
+) -> Result<Credential, String> {
+    if auth_mode == AuthMode::None {
+        return Ok(Credential { api_key: None, auth_mode });
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(id) = credential_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+            return resolve_credential_with(
+                id,
+                Some(&provider),
+                auth_mode,
+                |id| profile_keyring_entry(id).and_then(entry_password),
+                read_legacy_api_key,
+            );
         }
-        // 2. 回退旧全局条目（v0.7.2 及之前）
-        match legacy_keyring_entry().and_then(entry_password)? {
-            Some(key) => Ok(key),
-            None => Err("NO_KEY|未设置 API Key".to_string()),
+        let api_key = read_legacy_api_key(&provider)?.and_then(|key| {
+            let key = key.trim();
+            (!key.is_empty()).then(|| key.to_string())
+        });
+        if auth_mode == AuthMode::Required && api_key.is_none() {
+            return Err("NO_KEY|未设置 API Key".to_string());
         }
+        Ok(Credential { api_key, auth_mode })
     })
     .await
     .map_err(|e| format!("AUTH|{}", e))?
@@ -106,8 +146,18 @@ pub async fn translate_text(
     target_lang: String,
     tone: String,
     custom_prompt: Option<String>,
-    // v0.7.3：采样温度（由设置透传；kimi 等厂商仅允许 1）
-    temperature: f32,
+    // Option 同时兼容旧数值调用与 profile「不发送 temperature」配置。
+    temperature: Option<f32>,
+    // v0.15.3：以下均为可选，缺省保持旧 OpenAI Chat 行为。
+    credential_id: Option<String>,
+    protocol: Option<String>,
+    context_window_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
+    token_field: Option<String>,
+    reasoning_effort: Option<String>,
+    include_stream_usage: Option<bool>,
+    system_prompt: Option<String>,
+    auth_mode: Option<String>,
     // v0.9.0：调用方窗口 label（单任务槽/并发槽按窗口分桶）
     window_label: String,
     // v0.7.3 改进9：全文翻译并发槽位标识（None = 单任务互斥）
@@ -118,41 +168,58 @@ pub async fn translate_text(
     if text.is_empty() {
         return Err("STREAM|无可翻译内容".to_string());
     }
+    let protocol = ApiProtocol::parse(protocol.as_deref())?;
+    let auth_mode = AuthMode::parse(auth_mode.as_deref())?;
+    let credential = read_ai_credential(credential_id, provider, auth_mode).await?;
 
-    // 读 Key（仅 Rust 侧内存，不回传前端）
-    let api_key = read_api_key(&provider).await?;
-
-    // v0.7.3 改进9：按 concurrent_id 区分「并发任务槽位」与「单任务互斥」
     let cancel_flag = match &concurrent_id {
         Some(id) => state.begin_concurrent_task(id, &window_label),
         None => state.begin_task(&window_label),
     };
     let task_id = concurrent_id;
 
-    let sys_prompt = build_prompt(&text, &target_lang, &tone, custom_prompt.as_deref());
-    let provider = OpenAiCompatibleProvider {
+    let built_in = build_prompt(&text, &target_lang, &tone, custom_prompt.as_deref());
+    let seg = segment::mask(&text);
+    let request = AiRequest {
+        protocol,
         base_url,
         model,
-        api_key,
-        // v0.7.3：温度钳制到 [0, 2]，防止前端越界导致厂商 400
-        temperature: temperature.clamp(0.0, 2.0),
+        system: merge_system_prompt(&built_in, system_prompt.as_deref()),
+        messages: vec![AiChatMessage { role: "user".into(), content: seg.masked_text.clone() }],
+        max_output_tokens: max_output_tokens
+            .unwrap_or_else(|| estimate_max_tokens(text.chars().count())),
+        policy: RequestPolicy {
+            token_field: TokenField::parse(token_field.as_deref()),
+            temperature,
+            reasoning_effort: ReasoningEffort::parse(reasoning_effort.as_deref()),
+            include_stream_usage: include_stream_usage.unwrap_or(true),
+        },
     };
+    // 上下文窗口属于 profile 的预算元数据，不是任何三协议的请求体字段。
+    let _ = context_window_tokens;
 
-    let result = provider
-        .translate_stream(sys_prompt, text, &|chunk| {
-            // 推送增量（失败静默：前端可能已关闭气泡）
-            let _ = on_chunk.send(chunk);
-        }, &cancel_flag)
-        .await;
+    let result = stream_ai_request(&request, &credential, &|chunk| {
+        let _ = on_chunk.send(chunk);
+    }, &cancel_flag)
+    .await;
 
-    // 完成/失败统一清理对应槽位
     match (&task_id, &result) {
         (Some(id), _) => state.end_concurrent_task(id, &cancel_flag),
         (None, _) => state.end_task(&window_label, &cancel_flag),
     }
 
     match result {
-        Ok(r) => Ok(r),
+        Ok(result) => {
+            // 校验针对模型实际返回的 masked 文本；随后再 unmask，保持旧翻译语义。
+            let intact = segment::validate(&result.translated, seg.tokens.len());
+            Ok(TranslateResult {
+                translated: segment::unmask(&result.translated, &seg.tokens),
+                placeholders_intact: intact,
+                finish_reason: result.finish_reason,
+                prompt_tokens: result.prompt_tokens,
+                completion_tokens: result.completion_tokens,
+            })
+        }
         Err(e) => Err(e.to_code_string()),
     }
 }

@@ -16,7 +16,7 @@ import {
 } from "../core/shortcuts";
 // v0.15.0 需求（AI 深度配置）：AI 连接档案 DTO 与旧 translate 迁移
 import {
-  createAiSettingsFromLegacy,
+  createDefaultAiSettings,
   migrateAiSettings,
   type AiSettings,
 } from "../services/aiProfiles";
@@ -580,11 +580,8 @@ export const useSettingsStore = create<SettingsState>()(
       sidebarSectionSizes: {},
       // v0.6.0：AI 翻译默认配置（旧 localStorage 缺字段时自动回退默认值）
       translate: { ...DEFAULT_TRANSLATE_SETTINGS },
-      // v0.15.0 需求（AI 深度配置）：AI 连接档案初始值。
-      // 默认从 translate 的「默认值」派生一个 profile（等价于首次迁移结果），
-      // 这样即使跳过 migrate（如全新安装）也不会出现 ai.profiles 为空、
-      // 导致 AI 入口报"未配置连接"；之后的迁移在 migrateSettings 里做幂等覆盖。
-      ai: createAiSettingsFromLegacy(DEFAULT_TRANSLATE_SETTINGS, "ai-default"),
+      // v0.15.3：全新安装默认使用本地 Ollama；老用户的 persist 迁移仍保留原档案。
+      ai: createDefaultAiSettings(),
       // v0.15.0 需求（表格合并提示）：默认未看过 → 首次成功合并后弹一次
       tableMergeNoticeSeen: false,
       // v0.7.0：全局 AI 总开关默认关闭（迁移逻辑见 merge：老用户 translateEnabled=true 继承）

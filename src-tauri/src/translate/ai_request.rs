@@ -35,6 +35,8 @@ use serde::{Deserialize, Serialize};
 pub enum ApiProtocol {
     /// OpenAI 兼容：`POST {base}/chat/completions`
     OpenaiChat,
+    /// OpenAI Responses：`POST {base}/responses`
+    OpenaiResponses,
     /// Anthropic Messages：`POST {base}/v1/messages`
     AnthropicMessages,
 }
@@ -44,6 +46,7 @@ impl ApiProtocol {
     pub fn parse(value: Option<&str>) -> Result<Self, String> {
         match value.unwrap_or("openai-chat") {
             "openai-chat" => Ok(Self::OpenaiChat),
+            "openai-responses" => Ok(Self::OpenaiResponses),
             "anthropic-messages" => Ok(Self::AnthropicMessages),
             other => Err(format!("PROVIDER|400|未知协议: {}", other)),
         }
@@ -83,17 +86,19 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+    Max,
 }
 
 impl ReasoningEffort {
     pub fn parse(value: Option<&str>) -> Option<Self> {
         match value?.trim() {
-            "" => None,
+            "" | "off" => None,
             "minimal" => Some(Self::Minimal),
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
             "xhigh" => Some(Self::Xhigh),
+            "max" => Some(Self::Max),
             // 非法值不静默降级为某个档位，而是当作"未配置"（不发送该参数）
             _ => None,
         }
@@ -105,6 +110,7 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
         }
     }
 }
@@ -152,6 +158,18 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// 内置约束始终在前，profile.systemPrompt 只能追加，不能覆盖或经 messages 注入。
+pub fn merge_system_prompt(base: &str, custom: Option<&str>) -> Option<String> {
+    let base = base.trim();
+    let custom = custom.map(str::trim).filter(|s| !s.is_empty());
+    match (base.is_empty(), custom) {
+        (false, Some(custom)) => Some(format!("{}\n\n{}", base, custom)),
+        (false, None) => Some(base.to_string()),
+        (true, Some(custom)) => Some(custom.to_string()),
+        (true, None) => None,
+    }
+}
+
 // ─── URL 拼装 ────────────────────────────────────────────────
 
 /// 去掉尾部斜杠（`/` 与 `\` 都算，兼容用户粘贴 Windows 风格串）
@@ -176,6 +194,7 @@ pub fn endpoint_url(protocol: ApiProtocol, base_url: &str) -> String {
     let base = trim_base(base_url);
     match protocol {
         ApiProtocol::OpenaiChat => format!("{}/chat/completions", base),
+        ApiProtocol::OpenaiResponses => format!("{}/responses", base),
         ApiProtocol::AnthropicMessages => {
             if ends_with_v1(base) {
                 format!("{}/messages", base)
@@ -186,13 +205,30 @@ pub fn endpoint_url(protocol: ApiProtocol, base_url: &str) -> String {
     }
 }
 
-/// 模型列表 URL（仅 openai-chat 端点通常支持；anthropic 返回 None）
+/// 模型列表 URL。Anthropic 与 Messages 一样，base 已含 `/v1` 时不得重复。
 pub fn models_url(protocol: ApiProtocol, base_url: &str) -> Option<String> {
+    let base = trim_base(base_url);
     match protocol {
-        ApiProtocol::OpenaiChat => Some(format!("{}/models", trim_base(base_url))),
-        // Anthropic 协议没有 `/models` 端点（模型需手填），不构造假 URL
-        ApiProtocol::AnthropicMessages => None,
+        ApiProtocol::OpenaiChat | ApiProtocol::OpenaiResponses => {
+            Some(format!("{}/models", base))
+        }
+        ApiProtocol::AnthropicMessages => Some(if ends_with_v1(base) {
+            format!("{}/models", base)
+        } else {
+            format!("{}/v1/models", base)
+        }),
     }
+}
+
+/// Ollama 原生 API 根路径：OpenAI 兼容 base 通常以 `/v1` 结尾。
+pub fn ollama_native_url(base_url: &str, path: &str) -> String {
+    let base = trim_base(base_url);
+    let root = if ends_with_v1(base) {
+        &base[..base.len() - 3]
+    } else {
+        base
+    };
+    format!("{}/{}", root, path.trim_start_matches('/'))
 }
 
 // ─── 请求体组装 ─────────────────────────────────────────────
@@ -229,6 +265,44 @@ pub fn build_openai_body(req: &AiRequest, stream: bool) -> serde_json::Value {
         messages.push(serde_json::json!({"role":m.role,"content":m.content}));
     }
     body["messages"] = serde_json::Value::Array(messages);
+    body
+}
+
+/// 组装 OpenAI Responses 请求体。
+///
+/// Responses 使用 `input` / `instructions` / `max_output_tokens`，推理强度位于
+/// `reasoning.effort`；不会误发 Chat Completions 的 token 字段或 stream_options。
+pub fn build_openai_responses_body(req: &AiRequest, stream: bool) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": req.model,
+        "stream": stream,
+        "max_output_tokens": req.max_output_tokens,
+    });
+    if let Some(system) = req.system.as_deref().filter(|s| !s.trim().is_empty()) {
+        body["instructions"] = serde_json::json!(system);
+    }
+    if let Some(t) = req.policy.temperature {
+        body["temperature"] = serde_json::json!(t.clamp(0.0, 2.0));
+    }
+    if let Some(effort) = req.policy.reasoning_effort {
+        body["reasoning"] = serde_json::json!({ "effort": effort.as_str() });
+    }
+    let input: Vec<serde_json::Value> = req
+        .messages
+        .iter()
+        .filter(|m| m.role != "system" && !m.content.trim().is_empty())
+        .map(|m| {
+            let assistant = m.role == "assistant";
+            serde_json::json!({
+                "role": if assistant { "assistant" } else { "user" },
+                "content": [{
+                    "type": if assistant { "output_text" } else { "input_text" },
+                    "text": m.content,
+                }],
+            })
+        })
+        .collect();
+    body["input"] = serde_json::Value::Array(input);
     body
 }
 
@@ -271,6 +345,7 @@ pub fn build_anthropic_body(req: &AiRequest, stream: bool) -> serde_json::Value 
 pub fn build_body(req: &AiRequest, stream: bool) -> serde_json::Value {
     match req.protocol {
         ApiProtocol::OpenaiChat => build_openai_body(req, stream),
+        ApiProtocol::OpenaiResponses => build_openai_responses_body(req, stream),
         ApiProtocol::AnthropicMessages => build_anthropic_body(req, stream),
     }
 }
@@ -278,13 +353,196 @@ pub fn build_body(req: &AiRequest, stream: bool) -> serde_json::Value {
 /// 鉴权头：(头名, 值)。Anthropic 用 `x-api-key`，OpenAI 兼容用 `Bearer`。
 pub fn auth_header(protocol: ApiProtocol, api_key: &str) -> (&'static str, String) {
     match protocol {
-        ApiProtocol::OpenaiChat => ("Authorization", format!("Bearer {}", api_key)),
+        ApiProtocol::OpenaiChat | ApiProtocol::OpenaiResponses => {
+            ("Authorization", format!("Bearer {}", api_key))
+        }
         ApiProtocol::AnthropicMessages => ("x-api-key", api_key.to_string()),
     }
 }
 
 /// Anthropic 必带的协议版本头（可被 profile 覆盖时由调用方拼接）
 pub const ANTHROPIC_DEFAULT_VERSION: &str = "2023-06-01";
+
+// ─── 三协议 SSE 事件解析 ─────────────────────────────────────
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AiUsage {
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AiStreamEvent {
+    pub delta: Option<String>,
+    pub finish_reason: Option<String>,
+    pub usage: Option<AiUsage>,
+    pub error: Option<String>,
+    pub done: bool,
+}
+
+fn token_value(value: &serde_json::Value, keys: &[&str]) -> Option<u32> {
+    keys.iter()
+        .find_map(|key| value.get(*key)?.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+fn usage_value(
+    value: Option<&serde_json::Value>,
+    prompt_keys: &[&str],
+    completion_keys: &[&str],
+) -> Option<AiUsage> {
+    let value = value?.as_object()?;
+    let value = serde_json::Value::Object(value.clone());
+    let usage = AiUsage {
+        prompt_tokens: token_value(&value, prompt_keys),
+        completion_tokens: token_value(&value, completion_keys),
+    };
+    (usage.prompt_tokens.is_some() || usage.completion_tokens.is_some()).then_some(usage)
+}
+
+fn nested_error(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("error")
+        .and_then(|e| e.get("message").or(Some(e)))
+        .and_then(|e| e.as_str())
+        .or_else(|| value.get("message").and_then(|m| m.as_str()))
+        .map(str::to_string)
+}
+
+fn anthropic_finish_reason(reason: &str) -> String {
+    match reason {
+        "end_turn" | "stop_sequence" | "tool_use" => "stop".to_string(),
+        "max_tokens" => "length".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// 解析一条 SSE `data:` JSON。空事件和坏 JSON 返回 None，协议级 failed 保留错误。
+pub fn parse_ai_sse_data(protocol: ApiProtocol, data: &str) -> Option<AiStreamEvent> {
+    let value: serde_json::Value = serde_json::from_str(data).ok()?;
+    let mut out = AiStreamEvent::default();
+    match protocol {
+        ApiProtocol::OpenaiChat => {
+            if let Some(choice) = value
+                .get("choices")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+            {
+                out.delta = choice
+                    .get("delta")
+                    .and_then(|d| d.get("content"))
+                    .and_then(|c| c.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                out.finish_reason = choice
+                    .get("finish_reason")
+                    .and_then(|r| r.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+            }
+            out.usage = usage_value(
+                value.get("usage"),
+                &["prompt_tokens", "input_tokens"],
+                &["completion_tokens", "output_tokens"],
+            );
+        }
+        ApiProtocol::OpenaiResponses => {
+            match value.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "response.output_text.delta" => {
+                    out.delta = value
+                        .get("delta")
+                        .and_then(|d| d.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                }
+                "response.completed" | "response.failed" | "response.incomplete" => {
+                    let response = value.get("response").unwrap_or(&value);
+                    out.done = true;
+                    out.usage = usage_value(
+                        response.get("usage"),
+                        &["input_tokens", "prompt_tokens"],
+                        &["output_tokens", "completion_tokens"],
+                    );
+                    match value.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                        "response.completed" => out.finish_reason = Some("stop".to_string()),
+                        "response.failed" => {
+                            out.error = nested_error(response)
+                                .or_else(|| Some("OpenAI Responses 请求失败".to_string()));
+                        }
+                        _ => {
+                            let reason = response
+                                .get("incomplete_details")
+                                .and_then(|d| d.get("reason"))
+                                .and_then(|r| r.as_str())
+                                .unwrap_or("");
+                            out.finish_reason = Some(if reason == "max_output_tokens" {
+                                "length".to_string()
+                            } else {
+                                "stop".to_string()
+                            });
+                        }
+                    }
+                }
+                "error" => {
+                    out.done = true;
+                    out.error = nested_error(&value)
+                        .or_else(|| Some("OpenAI Responses 请求失败".to_string()));
+                }
+                _ => {}
+            }
+        }
+        ApiProtocol::AnthropicMessages => {
+            match value.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                "content_block_delta" => {
+                    let delta = value.get("delta")?;
+                    if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
+                        out.delta = delta
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                    }
+                }
+                "message_start" => {
+                    out.usage = usage_value(
+                        value.get("message").and_then(|m| m.get("usage")),
+                        &["input_tokens"],
+                        &["output_tokens"],
+                    );
+                }
+                "message_delta" => {
+                    out.usage = usage_value(
+                        value.get("usage"),
+                        &["input_tokens"],
+                        &["output_tokens"],
+                    );
+                    out.finish_reason = value
+                        .get("delta")
+                        .and_then(|d| d.get("stop_reason"))
+                        .and_then(|r| r.as_str())
+                        .map(anthropic_finish_reason);
+                }
+                "message_stop" => out.done = true,
+                "error" => {
+                    out.done = true;
+                    out.error = nested_error(&value)
+                        .or_else(|| Some("Anthropic Messages 请求失败".to_string()));
+                }
+                _ => {}
+            }
+        }
+    }
+    if out.delta.is_none()
+        && out.finish_reason.is_none()
+        && out.usage.is_none()
+        && out.error.is_none()
+        && !out.done
+    {
+        None
+    } else {
+        Some(out)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -297,6 +555,7 @@ mod tests {
                 ApiProtocol::OpenaiChat => {
                     "https://ark.cn-beijing.volces.com/api/plan/v3".to_string()
                 }
+                ApiProtocol::OpenaiResponses => "https://api.openai.com/v1".to_string(),
                 ApiProtocol::AnthropicMessages => {
                     "https://ark.cn-beijing.volces.com/api/plan".to_string()
                 }
@@ -342,13 +601,48 @@ mod tests {
     }
 
     #[test]
-    fn models_url_only_for_openai() {
+    fn models_url_supports_all_protocols_without_duplicate_v1() {
         assert_eq!(
             models_url(ApiProtocol::OpenaiChat, "https://x/v1").as_deref(),
             Some("https://x/v1/models")
         );
-        // Anthropic 协议没有 /models，不构造假 URL
-        assert!(models_url(ApiProtocol::AnthropicMessages, "https://x/v1").is_none());
+        assert_eq!(
+            models_url(ApiProtocol::OpenaiResponses, "https://x/v1/").as_deref(),
+            Some("https://x/v1/models")
+        );
+        assert_eq!(
+            models_url(ApiProtocol::AnthropicMessages, "https://x/v1").as_deref(),
+            Some("https://x/v1/models")
+        );
+        assert_eq!(
+            models_url(ApiProtocol::AnthropicMessages, "https://x").as_deref(),
+            Some("https://x/v1/models")
+        );
+        assert_eq!(
+            ollama_native_url("http://127.0.0.1:11434/v1/", "/api/tags"),
+            "http://127.0.0.1:11434/api/tags"
+        );
+    }
+
+    #[test]
+    fn openai_responses_url_and_body() {
+        let r = req(ApiProtocol::OpenaiResponses, RequestPolicy {
+            reasoning_effort: Some(ReasoningEffort::Max),
+            temperature: None,
+            ..Default::default()
+        });
+        assert_eq!(endpoint_url(r.protocol, &r.base_url), "https://api.openai.com/v1/responses");
+        let body = build_body(&r, true);
+        assert_eq!(body["max_output_tokens"], 4096);
+        assert_eq!(body["reasoning"]["effort"], "max");
+        assert_eq!(body["instructions"], "SYS");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][1]["content"][0]["type"], "output_text");
+        assert!(body.get("messages").is_none());
+        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("max_completion_tokens").is_none());
+        assert!(body.get("stream_options").is_none());
+        assert!(body.get("temperature").is_none());
     }
 
     // ── token 字段互斥（最关键的硬约束） ──────────────────────
@@ -521,7 +815,83 @@ mod tests {
     #[test]
     fn protocol_parse_defaults_and_rejects_unknown() {
         assert_eq!(ApiProtocol::parse(None).unwrap(), ApiProtocol::OpenaiChat);
+        assert_eq!(ApiProtocol::parse(Some("openai-responses")).unwrap(), ApiProtocol::OpenaiResponses);
         assert_eq!(ApiProtocol::parse(Some("anthropic-messages")).unwrap(), ApiProtocol::AnthropicMessages);
         assert!(ApiProtocol::parse(Some("grpc")).is_err());
+        assert_eq!(ReasoningEffort::parse(Some("off")), None);
+        assert_eq!(ReasoningEffort::parse(Some("max")), Some(ReasoningEffort::Max));
+    }
+
+    #[test]
+    fn off_reasoning_effort_omits_protocol_fields() {
+        let policy = RequestPolicy {
+            reasoning_effort: ReasoningEffort::parse(Some("off")),
+            ..Default::default()
+        };
+        let chat = build_openai_body(&req(ApiProtocol::OpenaiChat, policy.clone()), true);
+        assert!(chat.get("reasoning_effort").is_none());
+        let responses = build_openai_responses_body(
+            &req(ApiProtocol::OpenaiResponses, policy),
+            true,
+        );
+        assert!(responses.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn responses_sse_parses_delta_completion_usage_and_failure() {
+        let delta = parse_ai_sse_data(
+            ApiProtocol::OpenaiResponses,
+            r#"{"type":"response.output_text.delta","delta":"你好"}"#,
+        )
+        .unwrap();
+        assert_eq!(delta.delta.as_deref(), Some("你好"));
+        let completed = parse_ai_sse_data(
+            ApiProtocol::OpenaiResponses,
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":11,"output_tokens":7}}}"#,
+        )
+        .unwrap();
+        assert!(completed.done);
+        assert_eq!(completed.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(completed.usage.as_ref().unwrap().prompt_tokens, Some(11));
+        assert_eq!(completed.usage.as_ref().unwrap().completion_tokens, Some(7));
+        let failed = parse_ai_sse_data(
+            ApiProtocol::OpenaiResponses,
+            r#"{"type":"response.failed","response":{"error":{"message":"bad request"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(failed.error.as_deref(), Some("bad request"));
+    }
+
+    #[test]
+    fn anthropic_sse_parses_text_stop_and_partial_usage() {
+        let delta = parse_ai_sse_data(
+            ApiProtocol::AnthropicMessages,
+            r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}"#,
+        )
+        .unwrap();
+        assert_eq!(delta.delta.as_deref(), Some("Hello"));
+        let message = parse_ai_sse_data(
+            ApiProtocol::AnthropicMessages,
+            r#"{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":19}}"#,
+        )
+        .unwrap();
+        assert_eq!(message.finish_reason.as_deref(), Some("length"));
+        assert_eq!(message.usage.unwrap().completion_tokens, Some(19));
+        let start = parse_ai_sse_data(
+            ApiProtocol::AnthropicMessages,
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":1}}}"#,
+        )
+        .unwrap();
+        assert_eq!(start.usage.unwrap().prompt_tokens, Some(5));
+    }
+
+    #[test]
+    fn openai_usage_only_sse_event_is_not_dropped() {
+        let event = parse_ai_sse_data(
+            ApiProtocol::OpenaiChat,
+            r#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}"#,
+        )
+        .unwrap();
+        assert_eq!(event.usage.unwrap().prompt_tokens, Some(3));
     }
 }

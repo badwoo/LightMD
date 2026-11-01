@@ -13,6 +13,7 @@
 //! - 全文翻译并发槽位（v0.7.3）同时记录所属窗口，使「取消本窗口任务」能精确
 //!   覆盖本窗口的并发批次，而不误杀其他窗口正在跑的批次。
 
+pub mod ai_client;
 pub mod ai_request;
 pub mod credential;
 pub mod prompt;

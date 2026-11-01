@@ -14,6 +14,8 @@ import { isTauri } from "./fileService";
 import { getWindowLabel } from "../utils/windowLabel";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import type { TranslateResultData } from "../stores/translateStore";
+import { resolveAiConnection, type AiConnectionProfile } from "./aiProfiles";
+import type { TranslateSettings } from "../stores/useSettingsStore";
 
 /** 大选区防护上限（字符数） */
 export const MAX_SELECTION_CHARS = 4000;
@@ -67,6 +69,40 @@ export function parseTranslateError(raw: unknown): TranslateErrorInfo {
 
 /** 单任务互斥在 Rust 侧执行（begin_task/end_task）；v0.6.3 P2-3 删除前端冗余的 taskActive 标志 */
 
+function profileConnectionArgs(profile: AiConnectionProfile) {
+  return {
+    credentialId: profile.credentialId,
+    provider: profile.providerId ?? profile.id,
+    baseUrl: profile.baseUrl,
+    model: profile.model,
+    // null = Rust 侧不发送 temperature（推理端点会因 temperature 400）
+    temperature: profile.requestPolicy.temperature ?? null,
+    contextWindowTokens: profile.contextWindowTokens,
+    maxOutputTokens: profile.maxOutputTokens,
+    tokenField: profile.requestPolicy.tokenField,
+    reasoningEffort: profile.requestPolicy.reasoningEffort ?? null,
+    includeStreamUsage: profile.requestPolicy.includeStreamUsage,
+    protocol: profile.protocol,
+    systemPrompt: profile.systemPrompt ?? null,
+    authMode: profile.authMode,
+  };
+}
+
+function legacyConnectionArgs(cfg: TranslateSettings) {
+  return {
+    provider: cfg.translateProviderPreset,
+    baseUrl: cfg.translateBaseUrl,
+    model: cfg.translateModel,
+    temperature: cfg.translateTemperature,
+  };
+}
+
+function currentConnectionArgs(cfg: TranslateSettings) {
+  const profile = resolveAiConnection(useSettingsStore.getState().ai);
+  // 仅兼容 0.15.0 之前/被外部清空的档案；正常 0.15.3 路径永远使用当前模型配置。
+  return profile ? profileConnectionArgs(profile) : legacyConnectionArgs(cfg);
+}
+
 export const translateService = {
   /**
    * 选中翻译（流式）。
@@ -99,15 +135,10 @@ export const translateService = {
     try {
       const result = await invoke<TranslateResultData>("translate_text", {
         text: trimmed,
-        // v0.7.2 P1：Key 按厂商独立存储（keyring 条目 translate_api_key::{provider}）
-        provider: cfg.translateProviderPreset,
-        baseUrl: cfg.translateBaseUrl,
-        model: cfg.translateModel,
+        ...currentConnectionArgs(cfg),
         targetLang: cfg.translateTargetLang,
         tone: cfg.translateTone,
         customPrompt: cfg.translateCustomPrompt || null,
-        // v0.7.3：采样温度由设置透传（kimi 等厂商仅允许 1）
-        temperature: cfg.translateTemperature,
         // v0.9.0：单任务槽按窗口分桶（窗口 A 的翻译不顶掉窗口 B 的任务）
         windowLabel: getWindowLabel(),
         onChunk: channel,
@@ -148,13 +179,10 @@ export const translateService = {
     try {
       return await invoke<TranslateResultData>("translate_text", {
         text: trimmed,
-        provider: cfg.translateProviderPreset,
-        baseUrl: cfg.translateBaseUrl,
-        model: cfg.translateModel,
+        ...currentConnectionArgs(cfg),
         targetLang: cfg.translateTargetLang,
         tone: cfg.translateTone,
         customPrompt: cfg.translateCustomPrompt || null,
-        temperature: cfg.translateTemperature,
         concurrentId,
         // v0.9.0：并发批次槽位同时记录所属窗口，取消本窗口任务时不误杀其他窗口
         windowLabel: getWindowLabel(),

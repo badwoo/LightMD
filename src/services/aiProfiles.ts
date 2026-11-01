@@ -5,9 +5,10 @@
  * 连接能力由用户显式配置，不根据 provider 或 model 名称猜测。
  */
 
-export type ApiProtocol = "openai-chat" | "anthropic-messages";
+export type ApiProtocol = "openai-chat" | "openai-responses" | "anthropic-messages";
 export type TokenField = "max_tokens" | "max_completion_tokens";
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+/** off 是 UI 默认值；写入请求前会归一为 undefined（不发送推理参数）。 */
+export type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AiRequestPolicy {
   tokenField: TokenField;
@@ -18,9 +19,22 @@ export interface AiRequestPolicy {
   includeStreamUsage: boolean;
 }
 
+export interface AiModelCatalogEntry {
+  id: string;
+  name: string;
+  /** 服务端或用户明确提供的最大上下文；缺失时不按模型名猜测。 */
+  contextWindowTokens?: number;
+  /** 服务端明确提供的最小上下文；缺失时滑条使用应用下限。 */
+  minContextWindowTokens?: number;
+  /** 每个模型独立的默认推理档；off 表示不发送推理参数。 */
+  reasoningEffort?: ReasoningEffort;
+}
+
 export interface AiConnectionProfile {
   id: string;
   name: string;
+  /** 预设或自定义 Provider ID；旧档案缺失时由 UI 按端点推断。 */
+  providerId?: string;
   protocol: ApiProtocol;
   baseUrl: string;
   model: string;
@@ -31,6 +45,8 @@ export interface AiConnectionProfile {
   maxOutputTokens: number;
   requestPolicy: AiRequestPolicy;
   systemPrompt?: string;
+  /** 当前服务商的模型目录（静态预设、动态探测或用户自定义）。 */
+  modelCatalog?: AiModelCatalogEntry[];
 }
 
 export interface AiSettings {
@@ -75,7 +91,9 @@ export type AiProfileValidationError =
   | "profile.contextWindowTokens.invalid"
   | "profile.maxOutputTokens.invalid"
   | "profile.requestPolicy.invalid"
-  | "profile.temperature.invalid";
+  | "profile.temperature.invalid"
+  | "profile.providerId.invalid"
+  | "profile.modelCatalog.invalid";
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -107,6 +125,7 @@ export function createAiProfileFromLegacy(
   return {
     id,
     name: provider || "AI connection",
+    providerId: provider || "custom",
     protocol: "openai-chat",
     baseUrl: text(legacy.translateBaseUrl),
     model: text(legacy.translateModel),
@@ -127,6 +146,30 @@ export function createAiSettingsFromLegacy(
   id?: string,
 ): AiSettings {
   const profile = createAiProfileFromLegacy(legacy, id);
+  return { profiles: [profile], activeProfileId: profile.id, instructions: [] };
+}
+
+/** v0.15.3：全新安装默认使用本地 Ollama；旧用户仍由 migrateAiSettings 保留原连接。 */
+export function createDefaultAiSettings(): AiSettings {
+  const profile: AiConnectionProfile = {
+    id: "ollama",
+    name: "Ollama（本地）",
+    providerId: "ollama",
+    protocol: "openai-chat",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    model: "",
+    credentialId: "ollama",
+    authMode: "none",
+    contextWindowTokens: DEFAULT_AI_CONTEXT_WINDOW_TOKENS,
+    maxOutputTokens: DEFAULT_AI_MAX_OUTPUT_TOKENS,
+    requestPolicy: {
+      tokenField: "max_tokens",
+      temperature: 0.1,
+      reasoningEffort: undefined,
+      includeStreamUsage: true,
+    },
+    modelCatalog: [],
+  };
   return { profiles: [profile], activeProfileId: profile.id, instructions: [] };
 }
 
@@ -168,8 +211,11 @@ export function validateAiConnectionProfile(profile: AiConnectionProfile): AiPro
   const errors: AiProfileValidationError[] = [];
   if (!text(profile.id)) errors.push("profile.id.required");
   if (!text(profile.name)) errors.push("profile.name.required");
-  if (profile.protocol !== "openai-chat" && profile.protocol !== "anthropic-messages") {
+  if (!["openai-chat", "openai-responses", "anthropic-messages"].includes(profile.protocol)) {
     errors.push("profile.protocol.invalid");
+  }
+  if (profile.providerId !== undefined && !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(profile.providerId)) {
+    errors.push("profile.providerId.invalid");
   }
   if (!text(profile.baseUrl)) errors.push("profile.baseUrl.required");
   if (!text(profile.model)) errors.push("profile.model.required");
@@ -190,6 +236,20 @@ export function validateAiConnectionProfile(profile: AiConnectionProfile): AiPro
     ) {
       errors.push("profile.maxOutputTokens.invalid");
     }
+  }
+  if (profile.modelCatalog !== undefined) {
+    const ids = new Set<string>();
+    const valid = Array.isArray(profile.modelCatalog) && profile.modelCatalog.every((entry) => {
+      const contextValid = entry.contextWindowTokens === undefined ||
+        (Number.isSafeInteger(entry.contextWindowTokens) && entry.contextWindowTokens > 0);
+      const minValid = entry.minContextWindowTokens === undefined ||
+        (Number.isSafeInteger(entry.minContextWindowTokens) && entry.minContextWindowTokens > 0 &&
+          (entry.contextWindowTokens === undefined || entry.minContextWindowTokens <= entry.contextWindowTokens));
+      const duplicate = ids.has(entry.id);
+      ids.add(entry.id);
+      return Boolean(text(entry.id)) && !duplicate && Boolean(text(entry.name)) && contextValid && minValid;
+    });
+    if (!valid) errors.push("profile.modelCatalog.invalid");
   }
   const policy = profile.requestPolicy;
   if (!policy || (policy.tokenField !== "max_tokens" && policy.tokenField !== "max_completion_tokens")) {

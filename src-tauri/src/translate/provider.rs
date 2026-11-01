@@ -204,7 +204,7 @@ pub struct OpenAiCompatibleProvider {
 }
 
 /// 全局复用 Client（连接池复用，翻译频繁时省 TLS 握手）
-fn shared_client() -> &'static reqwest::Client {
+pub(crate) fn shared_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -494,12 +494,12 @@ fn classify_reqwest_error(timeout: bool, connect: bool) -> TranslateError {
 }
 
 /// reqwest 错误 → TranslateError（不含请求头信息）
-fn map_reqwest_err(e: reqwest::Error) -> TranslateError {
+pub(crate) fn map_reqwest_err(e: reqwest::Error) -> TranslateError {
     classify_reqwest_error(e.is_timeout(), e.is_connect())
 }
 
 /// 检查 HTTP 状态；非 2xx 提取厂商 message（仅 message 字段，脱敏）
-async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, TranslateError> {
+pub(crate) async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, TranslateError> {
     let status = resp.status();
     if status.is_success() {
         return Ok(resp);

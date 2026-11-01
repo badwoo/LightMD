@@ -276,6 +276,9 @@ pub fn run() {
             commands::ai_assist::ai_assist_text,
             // v0.7.5：AI 对话（多轮 messages + 内置 system 提示词，共享同一任务槽）
             commands::ai_assist::ai_chat,
+            // v0.15.3：AI profile 模型目录与三协议连接测试
+            commands::ai_assist::list_ai_models,
+            commands::ai_assist::test_ai_connection,
             export::export_pdf,
             export::export_html_to_pdf,
             // ─── v0.9.0 多窗口 ───

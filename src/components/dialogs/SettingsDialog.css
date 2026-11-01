@@ -58,7 +58,9 @@
   border: 1px solid var(--border-color);
   border-radius: 12px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2);
-  width: 520px;
+  /* v0.15.3：520px → 780px（+50%），小窗口仍保留 16px 两侧安全边距 */
+  width: 780px;
+  max-width: calc(100vw - 32px);
   max-height: 80vh;
   display: flex;
   flex-direction: column;
@@ -759,4 +761,52 @@ label.settings-switch {
 .settings-update-error .settings-btn {
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* ─── v0.15.3 AI 树状设置 ─────────────────────────────── */
+.ai-master-node {
+  margin-bottom: 16px;
+}
+
+.ai-tree-children {
+  position: relative;
+  margin-left: 7px;
+  padding-left: 20px;
+  border-left: 1px solid var(--border-color);
+}
+
+.ai-tree-children > .settings-section {
+  position: relative;
+}
+
+.ai-tree-children > .settings-section::before {
+  content: "";
+  position: absolute;
+  top: 13px;
+  left: -21px;
+  width: 13px;
+  border-top: 1px solid var(--border-color);
+}
+
+.ai-tree-node {
+  margin-top: 22px;
+}
+
+.ai-tree-children .ai-tree-children {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+@media (max-width: 640px) {
+  .settings-body {
+    padding: 16px;
+  }
+  .ai-tree-children {
+    margin-left: 3px;
+    padding-left: 12px;
+  }
+  .ai-tree-children > .settings-section::before {
+    left: -13px;
+    width: 8px;
+  }
 }

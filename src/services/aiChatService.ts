@@ -158,11 +158,12 @@ export const aiChatService = {
         messages,
         // v0.15.0：凭据按 profile 隔离；协议/预算/推理档随档案透传
         credentialId: profile.credentialId,
-        provider: profile.protocol === "anthropic-messages" ? "custom" : profile.id,
+        provider: profile.providerId ?? profile.id,
+        authMode: profile.authMode,
         baseUrl: profile.baseUrl,
         model: profile.model,
-        // 温度未配置时传 0 占位，Rust 侧按 requestPolicy 决定是否写入请求体
-        temperature: profile.requestPolicy.temperature ?? 0,
+        // null = Rust 侧不发送 temperature（推理端点会因 temperature 400）
+        temperature: profile.requestPolicy.temperature ?? null,
         contextWindowTokens: profile.contextWindowTokens,
         maxOutputTokens: profile.maxOutputTokens,
         tokenField: profile.requestPolicy.tokenField,

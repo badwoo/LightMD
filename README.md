@@ -2,7 +2,7 @@
 
 > 一款**轻量级**、**高性能**、**所见即所得**的 Windows Markdown 编辑器，基于 Tauri v2 + React + ProseMirror 构建。
 
-**当前版本：v0.15.2**
+**当前版本：v0.15.3**
 
 中文 | [English](./README_EN.md) | [用户指南](./USER_GUIDE.md)
 
@@ -423,6 +423,26 @@ npm run tauri build
 欢迎提交 Issue 和 Pull Request！
 
 ## 📋 更新历史
+
+### v0.15.3（2026-10-30）
+
+**AI 配置深化版 —— 设置窗加宽 50%、AI 树状配置、模型双页签、三协议与厂商 Plan**
+
+| 需求 | 实现 |
+| --- | --- |
+| 设置窗口加宽 50% | `SettingsDialog.css`：520px → **780px**，`max-width: calc(100vw - 32px)` 保留小窗口 16px 安全边距；实机测得对话窗宽 **780px** |
+| AI 配置树状结构 | 「启用 AI 功能」为总开关，开启后依次嵌套：**模型配置 → AI 翻译 → AI 指令库**；关闭总开关整棵子树收起，翻译子开关关闭时只收起翻译子项。`SettingsDialog` 不再重复保留模型字段，翻译节点只留语言/语体/结果模式/气泡颜色/自定义 Prompt |
+| 模型配置左右页签 | 新组件 `AiModelSettings`：左「服务商」（服务商、API 密钥、API 地址、模型名称、采样温度、获取模型列表、测试连接），右「自定义模型 API」（Provider ID、显示名称、API 地址、三协议、API 密钥、模型目录）。页签支持 `role=tab` 与方向键 |
+| 上下文窗口滑条 | 拉取/选择带上下文元数据的模型后出现滑条，**默认停在最大档**；1M 及以上模型在中间增加 **600K** 档（普通模型为「应用下限 / 模型上限」两档）。元数据只取端点真实返回（OpenAI `/models` 字段或 Ollama 原生 `/api/tags` 的 `details.context_length`），不按模型名猜测 |
+| 服务商默认 Ollama + 厂商 Plan | 全新安装默认本地 `http://127.0.0.1:11434/v1`、`authMode=none`（不发 Authorization）；在原有服务商之上新增 **Kimi Plan**（`api.kimi.com/coding` + Anthropic Messages）、**火山引擎 Coding Plan**（`/api/plan/v3`）、**智谱 GLM Coding Plan**（`/api/coding/paas/v4`）、**阿里云 Token Plan**（`token-plan.cn-beijing…`）。四个端点的 `/models` 均实测返回 401（需鉴权且路径有效） |
+| 自定义模型 API | Provider ID 按 DSH 规则 `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$` 校验，并作为凭据槽位（切换服务商不串 Key）；协议支持 OpenAI Chat Completions / OpenAI Responses / Anthropic Messages；模型目录含模型 ID、名称、上下文窗口、推理档 `off/low/medium/high/xhigh/max`（`off` 归一为「不发送推理参数」） |
+| AI 指令库位置 | 保留原指令编辑器实现，移到 AI 树最末节点，仍与 `settings.ai.instructions` 同源 |
+
+同时修复 0.15.0 遗留的真缺口：`ai_chat` / `ai_assist_text` / `translate_text` 之前只把协议、推理档与预算传到命令边界，实际仍固定走 OpenAI Chat；本版统一接入 `AiRequest` 三协议 HTTP/SSE，翻译保留 `build_prompt`、`{{N}}` 占位符 mask/unmask 与并发任务槽。翻译运行时改用**当前 AI 档案**，旧 `translate` 连接字段只作迁移兼容。
+
+验证：`tsc --noEmit` exit 0；前端 **347 文件 / 6269 用例通过**（1 条既有 skip）；Rust `cargo test` **270 通过 / 0 失败**（3 ignored）；`npx tauri build --no-bundle` 产出 0.15.3 exe；实机探针 `scripts/v0153-probe-ai-settings.mjs` **10/10 PASS**（780px、树顺序、Ollama 默认、拉取 qwen3-vl:8b / 8b-instruct、262K 滑条停在最大档、测试连接成功、总开关折叠、三协议、六档推理）。
+
+已知取舍：① 厂商 Plan 的模型目录只收录有明确公开目录数据的型号，其余靠「获取模型列表」动态拉取；② Anthropic 协议没有标准 `/models` 端点，若厂商不提供则模型需手填；③ `contextWindowTokens` 目前是档案元数据（用于滑条与预算校验），Rust 请求层不据此裁剪上下文。
 
 ### v0.15.2（2026-10-28）
 

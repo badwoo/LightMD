@@ -21,9 +21,18 @@
 use tauri::ipc::Channel;
 use tauri::State;
 
-use crate::commands::translate::read_api_key;
+use crate::commands::translate::read_ai_credential;
+use crate::translate::ai_client::{list_models, stream_ai_request, test_ai_request, AiModel};
+use crate::translate::ai_request::{
+    merge_system_prompt, AiRequest, ApiProtocol, ChatMessage, ReasoningEffort, RequestPolicy,
+    TokenField,
+};
+use crate::translate::credential::AuthMode;
 use crate::translate::prompt::build_ai_assist_prompt;
-use crate::translate::provider::{ChatMessage, OpenAiCompatibleProvider, TranslateResult};
+use crate::translate::provider::{
+    chat_temperature, estimate_max_tokens, TranslateResult, CHAT_MAX_TOKENS,
+};
+use crate::translate::segment;
 use crate::translate::TranslateState;
 
 /// AI 助手任务（流式）：按 task 组装 Prompt，复用翻译的流式通道与占位符保护
@@ -35,9 +44,16 @@ pub async fn ai_assist_text(
     provider: String,
     base_url: String,
     model: String,
-    // v0.7.3：采样温度（由设置透传；kimi 等厂商仅允许 1）
-    temperature: f32,
-    // v0.9.0：调用方窗口 label（单任务槽按窗口分桶，跨窗口互不取消）
+    temperature: Option<f32>,
+    credential_id: Option<String>,
+    protocol: Option<String>,
+    context_window_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
+    token_field: Option<String>,
+    reasoning_effort: Option<String>,
+    include_stream_usage: Option<bool>,
+    system_prompt: Option<String>,
+    auth_mode: Option<String>,
     window_label: String,
     on_chunk: Channel<String>,
 ) -> Result<TranslateResult, String> {
@@ -45,34 +61,49 @@ pub async fn ai_assist_text(
     if text.is_empty() {
         return Err("STREAM|无有效内容".to_string());
     }
-
-    // 任务类型校验 + Prompt 组装（未知任务直接拒绝，不产生请求）
-    let sys_prompt = build_ai_assist_prompt(&task)?;
-
-    // 读 Key（仅 Rust 侧内存，不回传前端；与翻译共用，v0.7.2 P1 起按厂商独立条目）
-    let api_key = read_api_key(&provider).await?;
-
-    // 单任务互斥（按窗口）：取消该窗口旧任务，注册新取消标志
+    let built_in = build_ai_assist_prompt(&task)?;
+    let protocol = ApiProtocol::parse(protocol.as_deref())?;
+    let auth_mode = AuthMode::parse(auth_mode.as_deref())?;
+    let credential = read_ai_credential(credential_id, provider, auth_mode).await?;
     let cancel_flag = state.begin_task(&window_label);
 
-    let provider = OpenAiCompatibleProvider {
+    let seg = segment::mask(&text);
+    let request = AiRequest {
+        protocol,
         base_url,
         model,
-        // v0.7.3：温度钳制到 [0, 2]，防止前端越界导致厂商 400
-        temperature: temperature.clamp(0.0, 2.0),
-        api_key,
+        system: merge_system_prompt(&built_in, system_prompt.as_deref()),
+        messages: vec![ChatMessage { role: "user".into(), content: seg.masked_text.clone() }],
+        max_output_tokens: max_output_tokens
+            .unwrap_or_else(|| estimate_max_tokens(text.chars().count())),
+        policy: RequestPolicy {
+            token_field: TokenField::parse(token_field.as_deref()),
+            temperature,
+            reasoning_effort: ReasoningEffort::parse(reasoning_effort.as_deref()),
+            include_stream_usage: include_stream_usage.unwrap_or(true),
+        },
     };
+    let _ = context_window_tokens;
 
-    let result = provider
-        .translate_stream(sys_prompt, text, &|chunk| {
-            // 推送增量（失败静默：前端可能已关闭气泡）
-            let _ = on_chunk.send(chunk);
-        }, &cancel_flag)
-        .await;
-
-    // 完成/失败路径统一清理本窗口的标志
+    let result = stream_ai_request(&request, &credential, &|chunk| {
+        let _ = on_chunk.send(chunk);
+    }, &cancel_flag)
+    .await;
     state.end_task(&window_label, &cancel_flag);
-    result.map_err(|e| e.to_code_string())
+
+    match result {
+        Ok(result) => {
+            let intact = segment::validate(&result.translated, seg.tokens.len());
+            Ok(TranslateResult {
+                translated: segment::unmask(&result.translated, &seg.tokens),
+                placeholders_intact: intact,
+                finish_reason: result.finish_reason,
+                prompt_tokens: result.prompt_tokens,
+                completion_tokens: result.completion_tokens,
+            })
+        }
+        Err(error) => Err(error.to_code_string()),
+    }
 }
 
 /// 角色白名单清洗（纯函数，便于单测）
@@ -111,50 +142,97 @@ pub async fn ai_chat(
     provider: String,
     base_url: String,
     model: String,
-    // v0.7.3：采样温度（由设置透传）；对话侧再抬到 ≥0.3（见 chat_temperature）
-    temperature: f32,
-    // v0.9.0：调用方窗口 label（单任务槽按窗口分桶，跨窗口互不取消）
+    temperature: Option<f32>,
+    credential_id: Option<String>,
+    protocol: Option<String>,
+    context_window_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
+    token_field: Option<String>,
+    reasoning_effort: Option<String>,
+    include_stream_usage: Option<bool>,
+    system_prompt: Option<String>,
+    auth_mode: Option<String>,
     window_label: String,
     on_chunk: Channel<String>,
 ) -> Result<TranslateResult, String> {
     let history = normalize_chat_messages(messages);
-
-    // 非空校验：至少一条 user 消息（否则无指令可执行，不发请求省 token）
     if !history.iter().any(|m| m.role == "user") {
         return Err("STREAM|无有效指令".to_string());
     }
-
-    // 读 Key（与翻译/助手共用同一 keyring 条目）
-    let api_key = read_api_key(&provider).await?;
-
-    // 单任务互斥（按窗口）：对话与同窗口的翻译/续写/润色/摘要共享任务槽，
-    // 新任务取消该窗口的旧任务；**不影响其他窗口**（AC-14）
+    let protocol = ApiProtocol::parse(protocol.as_deref())?;
+    let auth_mode = AuthMode::parse(auth_mode.as_deref())?;
+    let credential = read_ai_credential(credential_id, provider, auth_mode).await?;
     let cancel_flag = state.begin_task(&window_label);
 
-    let provider_impl = OpenAiCompatibleProvider {
+    let request = AiRequest {
+        protocol,
         base_url,
         model,
-        temperature: temperature.clamp(0.0, 2.0),
-        api_key,
+        system: merge_system_prompt(
+            crate::translate::prompt::AI_CHAT_SYSTEM_PROMPT,
+            system_prompt.as_deref(),
+        ),
+        messages: history,
+        max_output_tokens: max_output_tokens.unwrap_or(CHAT_MAX_TOKENS),
+        policy: RequestPolicy {
+            token_field: TokenField::parse(token_field.as_deref()),
+            temperature: temperature.map(chat_temperature),
+            reasoning_effort: ReasoningEffort::parse(reasoning_effort.as_deref()),
+            include_stream_usage: include_stream_usage.unwrap_or(true),
+        },
     };
+    let _ = context_window_tokens;
 
-    // system 置于最前（唯一 system 消息）
-    let mut payload = Vec::with_capacity(history.len() + 1);
-    payload.push(ChatMessage {
-        role: "system".to_string(),
-        content: crate::translate::prompt::AI_CHAT_SYSTEM_PROMPT.to_string(),
-    });
-    payload.extend(history);
-
-    let result = provider_impl
-        .chat_stream(payload, &|chunk| {
-            let _ = on_chunk.send(chunk);
-        }, &cancel_flag)
-        .await;
-
-    // 完成/失败路径统一清理本窗口的标志
+    let result = stream_ai_request(&request, &credential, &|chunk| {
+        let _ = on_chunk.send(chunk);
+    }, &cancel_flag)
+    .await;
     state.end_task(&window_label, &cancel_flag);
     result.map_err(|e| e.to_code_string())
+}
+
+/// 拉取当前 AI profile 的模型目录；返回字段由 AiModel 序列化为 camelCase。
+#[tauri::command]
+pub async fn list_ai_models(
+    credential_id: String,
+    provider: String,
+    protocol: String,
+    base_url: String,
+    auth_mode: Option<String>,
+) -> Result<Vec<AiModel>, String> {
+    let protocol = ApiProtocol::parse(Some(&protocol))?;
+    let auth_mode = AuthMode::parse(auth_mode.as_deref())?;
+    let credential = read_ai_credential(Some(credential_id), provider.clone(), auth_mode).await?;
+    list_models(protocol, &provider, &base_url, &credential)
+        .await
+        .map_err(|error| error.to_code_string())
+}
+
+/// 各协议发送同一个最小用户指令、1 token、非流式请求；不做换参重试。
+#[tauri::command]
+pub async fn test_ai_connection(
+    credential_id: String,
+    provider: String,
+    protocol: String,
+    base_url: String,
+    model: String,
+    auth_mode: Option<String>,
+) -> Result<(), String> {
+    let protocol = ApiProtocol::parse(Some(&protocol))?;
+    let auth_mode = AuthMode::parse(auth_mode.as_deref())?;
+    let credential = read_ai_credential(Some(credential_id), provider, auth_mode).await?;
+    let request = AiRequest {
+        protocol,
+        base_url,
+        model,
+        system: None,
+        messages: vec![ChatMessage { role: "user".into(), content: "hi".into() }],
+        max_output_tokens: 1,
+        policy: RequestPolicy::default(),
+    };
+    test_ai_request(&request, &credential)
+        .await
+        .map_err(|error| error.to_code_string())
 }
 
 #[cfg(test)]

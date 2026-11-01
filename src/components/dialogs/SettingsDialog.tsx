@@ -15,7 +15,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useSettingsStore, THEMES, type Theme, type TranslateSettings } from "../../stores/useSettingsStore";
 import { useTypographyPreviewStore } from "../../stores/useTypographyPreviewStore";
-import { translateService } from "../../services/translateService";
 import { useT } from "../../i18n";
 // v0.9.0 自定义快捷键设置弹窗（编辑器分类最后一栏入口）
 import { ShortcutSettingsDialog } from "./ShortcutSettingsDialog";
@@ -28,8 +27,8 @@ import {
   UpdateNetworkError,
   type UpdateCheckResult,
 } from "../../services/updateService";
-// v0.15.0 需求（AI 深度配置）：AI 连接档案 + 指令库（各自读写 settings.ai，无需数据 props）
-import { AiConnectionSettings } from "../settings/AiConnectionSettings";
+// v0.15.3：模型配置双页签 + 指令库（各自读写 settings.ai，无需数据 props）
+import { AiModelSettings } from "../settings/AiModelSettings";
 import { AiInstructionEditor } from "../settings/AiInstructionEditor";
 import "./SettingsDialog.css";
 
@@ -146,21 +145,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [autoSaveInterval, setAutoSaveInterval] = useState(settings.autoSaveIntervalMs / 1000);
   const [customCss, setCustomCss] = useState(settings.customCss);
 
-  // ─── v0.6.0：AI 翻译分组状态 ───────────────────
-  // Key 输入不回显已存值（keyring 只写不读明文）；keyStatus 打开对话框时异步探测
-  const [apiKey, setApiKey] = useState("");
-  const [keyStatus, setKeyStatus] = useState<"unknown" | "configured" | "not-configured">("unknown");
-  const [keySaved, setKeySaved] = useState(false);
-  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
-  const [testDetail, setTestDetail] = useState("");
-  // v0.7.2 P2：动态模型列表（拉取成功后替换 datalist；null = 使用静态预设列表）
-  const [dynamicModels, setDynamicModels] = useState<string[] | null>(null);
-  const [fetchStatus, setFetchStatus] = useState<"idle" | "fetching" | "ok" | "fail">("idle");
-  const [fetchDetail, setFetchDetail] = useState("");
-  // v0.7.2 修复：datalist 原生行为会按输入框已有文本过滤选项（切预设默认模型后只显示 1 项），
-  // 拉取成功后改用完整候选浮层展示全部模型，点击选择；datalist 仅保留给手动输入联想
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
-
   // ─── v0.14.0 需求1：软件更新 ──────────────────────────
   /**
    * 更新流程状态机（一次性 UI 状态，**不进 zustand**：关闭设置弹窗即应丢弃）。
@@ -192,86 +176,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
    * 下载阶段重试重新下载。
    */
   const [updateOfflineScope, setUpdateOfflineScope] = useState<"check" | "download">("check");
-
-  const providerPreset = settings.translate.translateProviderPreset;
-
-  // v0.7.2 修复：切换厂商或修改 baseUrl 后，旧动态列表不再适用，重置回静态预设
-  useEffect(() => {
-    setDynamicModels(null);
-    setFetchStatus("idle");
-    setFetchDetail("");
-    setModelMenuOpen(false);
-  }, [providerPreset, settings.translate.translateBaseUrl]);
-
-  // 打开时/切换厂商时检查 keyring 是否已配置当前厂商的 Key（v0.7.2 P1：按 provider 独立存储）
-  useEffect(() => {
-    let alive = true;
-    setKeyStatus("unknown");
-    translateService.hasKey(providerPreset).then((ok) => {
-      if (alive) setKeyStatus(ok ? "configured" : "not-configured");
-    });
-    // 切换厂商后动态列表失效（属于上一厂商端点的模型），回到静态预设列表
-    setDynamicModels(null);
-    setFetchStatus("idle");
-    setFetchDetail("");
-    return () => { alive = false; };
-  }, [providerPreset]);
-
-  /** v0.7.2 P1：保存 API Key 到当前厂商的 keyring 条目（成功后清空输入并显示已配置） */
-  const handleSaveKey = async () => {
-    const key = apiKey.trim();
-    if (!key) return;
-    try {
-      await translateService.setKey(providerPreset, key);
-      setApiKey("");
-      setKeySaved(true);
-      setKeyStatus("configured");
-      setTimeout(() => setKeySaved(false), 1500);
-    } catch {
-      // keyring 写入失败：保持输入，用户可重试
-    }
-  };
-
-  /** 测试连接（1-token 最小请求，验证 Key + baseUrl + model） */
-  const handleTestConnection = async () => {
-    setTestStatus("testing");
-    setTestDetail("");
-    try {
-      await translateService.testConnection(providerPreset, settings.translate.translateBaseUrl, settings.translate.translateModel);
-      setTestStatus("ok");
-    } catch (e) {
-      setTestStatus("fail");
-      const detail = e instanceof Error ? e.message.split(": ").slice(1).join(": ") : String(e);
-      setTestDetail(detail);
-    }
-  };
-
-  /**
-   * v0.7.2 P2：获取模型列表（GET {baseUrl}/models）。
-   * 成功 → 动态列表填充下拉；失败/空列表 → 回退静态预设列表并提示原因。
-   */
-  const handleFetchModels = async () => {
-    setFetchStatus("fetching");
-    setFetchDetail("");
-    try {
-      const ids = await translateService.listModels(providerPreset, settings.translate.translateBaseUrl);
-      if (ids.length > 0) {
-        setDynamicModels(ids);
-        setFetchStatus("ok");
-        // 自动展开完整候选浮层（datalist 会按输入框文本过滤，无法展示全量）
-        setModelMenuOpen(true);
-      } else {
-        // 端点返回空列表：视为不支持，回退静态列表
-        setDynamicModels(null);
-        setFetchStatus("fail");
-        setFetchDetail(t("settings.translate.fetchModelsEmpty"));
-      }
-    } catch (e) {
-      setDynamicModels(null);
-      setFetchStatus("fail");
-      setFetchDetail(e instanceof Error ? e.message.split(": ").slice(1).join(": ") : String(e));
-    }
-  };
 
   /** 翻译配置统一实时生效 */
   const setTranslate = (patch: Partial<TranslateSettings>) => {
@@ -892,13 +796,10 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             </div>
           </section>
 
-          {/* v0.6.0：AI 翻译 */}
-          <section className="settings-section" data-testid="translate-section">
-            <h3>{t("settings.translate")}</h3>
-
-            {/* v0.7.0 修复1/2：全局 AI 总开关（关闭后翻译/续写/润色/摘要全部入口静默，
-                底部栏 AI 图标变灰；关闭时联动关闭下方翻译子开关） */}
-            <div className="settings-field">
+          {/* v0.15.3：AI 总开关 → 模型配置 → AI 翻译 → AI 指令库 */}
+          <section className="settings-section ai-tree" data-testid="ai-tree">
+            <h3>{t("settings.ai.title")}</h3>
+            <div className="settings-field ai-master-node">
               <label>{t("settings.translate.enabled")}</label>
               <select
                 className="settings-select"
@@ -911,359 +812,113 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               </select>
             </div>
 
-            {/* v0.7.0 修复2：AI 翻译子开关（仅总开关开启后可操作）
-                v0.7.3 U2：收纳为总开关下的缩进子项，总开关关闭时置灰并注明"由总开关控制" */}
-            <div className="settings-field translate-sub-group">
-              <label>
-                {t("settings.translate.enabled.translate")}
-                {!settings.aiEnabled && (
-                  <span className="settings-hint" data-testid="translate-controlled-by-master">
-                    {t("settings.translate.controlledByMaster")}
-                  </span>
-                )}
-              </label>
-              <select
-                className="settings-select"
-                value={settings.translate.translateEnabled ? "on" : "off"}
-                onChange={(e) => setTranslate({ translateEnabled: e.target.value === "on" })}
-                disabled={!settings.aiEnabled}
-                data-testid="translate-enabled"
-              >
-                <option value="on">{t("settings.on")}</option>
-                <option value="off">{t("settings.off")}</option>
-              </select>
-            </div>
+            {settings.aiEnabled && (
+              <div className="ai-tree-children">
+                <AiModelSettings />
 
-            {/* 关闭时其余配置置灰（CSS pointer-events + opacity）；v0.7.0：跟随全局 AI 总开关
-                v0.7.3 U2：配置块与子开关统一左缩进，体现"总开关 → 子功能"层级 */}
-            <div className={`translate-config-fields translate-sub-group${settings.aiEnabled ? "" : " disabled"}`}>
-            {/* 服务商预设（切换自动填充地址与模型） */}
-            <div className="settings-field">
-              <label>{t("settings.translate.provider")}</label>
-              <select
-                className="settings-select"
-                value={settings.translate.translateProviderPreset}
-                onChange={(e) => setTranslate(applyProviderPreset(e.target.value, settings.translate))}
-                data-testid="translate-provider"
-              >
-                <option value="deepseek">{t("settings.translate.provider.deepseek")}</option>
-                <option value="zhipu">{t("settings.translate.provider.zhipu")}</option>
-                <option value="minimax">{t("settings.translate.provider.minimax")}</option>
-                <option value="alibaba">{t("settings.translate.provider.alibaba")}</option>
-                <option value="kimi">{t("settings.translate.provider.kimi")}</option>
-                <option value="volcengine">{t("settings.translate.provider.volcengine")}</option>
-                <option value="doubao">{t("settings.translate.provider.doubao")}</option>
-                <option value="kimicode">{t("settings.translate.provider.kimicode")}</option>
-                <option value="hunyuan">{t("settings.translate.provider.hunyuan")}</option>
-                <option value="xunfei">{t("settings.translate.provider.xunfei")}</option>
-                <option value="stepfun">{t("settings.translate.provider.stepfun")}</option>
-                <option value="baidu">{t("settings.translate.provider.baidu")}</option>
-                <option value="lingyi">{t("settings.translate.provider.lingyi")}</option>
-                <option value="baichuan">{t("settings.translate.provider.baichuan")}</option>
-                <option value="sensenova">{t("settings.translate.provider.sensenova")}</option>
-                <option value="antling">{t("settings.translate.provider.antling")}</option>
-                <option value="gemini">{t("settings.translate.provider.gemini")}</option>
-                <option value="claude">{t("settings.translate.provider.claude")}</option>
-                <option value="modelscope">{t("settings.translate.provider.modelscope")}</option>
-                <option value="siliconflow">{t("settings.translate.provider.siliconflow")}</option>
-                <option value="openai">{t("settings.translate.provider.openai")}</option>
-                <option value="custom">{t("settings.translate.provider.custom")}</option>
-              </select>
-            </div>
-
-            {/* API Key（keyring 安全存储，不回显） */}
-            <div className="settings-field">
-              <label>
-                {t("settings.translate.apiKey")}
-                {keyStatus === "configured" && (
-                  <span className="translate-key-status ok" data-testid="translate-key-status">✓ {t("settings.translate.apiKeyConfigured")}</span>
-                )}
-                {keyStatus === "not-configured" && (
-                  <span className="translate-key-status" data-testid="translate-key-status">{t("settings.translate.apiKeyNotConfigured")}</span>
-                )}
-              </label>
-              <div className="settings-inline-row">
-                <input
-                  type="password"
-                  className="settings-select"
-                  style={{ flex: 1, width: "auto" }}
-                  placeholder={t("settings.translate.apiKeyPlaceholder")}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  autoComplete="off"
-                  data-testid="translate-api-key-input"
-                />
-                <button
-                  className="settings-btn secondary"
-                  disabled={!apiKey.trim()}
-                  onClick={handleSaveKey}
-                  data-testid="translate-api-key-save"
-                >
-                  {keySaved ? t("settings.translate.apiKeySaved") : t("settings.translate.apiKeySave")}
-                </button>
-              </div>
-            </div>
-
-            {/* API 地址（custom 预设或任意预设均可微调） */}
-            <div className="settings-field">
-              <label>{t("settings.translate.baseUrl")}</label>
-              <input
-                type="text"
-                className="settings-select"
-                style={{ width: "auto" }}
-                value={settings.translate.translateBaseUrl}
-                onChange={(e) => setTranslate({ translateBaseUrl: e.target.value })}
-                spellCheck={false}
-                data-testid="translate-base-url"
-              />
-              {/* v0.6.3 S-4：非 https 地址明文传输 Bearer Key，显式警告 */}
-              {/^http:\/\//i.test(settings.translate.translateBaseUrl.trim()) && (
-                <div className="settings-hint settings-hint-warning" data-testid="translate-base-url-warning">
-                  {t("settings.translate.baseUrlInsecure")}
-                </div>
-              )}
-            </div>
-
-            {/* 模型角色（点击输入框展开全量候选浮层；datalist 仅保留给手动输入联想） */}
-            <div className="settings-field" style={{ position: "relative" }}>
-              <label>{t("settings.translate.model")}</label>
-              <div className="settings-inline-row">
-                <input
-                  type="text"
-                  className="settings-select"
-                  style={{ flex: 1, width: "auto" }}
-                  list="translate-model-options"
-                  value={settings.translate.translateModel}
-                  onChange={(e) => setTranslate({ translateModel: e.target.value })}
-                  onFocus={() => setModelMenuOpen(true)}
-                  onBlur={() => setModelMenuOpen(false)}
-                  spellCheck={false}
-                  data-testid="translate-model"
-                />
-                {/* v0.7.2 P2：动态拉取厂商模型列表（厂商上下线模型后用户可自行刷新） */}
-                <button
-                  className="settings-btn secondary"
-                  disabled={fetchStatus === "fetching" || !settings.translate.translateBaseUrl}
-                  onClick={handleFetchModels}
-                  data-testid="translate-fetch-models"
-                >
-                  {fetchStatus === "fetching" ? t("settings.translate.fetchingModels") : t("settings.translate.fetchModels")}
-                </button>
-              </div>
-              <datalist id="translate-model-options" data-testid="translate-model-options">
-                {(dynamicModels ?? TRANSLATE_PROVIDERS[providerPreset]?.models ?? []).map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-              {/* v0.7.2 修复：datalist 原生行为会按输入框已有文本过滤选项（如 deepseek 拉取到
-                  2 个模型但输入框已有值时只能看到 1 个），改为全量候选浮层：
-                  点击输入框或拉取成功后展开，动态列表优先、无动态列表时显示静态预设 */}
-              {modelMenuOpen && (dynamicModels ?? TRANSLATE_PROVIDERS[providerPreset]?.models ?? []).length > 0 && (
-                <div className="translate-model-menu" data-testid="translate-model-menu">
-                  <div className="translate-model-menu-header">
-                    <span>
-                      {dynamicModels
-                        ? t("settings.translate.fetchModelsOk", { count: dynamicModels.length })
-                        : t("settings.translate.modelMenuPreset")}
-                    </span>
-                    <button
-                      type="button"
-                      className="translate-model-menu-close"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => setModelMenuOpen(false)}
-                      aria-label="close"
-                      data-testid="translate-model-menu-close"
+                <section className="settings-section ai-tree-node" data-testid="translate-section">
+                  <h3>{t("settings.translate")}</h3>
+                  <div className="settings-field">
+                    <label>{t("settings.translate.enabled.translate")}</label>
+                    <select
+                      className="settings-select"
+                      value={settings.translate.translateEnabled ? "on" : "off"}
+                      onChange={(e) => setTranslate({ translateEnabled: e.target.value === "on" })}
+                      data-testid="translate-enabled"
                     >
-                      ✕
-                    </button>
+                      <option value="on">{t("settings.on")}</option>
+                      <option value="off">{t("settings.off")}</option>
+                    </select>
                   </div>
-                  <div className="translate-model-menu-list">
-                    {(dynamicModels ?? TRANSLATE_PROVIDERS[providerPreset]?.models ?? []).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        className="translate-model-menu-item"
-                        /* 阻止 mousedown 抢走 input 焦点（onBlur 会关浮层导致 click 不触发） */
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          setTranslate({ translateModel: m });
-                          setModelMenuOpen(false);
-                        }}
-                        data-testid="translate-model-menu-item"
-                      >
-                        {m}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {/* 拉取结果提示：成功显示数量；失败回退静态预设列表并显示原因 */}
-              {fetchStatus === "ok" && (
-                <div className="settings-hint translate-test-status ok" data-testid="translate-fetch-status">
-                  {t("settings.translate.fetchModelsOk", { count: dynamicModels?.length ?? 0 })}
-                </div>
-              )}
-              {fetchStatus === "fail" && (
-                <div className="settings-hint translate-test-status fail" data-testid="translate-fetch-status">
-                  {t("settings.translate.fetchModelsFail")}{fetchDetail ? `：${fetchDetail}` : ""}
-                </div>
-              )}
-              {/* v0.7.2：kimi 海外端点说明（国内默认 api.moonshot.cn，海外手动切换地址） */}
-              {providerPreset === "kimi" && (
-                <div className="settings-hint" data-testid="translate-kimi-oversea-hint">
-                  {t("settings.translate.kimiOverseaHint")}
-                </div>
-              )}
-            </div>
 
-            {/* 测试连接 */}
-            <div className="settings-field">
-              <label>{t("settings.translate.test")}</label>
-              <div className="settings-inline-row">
-                <button
-                  className="settings-btn secondary"
-                  disabled={testStatus === "testing" || !settings.translate.translateBaseUrl}
-                  onClick={handleTestConnection}
-                  data-testid="translate-test-btn"
-                >
-                  {testStatus === "testing" ? t("settings.translate.testing") : t("settings.translate.test")}
-                </button>
-                {testStatus === "ok" && (
-                  <span className="translate-test-status ok" data-testid="translate-test-status">✓ {t("settings.translate.testOk")}</span>
-                )}
-                {testStatus === "fail" && (
-                  <span className="translate-test-status fail" data-testid="translate-test-status">
-                    ✗ {t("settings.translate.testFail")}{testDetail ? `：${testDetail}` : ""}
-                  </span>
-                )}
+                  {settings.translate.translateEnabled && (
+                    <div className="translate-config-fields ai-tree-children">
+                      <div className="settings-field">
+                        <label>{t("settings.translate.targetLang")}</label>
+                        <select
+                          className="settings-select"
+                          value={settings.translate.translateTargetLang}
+                          onChange={(e) => setTranslate({ translateTargetLang: e.target.value })}
+                          data-testid="translate-target-lang"
+                        >
+                          <option value="auto">{t("settings.translate.targetLang.auto")}</option>
+                          <option value="简体中文">简体中文</option>
+                          <option value="English">English</option>
+                          <option value="日本語">日本語</option>
+                          <option value="한국어">한국어</option>
+                        </select>
+                      </div>
+
+                      <div className="settings-field">
+                        <label>{t("settings.translate.tone")}</label>
+                        <select
+                          className="settings-select"
+                          value={settings.translate.translateTone}
+                          onChange={(e) => setTranslate({ translateTone: e.target.value })}
+                          data-testid="translate-tone"
+                        >
+                          <option value="正式">{t("settings.translate.tone.formal")}</option>
+                          <option value="口语">{t("settings.translate.tone.casual")}</option>
+                          <option value="技术文档">{t("settings.translate.tone.technical")}</option>
+                        </select>
+                      </div>
+
+                      <div className="settings-field">
+                        <label>{t("settings.translate.resultMode")}</label>
+                        <select
+                          className="settings-select"
+                          value={settings.translate.translateResultMode}
+                          onChange={(e) => setTranslate({ translateResultMode: e.target.value as TranslateSettings["translateResultMode"] })}
+                          data-testid="translate-result-mode"
+                        >
+                          <option value="bubble">{t("settings.translate.resultMode.bubble")}</option>
+                          <option value="replace">{t("settings.translate.resultMode.replace")}</option>
+                          <option value="bilingual">{t("settings.translate.resultMode.bilingual")}</option>
+                          <option value="clipboard">{t("settings.translate.resultMode.clipboard")}</option>
+                        </select>
+                      </div>
+
+                      <div className="settings-field">
+                        <label>{t("settings.translate.bubbleColor")}</label>
+                        <div className="settings-inline-row">
+                          <input
+                            type="color"
+                            value={settings.translate.translateBubbleColor || "#4a9eff"}
+                            onChange={(e) => setTranslate({ translateBubbleColor: e.target.value })}
+                            data-testid="translate-bubble-color"
+                          />
+                          <button
+                            type="button"
+                            className="settings-btn secondary"
+                            onClick={() => setTranslate({ translateBubbleColor: "" })}
+                            data-testid="translate-bubble-color-reset"
+                          >
+                            {t("settings.translate.bubbleColorReset")}
+                          </button>
+                          <span className="settings-hint">{t("settings.translate.bubbleColorHint")}</span>
+                        </div>
+                      </div>
+
+                      <div className="settings-field">
+                        <label>{t("settings.translate.customPrompt")}</label>
+                        <textarea
+                          className="settings-css-input"
+                          rows={3}
+                          placeholder={t("settings.translate.customPromptPlaceholder")}
+                          value={settings.translate.translateCustomPrompt}
+                          onChange={(e) => setTranslate({ translateCustomPrompt: e.target.value })}
+                          spellCheck={false}
+                          data-testid="translate-custom-prompt"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <AiInstructionEditor />
               </div>
-            </div>
-
-            {/* 目标语言 */}
-            <div className="settings-field">
-              <label>{t("settings.translate.targetLang")}</label>
-              <select
-                className="settings-select"
-                value={settings.translate.translateTargetLang}
-                onChange={(e) => setTranslate({ translateTargetLang: e.target.value })}
-                data-testid="translate-target-lang"
-              >
-                <option value="auto">{t("settings.translate.targetLang.auto")}</option>
-                <option value="简体中文">简体中文</option>
-                <option value="English">English</option>
-                <option value="日本語">日本語</option>
-                <option value="한국어">한국어</option>
-              </select>
-            </div>
-
-            {/* 语体 */}
-            <div className="settings-field">
-              <label>{t("settings.translate.tone")}</label>
-              <select
-                className="settings-select"
-                value={settings.translate.translateTone}
-                onChange={(e) => setTranslate({ translateTone: e.target.value })}
-                data-testid="translate-tone"
-              >
-                <option value="正式">{t("settings.translate.tone.formal")}</option>
-                <option value="口语">{t("settings.translate.tone.casual")}</option>
-                <option value="技术文档">{t("settings.translate.tone.technical")}</option>
-              </select>
-            </div>
-
-            {/* v0.7.3：采样温度（0~2）。修复 kimi 等仅允许 temperature=1 的厂商 400 报错 */}
-            <div className="settings-field">
-              <label>{t("settings.translate.temperature")}</label>
-              <div className="settings-inline-row">
-                <input
-                  type="range"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={settings.translate.translateTemperature}
-                  onChange={(e) => setTranslate({ translateTemperature: Number(e.target.value) })}
-                  style={{ flex: 1 }}
-                  data-testid="translate-temperature"
-                />
-                <code className="settings-hint" style={{ minWidth: 34, textAlign: "right" }}>
-                  {settings.translate.translateTemperature.toFixed(1)}
-                </code>
-              </div>
-              {providerPreset === "kimi" || providerPreset === "kimicode" ? (
-                <div className="settings-hint" data-testid="translate-temperature-kimi-hint">
-                  {t("settings.translate.temperatureKimiHint")}
-                </div>
-              ) : (
-                <div className="settings-hint" data-testid="translate-temperature-hint">
-                  {t("settings.translate.temperatureHint")}
-                </div>
-              )}
-            </div>
-
-            {/* 结果模式 */}
-            <div className="settings-field">
-              <label>{t("settings.translate.resultMode")}</label>
-              <select
-                className="settings-select"
-                value={settings.translate.translateResultMode}
-                onChange={(e) => setTranslate({ translateResultMode: e.target.value as TranslateSettings["translateResultMode"] })}
-                data-testid="translate-result-mode"
-              >
-                <option value="bubble">{t("settings.translate.resultMode.bubble")}</option>
-                <option value="replace">{t("settings.translate.resultMode.replace")}</option>
-                <option value="bilingual">{t("settings.translate.resultMode.bilingual")}</option>
-                <option value="clipboard">{t("settings.translate.resultMode.clipboard")}</option>
-              </select>
-            </div>
-
-            {/* v0.7.5 功能3：「译」选区浮动气泡颜色（空串 = 跟随主题默认色）。
-                与「译」入口子设置面板（FullTranslateButton）读写同一字段，单源。 */}
-            <div className="settings-field">
-              <label>{t("settings.translate.bubbleColor")}</label>
-              <div className="settings-inline-row">
-                <input
-                  type="color"
-                  value={settings.translate.translateBubbleColor || "#4a9eff"}
-                  onChange={(e) => setTranslate({ translateBubbleColor: e.target.value })}
-                  data-testid="translate-bubble-color"
-                />
-                <button
-                  type="button"
-                  className="settings-btn secondary"
-                  onClick={() => setTranslate({ translateBubbleColor: "" })}
-                  data-testid="translate-bubble-color-reset"
-                >
-                  {t("settings.translate.bubbleColorReset")}
-                </button>
-                <span className="settings-hint">{t("settings.translate.bubbleColorHint")}</span>
-              </div>
-            </div>
-
-            {/* 自定义 Prompt */}
-            <div className="settings-field">
-              <label>{t("settings.translate.customPrompt")}</label>
-              <textarea
-                className="settings-css-input"
-                rows={3}
-                placeholder={t("settings.translate.customPromptPlaceholder")}
-                value={settings.translate.translateCustomPrompt}
-                onChange={(e) => setTranslate({ translateCustomPrompt: e.target.value })}
-                spellCheck={false}
-                data-testid="translate-custom-prompt"
-              />
-            </div>
-            </div>{/* /.translate-config-fields */}
+            )}
           </section>
-
-          {/* v0.15.0 需求（AI 深度配置）：AI 连接档案管理。
-              与上方「AI 翻译」是**两套独立配置**：翻译仍用 settings.translate，
-              AI 助手/对话用 settings.ai.profiles（本版核心需求：改翻译不影响 AI）。
-              Key 只进系统凭据库，绝不进 persist，UI 不回显明文。 */}
-          <AiConnectionSettings />
-
-          {/* v0.15.0 需求（自定义 system prompt + 指令库）：指令库增删改/复制/排序。
-              变量仅 {{selection}}/{{document}}，纯文本替换不执行代码。 */}
-          <AiInstructionEditor />
 
           {/* 自定义 CSS（v0.11.0 B6-2：此前有 UI 但无注入点 = 写了不生效） */}
           <section className="settings-section">

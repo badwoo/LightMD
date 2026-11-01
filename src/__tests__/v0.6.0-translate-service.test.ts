@@ -47,6 +47,7 @@ import {
   TranslateServiceError,
 } from "../services/translateService";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { createAiSettingsFromLegacy } from "../services/aiProfiles";
 
 describe("v0.6.0 translateService", () => {
   beforeEach(() => {
@@ -214,6 +215,10 @@ describe("v0.6.0 translateService", () => {
         translateTargetLang: "en",
         translateTone: "口语",
         translateCustomPrompt: "自定义模板",
+      });
+      // v0.15.3：翻译与 AI 助手共用当前模型档案；旧 translate 字段只保留迁移兼容。
+      useSettingsStore.setState({
+        ai: createAiSettingsFromLegacy(useSettingsStore.getState().translate, "test-ai"),
       });
       mockInvoke.mockResolvedValue(fakeResult);
 
