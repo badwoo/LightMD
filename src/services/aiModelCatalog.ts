@@ -4,11 +4,93 @@ import {
   type AiConnectionProfile,
   type AiModelCatalogEntry,
   type AiSettings,
+  type ApiProtocol,
+  type LocalDeploymentKind,
 } from "./aiProfiles";
 import type { AiProviderPreset } from "./aiProviderPresets";
 import { AI_PROVIDER_PRESETS } from "./aiProviderPresets";
 
 export const CUSTOM_PROVIDER_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+/**
+ * v0.15.4 需求 1：本地部署方案模板。
+ *
+ * 只预填「端点 + 协议 + 鉴权 + localKind」——模型目录一律留空，由「获取模型列表」
+ * 从运行时真实探测（不硬编码未核实的模型名）。所有值都来自各运行时的官方文档端点。
+ */
+export interface LocalDeploymentPreset {
+  kind: LocalDeploymentKind;
+  /** i18n key（名称为运行时品牌，两种语言可同值） */
+  nameKey: string;
+  baseUrl: string;
+  protocol: ApiProtocol;
+  authMode: AiConnectionProfile["authMode"];
+  /** 提示文案 key：说明该运行时是否支持原生接口 / 需要的端口 */
+  hintKey: string;
+}
+
+export const LOCAL_DEPLOYMENT_PRESETS: readonly LocalDeploymentPreset[] = Object.freeze([
+  {
+    kind: "ollama",
+    nameKey: "settings.ai.model.local.ollama",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    protocol: "openai-chat",
+    authMode: "none",
+    hintKey: "settings.ai.model.localHint.ollama",
+  },
+  {
+    kind: "lmstudio",
+    nameKey: "settings.ai.model.local.lmstudio",
+    baseUrl: "http://127.0.0.1:1234/v1",
+    protocol: "openai-chat",
+    authMode: "none",
+    hintKey: "settings.ai.model.localHint.generic",
+  },
+  {
+    kind: "vllm",
+    nameKey: "settings.ai.model.local.vllm",
+    baseUrl: "http://127.0.0.1:8000/v1",
+    protocol: "openai-chat",
+    authMode: "none",
+    hintKey: "settings.ai.model.localHint.generic",
+  },
+  {
+    kind: "llamacpp",
+    nameKey: "settings.ai.model.local.llamacpp",
+    baseUrl: "http://127.0.0.1:8080/v1",
+    protocol: "openai-chat",
+    authMode: "none",
+    hintKey: "settings.ai.model.localHint.generic",
+  },
+  {
+    kind: "localai",
+    nameKey: "settings.ai.model.local.localai",
+    baseUrl: "http://127.0.0.1:8080/v1",
+    protocol: "openai-chat",
+    authMode: "none",
+    hintKey: "settings.ai.model.localHint.generic",
+  },
+]);
+
+export function findLocalDeploymentPreset(kind: string): LocalDeploymentPreset | null {
+  return LOCAL_DEPLOYMENT_PRESETS.find((preset) => preset.kind === kind) ?? null;
+}
+
+/** 选中「本地部署类型」后应用预填字段（不改 Provider ID / 名称 / 模型目录）。 */
+export function applyLocalDeployment(
+  profile: AiConnectionProfile,
+  kind: LocalDeploymentKind,
+): AiConnectionProfile {
+  const preset = findLocalDeploymentPreset(kind);
+  if (!preset) return profile;
+  return {
+    ...profile,
+    localKind: kind,
+    baseUrl: preset.baseUrl,
+    protocol: preset.protocol,
+    authMode: preset.authMode,
+  };
+}
 
 function normalizedBase(value: string): string {
   return value.trim().replace(/\/+$/, "").toLowerCase();
@@ -78,6 +160,36 @@ export function upsertProviderProfile(
     },
     profile,
   };
+}
+
+/**
+ * 把「刚探测到的目录」合并进现有目录。
+ *
+ * 规则：探测结果为准（新条目优先），但**已有条目的用户编辑不丢**——
+ * 用户手工填的 name / contextWindowTokens / reasoningEffort 在没有新数据的维度上保留。
+ * 这样「再拉一次列表」不会把自定义备注冲掉。
+ */
+export function mergeModelCatalog(
+  existing: readonly AiModelCatalogEntry[] | undefined,
+  fetched: readonly AiModelCatalogEntry[],
+): AiModelCatalogEntry[] {
+  const previousById = new Map((existing ?? []).map((entry) => [entry.id, entry]));
+  const merged = fetched.map((entry) => {
+    const previous = previousById.get(entry.id);
+    if (!previous) return { ...entry };
+    return {
+      ...entry,
+      name: entry.name || previous.name,
+      contextWindowTokens: entry.contextWindowTokens ?? previous.contextWindowTokens,
+      minContextWindowTokens: entry.minContextWindowTokens ?? previous.minContextWindowTokens,
+      reasoningEffort: entry.reasoningEffort ?? previous.reasoningEffort,
+    };
+  });
+  // 探测结果里没有、但用户手工保留的条目继续留下（避免「拉列表」把手工模型清掉）。
+  for (const entry of existing ?? []) {
+    if (!merged.some((item) => item.id === entry.id)) merged.push({ ...entry });
+  }
+  return merged;
 }
 
 /** 选择模型时同时应用其上下文与模型级推理档，并默认停在最大上下文档。 */

@@ -10,6 +10,28 @@ export type TokenField = "max_tokens" | "max_completion_tokens";
 /** off 是 UI 默认值；写入请求前会归一为 undefined（不发送推理参数）。 */
 export type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+/**
+ * v0.15.4 需求 1：本地部署运行时类型。
+ *
+ * 自定义档案可显式标注「这是哪种本地运行时」：UI 据此预填 baseUrl/协议/鉴权，
+ * 后端据此决定是否额外探测 Ollama 原生 `/api/tags`（与 OpenAI 兼容 `/v1/models` 求并集）。
+ * 未设置 = 云端或其它 OpenAI 兼容服务，行为与 0.15.3 完全一致。
+ */
+export type LocalDeploymentKind = "ollama" | "lmstudio" | "vllm" | "llamacpp" | "localai";
+
+export const LOCAL_DEPLOYMENT_KINDS: readonly LocalDeploymentKind[] = Object.freeze([
+  "ollama",
+  "lmstudio",
+  "vllm",
+  "llamacpp",
+  "localai",
+]);
+
+/** 宽松判定：持久化数据被外部改坏时按「未设置」处理，不写入非法值。 */
+export function isLocalDeploymentKind(value: unknown): value is LocalDeploymentKind {
+  return typeof value === "string" && (LOCAL_DEPLOYMENT_KINDS as readonly string[]).includes(value);
+}
+
 export interface AiRequestPolicy {
   tokenField: TokenField;
   /** undefined = 请求中不发送 temperature。 */
@@ -47,6 +69,14 @@ export interface AiConnectionProfile {
   systemPrompt?: string;
   /** 当前服务商的模型目录（静态预设、动态探测或用户自定义）。 */
   modelCatalog?: AiModelCatalogEntry[];
+  /**
+   * v0.15.4 需求 1：本地部署运行时（可选）。
+   *
+   * 旧档案没有该字段 → 按 0.15.3 行为处理（不做任何本地特化探测）。
+   * 值非法时校验器报 `profile.localKind.invalid`，但**不阻断发送**以外的路径：
+   * 该字段只影响模型列表探测，不影响请求组装。
+   */
+  localKind?: LocalDeploymentKind;
 }
 
 export interface AiSettings {
@@ -93,7 +123,8 @@ export type AiProfileValidationError =
   | "profile.requestPolicy.invalid"
   | "profile.temperature.invalid"
   | "profile.providerId.invalid"
-  | "profile.modelCatalog.invalid";
+  | "profile.modelCatalog.invalid"
+  | "profile.localKind.invalid";
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -216,6 +247,9 @@ export function validateAiConnectionProfile(profile: AiConnectionProfile): AiPro
   }
   if (profile.providerId !== undefined && !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(profile.providerId)) {
     errors.push("profile.providerId.invalid");
+  }
+  if (profile.localKind !== undefined && !isLocalDeploymentKind(profile.localKind)) {
+    errors.push("profile.localKind.invalid");
   }
   if (!text(profile.baseUrl)) errors.push("profile.baseUrl.required");
   if (!text(profile.model)) errors.push("profile.model.required");

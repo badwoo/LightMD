@@ -3,12 +3,15 @@ import { useT } from "../../i18n";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { aiConnectionService } from "../../services/aiConnectionService";
 import {
+  applyLocalDeployment,
   applyModelSelection,
   contextSliderStops,
   createCustomProfileDraft,
   CUSTOM_PROVIDER_ID_PATTERN,
+  findLocalDeploymentPreset,
   formatTokenCount,
   inferProviderId,
+  mergeModelCatalog,
   upsertProviderProfile,
 } from "../../services/aiModelCatalog";
 import {
@@ -17,11 +20,14 @@ import {
   findAiProviderPreset,
 } from "../../services/aiProviderPresets";
 import {
+  isLocalDeploymentKind,
+  LOCAL_DEPLOYMENT_KINDS,
   validateAiConnectionProfile,
   type AiConnectionProfile,
   type AiModelCatalogEntry,
   type AiSettings,
   type ApiProtocol,
+  type LocalDeploymentKind,
   type ReasoningEffort,
 } from "../../services/aiProfiles";
 import { credentialErrorKey, type AiCredentialStore } from "./aiCredentialStore";
@@ -107,7 +113,9 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
     [ai?.activeProfileId, profiles],
   );
 
-  const [tab, setTab] = useState<ModelTab>("provider");
+  const [tab, setTab] = useState<ModelTab>(() =>
+    activeProfile && isCustomProfile(activeProfile) ? "custom" : "provider",
+  );
   const [providerNotice, setProviderNotice] = useState<Notice | null>(null);
   const [customNotice, setCustomNotice] = useState<Notice | null>(null);
   const [keyConfigured, setKeyConfigured] = useState<Record<string, boolean>>({});
@@ -116,6 +124,8 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
   const [providerKeyBusy, setProviderKeyBusy] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
+  const [customFetchingModels, setCustomFetchingModels] = useState(false);
+  const [customTestingConnection, setCustomTestingConnection] = useState(false);
   const [savingCustom, setSavingCustom] = useState(false);
 
   const defaultStoreRef = useRef<AiCredentialStore | null>(null);
@@ -133,6 +143,24 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
   );
   const customIsNew = customDraft.id === "";
 
+  /**
+   * v0.15.4 需求 3：当前启用的是自定义档案时自动切到自定义页签。
+   *
+   * 只切页签；仅当草稿指向别的档案时才重载草稿（保存后 draft.id 已是新档案，
+   * 因此不会把刚写入的「已保存」提示清掉）。
+   */
+  useEffect(() => {
+    if (!activeProfile || !isCustomProfile(activeProfile)) return;
+    setTab("custom");
+    if (customDraft.id !== activeProfile.id) {
+      setCustomDraft(asCustomDraft(activeProfile));
+      setCustomKeyDraft({ credentialId: "", value: "" });
+      setCustomNotice(null);
+    }
+    // customDraft 只作为比较基线，不参与触发条件：草稿输入不应导致页签重载。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProfile?.id]);
+
   /** 空配置只在新装/被清空的防御路径出现；默认仍落到本地 Ollama。 */
   useEffect(() => {
     if (profiles.length > 0) return;
@@ -144,6 +172,9 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
     setAiSettings(next.settings);
   }, [profiles.length, setAiSettings, t]);
 
+  const effectiveCustomCredentialId = customDraft.credentialId?.trim()
+    || customDraft.providerId?.trim()
+    || "custom-draft";
   const providerCredentialId = activeProfile && activeProfile.authMode !== "none"
     ? activeProfile.credentialId
     : "";
@@ -203,6 +234,7 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
     try {
       const models = await aiConnectionService.listModels(activeProfile);
       updateProfile(profileId, (profile) => {
+        // 服务商页签的目录是「端点的镜像」，没有手工编辑入口，因此以探测结果为准。
         const withCatalog = { ...profile, modelCatalog: models };
         return models.some((entry) => entry.id === profile.model)
           ? applyModelSelection(withCatalog, profile.model)
@@ -292,6 +324,21 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
     setCustomNotice(null);
   }, []);
 
+  /** v0.15.4 需求 1：选中「本地部署类型」即预填端点/协议/鉴权。 */
+  const handleCustomLocalKindChange = useCallback((raw: string) => {
+    setCustomDraft((previous) => {
+      if (!raw) {
+        const next = { ...previous };
+        delete next.localKind;
+        return next;
+      }
+      return isLocalDeploymentKind(raw)
+        ? applyLocalDeployment(previous, raw as LocalDeploymentKind)
+        : previous;
+    });
+    setCustomNotice(null);
+  }, []);
+
   const updateCustomEntry = useCallback((index: number, patch: Partial<AiModelCatalogEntry>) => {
     setCustomDraft((previous) => {
       const catalog = previous.modelCatalog ?? [];
@@ -334,6 +381,76 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
     });
     setCustomNotice(null);
   }, []);
+
+  /** v0.15.4 需求 4：自定义页签用**草稿档案 + 临时 credentialId**探测模型列表。 */
+  const handleCustomFetchModels = useCallback(async () => {
+    if (customFetchingModels) return;
+    const probeProfile: AiConnectionProfile = {
+      ...cloneProfile(customDraft),
+      id: customDraft.id || effectiveCustomCredentialId,
+      providerId: (customDraft.providerId?.trim() || effectiveCustomCredentialId) as string,
+      credentialId: effectiveCustomCredentialId,
+    };
+    setCustomFetchingModels(true);
+    setCustomNotice(null);
+    try {
+      // 草稿里刚输入、尚未保存的 Key 需要先落到凭据槽，后端才能读到。
+      const pendingKey = customKeyDraft.credentialId === (customDraft.id || "new")
+        ? customKeyDraft.value.trim()
+        : "";
+      if (pendingKey && probeProfile.authMode !== "none") {
+        await store.save(probeProfile.credentialId, pendingKey);
+        setKeyConfigured((previous) => ({ ...previous, [probeProfile.credentialId]: true }));
+      }
+      const models = await aiConnectionService.listModels(probeProfile);
+      setCustomDraft((previous) => {
+        const withCatalog = {
+          ...previous,
+          modelCatalog: mergeModelCatalog(previous.modelCatalog, models),
+        };
+        return models.some((entry) => entry.id === previous.model)
+          ? applyModelSelection(withCatalog, previous.model)
+          : withCatalog;
+      });
+      setCustomNotice({ kind: "success", key: "settings.ai.model.status.fetchSuccess" });
+    } catch {
+      setCustomNotice({ kind: "error", key: "settings.ai.model.status.fetchError" });
+    } finally {
+      setCustomFetchingModels(false);
+    }
+  }, [customDraft, customFetchingModels, customKeyDraft, effectiveCustomCredentialId, store]);
+
+  /** v0.15.4 需求 4：自定义页签测试连接（同样用草稿档案）。 */
+  const handleCustomTestConnection = useCallback(async () => {
+    if (customTestingConnection) return;
+    if (!customDraft.model.trim()) {
+      setCustomNotice({ kind: "error", key: "settings.ai.model.error.selectModel" });
+      return;
+    }
+    const probeProfile: AiConnectionProfile = {
+      ...cloneProfile(customDraft),
+      id: customDraft.id || effectiveCustomCredentialId,
+      providerId: (customDraft.providerId?.trim() || effectiveCustomCredentialId) as string,
+      credentialId: effectiveCustomCredentialId,
+    };
+    setCustomTestingConnection(true);
+    setCustomNotice(null);
+    try {
+      const pendingKey = customKeyDraft.credentialId === (customDraft.id || "new")
+        ? customKeyDraft.value.trim()
+        : "";
+      if (pendingKey && probeProfile.authMode !== "none") {
+        await store.save(probeProfile.credentialId, pendingKey);
+        setKeyConfigured((previous) => ({ ...previous, [probeProfile.credentialId]: true }));
+      }
+      await aiConnectionService.testConnection(probeProfile);
+      setCustomNotice({ kind: "success", key: "settings.ai.model.status.testSuccess" });
+    } catch {
+      setCustomNotice({ kind: "error", key: "settings.ai.model.status.testError" });
+    } finally {
+      setCustomTestingConnection(false);
+    }
+  }, [customDraft, customKeyDraft, customTestingConnection, effectiveCustomCredentialId, store]);
 
   const validateCustom = useCallback((draft: AiConnectionProfile): string | null => {
     const providerId = draft.providerId?.trim() ?? "";
@@ -430,6 +547,10 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
 
   const providerId = activeProfile ? inferProviderId(activeProfile) : AI_DEFAULT_PROVIDER_ID;
   const providerPreset = findAiProviderPreset(providerId);
+  const activeIsCustom = Boolean(activeProfile && isCustomProfile(activeProfile));
+  // v0.15.4 需求 3：服务商下拉只列 AI_PROVIDER_PRESETS，自定义档案不会混进来。
+  const providerSelectValue = providerPreset ? providerId : AI_DEFAULT_PROVIDER_ID;
+  const providerEditable = Boolean(activeProfile) && !activeIsCustom;
   const selectedModel = activeProfile?.modelCatalog?.find((entry) => entry.id === activeProfile.model);
   const sliderStops = selectedModel ? contextSliderStops(selectedModel) : [];
   const exactSliderIndex = activeProfile ? sliderStops.indexOf(activeProfile.contextWindowTokens) : -1;
@@ -440,6 +561,31 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
   const customKeyScope = customDraft.id || "new";
   const customKeyValue = customKeyDraft.credentialId === customKeyScope ? customKeyDraft.value : "";
   const customCatalog = customDraft.modelCatalog ?? [];
+  const customSelectedModel = customCatalog.find((entry) => entry.id === customDraft.model);
+  const customSliderStops = customSelectedModel ? contextSliderStops(customSelectedModel) : [];
+  const customExactSliderIndex = customSliderStops.indexOf(customDraft.contextWindowTokens);
+  const customSliderIndex = customExactSliderIndex >= 0
+    ? customExactSliderIndex
+    : Math.max(0, customSliderStops.length - 1);
+  const localKindValue = customDraft.localKind && isLocalDeploymentKind(customDraft.localKind)
+    ? customDraft.localKind
+    : "";
+  const localHint = localKindValue
+    ? t(`settings.ai.model.localHint.${localKindValue === "ollama" ? "ollama" : "generic"}`)
+    : "";
+
+  /** v0.15.4 需求 6：「当前启用模型」= 服务商 - 模型名称 - 推理等级。 */
+  const activeSummary = useMemo(() => {
+    if (!activeProfile) return null;
+    const providerLabel = providerPreset
+      ? t(providerPreset.nameKey)
+      // 自定义 Provider 用「显示名称」，缺失退到 Provider ID。
+      : (activeProfile.name || activeProfile.providerId || activeProfile.id);
+    const modelLabel = activeProfile.modelCatalog?.find((entry) => entry.id === activeProfile.model)?.name
+      || activeProfile.model;
+    const reasoning = activeProfile.requestPolicy.reasoningEffort ?? "off";
+    return { providerLabel, modelLabel, reasoning };
+  }, [activeProfile, providerPreset, t]);
 
   const providerTabId = `${idPrefix}-provider-tab`;
   const customTabId = `${idPrefix}-custom-tab`;
@@ -495,17 +641,19 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
               <select
                 id={`${idPrefix}-provider`}
                 className="settings-select"
-                value={providerId}
+                value={providerSelectValue}
                 onChange={(event) => handleProviderChange(event.target.value)}
                 data-testid="ai-model-provider"
               >
-                {!providerPreset && activeProfile && (
-                  <option value={providerId}>{activeProfile.name || providerId}</option>
-                )}
                 {AI_PROVIDER_PRESETS.map((preset) => (
                   <option key={preset.id} value={preset.id}>{t(preset.nameKey)}</option>
                 ))}
               </select>
+              {activeIsCustom && (
+                <small className="settings-hint" data-testid="ai-model-provider-custom-hint">
+                  {t("settings.ai.model.status.customActiveHint")}
+                </small>
+              )}
             </div>
 
             <div className="ai-model-field">
@@ -571,26 +719,47 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
                 type="text"
                 value={activeProfile?.baseUrl ?? ""}
                 onChange={(event) => patchActive({ baseUrl: event.target.value })}
-                disabled={!activeProfile}
+                disabled={!providerEditable}
                 data-testid="ai-model-base-url"
               />
             </div>
 
+            {/* v0.15.4 需求 5：两个按钮移到「模型名称」输入框右侧。 */}
             <div className="ai-model-field">
               <label htmlFor={`${idPrefix}-provider-model`}>{t("settings.ai.model.field.model")}</label>
-              <input
-                id={`${idPrefix}-provider-model`}
-                className="ai-input ai-input-mono"
-                type="text"
-                list={`${idPrefix}-provider-models`}
-                value={activeProfile?.model ?? ""}
-                onChange={(event) => activeProfile && updateProfile(
-                  activeProfile.id,
-                  (profile) => applyModelSelection(profile, event.target.value),
-                )}
-                disabled={!activeProfile}
-                data-testid="ai-model-name"
-              />
+              <div className="ai-model-inline ai-model-model-row">
+                <input
+                  id={`${idPrefix}-provider-model`}
+                  className="ai-input ai-input-mono"
+                  type="text"
+                  list={`${idPrefix}-provider-models`}
+                  value={activeProfile?.model ?? ""}
+                  onChange={(event) => activeProfile && updateProfile(
+                    activeProfile.id,
+                    (profile) => applyModelSelection(profile, event.target.value),
+                  )}
+                  disabled={!providerEditable}
+                  data-testid="ai-model-name"
+                />
+                <button
+                  type="button"
+                  className="ai-btn"
+                  onClick={handleFetchModels}
+                  disabled={!providerEditable || fetchingModels}
+                  data-testid="ai-model-fetch"
+                >
+                  {t(fetchingModels ? "settings.ai.model.action.fetching" : "settings.ai.model.action.fetch")}
+                </button>
+                <button
+                  type="button"
+                  className="ai-btn"
+                  onClick={handleTestConnection}
+                  disabled={!providerEditable || testingConnection}
+                  data-testid="ai-model-test"
+                >
+                  {t(testingConnection ? "settings.ai.model.action.testing" : "settings.ai.model.action.test")}
+                </button>
+              </div>
               <datalist id={`${idPrefix}-provider-models`}>
                 {(activeProfile?.modelCatalog ?? []).map((entry) => (
                   <option key={entry.id} value={entry.id}>{entry.name}</option>
@@ -621,32 +790,9 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
                     },
                   });
                 }}
-                disabled={!activeProfile}
+                disabled={!providerEditable}
                 data-testid="ai-model-temperature"
               />
-            </div>
-
-            <div className="ai-model-field ai-model-actions-field">
-              <div className="ai-model-actions">
-                <button
-                  type="button"
-                  className="ai-btn"
-                  onClick={handleFetchModels}
-                  disabled={!activeProfile || fetchingModels}
-                  data-testid="ai-model-fetch"
-                >
-                  {t(fetchingModels ? "settings.ai.model.action.fetching" : "settings.ai.model.action.fetch")}
-                </button>
-                <button
-                  type="button"
-                  className="ai-btn"
-                  onClick={handleTestConnection}
-                  disabled={!activeProfile || testingConnection}
-                  data-testid="ai-model-test"
-                >
-                  {t(testingConnection ? "settings.ai.model.action.testing" : "settings.ai.model.action.test")}
-                </button>
-              </div>
             </div>
 
             {sliderStops.length > 0 && activeProfile && (
@@ -690,6 +836,23 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
               {t(providerNotice.key)}
             </p>
           )}
+          {/* v0.15.4 需求 6：当前启用模型（服务商 - 模型名称 - 推理等级）。 */}
+          <div className="ai-model-active-summary" data-testid="ai-model-active-summary">
+            <span className="ai-model-active-summary-label">{t("settings.ai.model.active.title")}</span>
+            {activeSummary ? (
+              <span className="ai-model-active-summary-value">
+                <span data-testid="ai-model-active-provider">{activeSummary.providerLabel}</span>
+                <span className="ai-model-active-separator">-</span>
+                <span data-testid="ai-model-active-model">{activeSummary.modelLabel || t("settings.ai.model.active.empty")}</span>
+                <span className="ai-model-active-separator">-</span>
+                <span data-testid="ai-model-active-reasoning">{activeSummary.reasoning}</span>
+              </span>
+            ) : (
+              <span className="ai-model-active-summary-value is-empty" data-testid="ai-model-active-empty">
+                {t("settings.ai.model.active.none")}
+              </span>
+            )}
+          </div>
         </div>
       ) : (
         <div
@@ -727,6 +890,29 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
           </div>
 
           <div className="ai-model-tree">
+            {/* v0.15.4 需求 1：本地部署类型，选中即预填端点/协议/鉴权。 */}
+            <div className="ai-model-field">
+              <label htmlFor={`${idPrefix}-custom-local-kind`}>{t("settings.ai.model.local.label")}</label>
+              <select
+                id={`${idPrefix}-custom-local-kind`}
+                className="settings-select"
+                value={localKindValue}
+                onChange={(event) => handleCustomLocalKindChange(event.target.value)}
+                data-testid="ai-model-custom-local-kind"
+              >
+                <option value="">{t("settings.ai.model.local.none")}</option>
+                {LOCAL_DEPLOYMENT_KINDS.map((kind) => {
+                  const preset = findLocalDeploymentPreset(kind);
+                  return (
+                    <option key={kind} value={kind}>
+                      {t(preset?.nameKey ?? `settings.ai.model.local.${kind}`)}
+                    </option>
+                  );
+                })}
+              </select>
+              {localHint && <small className="settings-hint">{localHint}</small>}
+            </div>
+
             <div className="ai-model-field">
               <label htmlFor={`${idPrefix}-custom-provider-id`}>{t("settings.ai.model.custom.providerId")}</label>
               <input
@@ -802,6 +988,78 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
                 </small>
               )}
             </div>
+
+            {/* v0.15.4 需求 4+5：对等的模型名称 + 两个按钮；上下文滑条与当前模型选择。 */}
+            <div className="ai-model-field">
+              <label htmlFor={`${idPrefix}-custom-model`}>{t("settings.ai.model.field.model")}</label>
+              <div className="ai-model-inline ai-model-model-row">
+                <input
+                  id={`${idPrefix}-custom-model`}
+                  className="ai-input ai-input-mono"
+                  type="text"
+                  list={`${idPrefix}-custom-models`}
+                  value={customDraft.model}
+                  onChange={(event) => setCustomDraft((previous) =>
+                    applyModelSelection(previous, event.target.value))}
+                  data-testid="ai-model-custom-model"
+                />
+                <button
+                  type="button"
+                  className="ai-btn"
+                  onClick={handleCustomFetchModels}
+                  disabled={customFetchingModels}
+                  data-testid="ai-model-custom-fetch"
+                >
+                  {t(customFetchingModels ? "settings.ai.model.action.fetching" : "settings.ai.model.action.fetch")}
+                </button>
+                <button
+                  type="button"
+                  className="ai-btn"
+                  onClick={handleCustomTestConnection}
+                  disabled={customTestingConnection}
+                  data-testid="ai-model-custom-test"
+                >
+                  {t(customTestingConnection ? "settings.ai.model.action.testing" : "settings.ai.model.action.test")}
+                </button>
+              </div>
+              <datalist id={`${idPrefix}-custom-models`}>
+                {customCatalog.map((entry, index) => (
+                  <option key={`${entry.id}-${index}`} value={entry.id}>{entry.name}</option>
+                ))}
+              </datalist>
+            </div>
+
+            {customSliderStops.length > 0 && (
+              <div className="ai-model-field ai-model-context" data-testid="ai-model-custom-context">
+                <div className="ai-model-context-heading">
+                  <label htmlFor={`${idPrefix}-custom-context`}>{t("settings.ai.model.field.context")}</label>
+                  <output htmlFor={`${idPrefix}-custom-context`}>
+                    {formatTokenCount(customDraft.contextWindowTokens)}
+                  </output>
+                </div>
+                <input
+                  id={`${idPrefix}-custom-context`}
+                  type="range"
+                  min="0"
+                  max={customSliderStops.length - 1}
+                  step="1"
+                  value={customSliderIndex}
+                  onChange={(event) => {
+                    const nextContext = customSliderStops[Number(event.target.value)];
+                    if (nextContext === undefined) return;
+                    setCustomDraft((previous) => ({
+                      ...previous,
+                      contextWindowTokens: nextContext,
+                      maxOutputTokens: clampOutputTokens(previous.maxOutputTokens, nextContext),
+                    }));
+                  }}
+                  data-testid="ai-model-custom-context-slider"
+                />
+                <div className="ai-model-context-stops" aria-hidden="true">
+                  {customSliderStops.map((stop) => <span key={stop}>{formatTokenCount(stop)}</span>)}
+                </div>
+              </div>
+            )}
 
             <div className="ai-model-field ai-model-catalog-field">
               <div className="ai-model-catalog-heading">
@@ -920,6 +1178,25 @@ export function AiModelSettings({ credentialStore }: AiModelSettingsProps = {}) 
               {t(customNotice.key)}
             </p>
           )}
+          {/* 自定义页签同样展示当前启用模型（服务商显示名称 - 模型名称 - 推理等级）。 */}
+          <div className="ai-model-active-summary" data-testid="ai-model-custom-active-summary">
+            <span className="ai-model-active-summary-label">{t("settings.ai.model.active.title")}</span>
+            {activeSummary ? (
+              <span className="ai-model-active-summary-value">
+                <span data-testid="ai-model-custom-active-provider">{activeSummary.providerLabel}</span>
+                <span className="ai-model-active-separator">-</span>
+                <span data-testid="ai-model-custom-active-model">
+                  {activeSummary.modelLabel || t("settings.ai.model.active.empty")}
+                </span>
+                <span className="ai-model-active-separator">-</span>
+                <span data-testid="ai-model-custom-active-reasoning">{activeSummary.reasoning}</span>
+              </span>
+            ) : (
+              <span className="ai-model-active-summary-value is-empty">
+                {t("settings.ai.model.active.none")}
+              </span>
+            )}
+          </div>
         </div>
       )}
     </section>

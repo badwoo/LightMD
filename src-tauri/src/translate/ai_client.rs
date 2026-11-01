@@ -9,8 +9,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::translate::ai_request::{
-    auth_header, build_body, endpoint_url, models_url, ollama_native_url, parse_ai_sse_data,
-    AiRequest, AiStreamEvent, ApiProtocol, ANTHROPIC_DEFAULT_VERSION,
+    auth_header, build_body, endpoint_url, models_url, models_url_fallback, ollama_native_url,
+    parse_ai_sse_data, AiRequest, AiStreamEvent, ApiProtocol, ANTHROPIC_DEFAULT_VERSION,
 };
 use crate::translate::credential::{authorization_header, AuthMode, Credential};
 use crate::translate::provider::{
@@ -93,43 +93,79 @@ pub fn parse_models_payload(payload: &Value) -> Vec<AiModel> {
     models
 }
 
-/// 用 Ollama 原生 details.context_length 补充元数据；没有该字段就保持 None。
-pub fn merge_ollama_details(models: &mut [AiModel], payload: &Value) {
-    let Some(native_models) = payload.get("models").and_then(|m| m.as_array()) else {
-        return;
-    };
-    for native in native_models {
-        let Some(native_id) = string_field(native, &["model", "name", "id"]) else {
-            continue;
-        };
-        let Some(details) = native.get("details") else {
-            continue;
-        };
-        let context = number_field(details, &["context_length", "contextLength"]);
-        let min_context = number_field(
-            details,
-            &[
-                "min_context_length",
-                "minContextLength",
-                "min_context_window_tokens",
-            ],
-        );
-        if context.is_none() && min_context.is_none() {
-            continue;
-        }
-        if let Some(model) = models
-            .iter_mut()
-            .find(|model| model.id == native_id || model.name == native_id)
-        {
-            if context.is_some() {
-                model.context_window_tokens = context;
+/// 用 Ollama 原生 /api/tags 响应构造模型条目：id 取 `model`（退回 `name`），
+/// 上下文来自 `details.context_length`。原生接口本身就是「本机已安装的全部模型」，
+/// 因此它不仅能补元数据，还能补齐 /v1/models 漏掉的条目（如 embedding 模型）。
+pub fn parse_ollama_tags_payload(payload: &Value) -> Vec<AiModel> {
+    let mut models: Vec<AiModel> = payload
+        .get("models")
+        .and_then(|items| items.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|native| {
+            let id = string_field(native, &["model", "name", "id"])?.to_string();
+            let name = string_field(native, &["name", "model", "id"])
+                .unwrap_or(&id)
+                .to_string();
+            let details = native.get("details");
+            Some(AiModel {
+                id,
+                name,
+                context_window_tokens: details.and_then(|details| {
+                    number_field(details, &["context_length", "contextLength"])
+                }),
+                min_context_window_tokens: details.and_then(|details| {
+                    number_field(
+                        details,
+                        &[
+                            "min_context_length",
+                            "minContextLength",
+                            "min_context_window_tokens",
+                        ],
+                    )
+                }),
+            })
+        })
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    models
+}
+
+/// 按 id 求并集：两端各有的模型都要出现，同 id 只补缺失元数据、不覆盖已有显示名。
+pub fn union_models(models: &mut Vec<AiModel>, extra: Vec<AiModel>) {
+    for candidate in extra {
+        match models.iter_mut().find(|model| model.id == candidate.id) {
+            Some(existing) => {
+                if existing.context_window_tokens.is_none() {
+                    existing.context_window_tokens = candidate.context_window_tokens;
+                }
+                if existing.min_context_window_tokens.is_none() {
+                    existing.min_context_window_tokens = candidate.min_context_window_tokens;
+                }
             }
-            if min_context.is_some() {
-                model.min_context_window_tokens = min_context;
-            }
+            None => models.push(candidate),
         }
     }
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
 }
+
+/// 宽容判定「这个端点就是本机 Ollama」：显式 localKind=ollama / provider=ollama /
+/// 标准 11434 端口。只按端点特征识别，不从模型名猜测能力。
+fn looks_like_ollama(provider: &str, base_url: &str, local_kind: Option<&str>) -> bool {
+    if local_kind
+        .map(|kind| kind.trim().eq_ignore_ascii_case("ollama"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if provider.trim().eq_ignore_ascii_case("ollama") {
+        return true;
+    }
+    base_url.trim().to_ascii_lowercase().contains(":11434")
+}
+
 
 fn with_protocol_headers(
     mut builder: reqwest::RequestBuilder,
@@ -161,6 +197,12 @@ fn with_protocol_headers(
     builder
 }
 
+/// 发送一次 AI 请求。
+///
+/// **绝不重发**：这里不做任何「换 URL / 删参 / 换字段」的二次发送。
+/// 404 也不兜底——对话与测试连接拿到 404 就原样报错，由用户核对端点
+/// （本地运行时的 `/v1` 兜底只在「获取模型列表」路径提供，见 `list_models`）。
+/// 理由：对话请求一旦发出就可能已产生 token 消耗，重发有重复计费风险。
 async fn send_ai_request(
     request: &AiRequest,
     credential: &Credential,
@@ -306,47 +348,120 @@ pub async fn test_ai_request(
     Ok(())
 }
 
+async fn fetch_models_payload(
+    protocol: ApiProtocol,
+    url: &str,
+    credential: &Credential,
+) -> Result<Value, TranslateError> {
+    let response = with_protocol_headers(shared_client().get(url), protocol, credential)
+        .send()
+        .await
+        .map_err(map_reqwest_err)?;
+    check_status(response)
+        .await?
+        .json()
+        .await
+        .map_err(|_| TranslateError::StreamInterrupted)
+}
+
+/// 主 URL 是否值得用 `/v1` 兜底：只有 404（端点不存在）才算「路径写少了」。
+/// 401/403/429/其它 4xx/5xx 一律不透支兜底，避免把鉴权或限流错误伪装成「模型列表为空」。
+fn should_probe_v1_fallback(error: &TranslateError) -> bool {
+    match error {
+        TranslateError::ProviderError(404, _) => true,
+        _ => false,
+    }
+}
+
+/// 拉取模型目录（**唯一允许 URL 兜底的路径**）。
+///
+/// 三条规则（都是用户实测踩出来的，不按模型名猜）：
+/// 1. 主 URL **404** 且 base 未带 `/v1` 时，用 `{base}/v1/models` 兜底探测一次
+///    （LM Studio / vLLM / llama.cpp server 的文档端点都是 `/v1`，用户常只填端口）；
+///    仅限 404——401/403/429/5xx 直接原样报错，不把鉴权/限流错误伪装成「没有模型」；
+/// 2. 端点像 Ollama 时，额外拉原生 `/api/tags` 并**按 id 求并集**：
+///    `/v1/models` 常漏掉 embedding 类模型、且完全没有上下文元数据；
+/// 3. `/v1/models` 完全失败但 `/api/tags` 成功时，以原生结果作为返回值
+///    （Ollama 原生接口可用就说明本机在跑，没必要因 OpenAI 兼容层未开而报错）。
+///
+/// 模型列表是只读探测，因此这里允许兜底重发；对话/测试连接**一律不重发**。
 pub async fn list_models(
     protocol: ApiProtocol,
     provider: &str,
     base_url: &str,
     credential: &Credential,
+    local_kind: Option<&str>,
 ) -> Result<Vec<AiModel>, TranslateError> {
     let url = models_url(protocol, base_url)
         .ok_or_else(|| TranslateError::ProviderError(400, "协议不支持模型列表".to_string()))?;
-    let response = with_protocol_headers(shared_client().get(url), protocol, credential)
-        .send()
-        .await
-        .map_err(map_reqwest_err)?;
-    let payload: Value = check_status(response)
-        .await?
-        .json()
-        .await
-        .map_err(|_| TranslateError::StreamInterrupted)?;
-    let mut models = parse_models_payload(&payload);
+    let mut primary_error: Option<TranslateError> = None;
+    let mut models: Vec<AiModel> = Vec::new();
 
-    // Ollama 的 OpenAI /models 不含上下文元数据；原生 /api/tags 仅作增强，
-    // 失败时保留已取得的模型列表，上下文字段自然缺省。
-    if provider.trim().eq_ignore_ascii_case("ollama") {
-        let native_url = ollama_native_url(base_url, "/api/tags");
-        let native = with_protocol_headers(shared_client().get(native_url), protocol, credential)
-            .send()
-            .await;
-        if let Ok(response) = native {
-            if let Ok(response) = check_status(response).await {
-                if let Ok(native_payload) = response.json::<Value>().await {
-                    merge_ollama_details(&mut models, &native_payload);
-                }
+    match fetch_models_payload(protocol, &url, credential).await {
+        Ok(payload) => models = parse_models_payload(&payload),
+        Err(error) => {
+            let fallback = if should_probe_v1_fallback(&error) {
+                models_url_fallback(protocol, base_url)
+            } else {
+                None
+            };
+            match fallback {
+                Some(fallback_url) => match fetch_models_payload(protocol, &fallback_url, credential).await {
+                    Ok(payload) => models = parse_models_payload(&payload),
+                    Err(_) => primary_error = Some(error),
+                },
+                None => primary_error = Some(error),
             }
         }
     }
-    Ok(models)
+
+    if looks_like_ollama(provider, base_url, local_kind) {
+        let native_url = ollama_native_url(base_url, "/api/tags");
+        if let Ok(native_payload) = fetch_models_payload(protocol, &native_url, credential).await {
+            // 原生接口失败时不报错：能拿到的部分列表优先，上下文字段自然缺省。
+            union_models(&mut models, parse_ollama_tags_payload(&native_payload));
+            primary_error = None;
+        }
+    }
+
+    match primary_error {
+        Some(error) => Err(error),
+        None => Ok(models),
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::translate::ai_request::{ChatMessage, RequestPolicy};
+
+    #[test]
+    fn v1_fallback_is_probed_only_on_404() {
+        // 只有「端点不存在」值得换 URL；鉴权/限流/服务端错误必须原样抛出。
+        assert!(should_probe_v1_fallback(&TranslateError::ProviderError(
+            404,
+            "not found".into()
+        )));
+        assert!(!should_probe_v1_fallback(&TranslateError::ProviderError(
+            401,
+            "unauthorized".into()
+        )));
+        assert!(!should_probe_v1_fallback(&TranslateError::ProviderError(
+            400,
+            "bad request".into()
+        )));
+        assert!(!should_probe_v1_fallback(&TranslateError::ProviderError(
+            429,
+            "rate limited".into()
+        )));
+        assert!(!should_probe_v1_fallback(&TranslateError::ProviderError(
+            500,
+            "server error".into()
+        )));
+        assert!(!should_probe_v1_fallback(&TranslateError::Network));
+        assert!(!should_probe_v1_fallback(&TranslateError::RateLimited));
+    }
 
     #[test]
     fn model_dto_uses_camel_case_and_omits_unknown_context() {
@@ -373,17 +488,84 @@ mod tests {
         let mut models = parse_models_payload(&serde_json::json!({
             "data":[{"id":"qwen:latest"}]
         }));
-        merge_ollama_details(
+        union_models(
             &mut models,
-            &serde_json::json!({
+            parse_ollama_tags_payload(&serde_json::json!({
                 "models":[{
                     "name":"qwen:latest",
                     "details":{"context_length":131072}
                 }]
-            }),
+            })),
         );
+        assert_eq!(models.len(), 1);
         assert_eq!(models[0].context_window_tokens, Some(131072));
         assert_eq!(models[0].min_context_window_tokens, None);
+    }
+
+    /// v0.15.4 需求 2：ollama 必须返回本机全部模型。
+    /// 真机数据：/v1/models 只有 4 条且无上下文；/api/tags 有 details.context_length。
+    #[test]
+    fn ollama_union_returns_every_installed_model_with_context() {
+        let mut models = parse_models_payload(&serde_json::json!({
+            "object":"list",
+            "data":[
+                {"id":"qwen3-vl:8b-instruct","object":"model"},
+                {"id":"qwen3-vl:8b","object":"model"}
+            ]
+        }));
+        union_models(
+            &mut models,
+            parse_ollama_tags_payload(&serde_json::json!({
+                "models":[
+                    {"name":"qwen3-vl:8b-instruct","model":"qwen3-vl:8b-instruct",
+                     "details":{"context_length":262144}},
+                    {"name":"qwen3-vl:8b","model":"qwen3-vl:8b",
+                     "details":{"context_length":262144}},
+                    {"name":"guoxuter/ov_intent_analysis_sft:v7_q8",
+                     "model":"guoxuter/ov_intent_analysis_sft:v7_q8",
+                     "details":{"context_length":262144}},
+                    {"name":"bge-m3:latest","model":"bge-m3:latest",
+                     "details":{"context_length":8192}}
+                ]
+            })),
+        );
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids.len(), 4, "必须按 id 求并集，不能只增强已有条目");
+        assert!(ids.contains(&"bge-m3:latest"), "/v1/models 漏掉的条目也要补上");
+        assert!(ids.contains(&"guoxuter/ov_intent_analysis_sft:v7_q8"));
+        let vl = models.iter().find(|m| m.id == "qwen3-vl:8b").unwrap();
+        assert_eq!(vl.context_window_tokens, Some(262144));
+        let embedding = models.iter().find(|m| m.id == "bge-m3:latest").unwrap();
+        assert_eq!(embedding.context_window_tokens, Some(8192));
+        // 已有条目的显示名不被原生接口覆盖
+        assert_eq!(models.iter().find(|m| m.id == "qwen3-vl:8b").unwrap().name, "qwen3-vl:8b");
+    }
+
+    #[test]
+    fn ollama_tags_payload_is_tolerated_when_v1_list_is_empty() {
+        let mut models: Vec<AiModel> = Vec::new();
+        union_models(
+            &mut models,
+            parse_ollama_tags_payload(&serde_json::json!({
+                "models":[
+                    {"name":"bge-m3:latest","details":{"context_length":8192}},
+                    {"model":"qwen3-vl:8b"}
+                ]
+            })),
+        );
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "bge-m3:latest");
+        assert_eq!(models[0].context_window_tokens, Some(8192));
+        assert_eq!(models[1].id, "qwen3-vl:8b");
+        assert_eq!(models[1].context_window_tokens, None);
+    }
+
+    #[test]
+    fn ollama_detection_uses_explicit_kind_or_standard_port() {
+        assert!(looks_like_ollama("ollama", "http://x/v1", None));
+        assert!(looks_like_ollama("acme", "http://127.0.0.1:11434/v1", None));
+        assert!(looks_like_ollama("acme", "http://127.0.0.1:11434/v1", Some("OLLAMA")));
+        assert!(!looks_like_ollama("acme", "http://127.0.0.1:1234/v1", None));
     }
 
     #[test]

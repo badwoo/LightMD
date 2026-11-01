@@ -38,6 +38,8 @@ export function validationErrorKey(code: AiProfileValidationError | string): str
       return "settings.ai.error.providerIdInvalid";
     case "profile.modelCatalog.invalid":
       return "settings.ai.error.modelCatalogInvalid";
+    case "profile.localKind.invalid":
+      return "settings.ai.model.error.localKind";
     default:
       return "settings.ai.error.generic";
   }

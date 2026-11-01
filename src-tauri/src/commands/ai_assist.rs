@@ -192,6 +192,9 @@ pub async fn ai_chat(
 }
 
 /// 拉取当前 AI profile 的模型目录；返回字段由 AiModel 序列化为 camelCase。
+///
+/// `local_kind` 由前端「本地部署类型」写入档案：`ollama` 时后端必然再拉一次原生
+/// `/api/tags` 与 `/v1/models` 求并集（其它运行时不带该值，行为不变）。
 #[tauri::command]
 pub async fn list_ai_models(
     credential_id: String,
@@ -199,13 +202,20 @@ pub async fn list_ai_models(
     protocol: String,
     base_url: String,
     auth_mode: Option<String>,
+    local_kind: Option<String>,
 ) -> Result<Vec<AiModel>, String> {
     let protocol = ApiProtocol::parse(Some(&protocol))?;
     let auth_mode = AuthMode::parse(auth_mode.as_deref())?;
     let credential = read_ai_credential(Some(credential_id), provider.clone(), auth_mode).await?;
-    list_models(protocol, &provider, &base_url, &credential)
-        .await
-        .map_err(|error| error.to_code_string())
+    list_models(
+        protocol,
+        &provider,
+        &base_url,
+        &credential,
+        local_kind.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_code_string())
 }
 
 /// 各协议发送同一个最小用户指令、1 token、非流式请求；不做换参重试。

@@ -143,6 +143,58 @@
   flex: 0 0 auto;
 }
 
+/* v0.15.4 需求 5：模型名称输入框 + 「获取模型列表」「测试连接」同一行。 */
+.ai-model-model-row > .ai-input {
+  flex: 1 1 auto;
+}
+
+.ai-model-model-row > .ai-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* v0.15.4 需求 6：当前启用模型（服务商 - 模型名称 - 推理等级）。 */
+.ai-model-active-summary {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 12px 0 0 28px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--bg-primary) 96%, var(--accent-color) 4%);
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-model-active-summary-label {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.ai-model-active-summary-value {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ai-model-active-summary-value.is-empty {
+  color: var(--text-secondary);
+  font-family: inherit;
+}
+
+.ai-model-active-separator {
+  color: var(--text-secondary);
+}
+
 .ai-model-number {
   max-width: 180px;
   font-variant-numeric: tabular-nums;

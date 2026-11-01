@@ -30,6 +30,26 @@ describe("v0.15.3 aiConnectionService", () => {
       protocol: "openai-chat",
       authMode: "none",
       baseUrl: "http://127.0.0.1:11434/v1",
+      // v0.15.4：内置 Ollama 预设不带 localKind（后端仍按 provider=ollama 探测原生接口）
+      localKind: null,
+    }));
+  });
+
+  it("v0.15.4：自定义本地部署的 localKind 透传给后端", async () => {
+    invokeMock.mockResolvedValue([]);
+    const profile = {
+      ...createDefaultAiSettings().profiles[0]!,
+      id: "local-lmstudio",
+      providerId: "local-lmstudio",
+      credentialId: "local-lmstudio",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      localKind: "lmstudio" as const,
+    };
+    await aiConnectionService.listModels(profile);
+    expect(invokeMock).toHaveBeenCalledWith("list_ai_models", expect.objectContaining({
+      provider: "local-lmstudio",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      localKind: "lmstudio",
     }));
   });
 

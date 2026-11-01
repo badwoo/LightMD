@@ -220,6 +220,25 @@ pub fn models_url(protocol: ApiProtocol, base_url: &str) -> Option<String> {
     }
 }
 
+/// OpenAI 兼容 base 未以 `/v1` 结尾时的**模型列表兜底候选**。
+///
+/// 本地运行时（LM Studio / vLLM / llama.cpp server / LocalAI / Ollama）文档基本都写
+/// `http://127.0.0.1:PORT/v1`，但用户常只填 `http://127.0.0.1:PORT`；此时主 URL
+/// `{base}/models` 会 404。仅当主请求 **404** 时补 `/v1` 再探测一次，
+/// 绝不因参数类 400 做「删参重试」（那会带来重复计费风险）。
+///
+/// **仅用于「获取模型列表」**：模型列表是只读探测，重发无副作用；
+/// 对话/测试连接不提供任何兜底（见 `ai_client::send_ai_request`）。
+pub fn models_url_fallback(protocol: ApiProtocol, base_url: &str) -> Option<String> {
+    let base = trim_base(base_url);
+    match protocol {
+        ApiProtocol::OpenaiChat | ApiProtocol::OpenaiResponses if !ends_with_v1(base) => {
+            Some(format!("{}/v1/models", base))
+        }
+        _ => None,
+    }
+}
+
 /// Ollama 原生 API 根路径：OpenAI 兼容 base 通常以 `/v1` 结尾。
 pub fn ollama_native_url(base_url: &str, path: &str) -> String {
     let base = trim_base(base_url);
@@ -621,6 +640,31 @@ mod tests {
         assert_eq!(
             ollama_native_url("http://127.0.0.1:11434/v1/", "/api/tags"),
             "http://127.0.0.1:11434/api/tags"
+        );
+    }
+
+    /// v0.15.4 需求 1：本地 OpenAI 兼容运行时用户常只填端口（缺 /v1）。
+    ///
+    /// 兜底**只在模型列表**提供；对话/测试连接由 `ai_client::send_ai_request` 保证不重发。
+    #[test]
+    fn models_url_fallback_only_for_openai_compatible_without_v1() {
+        assert_eq!(
+            models_url_fallback(ApiProtocol::OpenaiChat, "http://127.0.0.1:1234").as_deref(),
+            Some("http://127.0.0.1:1234/v1/models")
+        );
+        // 已带 /v1 → 不重复探测
+        assert_eq!(
+            models_url_fallback(ApiProtocol::OpenaiChat, "http://127.0.0.1:1234/v1"),
+            None
+        );
+        assert_eq!(
+            models_url_fallback(ApiProtocol::OpenaiResponses, "http://127.0.0.1:8000").as_deref(),
+            Some("http://127.0.0.1:8000/v1/models")
+        );
+        // Anthropic 已有自己的 /v1 拼接规则，不需要兜底
+        assert_eq!(
+            models_url_fallback(ApiProtocol::AnthropicMessages, "https://x"),
+            None
         );
     }
 
