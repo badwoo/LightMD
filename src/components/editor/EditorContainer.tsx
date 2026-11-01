@@ -1061,6 +1061,52 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   // 打字机 effect 的初始 scrollToCenter 检查此标志，避免 smooth 滚动覆盖 applyScroll 的 scrollTop
   const isRestoringScrollRef = useRef(false);
   /**
+   * v0.15.4 需求10：**撤销/恢复落地后的滚动执行窗口**（单位 = `performance.now()` 时刻）。
+   *
+   * ## 缺陷（实机取证 `scripts/v0154-probe-real-keys.mjs`）
+   * 用户在阅读模式按 Ctrl+Z，探针 8ms 采样的内容坐标序列是
+   * `… 145 → 146 → 294.03 → 294.03 → 146 …`（一次方向反转，振幅 149 块），
+   * scrollTop 写入序列：
+   * ```
+   * t=117.4  2853.33 → 2853.33  (Δ0)      ← restorePreviewScrollFromAnchor 的 apply(rAF)
+   * t=150.9  2853.33 → 6301.61  (Δ+3448)  ← keyup 处理器的 scrollToVisible()
+   * t=186.1  6301.33 → 2853.33  (Δ−3448)  ← apply(60ms) 按内容锚拉回
+   * t=279.7  2853.33 → 2853.33  (Δ0)      ← apply(160ms)
+   * ```
+   * 即：锚点先把视口放对，**同一批 keyup 又把视口推到光标所在处**（校验窗外的
+   * 3448px），60ms 后锚点再拉回来。用户看到的就是「撤销时文档抖一下」。
+   *
+   * ## 为什么 keyup 会跑
+   * `Ctrl+Z` 的 keyup 冒泡到 `.ProseMirror` 的 keyup 监听器；此时
+   * `diff = |cursorY - savedCursorY|` 很大（撤销把整篇换掉、光标位置也换了），
+   * 既不是 `wasOutside`，也不满足 `diff <= 5` 的同行分支，于是落到
+   * 「触发滚动 → scrollToVisible()」。
+   *
+   * ## 修法
+   * 撤销/恢复的窗口内**禁止** keyup/click/select 主动滚动：这些滚动不是用户意图
+   * （用户只按了 Ctrl+Z），且它们会和内容锚点恢复互相踩。窗口用时刻戳而不是布尔，
+   * 避免异常路径下永久卡死；每次撤销落地都重置窗口。
+   */
+  const historyScrollGuardUntilRef = useRef(0);
+  /**
+   * v0.15.4 需求10：撤销/恢复的滚动窗口长度。
+   *
+   * 必须覆盖 `restorePreviewScrollFromAnchor` 的三段校正（rAF / 60ms / 160ms）加上
+   * 一次布局重排余量 —— 实测最后一次校正落在 t≈279ms，留 100ms 安全量取 400ms。
+   * 取值不影响正确性（窗口外用户滚动立刻生效），只影响"多久之内屏蔽旧滚动意图"。
+   */
+  const HISTORY_SCROLL_GUARD_MS = 400;
+  /**
+   * v0.15.4 需求10：当前是否处于「撤销/恢复的滚动窗口」。
+   *
+   * keyup / click / select 这类**非用户主动滚动**的自动滚动动作在窗口内必须让位：
+   * 视口位置由内容锚点恢复统一负责（见 `historyScrollGuardUntilRef` 的实测取证）。
+   */
+  const inHistoryScrollGuard = useCallback(
+    () => performance.now() < historyScrollGuardUntilRef.current,
+    [],
+  );
+  /**
    * v0.15.1 需求3（二次修复）：滚动恢复的**代际**计数。
    *
    * 用途：恢复保护窗用 `setTimeout` 收尾，而期间用户可能又切了一次模式（新一代恢复开始）。
@@ -3055,6 +3101,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // v0.15.1 需求1：撤销前先记「视口中央是哪块内容」，落地后按新几何还原。
       // 必须在 dispatch 之前采（dispatch 后 doc 已换、几何已变）。
       const scrollAnchor = capturePreviewScrollAnchor();
+      /**
+       * v0.15.4 需求10：进入**撤销滚动窗口**。
+       *
+       * 打开窗口后，`.ProseMirror` 的 keyup 处理器不再调用 `scrollToVisible()` /
+       * `scrollToCenter()`（用户只按了 Ctrl+Z，不该触发"把光标滚进视口"）；
+       * 窗口内的视口位置由下面 `restorePreviewScrollFromAnchor` 的内容锚点统一负责。
+       * 不开窗口的后果（实测）：锚点先把视口放对 → keyup 把视口推到光标（+3448px）
+       * → 60ms 后锚点拉回（−3448px）= 用户看到的「撤销时文档抖一下」。
+       */
+      historyScrollGuardUntilRef.current = performance.now() + HISTORY_SCROLL_GUARD_MS;
       const userScrolledRef = { current: false };
       const markUserScrolled = () => {
         userScrolledRef.current = true;
@@ -3098,6 +3154,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       return;
     }
     // 源码模式：写 state + 恢复光标/滚动
+    //
+    // v0.15.4 需求10：源码面同样进入撤销滚动窗口。
+    // 源码面没有 keyup 的 scrollToVisible 路径，但 textarea 的**原生动滚动**
+    // （`setSelectionRange` 后浏览器把光标滚入视口）会在下面的选区恢复里发生，
+    // 与 `applyScrollRestore` 的内容锚校正互相踩 —— 同样一次「先跳后回」。
+    // 窗口内不接管具体写入（下面本来就是锚点统一负责），只需要让
+    // 其它自动滚动路径（打字机居中 / ResizeObserver 补偿）让位。
+    historyScrollGuardUntilRef.current = performance.now() + HISTORY_SCROLL_GUARD_MS;
     //
     // ─── v0.15.3 返修（缺陷 A）：跨模式撤销后源码面「贴底」────
     //
@@ -7298,6 +7362,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       const cursorY = getCursorY();
       const diff = Math.abs(cursorY - savedCursorY);
 
+      // v0.15.4 需求10：撤销/恢复的滚动窗口内**不允许**按键驱动滚动。
+      //
+      // 实测（`scripts/v0154-probe-real-keys.mjs`）：Ctrl+Z 之后 keyup 到达，
+      // `diff` 很大（整篇换掉、光标也换了）→ 落到下面的 `scrollToVisible()`，
+      // 把视口推到光标处（+3448px），而内容锚点恢复的 60ms 校正又拉回来（−3448px）
+      // → 用户看到「撤销时文档抖一下」。用户只按了 Ctrl+Z，不该有"光标滚入视口"。
+      // 视口位置由 `restorePreviewScrollFromAnchor` 统一负责。
+      if (inHistoryScrollGuard()) return;
       // 光标在视口外时按键：浏览器 scrollIntoView 已把光标滚动到可见
       // 不恢复 scrollTop，避免抖动；打字机模式进一步滚动到中央
       if (wasOutside) {
@@ -7404,7 +7476,6 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       savedScrollTop = textarea.scrollTop;
       markScrollKeyDown(scrollBaseline, 0, savedScrollTop, false);
     };
-
     // 抑制 textarea 输入时的自动滚动（打字机模式核心修复）
     //
     // 根因：textarea 在 input 事件后、keyup 事件前会同步执行 scrollIntoView
@@ -7432,6 +7503,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       // 根因：双击 Ctrl/Shift 切换模式时，keyup 事件在 textarea 上触发（事件冒泡），
       // 若不跳过则会调用 scrollCursorToCenter 或 scrollTo({behavior: "smooth"})
       if (isRestoringScrollRef.current) return;
+      // v0.15.4 需求10：撤销/恢复的滚动窗口内不让打字机居中接管（同阅读面口径）。
+      if (inHistoryScrollGuard()) return;
       // 修饰键（Shift/Ctrl/Alt/Meta）不移动光标，不应触发滚动
       // 作为 isRestoringScrollRef 的双重保护，应对 applyScroll effect 尚未执行的时序竞争
       if (isModifierKey(e.key)) return;

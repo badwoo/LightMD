@@ -576,6 +576,21 @@ export function createEditor(options: EditorOptions): EditorView | null {
     editable: () => editableGetter?.() ?? true,
     dispatchTransaction(tr) {
       const isFileSwitch = tr.getMeta("fileSwitch");
+      /**
+       * v0.15.4 需求10：撤销/恢复的 bridge 事务**不在这里保存/恢复 scrollTop**。
+       *
+       * 缺陷（`_plan/v0153-undo-jitter-analysis.md` R1 + 实机探针
+       * `scripts/v0154-probe-real-keys.mjs`）：撤销把整篇 doc `replaceWith` 成更短的
+       * 内容后，`scrollHeight` 立刻变小 → 浏览器把 `savedScrollTop`（**替换前的像素**）
+       * 钳到新的 max（= 贴底）。随后 `EditorContainer` 的
+       * `restorePreviewScrollFromAnchor` 才按内容锚点把它拉回原位 —— 两次写入方向相反，
+       * 用户看到「撤销时文档抖一下」。
+       *
+       * 判定用 `historyBridge` 而不是 `addToHistory:false`：后者被三处共用
+       * （换文档 / 整篇重解析 / 翻译回写），只有撤销/恢复的 bridge 写入才由
+       * EditorContainer 统一负责视口（它自己采了内容锚点）。
+       */
+      const isHistoryBridge = tr.getMeta("historyBridge");
       const newState = view.state.apply(tr);
 
       // ─── 同步保存/恢复 scrollTop，防止编辑时屏幕闪动 ───────
@@ -593,7 +608,7 @@ export function createEditor(options: EditorOptions): EditorView | null {
       // 因为 .ProseMirror 移除 overflow-y: auto 后，滚动发生在 editor-container 上
       const editorDom = view.dom as HTMLElement;
       const scrollContainer = editorDom.parentElement as HTMLElement;
-      const savedScrollTop = isFileSwitch ? -1 : (scrollContainer ? scrollContainer.scrollTop : 0);
+      const savedScrollTop = isFileSwitch || isHistoryBridge ? -1 : (scrollContainer ? scrollContainer.scrollTop : 0);
       view.updateState(newState);
       if (savedScrollTop >= 0 && scrollContainer && scrollContainer.scrollTop !== savedScrollTop) {
         scrollContainer.scrollTop = savedScrollTop;
