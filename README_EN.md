@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.15.3**
+**Current Version: v0.15.4**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -402,6 +402,31 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.15.4 (2026-11-01)
+
+**Fix release — the ten issues you reported; AI configuration went from "configurable" to "usable and broad enough", and the per-keystroke / per-undo document jitter is finally gone**
+
+| # | Issue | Fix |
+| --- | --- | --- |
+| 1 | Custom configuration must support Ollama and other local deployments | The custom tab gains a **local deployment kind** selector (Ollama / LM Studio / vLLM / llama.cpp / LocalAI; Text Generation WebUI / Jan / Xinference / SGLang ship as provider presets). Selecting one prefills the official default endpoint, protocol and no-auth mode. Profiles gain an optional `localKind` field the backend uses to detect Ollama's native API |
+| 2 | Ollama "fetch models" must list **every** model installed locally | The old code only enriched context metadata and silently dropped models missing from `/v1/models`. Now `/v1/models` and native `/api/tags` are **union'd by id**, merging `details.context_length`; if `/v1/models` fails entirely but native succeeds, the native result is returned |
+| 3 | Custom models leak into the "Providers" dropdown (bug) | The dropdown only renders built-in presets; activating a custom profile auto-switches to the custom tab with a hint |
+| 4 | Custom configuration needs the same model configuration as providers | The custom tab now has a model-name field, fetch-models, test-connection (draft profile + temporary credential slot, unsaved key stored first), a context slider and current-model selection |
+| 5 | Move both buttons to the right of the model-name field | "Fetch models" and "Test connection" now sit on the same row as the model-name input on both tabs |
+| 6 | Show the currently enabled model below the model configuration | New `provider - model name - reasoning level` line; for custom profiles the provider part is the display name |
+| 7 | The AI instruction library could be configured but had no entry point (the feature was incomplete) | A **second row of custom instruction chips** under "Quick instructions"; typing `/` in the input opens an instruction picker (↑↓ / Enter / Esc, never during IME composition); selecting one expands `{{selection}}` / `{{document}}` into the input (prefill only, never auto-send) and syncs the context chip. An empty library renders no extra row |
+| 8 | Verify provider/custom coverage reaches 95%+ of the market | Presets **26 → 54** (13 international / 7 Chinese / 8 local). Vendors that need a compatibility layer (Cohere / DeepInfra / Novita / Groq / Perplexity) document the endpoint transformation in comments; presets that would only ever fail are deliberately **not** added (Hyperbolic decommissioned, Skywork continuous 503, 01.AI shut down). The dropdown groups entries as local / Chinese / international |
+| 9 | The AI chat context is always the full document and selecting text had no effect | Root cause: context refresh was skipped whenever focus sat inside the chat window, and once the scope was "document" it never followed. Now the editor's own selection is read, decoupled from focus; an explicit auto-follow / manual-lock state was added: a usable selection switches to "selection N chars", losing it falls back to the full document, clicking the chip locks it, and only a **real** selection change unlocks it. Sending re-evaluates the selection at that moment, so it never shows "document" while sending a selection |
+| 10 | The document still flickers on every keystroke and every Ctrl+Z | Two writers were caught by real-machine measurement: ① the undo-landing transaction still saved/restored `scrollTop` using the pre-replacement pixel value, which the browser clamped to the new bottom once the document got shorter, and the content anchor then pulled it back; ② during the undo window `keyup` still ran `scrollToVisible()` because "caret outside viewport", pushing the viewport away before it was pulled back. Fix: undo-landing transactions are exempt from `scrollTop` restoration (the content anchor owns the viewport), plus a 400ms undo scroll window in which keyup / click / typewriter centering stand down. Measured scrollTop writes went from "+3448 then −3448" to three zero-delta idempotent writes |
+
+**URL fallback contract** (so no request is ever sent twice): only "fetch models" keeps a fallback, and only on 404 does it retry `{base}/v1/models` once; chat / assistant / translation / test-connection report the 404 as-is and never resend.
+
+**Local runtime alignment**: llama.cpp uses upstream's default port **9931** (no longer colliding with LocalAI's 8080, which made endpoint-based provider inference ambiguous); local runtimes are always `authMode=none` (no wasted credential lookup).
+
+Verification: `tsc --noEmit` exit 0; **352 frontend files / 6389 cases pass** (1 pre-existing skip); `cargo test --lib` **275 passed / 0 failed** (3 ignored); the real-machine undo-jitter probe `scripts/v0154-probe-real-keys.mjs` (real WebView2 + real keydown/keyup chain + content-coordinate judging) shows undo content-coordinate reversals **1 → 0** and amplitude **149 blocks → 1 block**.
+
+Known trade-offs: ① provider coverage meets 95% for **individuals / small teams + local deployment**; enterprise does not — Azure OpenAI / AWS Bedrock / Vertex must use custom (the hard boundary of three protocols + a static base URL; Azure differs only in its per-tenant resource subdomain, and the configuration hint shows how to fill it); ② static model catalogs age, refresh them via "fetch models"; ③ instruction `{{document}}` uses the 20k-character truncated context, which fills the input on long documents (matching the send limit, so nothing over-sends).
 
 ### v0.15.3 (2026-10-30)
 
