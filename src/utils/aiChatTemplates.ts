@@ -10,6 +10,7 @@
  *   中英字典一一对应
  */
 import type { AiChatContextScope } from "../services/aiChatService";
+import type { AiInstruction } from "../services/aiProfiles";
 
 export interface AiChatTemplate {
   /** 稳定标识（测试定位 data-template） */
@@ -134,4 +135,121 @@ export function resolveTemplateScope(
   }
   // 明确要求全文/无上下文的模板：直接采用模板默认
   return tpl.defaultScope === "document" ? "document" : tpl.defaultScope ?? currentScope;
+}
+
+// ═══ v0.15.4 需求7：AI 指令库的应用入口（对话窗第二排 chips + 输入框 `/` 选用）═══
+//
+// 指令库（设置里的自定义指令）在 0.15.3 之前**没有应用入口**：能配置但不能用。
+// 这里把「触发识别 / 列表过滤 / 上下文展开」抽成纯函数，组件只负责渲染与键盘导航。
+
+/** `/` 选用触发点（`start` = `/` 在输入框文本中的下标） */
+export interface InstructionTrigger {
+  start: number;
+  query: string;
+}
+
+/**
+ * 识别输入框里的 `/` 触发（纯函数，可测试）
+ *
+ * 规则刻意保守：
+ * - 只认**当前 token**（从光标向左到上一个空白）以 `/` 开头，所以 `https://…`
+ *   这类中间含 `/` 的文本不会弹菜单（token 不以 `/` 开头）；
+ * - 光标右侧即使还有内容也不影响（`/` 之后继续输入会刷新 query）；
+ * - 没有 `/` / 光标在 0 / token 为空 → null。
+ */
+export function findInstructionTrigger(text: string, caret: number = text.length): InstructionTrigger | null {
+  if (caret < 0 || caret > text.length) return null;
+  let start = caret;
+  while (start > 0 && !/\s/.test(text[start - 1]!)) start--;
+  if (start >= caret) return null;
+  if (text[start] !== "/") return null;
+  return { start, query: text.slice(start + 1, caret) };
+}
+
+/**
+ * 过滤可用的指令（纯函数，可测试）
+ *
+ * - **只有模板正文非空**的指令可应用（空模板展开后是空串，点了没反应）；
+ * - 名称大小写不敏感包含匹配；query 为空 = 全部。
+ */
+export function filterApplicableInstructions(
+  instructions: readonly AiInstruction[],
+  query = ""
+): AiInstruction[] {
+  const usable = instructions.filter((item) => item.userTemplate.trim().length > 0);
+  const q = query.trim().toLowerCase();
+  if (!q) return usable;
+  return usable.filter((item) => item.name.trim().toLowerCase().includes(q));
+}
+
+/** 指令作用域 → 上下文范围（两者取值本就是同一三档，这里显式表达"联动"语义） */
+export function instructionScopeToContextScope(instruction: AiInstruction): AiChatContextScope {
+  return instruction.scope;
+}
+
+/**
+ * 把指令模板按**当前上下文**展开成可发送的指令文本（纯函数，可测试）
+ *
+ * 变量只有 `{{selection}}` / `{{document}}`（白名单，见 aiInstructionOps）。
+ * 传入的两个值由入口层按对话上下文上限截断（选区 4000 / 全文 20000）后再进来，
+ * 避免把整篇长文档塞进输入框。
+ */
+export function expandChatInstruction(
+  instruction: AiInstruction,
+  values: { selection: string; document: string },
+  expand: (template: string, values: { selection: string; document: string }) => string
+): string {
+  return expand(instruction.userTemplate, {
+    selection: values.selection,
+    document: values.document,
+  });
+}
+
+/**
+ * 把 `/` 触发的 token 替换成展开后的指令（纯函数，可测试）
+ *
+ * @param text  当前输入框全文
+ * @param start `/` 的下标（来自 findInstructionTrigger）
+ * @param caret 光标位置（替换范围是 [start, caret)）
+ * @param replacement 展开后的指令文本
+ * @returns 新文本与新光标位置（= start + replacement.length）
+ */
+export function replaceInstructionTrigger(
+  text: string,
+  start: number,
+  caret: number,
+  replacement: string
+): { text: string; caret: number } {
+  const from = Math.max(0, Math.min(start, text.length));
+  const to = Math.max(from, Math.min(caret, text.length));
+  const next = `${text.slice(0, from)}${replacement}${text.slice(to)}`;
+  return { text: next, caret: from + replacement.length };
+}
+
+/**
+ * `/` 选用列表是否应当显示（纯函数，可测试）
+ *
+ * 三条**不显示**的情形（缺一不可）：
+ * 1. 没有 `/` 触发点；
+ * 2. 输入法组合态（`isComposing`）——中文输入时 `/` 常作为候选词输入的一部分，
+ *    此时弹列表会跟候选窗打架；
+ * 3. 过滤后没有可用指令（空指令库 → 不弹空列表）。
+ */
+export function shouldShowInstructionPalette(
+  trigger: InstructionTrigger | null,
+  items: readonly AiInstruction[],
+  composing = false
+): boolean {
+  if (composing) return false;
+  if (!trigger) return false;
+  return items.length > 0;
+}
+
+/** 键盘上下移动高亮项（纯函数；越界时钳制在两端，不循环） */
+export function movePaletteIndex(current: number, delta: -1 | 1, total: number): number {
+  if (total <= 0) return 0;
+  const next = current + delta;
+  if (next < 0) return 0;
+  if (next >= total) return total - 1;
+  return next;
 }

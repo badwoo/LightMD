@@ -117,6 +117,63 @@ export function hasUsableContext(text: string | null | undefined): boolean {
   return typeof text === "string" && text.trim().length > 0;
 }
 
+// ─── v0.15.4 需求9：对话上下文「自动跟随选区」的纯逻辑 ─────────────
+//
+// 背景（用户实测 bug）：未选内容打开对话时上下文永远停在「全文」，
+// 之后在编辑器里选中文本也不生效。根因有三：
+// 1. 打开时按「有无选区」只算一次默认范围（document），之后从不跟随；
+// 2. 选区变化监听里只要焦点在对话框内就整体 `return` —— 用户点过输入框后
+//    焦点长期在窗内，之后在编辑器选区变化**再也不会刷新**；
+// 3. chip 一旦是 document 就不会自动回到 selection。
+//
+// 修法把决策抽成纯函数（EditorContainer 只负责取签名/取文本）：
+// - 用「选区签名」辨别**真实选区变化**：只有非空选区才带 from/to；
+//   光标移动（空选区）与对话框内的选字都不改变签名 → 绝不动用户的选择；
+// - 真实变化 → 自动跟随（有选区→选区；无选区→回落全文），并解除手动锁定；
+// - 用户手动点 chip / 指令作用域 → 锁定，直到下一次真实选区变化；
+// - 发送那一刻按当下选区再判一次（chip 的 250ms 防抖可能滞后）。
+
+/** 选区签名（mode 用于区分 PM 与源码 textarea 两条通道） */
+export function chatSelectionSignature(mode: "pm" | "source", from: number, to: number): string {
+  // 空选区（光标）统一成一个值：光标移动不算「选区变化」
+  const anchor = to > from ? `${from}:${to}` : "";
+  return `${mode}:${anchor}`;
+}
+
+/** 自动跟随的目标范围：有可用选区 → 选区；否则回落全文 */
+export function resolveAutoFollowScope(hasSelection: boolean): AiChatContextScope {
+  return hasSelection ? "selection" : "document";
+}
+
+/**
+ * 选区变化后的范围决策（纯函数，可测试）。
+ *
+ * @returns 需要切换到的范围；`null` = 这不是一次真实选区变化，不要覆盖用户当前选择
+ */
+export function planChatSelectionChange(input: {
+  prevSignature: string;
+  nextSignature: string;
+  hasSelection: boolean;
+}): AiChatContextScope | null {
+  if (input.nextSignature === input.prevSignature) return null;
+  return resolveAutoFollowScope(input.hasSelection);
+}
+
+/**
+ * 发送那一刻实际使用的范围（纯函数，可测试）。
+ *
+ * - 自动跟随中 → 以发送时的真实选区重判（防 250ms 防抖窗口内 chip 尚未刷新）；
+ * - 用户手动锁定 → 尊重用户点 chip / 指令作用域的决定，不擅自改。
+ */
+export function resolveChatSendScope(
+  currentScope: AiChatContextScope,
+  autoFollow: boolean,
+  hasSelection: boolean
+): AiChatContextScope {
+  if (!autoFollow) return currentScope;
+  return resolveAutoFollowScope(hasSelection);
+}
+
 export const aiChatService = {
   /**
    * 发送一次对话请求（流式）。

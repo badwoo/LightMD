@@ -75,6 +75,18 @@ interface AiChatState {
   result: TranslateResultData | null;
   /** 上下文范围（chip 一键切换） */
   contextScope: AiChatContextScope;
+  /**
+   * v0.15.4 需求9：上下文是否处于「自动跟随选区」状态。
+   *
+   * - `true`（打开对话的默认值）：编辑器里出现可用选区 → 自动切「选区」；
+   *   选区消失 → 回落「全文」；
+   * - `false`：用户手动点过 chip / 选用带作用域的指令 → **锁定**该范围，
+   *   直到下一次**真实**选区变化（光标移动、窗内选字都不算）才解锁。
+   *
+   * 用显式状态位而不是靠 scope 值推断，避免把「用户选的全文」和
+   * 「自动回落的全文」混为一谈（后者可以被下一次选区覆盖，前者不能）。
+   */
+  contextAuto: boolean;
   /** 上下文 chip 预览快照 */
   contextPreview: AiChatContextPreview | null;
   /** 归属文档路径（切文档时作废残留会话，防跨文档串写） */
@@ -82,11 +94,17 @@ interface AiChatState {
   /** 本次请求的生成元信息（发起时写入，finish 时挂到 assistant 消息上） */
   pendingMeta: AiChatUiMessage["meta"] | null;
 
-  /** 打开窗口并开始新会话（清空历史；rect 来自设置记忆，可为 null） */
+  /**
+   * 打开窗口并开始新会话（清空历史；rect 来自设置记忆，可为 null）
+   *
+   * v0.15.4 需求9：`autoFollow` 决定新会话是否「自动跟随选区」。
+   * 默认 true：未选内容打开 → 全文，之后选区变化会自动切换。
+   */
   openWindow: (
     filePath: string | null,
     rect: AiChatWindowRect | null,
-    contextScope?: AiChatContextScope
+    contextScope?: AiChatContextScope,
+    autoFollow?: boolean
   ) => void;
   /** 关闭窗口（清空历史与流式状态；不取消任务——取消由入口层负责） */
   closeWindow: () => void;
@@ -94,8 +112,13 @@ interface AiChatState {
   toggleMinimize: () => void;
   /** 更新窗口位置/尺寸（拖拽/缩放结束时调用；不落盘，落盘由入口层写设置） */
   setRect: (rect: AiChatWindowRect | null) => void;
-  /** 切换上下文范围 */
+  /** 切换上下文范围（v0.15.4：同时解除自动跟随 = 用户手动锁定） */
   setContextScope: (scope: AiChatContextScope) => void;
+  /**
+   * v0.15.4 需求9：切换范围并显式指定是否自动跟随。
+   * `autoFollow=false` 即用户手动指定（锁定）；`true` 表示自动跟随产出的范围。
+   */
+  setContextScopeWithAuto: (scope: AiChatContextScope, autoFollow: boolean) => void;
   /** 更新上下文预览快照 */
   setContextPreview: (preview: AiChatContextPreview) => void;
   /** 整体替换历史（重新生成时裁剪用） */
@@ -125,12 +148,14 @@ export const useAiChatStore = create<AiChatState>((set, get) => ({
   errorDetail: null,
   result: null,
   contextScope: "document",
+  // v0.15.4 需求9：打开对话默认「自动跟随选区」
+  contextAuto: true,
   contextPreview: null,
   filePath: null,
   pendingMeta: null,
 
   // 每次打开都是新会话：历史清空（v0.7.5 不持久化对话，见 §2.4 决策）
-  openWindow: (filePath, rect, contextScope = "document") =>
+  openWindow: (filePath, rect, contextScope = "document", autoFollow = true) =>
     set({
       open: true,
       minimized: false,
@@ -142,6 +167,8 @@ export const useAiChatStore = create<AiChatState>((set, get) => ({
       errorDetail: null,
       result: null,
       contextScope,
+      // v0.15.4 需求9：打开即自动跟随（除非调用方明确锁定）
+      contextAuto: autoFollow,
       contextPreview: null,
       filePath,
       pendingMeta: null,
@@ -157,6 +184,7 @@ export const useAiChatStore = create<AiChatState>((set, get) => ({
       errorCode: null,
       errorDetail: null,
       result: null,
+      contextAuto: true,
       contextPreview: null,
       filePath: null,
       pendingMeta: null,
@@ -166,7 +194,10 @@ export const useAiChatStore = create<AiChatState>((set, get) => ({
 
   setRect: (rect) => set({ rect }),
 
-  setContextScope: (contextScope) => set({ contextScope }),
+  // v0.15.4 需求9：不带 autoFollow 的入口一律视为「用户手动选择」→ 锁定
+  setContextScope: (contextScope) => set({ contextScope, contextAuto: false }),
+
+  setContextScopeWithAuto: (contextScope, autoFollow) => set({ contextScope, contextAuto: autoFollow }),
 
   setContextPreview: (contextPreview) => set({ contextPreview }),
 

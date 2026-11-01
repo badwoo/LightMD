@@ -169,6 +169,87 @@
   color: #fff;
 }
 
+/* ─── v0.15.4 需求7：自定义指令第二排 chips ───────────── */
+/* 与第一排（快捷指令模板）同一视觉语言；作用域用左侧细条 + 颜色区分，
+   不改字号/高度，避免出现"第二排看起来像另一套控件"的割裂感。 */
+.ai-chat-instructions {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 10px 0;
+  flex: 0 0 auto;
+}
+
+.ai-chat-tpl-instruction {
+  border-left: 2px solid var(--border-color);
+}
+
+/* 选区指令：左侧 accent 条（提示"会带走选区"） */
+.ai-chat-tpl-instruction[data-scope="selection"] {
+  border-left-color: var(--accent-color, #4a9eff);
+}
+
+/* 无上下文指令：左侧警示色（提示"不携带文档内容"） */
+.ai-chat-tpl-instruction[data-scope="none"] {
+  border-left-color: var(--text-tertiary);
+}
+
+/* ─── v0.15.4 需求7：`/` 指令选用列表 ─────────────────── */
+.ai-chat-palette {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 56px;
+  max-height: 40%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 3;
+}
+
+.ai-chat-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-chat-palette-item:hover,
+.ai-chat-palette-item.active {
+  background: var(--bg-hover);
+}
+
+.ai-chat-palette-item.active {
+  box-shadow: inset 2px 0 0 var(--accent-color, #4a9eff);
+}
+
+.ai-chat-palette-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-chat-palette-scope {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
 /* ─── 消息区 ──────────────────────────────── */
 .ai-chat-body {
   flex: 1 1 auto;

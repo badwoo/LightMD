@@ -35,10 +35,22 @@ import {
 } from "../../stores/useSettingsStore";
 import {
   AI_CHAT_TEMPLATES,
+  expandChatInstruction,
+  filterApplicableInstructions,
+  findInstructionTrigger,
+  instructionScopeToContextScope,
+  movePaletteIndex,
+  replaceInstructionTrigger,
   resolveTemplateInstruction,
   resolveTemplateScope,
+  shouldShowInstructionPalette,
   type AiChatTemplate,
 } from "../../utils/aiChatTemplates";
+import {
+  expandInstructionTemplate,
+  scopeLabelKey,
+} from "../settings/aiInstructionOps";
+import type { AiInstruction } from "../../services/aiProfiles";
 import { MiniContextMenu } from "./MiniContextMenu";
 import "./AiChatDialog.css";
 
@@ -114,6 +126,9 @@ export function chatContextChipText(
   return t("ai.chat.ctx.document", { count });
 }
 
+/** 空指令库的稳定引用（避免每次渲染新建数组 → useEffect 依赖反复触发） */
+const EMPTY_INSTRUCTIONS: readonly AiInstruction[] = Object.freeze([]);
+
 /** 拖拽终点提交（拖拽期间只改本地 state，mouseup 才写 store + 持久化） */
 type DragMode = "move" | "resize";
 
@@ -134,6 +149,12 @@ interface AiChatDialogProps {
   onCopy: (text: string) => void;
   /** 上下文范围切换（入口层重新提取预览） */
   onScopeChange: (scope: AiChatContextScope) => void;
+  /**
+   * v0.15.4 需求7：取当下上下文文本（`{{selection}}` / `{{document}}` 变量展开用）。
+   * 由入口层实现（它才知道 PM/源码两条通道）；已按上限截断。
+   * 缺省时按空上下文处理（仅渲染测试/独立挂载场景）。
+   */
+  getContextValues?: () => { selection: string; document: string };
 }
 
 export function AiChatDialog({
@@ -145,6 +166,7 @@ export function AiChatDialog({
   onReplaceDocument,
   onCopy,
   onScopeChange,
+  getContextValues,
 }: AiChatDialogProps) {
   const t = useT();
   const open = useAiChatStore((s) => s.open);
@@ -181,6 +203,29 @@ export function AiChatDialog({
   const localRectRef = useRef<AiChatWindowRect | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  /** 输入法组合态（组合期间的 Enter/`/` 都不能当命令键） */
+  const composingRef = useRef(false);
+  /**
+   * v0.15.4 需求7：输入框 `/` 触发的指令选用列表状态。
+   * `index` 为键盘高亮项；`caret` 为触发时的光标位置（替换 token 的右端）。
+   * null = 列表未打开。
+   */
+  const [palette, setPalette] = useState<{
+    start: number;
+    caret: number;
+    query: string;
+    index: number;
+  } | null>(null);
+  /** 列表状态的最新引用（capture 阶段 Esc 监听只挂一次，需要读当下值） */
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
+
+  /** v0.15.4 需求7：用户自定义指令库（第二排 chips + `/` 列表的数据源） */
+  const instructions = useSettingsStore((s) => s.ai?.instructions ?? EMPTY_INSTRUCTIONS);
+  const applicableInstructions = useMemo(
+    () => filterApplicableInstructions(instructions),
+    [instructions]
+  );
 
   const busy = status === "loading" || status === "streaming";
   const hasSelection = contextPreview?.actualScope === "selection" && !contextPreview.degraded;
@@ -322,13 +367,21 @@ export function AiChatDialog({
     closeWindow();
   }, [busy, onStop, closeWindow]);
 
-  // Esc 关闭（流式中先停止任务再关闭）；capture 阶段拦截，避免触发其他 Esc 快捷键
+  // Esc 关闭（流式中先停止任务再关闭）；capture 阶段拦截，避免触发其他 Esc 快捷键。
+  //
+  // v0.15.4 需求7：`/` 指令列表打开时，Esc 的第一语义是"收起列表"而不是"关窗"。
+  // 因为 capture 阶段监听先于输入框的 target 阶段执行，必须在这里先判一次，
+  // 否则用户按 Esc 想收列表，整个对话窗却被关掉（会话历史也一起丢失）。
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopPropagation();
+      if (paletteRef.current) {
+        setPalette(null);
+        return;
+      }
       handleClose();
     };
     window.addEventListener("keydown", onKey, true);
@@ -341,7 +394,66 @@ export function AiChatDialog({
     onSend(text, activeTemplateId);
     setInput("");
     setActiveTemplateId(null);
+    // v0.15.4 需求7：发送后收起 `/` 选用列表（输入框已清空，触发点不复存在）
+    setPalette(null);
   }, [input, busy, onSend, activeTemplateId]);
+
+  /**
+   * v0.15.4 需求7：应用一条自定义指令 —— 用当下的上下文把
+   * `{{selection}}` / `{{document}}` 展开后**预填输入框**（不自动发送），
+   * 同时把上下文范围联动到指令自己的作用域。
+   */
+  const applyInstruction = useCallback(
+    (instruction: AiInstruction, trigger: { start: number; caret: number } | null) => {
+      const values = getContextValues?.() ?? { selection: "", document: "" };
+      const expanded = expandChatInstruction(instruction, values, (template, vars) =>
+        expandInstructionTemplate(template, vars)
+      );
+      const nextInput = trigger
+        ? replaceInstructionTrigger(input, trigger.start, trigger.caret, expanded).text
+        : expanded;
+      setInput(nextInput);
+      // 手动选用指令 = 用户明确指定了作用域 → 锁定（直到下一次真实选区变化）
+      setActiveTemplateId(null);
+      const nextScope = instructionScopeToContextScope(instruction);
+      if (nextScope !== contextScope) onScopeChange(nextScope);
+      setPalette(null);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        const caret = trigger ? trigger.start + expanded.length : expanded.length;
+        el.setSelectionRange(caret, caret);
+      });
+    },
+    [contextScope, getContextValues, input, onScopeChange]
+  );
+
+  /** 当前 `/` 选用列表命中的指令（null = 不显示） */
+  const paletteItems = useMemo(
+    () => (palette ? filterApplicableInstructions(instructions, palette.query) : []),
+    [instructions, palette]
+  );
+
+  /**
+   * 输入框文本变化后重算 `/` 触发。
+   * 输入法组合态下**不弹列表**（`/` 常是候选词输入的一部分，弹窗会与候选窗打架）。
+   */
+  const syncPaletteTrigger = useCallback(
+    (value: string, caret: number) => {
+      if (composingRef.current) {
+        setPalette(null);
+        return;
+      }
+      const trigger = findInstructionTrigger(value, caret);
+      if (!shouldShowInstructionPalette(trigger, filterApplicableInstructions(instructions, trigger?.query ?? ""))) {
+        setPalette(null);
+        return;
+      }
+      setPalette({ start: trigger!.start, caret, query: trigger!.query, index: 0 });
+    },
+    [instructions]
+  );
 
   const applyTemplate = useCallback(
     (tpl: AiChatTemplate) => {
@@ -508,6 +620,31 @@ export function AiChatDialog({
             </div>
           </div>
 
+          {/* v0.15.4 需求7：自定义指令第二排 chips（点一下展开模板并预填，
+              同时把上下文范围联动到该指令的作用域）。
+              空指令库时整排**不渲染** —— 不留空行、不显示空标签。 */}
+          {applicableInstructions.length > 0 && (
+            <div className="ai-chat-instructions" data-testid="ai-chat-instructions">
+              <span className="ai-chat-context-label">{t("ai.chat.instructions")}</span>
+              <div className="ai-chat-template-list">
+                {applicableInstructions.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="ai-chat-tpl ai-chat-tpl-instruction"
+                    data-instruction={item.id}
+                    data-scope={item.scope}
+                    data-testid={`ai-chat-inst-${item.id}`}
+                    title={`${t(scopeLabelKey(item.scope))} · ${item.userTemplate}`}
+                    onClick={() => applyInstruction(item, null)}
+                  >
+                    {item.name || t("settings.ai.instruction.unnamed")}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 消息区：多轮对话，流式渲染最后一条 */}
           <div className="ai-chat-body" ref={listRef} data-testid="ai-chat-body">
             {messages.length === 0 && !busy && (
@@ -631,6 +768,28 @@ export function AiChatDialog({
         </>
       )}
 
+      {/* v0.15.4 需求7：`/` 触发的指令选用列表（输入框正上方浮层；键盘上下 + Enter 选用） */}
+      {palette && paletteItems.length > 0 && (
+        <div className="ai-chat-palette" data-testid="ai-chat-palette" role="listbox">
+          {paletteItems.map((item, idx) => (
+            <button
+              key={item.id}
+              type="button"
+              role="option"
+              aria-selected={idx === palette.index}
+              className={`ai-chat-palette-item${idx === palette.index ? " active" : ""}`}
+              data-testid={`ai-chat-palette-item-${item.id}`}
+              // mousedown 阻止默认：否则输入框先失焦，再点选会丢掉光标/触发点
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => applyInstruction(item, palette)}
+            >
+              <span className="ai-chat-palette-name">{item.name || t("settings.ai.instruction.unnamed")}</span>
+              <span className="ai-chat-palette-scope">{t(scopeLabelKey(item.scope))}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* 输入区：Enter 发送 / Shift+Enter 换行；流式中发送键变停止键。
           折叠（minimized）态下保留——折叠语义就是"只剩输入条"（§2.3），
           且折叠不取消进行中的任务。 */}
@@ -644,11 +803,51 @@ export function AiChatDialog({
           aria-label={t("ai.chat.title")}
           data-testid="ai-chat-input"
           onChange={(e) => {
-            setInput(e.target.value);
+            const value = e.target.value;
+            setInput(value);
             // 手动改动指令后不再视为模板产物（「替换全文」按钮随之下线）
             setActiveTemplateId(null);
+            // v0.15.4 需求7：输入 `/` 触发指令选用列表（组合态下由 syncPaletteTrigger 跳过）
+            syncPaletteTrigger(value, e.target.selectionStart ?? value.length);
+          }}
+          onCompositionStart={() => {
+            composingRef.current = true;
+            // 组合一开始就收起列表：候选窗与指令列表同屏会互相遮挡
+            setPalette(null);
+          }}
+          onCompositionEnd={(e) => {
+            composingRef.current = false;
+            // 组合提交后文本已稳定，此时才允许 `/` 触发
+            const el = e.currentTarget;
+            syncPaletteTrigger(el.value, el.selectionStart ?? el.value.length);
           }}
           onKeyDown={(e) => {
+            // 输入法组合态：所有命令键（Enter / 上下 / Esc）都不处理，交给输入法选词
+            if (e.nativeEvent.isComposing) return;
+            // v0.15.4 需求7：`/` 选用列表的键盘导航（上下移动 / Enter 选中 / Esc 关闭）
+            if (palette && paletteItems.length > 0) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                setPalette({
+                  ...palette,
+                  index: movePaletteIndex(palette.index, e.key === "ArrowDown" ? 1 : -1, paletteItems.length),
+                });
+                return;
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                const picked = paletteItems[palette.index] ?? paletteItems[0];
+                if (picked) applyInstruction(picked, palette);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                // 只收列表，不关窗口（Esc 关窗由 capture 阶段监听负责，需 stopPropagation）
+                e.stopPropagation();
+                setPalette(null);
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               // 输入法组合态下的 Enter 用于选词，不能当发送
               if (e.nativeEvent.isComposing) return;

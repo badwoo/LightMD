@@ -206,6 +206,10 @@ import { useAiChatStore } from "../../stores/aiChatStore";
 import {
   aiChatService,
   buildChatRequestMessages,
+  chatSelectionSignature,
+  planChatSelectionChange,
+  resolveAutoFollowScope,
+  resolveChatSendScope,
   truncateChatContext,
   hasUsableContext,
   type AiChatContextScope,
@@ -5282,6 +5286,69 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   );
 
   /**
+   * v0.15.4 需求9：读取**当下**的编辑器选区（PM 通道 / 源码 textarea 通道）。
+   *
+   * 为什么不用 `document.activeElement`：窗口焦点在对话输入框时，PM 的
+   * `view.state.selection` 与 textarea 的 selectionStart/End **都还在**，
+   * 只是 DOM 焦点挪走了。旧实现看到 activeElement 在对话框内就直接 return，
+   * 于是「点过输入框之后在编辑器里选文本」永远不刷新 chip —— 正是用户报的 bug。
+   * 这里直接读编辑器自身的选区状态，与焦点无关。
+   */
+  const readChatSelection = useCallback((): {
+    mode: "pm" | "source";
+    from: number;
+    to: number;
+    text: string;
+  } => {
+    if (viewMode === "preview" && isMdFile) {
+      const view = viewRef.current;
+      if (!view || view.isDestroyed) return { mode: "pm", from: 0, to: 0, text: "" };
+      const { from, to } = view.state.selection;
+      return {
+        mode: "pm",
+        from,
+        to,
+        text: from === to ? "" : (extractFromSelection(view)?.text ?? ""),
+      };
+    }
+    if (isSourceMode) {
+      const ta = sourceTextareaRef.current;
+      if (!ta) return { mode: "source", from: 0, to: 0, text: "" };
+      const from = ta.selectionStart;
+      const to = ta.selectionEnd;
+      return {
+        mode: "source",
+        from,
+        to,
+        text: to > from ? sourceContentRef.current.slice(from, to) : "",
+      };
+    }
+    return { mode: "pm", from: 0, to: 0, text: "" };
+  }, [viewMode, isMdFile, isSourceMode]);
+
+  /**
+   * v0.15.4 需求7：指令模板展开所需的两个变量值（按上下文上限截断后）。
+   *
+   * 指令库的 `{{selection}}` / `{{document}}` 由这里取"当下"的真实文本，
+   * 而不是 chip 预览里的字数——展开后的指令要能直接发送。
+   */
+  const getChatContextValues = useCallback((): { selection: string; document: string } => {
+    return {
+      selection: truncateChatContext(extractChatContext("selection").raw, "selection").text,
+      document: truncateChatContext(extractChatContext("document").raw, "document").text,
+    };
+  }, [extractChatContext]);
+
+  /** 上次记录的选区签名（用于辨别"真实选区变化"；见 chatSelectionSignature） */
+  const chatSelSigRef = useRef<string>("");
+
+  /** 读取当下选区签名（"pm:from:to" / "source:from:to"；空选区统一为 "mode:"） */
+  const currentChatSelectionSignature = useCallback((): string => {
+    const sel = readChatSelection();
+    return chatSelectionSignature(sel.mode, sel.from, sel.to);
+  }, [readChatSelection]);
+
+  /**
    * v0.7.5 功能1：AI 对话入口（底部栏「AI对话」/ Ctrl+K / 选区「问」气泡共用）。
    *
    * - 未打开：新建会话，默认上下文范围 = 有可用选区 → 选区；否则全文
@@ -5299,15 +5366,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       notifyWarning(translate("translate.fullRunningNotify"));
       return;
     }
-    const defaultScope: AiChatContextScope = hasUsableContext(extractChatContext("selection").raw)
-      ? "selection"
-      : "document";
+    // v0.15.4 需求9：打开/复用会话时按**当下**选区算出范围，并进入「自动跟随」。
+    // 打开那一刻没有可用选区 → 全文；之后编辑器里选区变化会由下方 effect 跟随。
+    const defaultScope = resolveAutoFollowScope(
+      hasUsableContext(extractChatContext("selection").raw)
+    );
 
     const store = useAiChatStore.getState();
     if (store.open) {
-      // 复用已开会话：展开 + 刷新预览 + 聚焦输入框
+      // 复用已开会话：展开 + 刷新预览 + 聚焦输入框。
+      // 注意：再次按 Ctrl+K 视为「重新开始自动跟随」——用户的意图是"用当前选区"，
+      // 不应被上一次的手动锁定挡住。
       if (store.minimized) store.toggleMinimize();
-      useAiChatStore.getState().setContextScope(defaultScope);
+      store.setContextScopeWithAuto(defaultScope, true);
+      chatSelSigRef.current = currentChatSelectionSignature();
       refreshChatPreview(defaultScope);
       requestAnimationFrame(() => {
         document.querySelector<HTMLTextAreaElement>(".ai-chat-input")?.focus();
@@ -5320,43 +5392,117 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const rect = isAiChatRectVisible(saved, { width: window.innerWidth, height: window.innerHeight })
       ? saved
       : null;
-    store.openWindow(activeFileRef.current ?? null, rect, defaultScope);
+    // 打开即自动跟随（第 4 参 autoFollow=true 是默认，显式写出便于阅读）
+    store.openWindow(activeFileRef.current ?? null, rect, defaultScope, true);
+    chatSelSigRef.current = currentChatSelectionSignature();
     refreshChatPreview(defaultScope);
   }, [extractChatContext, refreshChatPreview]);
   const startAiChatRef = useRef<() => void>(() => {});
   startAiChatRef.current = startAiChat;
 
   /**
-   * v0.7.5：对话窗打开期间，编辑器选区变化时刷新上下文 chip 预览。
-   * - 发送时仍会重新提取（预览只影响展示），故此处节流 250ms 即可
-   * - 焦点在对话框内时跳过：点击输入框会让编辑器失焦、选区看似丢失，
-   *   若照常刷新会把 chip 误降级为「全文」并丢失用户的选区意图
+   * v0.7.5 / v0.15.4 需求9：对话窗打开期间，编辑器选区变化时**自动跟随**并刷新 chip。
+   *
+   * 旧实现的三个问题（用户实测「选了文本也不生效」）：
+   * 1. `if (active?.closest?.(".ai-chat-dialog")) return;` —— 点过输入框后焦点
+   *    长期在窗内，这个分支会让选区变化**永远**不刷新。焦点在不在窗内与
+   *    "编辑器有没有选区"是两件事：PM 的 `state.selection` 与 textarea 的
+   *    selectionStart/End 都还在，直接读编辑器状态即可。现改为只跳过
+   *    **窗内自己的选区**（用户拖选 AI 回答文本时 `document.getSelection()` 的
+   *    anchorNode 落在 `.ai-chat-dialog` 里），那确实不是编辑器选区。
+   * 2. 只刷新预览、不改范围 → chip 一直显示上次算出的范围。
+   *    现在按 `planChatSelectionChange` 决策：真实选区变化 → 自动切「选区」；
+   *    选区消失且处于自动跟随 → 回落全文；手动锁定则保持不动。
+   * 3. 无节流的连续性：仍用 250ms 防抖（用户拖选时高频触发），
+   *    发送那一刻会再提取一次，预览滞后不影响实际发送内容。
    */
   useEffect(() => {
     if (!chatOpen) return;
+    // 打开瞬间先记录基线签名：此后只有**变化**才算真实选区变化
+    chatSelSigRef.current = currentChatSelectionSignature();
     let timer: ReturnType<typeof setTimeout> | null = null;
+
+    /** 当前 DOM 选区是否落在对话窗内部（拖选/双击 AI 回答文本） */
+    const isSelectionInsideChatDialog = (): boolean => {
+      const domSel = document.getSelection();
+      if (!domSel || domSel.rangeCount === 0) return false;
+      const anchor = domSel.anchorNode;
+      const node = anchor instanceof Element ? anchor : anchor?.parentElement ?? null;
+      return !!node?.closest?.(".ai-chat-dialog");
+    };
+
     const schedule = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        const active = document.activeElement as HTMLElement | null;
-        if (active?.closest?.(".ai-chat-dialog")) return;
-        refreshChatPreview(useAiChatStore.getState().contextScope);
+        const store = useAiChatStore.getState();
+        if (!store.open) return;
+        // 窗内选字（拖选 AI 回答）不是编辑器选区变化：保持 chip 原样
+        if (isSelectionInsideChatDialog()) return;
+
+        const nextSig = currentChatSelectionSignature();
+        const sel = readChatSelection();
+        const hasSel = hasUsableContext(sel.text);
+        const planned = planChatSelectionChange({
+          prevSignature: chatSelSigRef.current,
+          nextSignature: nextSig,
+          hasSelection: hasSel,
+        });
+        chatSelSigRef.current = nextSig;
+        // planned=null → 不是真实选区变化（光标移动 / 同一选区的重复事件）：
+        // 只刷新预览字数，绝不动用户手动锁定的范围
+        if (planned === null) {
+          refreshChatPreview(store.contextScope);
+          return;
+        }
+        // 真实选区变化 → **解锁**并自动跟随。
+        // 「手动点 chip 的锁定」只保持到下一次真实选区变化为止（用户口径），
+        // 因此在锁定态下也要把 planned 应用下去，同时把 contextAuto 恢复为 true。
+        if (planned !== store.contextScope || !store.contextAuto) {
+          store.setContextScopeWithAuto(planned, true);
+        }
+        refreshChatPreview(planned);
       }, 250);
     };
     document.addEventListener("selectionchange", schedule);
+    // 源码通道兜底：部分 WebView2 版本里 textarea 的选区变化不一定派发 document
+    // 级 selectionchange，这里额外挂 textarea 自身的 select / keyup / mouseup。
+    const ta = sourceTextareaRef.current;
+    ta?.addEventListener("select", schedule);
+    ta?.addEventListener("keyup", schedule);
+    ta?.addEventListener("mouseup", schedule);
     return () => {
       document.removeEventListener("selectionchange", schedule);
+      ta?.removeEventListener("select", schedule);
+      ta?.removeEventListener("keyup", schedule);
+      ta?.removeEventListener("mouseup", schedule);
       if (timer) clearTimeout(timer);
     };
-  }, [chatOpen, refreshChatPreview]);
+  }, [chatOpen, refreshChatPreview, currentChatSelectionSignature, readChatSelection]);
 
-  // v0.7.5：编辑模式切换时上下文来源通道随之改变（PM 选区 ↔ textarea 切片），
-  // 立即刷新 chip 预览，避免显示上一模式的过期选区字数
+  /**
+   * v0.7.5：编辑模式切换时上下文来源通道随之改变（PM 选区 ↔ textarea 切片），
+   * 立即刷新 chip 预览，避免显示上一模式的过期选区字数。
+   *
+   * v0.15.4 需求9：模式切换 = 选区通道切换，也算一次真实选区观测 ——
+   * 自动跟随态下按新模式里的选区重新跟随（例如"源码模式选了文本 → 切阅读模式"）。
+   * 同时更新签名，避免紧随其后的 selectionchange 把刚算好的范围又判成"变化"。
+   */
   useEffect(() => {
-    if (!useAiChatStore.getState().open) return;
-    refreshChatPreview(useAiChatStore.getState().contextScope);
-  }, [viewMode, isSourceMode, isMdFile, refreshChatPreview]);
+    const store = useAiChatStore.getState();
+    if (!store.open) return;
+    chatSelSigRef.current = currentChatSelectionSignature();
+    if (store.contextAuto) {
+      const sel = readChatSelection();
+      const followed = resolveAutoFollowScope(hasUsableContext(sel.text));
+      if (followed !== store.contextScope) {
+        store.setContextScopeWithAuto(followed, true);
+        refreshChatPreview(followed);
+        return;
+      }
+    }
+    refreshChatPreview(store.contextScope);
+  }, [viewMode, isSourceMode, isMdFile, refreshChatPreview, currentChatSelectionSignature, readChatSelection]);
 
   // v0.7.5：切换文件时作废对话窗（无路径新文件的 filePath 均为 null，无法区分归属，
   // 与 v0.7.4 AI 气泡同款兜底：宁可关闭也不跨文档串写内容）
@@ -5567,7 +5713,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     (instruction: string, templateId: string | null) => {
       const store = useAiChatStore.getState();
       if (!store.open) return;
-      const scope = store.contextScope;
+      // v0.15.4 需求9：发送时按**这一刻**的选区重新判定范围。
+      // 自动跟随状态下即使 250ms 防抖的 chip 还没刷新（用户刚选完就按 Enter），
+      // 也绝不能"chip 显示全文、实际发选区"或反之。
+      const selNow = readChatSelection();
+      const hasSelNow = hasUsableContext(selNow.text);
+      const scope = resolveChatSendScope(store.contextScope, store.contextAuto, hasSelNow);
+      // 发送瞬间就是一次真实选区观测：同步签名，避免随后的 selectionchange
+      // 把已发送的范围又"自动跟随"回旧状态
+      chatSelSigRef.current = chatSelectionSignature(selNow.mode, selNow.from, selNow.to);
+      if (scope !== store.contextScope) store.setContextScopeWithAuto(scope, store.contextAuto);
+
       let actualScope: AiChatContextScope = scope;
       let extracted = extractChatContext(scope);
       // 选区已丢失 → 降级为全文（与 chip 预览同规则）
@@ -5640,7 +5796,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           useAiChatStore.getState().fail(info.code, info.detail);
         });
     },
-    [extractChatContext, viewMode, isMdFile]
+    [extractChatContext, readChatSelection, viewMode, isMdFile]
   );
 
   /** 停止对话流式任务（作废后续回调；半截回答不入历史，避免污染下一轮上下文） */
@@ -5826,7 +5982,13 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     navigator.clipboard?.writeText(text).catch(() => undefined);
   }, []);
 
-  /** 上下文范围切换（对话框 chip / 快捷指令模板触发） */
+  /**
+   * 上下文范围切换（对话框 chip / 指令作用域联动触发）。
+   *
+   * v0.15.4 需求9：这里的调用一律视为**用户手动指定** → 锁定该范围。
+   * 自动跟随产出的范围由 selectionchange effect 走 `setContextScopeWithAuto`，
+   * 不经本入口，因此不会被误锁定。
+   */
   const chatScopeChange = useCallback(
     (scope: AiChatContextScope) => {
       useAiChatStore.getState().setContextScope(scope);
@@ -9801,7 +9963,8 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         onRetry={handleAiRetry}
       />
 
-      {/* v0.7.5 功能1：AI 对话浮动窗口（Portal，关闭时组件内部返回 null） */}
+      {/* v0.7.5 功能1：AI 对话浮动窗口（Portal，关闭时组件内部返回 null）
+          v0.15.4 需求7：getContextValues 供自定义指令的 {{selection}}/{{document}} 展开 */}
       <AiChatDialog
         onSend={sendAiChat}
         onStop={stopAiChat}
@@ -9811,6 +9974,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         onReplaceDocument={chatReplaceDocument}
         onCopy={chatCopy}
         onScopeChange={chatScopeChange}
+        getContextValues={getChatContextValues}
       />
     </div>
   );
