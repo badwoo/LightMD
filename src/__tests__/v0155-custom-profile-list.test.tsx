@@ -129,6 +129,11 @@ function listedProfileIds(): string[] {
     .map((id) => id.replace("ai-model-custom-item-", ""));
 }
 
+/** v0.15.6：表单只在展开的条目体内渲染；先点条目主体展开（accordion）。 */
+function expandCustomItem(profileId: string) {
+  fireEvent.click(screen.getByTestId(`ai-model-custom-item-select-${profileId}`));
+}
+
 /** 填充并保存一条自定义配置（providerId 可任意，含撞预设 id 的情形）。 */
 async function saveCustomProfile(options: {
   providerId: string;
@@ -185,6 +190,8 @@ describe("问题1 根因：providerId 撞预设 id 不再导致配置消失", ()
     setAi([presetProfile("ollama")]);
     mount();
     openCustomTab();
+    // v0.15.6：列表为空时先点「新建」展开空白草稿条目。
+    fireEvent.click(screen.getByTestId("ai-model-custom-new"));
 
     await saveCustomProfile({ providerId: "deepseek", name: "我的 DeepSeek 代理" });
 
@@ -213,6 +220,8 @@ describe("问题1 根因：providerId 撞预设 id 不再导致配置消失", ()
     mount();
     openCustomTab();
     expect(listedProfileIds()).toContain("legacy-proxy");
+    // 该档案是当前启用项且在自定义页签 → 默认展开，直接可编辑
+    expect(screen.getByTestId("ai-model-custom-body-legacy-proxy")).not.toBeNull();
   });
 
   it("真预设档案（source=preset）绝不进自定义列表，即使 providerId 命中预设", () => {
@@ -258,7 +267,7 @@ describe("问题1 需求1：自定义配置条目列表", () => {
     expect(item.textContent).toContain("http://127.0.0.1:1234/v1");
   });
 
-  it("点击行载入该档案到编辑区", () => {
+  it("点击条目主体展开该档案到编辑区（accordion：点另一条会收起前一条）", () => {
     setAi([
       customProfile(),
       customProfile({ id: "other", providerId: "other", credentialId: "other", name: "另一条", baseUrl: "https://other.test/v1" }),
@@ -266,11 +275,17 @@ describe("问题1 需求1：自定义配置条目列表", () => {
     ], "acme");
     mount();
 
+    // 默认展开当前启用的 acme
     expect((screen.getByTestId("ai-model-custom-name") as HTMLInputElement).value).toBe("Acme 本地");
+    expect(screen.getByTestId("ai-model-custom-item-select-acme").getAttribute("aria-expanded")).toBe("true");
+
     fireEvent.click(screen.getByTestId("ai-model-custom-item-select-other"));
     expect((screen.getByTestId("ai-model-custom-name") as HTMLInputElement).value).toBe("另一条");
     expect((screen.getByTestId("ai-model-custom-base-url") as HTMLInputElement).value)
       .toBe("https://other.test/v1");
+    // accordion：前一条收起
+    expect(screen.getByTestId("ai-model-custom-item-select-acme").getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("ai-model-custom-body-acme")).toBeNull();
   });
 
   it("绿色圆点只出现在当前启用条目，并带 aria-label", () => {
@@ -282,9 +297,9 @@ describe("问题1 需求1：自定义配置条目列表", () => {
     mount();
 
     const dot = screen.getByTestId("ai-model-custom-item-active-acme");
-    expect(dot.classList.contains("ai-model-custom-item-active-dot")).toBe(true);
+    expect(dot.classList.contains("ai-model-profile-active-dot")).toBe(true);
     expect(dot.getAttribute("role")).toBe("img");
-    expect(dot.getAttribute("aria-label")).toBe("settings.ai.model.custom.activeDotLabel");
+    expect(dot.getAttribute("aria-label")).toBe("settings.ai.model.profile.activeDot");
     // 非启用条目没有绿点
     expect(screen.queryByTestId("ai-model-custom-item-active-other")).toBeNull();
     expect(screen.queryByTestId("ai-model-custom-item-active-ollama")).toBeNull();
@@ -331,9 +346,13 @@ describe("问题1 需求1：自定义配置条目列表", () => {
     setAi([customProfile(), presetProfile("ollama")], "acme");
     mount();
 
+    // v0.15.6：删除正在展开的条目会连带收起（展开体与其表单一起消失），草稿复位为「新建」。
     fireEvent.click(screen.getByTestId("ai-model-custom-item-delete-acme"));
-    await waitFor(() => expect((screen.getByTestId("ai-model-custom-name") as HTMLInputElement).value).toBe(""));
-    expect(screen.getByTestId("ai-model-custom-new")).toHaveProperty("disabled", true);
+    await waitFor(() => expect(screen.queryByTestId("ai-model-custom-body-acme")).toBeNull());
+    expect(screen.queryByTestId("ai-model-custom-name")).toBeNull();
+    // 草稿已复位：此时点「新建」展开出来的应是空白表单
+    fireEvent.click(screen.getByTestId("ai-model-custom-new"));
+    expect((screen.getByTestId("ai-model-custom-name") as HTMLInputElement).value).toBe("");
   });
 
   it("凭据清理失败不阻断删除", async () => {

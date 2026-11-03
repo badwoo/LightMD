@@ -283,23 +283,31 @@ describe("问题3 内容：服务商 - 模型名称 - 推理等级", () => {
 });
 
 describe("问题3 联动：切换启用档案后摘要跟随", () => {
-  it("在页签内切换服务商后，总开关下方摘要同步更新", () => {
+  /**
+   * v0.15.6：服务商页签的「切换服务商下拉」已改为「条目列表 + 启用/关闭按钮」。
+   * 启用语义整体迁移到条目上的 toggle 按钮，因此这两条用例也改为点 toggle：
+   * 摘要跟随 activeProfileId，与技术无关。
+   */
+  it("在页签内添加并启用服务商后，总开关下方摘要同步更新", () => {
     setAi([presetProfile("ollama")]);
     renderDialog();
     expect(screen.getByTestId("ai-active-model").textContent).toBe("未选择模型");
 
-    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "deepseek" } });
+    // 添加 deepseek 条目（自动展开但不启用），再点它的「启用」按钮
+    fireEvent.change(screen.getByTestId("ai-model-provider-add-select"), { target: { value: "deepseek" } });
+    fireEvent.click(screen.getByTestId("ai-model-provider-item-toggle-deepseek"));
+
     expect(screen.getByTestId("ai-active-provider").textContent).toBe("DeepSeek（默认）");
     expect(screen.getByTestId("ai-active-model").textContent).toBe("deepseek-v4-flash");
     expect(screen.getByTestId("ai-active-reasoning").textContent).toBe("off");
   });
 
-  it("切换回原档案后摘要回到原值（不是只增不减）", () => {
+  it("切回原档案（点原条目 toggle）后摘要回到原值（不是只增不减）", () => {
     setAi([presetProfile("ollama"), presetProfile("deepseek")], "deepseek");
     renderDialog();
     expect(screen.getByTestId("ai-active-model").textContent).toBe("deepseek-v4-flash");
 
-    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "ollama" } });
+    fireEvent.click(screen.getByTestId("ai-model-provider-item-toggle-ollama"));
     expect(screen.getByTestId("ai-active-provider").textContent).toBe("Ollama（本地，默认）");
     expect(screen.getByTestId("ai-active-model").textContent).toBe("未选择模型");
   });

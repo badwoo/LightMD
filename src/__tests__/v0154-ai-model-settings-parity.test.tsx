@@ -98,6 +98,24 @@ function openCustomTab() {
   fireEvent.click(screen.getByRole("tab", { name: "settings.ai.model.tabs.custom" }));
 }
 
+/**
+ * v0.15.6：自定义页签表单只在**展开的条目**里渲染（accordion）。
+ * 展开「新建」草稿条目；如果当前展开的是某条已存档案且需要它，用 expandCustom(id)。
+ */
+function openNewCustomDraft() {
+  fireEvent.click(screen.getByTestId("ai-model-custom-new"));
+}
+
+/** 展开某个已存的自定义条目。 */
+function expandCustomItem(profileId: string) {
+  fireEvent.click(screen.getByTestId(`ai-model-custom-item-select-${profileId}`));
+}
+
+/** v0.15.6：服务商页签的表单只在展开条目里；激活的服务商档案默认展开。 */
+function providerBody(profileId: string) {
+  return screen.queryByTestId(`ai-model-provider-body-${profileId}`);
+}
+
 beforeEach(() => {
   cleanup();
   listModelsMock.mockReset();
@@ -160,6 +178,7 @@ describe("需求1：本地部署类型", () => {
     setAi([presetProfile("deepseek")]);
     mount();
     openCustomTab();
+    openNewCustomDraft();
 
     const select = screen.getByTestId("ai-model-custom-local-kind");
     expect((select as HTMLSelectElement).value).toBe("");
@@ -182,6 +201,7 @@ describe("需求1：本地部署类型", () => {
     const credentials = createMemoryCredentialStore();
     mount(credentials);
     openCustomTab();
+    openNewCustomDraft();
 
     fireEvent.change(screen.getByTestId("ai-model-custom-local-kind"), { target: { value: "ollama" } });
     fireEvent.change(screen.getByTestId("ai-model-custom-provider-id"), { target: { value: "local-ollama" } });
@@ -234,19 +254,32 @@ describe("需求2：Ollama 本机全部模型", () => {
 });
 
 describe("需求3：服务商下拉不泄漏自定义项", () => {
-  it("下拉只含 AI_PROVIDER_PRESETS 的 id", () => {
+  it("v0.15.6：服务商页签只列已配置服务商，自定义档案绝不混入条目列表", () => {
     setAi([customProfile(), presetProfile("deepseek")], "acme");
     mount();
 
-    // 自定义档案激活时自动停在自定义页签，先回到服务商页签检查下拉。
+    // 自定义档案激活时自动停在自定义页签，先回到服务商页签检查列表。
     fireEvent.click(screen.getByRole("tab", { name: "settings.ai.model.tabs.provider" }));
-    const select = screen.getByTestId("ai-model-provider") as HTMLSelectElement;
-    const options = Array.from(select.querySelectorAll("option")).map((option) => option.value);
-    expect(options.sort()).toEqual(AI_PROVIDER_PRESETS.map((preset) => preset.id).sort());
-    expect(options).not.toContain("acme");
-    // 自定义档案激活时值为内置默认，且给出提示（不是显示自定义名混在下拉里）
-    expect(select.value).toBe("ollama");
-    expect(screen.getByTestId("ai-model-provider-custom-hint")).not.toBeNull();
+
+    // 条目列表只含「已配置的服务商」，且不含自定义档案 acme
+    const items = Array.from(document.querySelectorAll('[data-testid^="ai-model-provider-item-"]'))
+      .map((element) => element.getAttribute("data-testid")!)
+      .filter((id) => ["-select-", "-toggle-", "-active-", "-delete-"].every((marker) => !id.includes(marker)))
+      .map((id) => id.replace("ai-model-provider-item-", ""));
+    expect(items).toEqual(["deepseek"]);
+    expect(items).not.toContain("acme");
+
+    // 「添加服务商」下拉只含**尚未配置**的预设，且不列已配置的 deepseek
+    const addSelect = screen.getByTestId("ai-model-provider-add-select") as HTMLSelectElement;
+    const optionIds = Array.from(addSelect.querySelectorAll("option"))
+      .map((option) => option.value)
+      .filter((value) => value !== "");
+    expect(optionIds).not.toContain("deepseek");
+    expect(optionIds).toContain("ollama");
+    // 剩余可添加项 = 全部预设 - 已配置项
+    expect(optionIds.sort()).toEqual(
+      AI_PROVIDER_PRESETS.filter((preset) => preset.id !== "deepseek").map((preset) => preset.id).sort(),
+    );
   });
 
   it("当前启用自定义档案时自动切到自定义页签，并载入该档案", () => {
@@ -267,16 +300,22 @@ describe("需求3：服务商下拉不泄漏自定义项", () => {
     mount();
     expect(screen.getByRole("tab", { name: "settings.ai.model.tabs.provider" }).getAttribute("aria-selected"))
       .toBe("true");
+    // v0.15.6：服务商页签改为条目列表，不再有「自定义档案激活」提示行
     expect(screen.queryByTestId("ai-model-provider-custom-hint")).toBeNull();
   });
 });
 
-describe("task-4：服务商下拉按 optgroup 分组", () => {
-  it("下拉有 3 个 optgroup（本地/国内/国际），label 走 i18n 且互不相同", () => {
+describe("task-4：服务商添加下拉按 optgroup 分组（v0.15.6 迁移）", () => {
+  /**
+   * v0.15.6：服务商页签不再是「一个下拉选服务商」，而是「条目列表 + 添加服务商」。
+   * 分组语义整体迁移到 `ai-model-provider-add-select`：它只列**尚未配置**的预设，
+   * 仍按 v0.15.4 的 group 分 optgroup。以下断言逐条对应原用例。
+   */
+  it("添加下拉有 3 个 optgroup（本地/国内/国际），label 走 i18n 且互不相同", () => {
     setAi([presetProfile("deepseek")]);
     mount();
 
-    const select = screen.getByTestId("ai-model-provider") as HTMLSelectElement;
+    const select = screen.getByTestId("ai-model-provider-add-select") as HTMLSelectElement;
     const groups = Array.from(select.querySelectorAll("optgroup"));
     expect(groups.map((group) => group.dataset.testid)).toEqual([
       "ai-model-provider-group-local",
@@ -291,32 +330,38 @@ describe("task-4：服务商下拉按 optgroup 分组", () => {
     ]);
   });
 
-  it("optgroup 内的 option 仍覆盖全部预设（既有「只含预设 id」断言在新结构下成立）", () => {
+  it("optgroup 内的 option 都挂在分组下，且覆盖「全部预设 - 已配置」", () => {
     setAi([presetProfile("ollama")]);
     mount();
 
-    const select = screen.getByTestId("ai-model-provider") as HTMLSelectElement;
-    // 每条 option 都必须挂在某个 optgroup 下，不能散落在 select 顶层。
-    const strayOptions = Array.from(select.children).filter((child) => child.tagName === "OPTION");
+    const select = screen.getByTestId("ai-model-provider-add-select") as HTMLSelectElement;
+    // 除占位项（value=""）外，每条 option 都必须挂在某个 optgroup 下。
+    const strayOptions = Array.from(select.children).filter(
+      (child) => child.tagName === "OPTION" && (child as HTMLOptionElement).value !== "",
+    );
     expect(strayOptions).toHaveLength(0);
 
     const groupedIds = Array.from(select.querySelectorAll("optgroup option")).map(
       (option) => (option as HTMLOptionElement).value,
     );
-    expect(groupedIds.sort()).toEqual(AI_PROVIDER_PRESETS.map((preset) => preset.id).sort());
+    // 已配置的 ollama 不应出现在「可添加」列表里。
+    expect(groupedIds).not.toContain("ollama");
+    expect(groupedIds.sort()).toEqual(
+      AI_PROVIDER_PRESETS.filter((preset) => preset.id !== "ollama").map((preset) => preset.id).sort(),
+    );
   });
 
-  it("分组数量与预设的 group 字段一致（不另写第二份 id→分组清单）", () => {
+  it("分组成员与预设 group 字段一致（不另写第二份 id→分组清单）", () => {
     setAi([presetProfile("ollama")]);
     mount();
 
-    const select = screen.getByTestId("ai-model-provider") as HTMLSelectElement;
+    const select = screen.getByTestId("ai-model-provider-add-select") as HTMLSelectElement;
     for (const group of Array.from(select.querySelectorAll("optgroup"))) {
       const key = group.dataset.testid!.replace("ai-model-provider-group-", "") as
         "local" | "cn" | "intl";
-      const expected = AI_PROVIDER_PRESETS.filter((preset) => preset.group === key).map(
-        (preset) => preset.id,
-      );
+      const expected = AI_PROVIDER_PRESETS
+        .filter((preset) => preset.group === key && preset.id !== "ollama")
+        .map((preset) => preset.id);
       const actual = Array.from(group.querySelectorAll("option")).map(
         (option) => (option as HTMLOptionElement).value,
       );
@@ -324,19 +369,26 @@ describe("task-4：服务商下拉按 optgroup 分组", () => {
     }
   });
 
-  it("切换分组内任一项仍能正确建立档案（optgroup 不影响 onChange 取值）", () => {
+  it("从添加下拉选中即新增档案并自动展开（不自动启用）", () => {
     setAi([presetProfile("ollama")]);
     mount();
 
-    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "xai" } });
-    expect(currentAi().activeProfileId).toBe("xai");
-    expect(activeProfile().providerId).toBe("xai");
-    expect(activeProfile().baseUrl).toBe("https://api.x.ai/v1");
+    fireEvent.change(screen.getByTestId("ai-model-provider-add-select"), { target: { value: "xai" } });
+    const xai = currentAi().profiles.find((profile) => profile.id === "xai")!;
+    expect(xai.providerId).toBe("xai");
+    expect(xai.baseUrl).toBe("https://api.x.ai/v1");
+    expect(xai.source).toBe("preset");
+    // 新增不改变当前启用项（启用是条目上「启用/关闭」按钮的职责）
+    expect(currentAi().activeProfileId).toBe("ollama");
+    // 自动展开新条目
+    expect(screen.getByTestId("ai-model-provider-item-select-xai").getAttribute("aria-expanded")).toBe("true");
+    expect(providerBody("xai")).not.toBeNull();
+    expect((screen.getByTestId("ai-model-base-url") as HTMLInputElement).value).toBe("https://api.x.ai/v1");
 
-    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "vllm" } });
-    expect(currentAi().activeProfileId).toBe("vllm");
-    expect(activeProfile().authMode).toBe("none");
-    expect(activeProfile().baseUrl).toBe("http://127.0.0.1:8000/v1");
+    fireEvent.change(screen.getByTestId("ai-model-provider-add-select"), { target: { value: "vllm" } });
+    const vllm = currentAi().profiles.find((profile) => profile.id === "vllm")!;
+    expect(vllm.authMode).toBe("none");
+    expect(vllm.baseUrl).toBe("http://127.0.0.1:8000/v1");
   });
 });
 
@@ -349,6 +401,7 @@ describe("需求4：自定义页签与内置页签对等", () => {
     ]);
     mount(credentials);
     openCustomTab();
+    openNewCustomDraft();
 
     fireEvent.change(screen.getByTestId("ai-model-custom-local-kind"), { target: { value: "ollama" } });
     fireEvent.change(screen.getByTestId("ai-model-custom-provider-id"), { target: { value: "draft-ollama" } });
@@ -366,6 +419,7 @@ describe("需求4：自定义页签与内置页签对等", () => {
     setAi([presetProfile("ollama")]);
     mount();
     openCustomTab();
+    openNewCustomDraft();
 
     fireEvent.change(screen.getByTestId("ai-model-custom-provider-id"), { target: { value: "draft-api" } });
     fireEvent.change(screen.getByTestId("ai-model-custom-name"), { target: { value: "草稿 API" } });
@@ -396,6 +450,7 @@ describe("需求4：自定义页签与内置页签对等", () => {
     setAi([presetProfile("ollama")]);
     mount();
     openCustomTab();
+    openNewCustomDraft();
 
     fireEvent.change(screen.getByTestId("ai-model-custom-provider-id"), { target: { value: "draft-api" } });
     fireEvent.change(screen.getByTestId("ai-model-custom-name"), { target: { value: "草稿 API" } });
@@ -416,9 +471,11 @@ describe("需求4：自定义页签与内置页签对等", () => {
 });
 
 describe("需求5：按钮位置", () => {
-  it("服务商页签的获取/测试按钮与模型名称输入框同一行容器", () => {
+  it("服务商页签的获取/测试按钮与模型名称输入框同一行容器（在展开条目体内）", () => {
     setAi([presetProfile("deepseek")]);
     mount();
+    // v0.15.6：激活的服务商档案默认展开，表单在该条目体内
+    expect(providerBody("deepseek")).not.toBeNull();
     const nameInput = screen.getByTestId("ai-model-name");
     const row = nameInput.parentElement!;
     expect(row.className).toContain("ai-model-model-row");
@@ -430,6 +487,7 @@ describe("需求5：按钮位置", () => {
     setAi([presetProfile("ollama")]);
     mount();
     openCustomTab();
+    openNewCustomDraft();
     const nameInput = screen.getByTestId("ai-model-custom-model");
     const row = nameInput.parentElement!;
     expect(row.className).toContain("ai-model-model-row");

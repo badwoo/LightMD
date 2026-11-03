@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.15.5**
+**Current Version: v0.15.6**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -402,6 +402,29 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.15.6 (2026-11-03)
+
+**Configuration interaction rebuilt — the Providers and Custom tabs now share one "entry list" model: click to expand/collapse, a per-entry toggle, and a green dot for the enabled one**
+
+| Point | Implementation |
+| --- | --- |
+| One config = one entry | Both tabs are lists now: each row shows name + Provider ID + endpoint summary, replacing the old dropdown |
+| Click the entry = expand/collapse | Clicking the entry body only toggles whether its configuration is shown (`aria-expanded`), one entry at a time (accordion); it never enables the entry as a side effect |
+| Per-entry enable/disable button | An independent switch (`aria-pressed`): clicking a disabled entry enables it; clicking the enabled entry disables it (all entries may be off, in which case the summary shows "no connection configured yet") |
+| Green dot marks the enabled entry | The enabled entry shows a green dot to the **right** of the toggle (with `role="img"` + `aria-label`, not colour alone) |
+| Providers tab lists only configured entries | The list shows only providers you have already configured; the "Add provider" dropdown above it lists only **not-yet-configured** presets (grouped local / Chinese / international), and picking one adds an entry and expands it |
+| The expanded entry edits itself | The Providers tab form now binds to the **expanded entry** instead of a hard-coded "currently enabled profile" — editing A changes A regardless of which entry is enabled |
+
+**One key trade-off (draft safety)**: the Custom tab keeps its draft + save model. Before collapsing or switching entries it performs a best-effort commit —
+if validation passes it writes the draft back silently (**without changing the enabled state**); if validation fails it **refuses to switch and shows a warning**,
+so edits are neither silently discarded nor written as invalid data.
+
+Verification: `tsc --noEmit` exit 0; **355 frontend files / 6456 cases pass** (1 pre-existing skip);
+the new real-machine probe `scripts/v0156-probe-profile-accordion.mjs` reports **25/25 PASS**
+(entry expand/collapse, accordion, toggle decoupled from expansion, dot position, all-off, providers list only configured,
+add dropdown only offering unconfigured presets, expanded-entry edit ownership without touching the enabled profile);
+the v0.15.4 acceptance probe (which includes the 11 v0.15.5 checks) reports **52/52 PASS** with no regression.
 
 ### v0.15.5 (2026-11-01)
 

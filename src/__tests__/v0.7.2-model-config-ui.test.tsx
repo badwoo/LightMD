@@ -32,23 +32,31 @@ describe("v0.15.3 模型配置入口", () => {
     render(<SettingsDialog onClose={() => {}} />);
     // 样式为源码契约；真机几何由后续探针另行验证。
     expect(780 / 520).toBe(1.5);
-    expect(screen.getByTestId("ai-model-provider")).toBeTruthy();
+    // v0.15.6：服务商页签改为「条目列表 + 添加服务商」；默认 Ollama 档案以条目形式存在。
+    expect(screen.getByTestId("ai-model-provider-list")).toBeTruthy();
+    expect(screen.getByTestId("ai-model-provider-add-select")).toBeTruthy();
   });
 
   it("默认服务商为本地 Ollama，显示地址且不显示密钥输入框", () => {
     render(<SettingsDialog onClose={() => {}} />);
-    expect((screen.getByTestId("ai-model-provider") as HTMLSelectElement).value).toBe("ollama");
+    // v0.15.6：默认 Ollama 档案既是列表条目、也是当前启用项（默认展开，表单可见）。
+    expect(screen.getByTestId("ai-model-provider-item-ollama")).toBeTruthy();
+    expect(screen.getByTestId("ai-model-provider-item-toggle-ollama").getAttribute("aria-pressed"))
+      .toBe("true");
+    expect(screen.getByTestId("ai-model-provider-item-active-ollama")).toBeTruthy();
+    expect(screen.getByTestId("ai-model-provider-body-ollama")).toBeTruthy();
     expect((screen.getByTestId("ai-model-base-url") as HTMLInputElement).value)
       .toBe("http://127.0.0.1:11434/v1");
     expect(screen.getByTestId("ai-model-no-auth")).toBeTruthy();
     expect(screen.queryByTestId("ai-model-provider-key")).toBeNull();
   });
 
-  it("切换到 Kimi Plan 使用独立档案、Anthropic 协议与模型目录", () => {
+  it("添加 Kimi Plan 使用独立档案、Anthropic 协议与模型目录", () => {
     render(<SettingsDialog onClose={() => {}} />);
-    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "kimi-plan" } });
+    // v0.15.6：从「添加服务商」下拉选择 → 新增条目并自动展开（不自动启用）。
+    fireEvent.change(screen.getByTestId("ai-model-provider-add-select"), { target: { value: "kimi-plan" } });
     const current = useSettingsStore.getState().ai;
-    const profile = current.profiles.find((item) => item.id === current.activeProfileId)!;
+    const profile = current.profiles.find((item) => item.providerId === "kimi-plan")!;
     expect(profile).toMatchObject({
       providerId: "kimi-plan",
       credentialId: "kimi-plan",
@@ -58,6 +66,8 @@ describe("v0.15.3 模型配置入口", () => {
       contextWindowTokens: 1_048_576,
     });
     expect(profile.modelCatalog).toHaveLength(4);
+    // 新条目自动展开，其上下文档滑条可见且停在最大档
+    expect(screen.getByTestId("ai-model-provider-body-kimi-plan")).toBeTruthy();
     expect((screen.getByTestId("ai-model-context-slider") as HTMLInputElement).value).toBe("2");
   });
 

@@ -399,18 +399,39 @@ const main = async () => {
       log("");
       log("════════ A 需求1：自定义配置支持本地部署（含 Ollama）════════");
       await openCustomTab();
+      /**
+       * v0.15.6：自定义页签改为条目式交互 —— 表单只在**展开的条目体**内渲染，
+       * 因此必须先展开「新建」草稿条目（其展开体 testid = ai-model-custom-body-new）。
+       * 这不是功能回归：`ai-model-custom-local-kind` 仍在（在 body 内）。
+       */
+      await ev(`
+        const btn = document.querySelector('[data-testid="ai-model-custom-new"]');
+        if (btn) btn.click();
+        await new Promise((r) => setTimeout(r, 600));
+        return true;
+      `);
       const sel = await waitFor(`!!document.querySelector('[data-testid="ai-model-custom-local-kind"]')`, 8000);
-      check("A1 自定义页签存在「本地部署类型」下拉", !!sel, sel ? "" : "找不到 ai-model-custom-local-kind");
+      check("A1 自定义页签存在「本地部署类型」下拉（展开新建草稿后可见）", !!sel,
+        sel ? "" : "找不到 ai-model-custom-local-kind（需先展开新建草稿）");
+      // 记录该下拉所在的 body 容器，后续查询都限定在这个容器内，避免与其它条目串味
+      const bodySelector = await ev(`
+        const el = document.querySelector('[data-testid="ai-model-custom-local-kind"]');
+        if (!el) return null;
+        const body = el.closest('[data-testid^="ai-model-custom-body"]');
+        return body ? body.getAttribute("data-testid") : null;
+      `);
+      log(`  表单所在展开体：${bodySelector}`);
       const rows = [];
       for (const kind of ["ollama", "lmstudio", "vllm", "llamacpp", "localai"]) {
         const got = await ev(`
-          const s = document.querySelector('[data-testid="ai-model-custom-local-kind"]');
+          const scope = document.querySelector('[data-testid="' + "${bodySelector}" + '"]') || document;
+          const s = scope.querySelector('[data-testid="ai-model-custom-local-kind"]');
+          if (!s) return { kind: "${kind}", url: null, proto: null, why: "no-select" };
           s.value = "${kind}";
           s.dispatchEvent(new Event("change", { bubbles: true }));
           await new Promise((r) => setTimeout(r, 260));
-          const url = document.querySelector('[data-testid="ai-model-custom-base-url"]');
-          const proto = document.querySelector('[data-testid="ai-model-custom-protocol"]');
-          const store = (window.__LMD_TEST_STORE || null);
+          const url = scope.querySelector('[data-testid="ai-model-custom-base-url"]');
+          const proto = scope.querySelector('[data-testid="ai-model-custom-protocol"]');
           return { kind: "${kind}", url: url ? url.value : null, proto: proto ? proto.value : null };
         `);
         rows.push(got);
@@ -431,25 +452,59 @@ const main = async () => {
       log("");
       log("════════ H 需求8：服务商下拉分组（54 项 / 3 组）════════");
       await openProviderTab();
+      // v0.15.6：服务商页签改为条目式，预设分组移到了「添加服务商」下拉
+      // （ai-model-provider-add-select），它同样按 group 分 3 个 optgroup。
       const groups = await ev(`
-        const sel = document.querySelector('[data-testid="ai-model-provider"]');
+        let sel = document.querySelector('[data-testid="ai-model-provider-add-select"]');
+        if (!sel) {
+          // 下拉可能要在点「添加服务商」后才挂载，兜底再点一次
+          const add = document.querySelector('[data-testid="ai-model-provider-add"]');
+          if (add) add.click();
+          await new Promise((r) => setTimeout(r, 500));
+          sel = document.querySelector('[data-testid="ai-model-provider-add-select"]');
+        }
         if (!sel) return null;
         const opts = Array.from(sel.querySelectorAll("optgroup")).map((g) => ({
           label: g.label,
           count: g.querySelectorAll("option").length,
         }));
-        const direct = Array.from(sel.children).filter((c) => c.tagName === "OPTION").length;
-        const total = sel.querySelectorAll("option").length;
-        return { groups: opts, direct, total };
+        // v0.15.6：添加下拉有一个 value="" 的「请选择」占位 option（正常 UI，不算散落项/不计入预设数）
+        const directAll = Array.from(sel.children).filter((c) => c.tagName === "OPTION");
+        const direct = directAll.filter((o) => o.value !== "").length;
+        const total = Array.from(sel.querySelectorAll("option")).filter((o) => o.value !== "").length;
+        const hasPlaceholder = directAll.some((o) => o.value === "");
+        return { groups: opts, direct, total, hasPlaceholder };
       `);
       log(`  分组：${JSON.stringify(groups?.groups)}（顶层散落 option=${groups?.direct}，总 option=${groups?.total}）`);
       check("H1 服务商下拉有 3 个 optgroup", groups?.groups?.length === 3, JSON.stringify(groups?.groups));
-      check("H2 没有散落的顶层 option（每条都挂在组内）", groups?.direct === 0, `顶层=${groups?.direct}`);
-      check("H3 组内 option 总数 = 54", groups?.total === 54, `实测=${groups?.total}`);
+      check("H2 没有散落的顶层预设 option（每条都挂在组内；value=\"\" 占位项除外）",
+        groups?.direct === 0, `顶层预设项=${groups?.direct}（占位项存在=${groups?.hasPlaceholder}）`);
+      // v0.15.6：添加下拉只列**未配置**预设，因此总数 = 54 - 已配置服务商数
+      const configuredCount = await ev(`
+        const raw = localStorage.getItem("lightmd-settings");
+        const ai = raw ? (JSON.parse(raw).state || {}).ai : null;
+        if (!ai) return 0;
+        // 只数「预设来源」的档案（自定义不算）
+        return ai.profiles.filter((x) => x.source === "preset" || (!x.source && x.providerId && x.providerId !== "custom")).length;
+      `);
+      const expectedTotal = 54 - (configuredCount || 0);
+      check("H3 组内 option 总数 = 54 − 已配置数（添加下拉只列未配置）",
+        groups?.total === expectedTotal, `实测=${groups?.total} 期望=${expectedTotal}（已配置 ${configuredCount}）`);
       const localSeg = groups?.groups?.[0];
       const cnSeg = groups?.groups?.[1];
       const intlSeg = groups?.groups?.[2];
-      check("H4 第一组为本地部署（9 项）", !!localSeg && localSeg.count === 9, JSON.stringify(localSeg));
+      // v0.15.6：添加下拉只列未配置预设。默认新装 ollama 已配置 → 本地组为 9−1=8。
+      // 用「本地组预设总数」判断：9 个本地预设中，已配置的数量要扣掉。
+      const configuredLocal = await ev(`
+        const raw = localStorage.getItem("lightmd-settings");
+        const ai = raw ? (JSON.parse(raw).state || {}).ai : null;
+        if (!ai) return 0;
+        const localIds = ["ollama","lmstudio","vllm","llama-cpp","localai","textgen-webui","jan","xinference","sglang"];
+        return ai.profiles.filter((x) => localIds.includes(x.providerId || x.id)).length;
+      `);
+      check("H4 第一组为本地部署（9 项预设 − 已配置数）",
+        !!localSeg && localSeg.count === 9 - (configuredLocal || 0),
+        `实测=${localSeg?.count} 已配置本地=${configuredLocal}`);
       check("H5 国内厂商组非空", !!cnSeg && cnSeg.count > 0, JSON.stringify(cnSeg));
       check("H6 国际厂商组非空", !!intlSeg && intlSeg.count > 0, JSON.stringify(intlSeg));
       runs.providerGroups = groups;
@@ -674,17 +729,37 @@ const main = async () => {
       check("K3 当前启用的条目有绿色圆点标记（且仅一个）",
         (listState?.dots || []).length === 1, `dots=${JSON.stringify(listState?.dots)}`);
 
-      // 点击条目 → 载入编辑区
+      /**
+       * 点击条目 → 展开它的配置体。
+       * v0.15.6：交互改为「点主体 = 展开/收起」，配置信息在该条目的展开体内
+       * （ai-model-custom-body-deepseek），因此断言改为「展开体内出现该档案的值」。
+       */
       const selected = await ev(`
         const btn = document.querySelector('[data-testid="ai-model-custom-item-select-deepseek"]');
-        if (btn) btn.click();
-        await new Promise((r) => setTimeout(r, 500));
-        const idEl = document.querySelector('[data-testid="ai-model-custom-provider-id"]');
-        const nameEl = document.querySelector('[data-testid="ai-model-custom-name"]');
-        return { providerId: idEl ? idEl.value : null, name: nameEl ? nameEl.value : null };
+        if (!btn) return { expanded: false, why: "no-select-btn" };
+        // v0.15.6：点击 = **切换**展开态。保存后该条目通常已自动展开，
+        // 因此先确保处于「收起」再点一次，得到确定的「展开」结果。
+        if (btn.getAttribute("aria-expanded") === "true") {
+          btn.click();
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        document.querySelector('[data-testid="ai-model-custom-item-select-deepseek"]').click();
+        await new Promise((r) => setTimeout(r, 600));
+        const body = document.querySelector('[data-testid="ai-model-custom-body-deepseek"]');
+        const selBtn = document.querySelector('[data-testid="ai-model-custom-item-select-deepseek"]');
+        if (!body) return { expanded: false, why: "no-body", aria: selBtn ? selBtn.getAttribute("aria-expanded") : null };
+        const idEl = body.querySelector('[data-testid="ai-model-custom-provider-id"]');
+        const nameEl = body.querySelector('[data-testid="ai-model-custom-name"]');
+        return {
+          expanded: selBtn ? selBtn.getAttribute("aria-expanded") === "true" : null,
+          bodyVisible: body.offsetHeight > 0,
+          providerId: idEl ? idEl.value : null,
+          name: nameEl ? nameEl.value : null,
+        };
       `);
-      log(`  点击条目后编辑区：${JSON.stringify(selected)}`);
-      check("K4 点击条目能把该配置载入编辑区", selected?.name === "我的 DeepSeek 自定义", JSON.stringify(selected));
+      log(`  点击条目后展开体：${JSON.stringify(selected)}`);
+      check("K4 点击条目能展开并显示该配置的字段值",
+        selected?.expanded === true && selected?.name === "我的 DeepSeek 自定义", JSON.stringify(selected));
 
       // 删除该条目
       const afterDel = await ev(`

@@ -304,10 +304,15 @@
   border: 1px solid color-mix(in srgb, var(--border-color) 65%, var(--error-color, #d9534f) 35%);
 }
 
-/* ── v0.15.5 问题1：自定义配置条目列表 ─────────────────────────
+/* ── v0.15.6：两个页签共用「配置条目」样式 ─────────────────────
  *
- * 为什么不再用 <select>：用户明确要求「每个自定义配置对应一个条目，
- * 可以点击编辑/删除，当前启用的条目右侧有绿色小亮点」——下拉无法承载删除与状态点。
+ * 用户要求自定义与服务商两个页签使用同一套条目交互：
+ *   条目主体 = 展开/收起（accordion，同屏只展开一条）
+ *   「启用/关闭」按钮 = 独立启停（aria-pressed）
+ *   绿点 = 当前启用（放在启用按钮**右边**）
+ *   展开体渲染在同一个 <li> 内（实机探针用 body.offsetHeight 判可见）
+ *
+ * 为什么抽成共用类：两个页签若各写一套，行为（尤其 aria 属性）很容易漂移。
  */
 
 .ai-model-custom-list-block {
@@ -328,7 +333,8 @@
   font-size: 12px;
 }
 
-.ai-model-custom-list-empty {
+.ai-model-custom-list-empty,
+.ai-model-profile-list-empty {
   margin: 0;
   padding: 12px;
   color: var(--text-secondary);
@@ -339,7 +345,9 @@
   text-align: center;
 }
 
-.ai-model-custom-list {
+/* ── 条目列表 ── */
+
+.ai-model-profile-list {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -349,27 +357,32 @@
   list-style: none;
 }
 
-.ai-model-custom-item {
-  display: flex;
+.ai-model-profile-item {
   min-width: 0;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
   background: color-mix(in srgb, var(--bg-primary) 97%, var(--text-secondary) 3%);
   border: 1px solid var(--border-color);
   border-radius: 7px;
   transition: background 120ms ease, border-color 120ms ease;
 }
 
-.ai-model-custom-item.is-editing {
-  border-color: var(--accent-color);
-}
-
-.ai-model-custom-item.is-active {
+.ai-model-profile-item.is-active {
   background: color-mix(in srgb, var(--bg-primary) 94%, var(--accent-color) 6%);
 }
 
-.ai-model-custom-item-button {
+.ai-model-profile-item.is-expanded {
+  border-color: var(--accent-color);
+}
+
+/* DOM 顺序 = 主按钮 → 启用/关闭 → 绿点 → 删除（绿点在 toggle 右边）。 */
+.ai-model-profile-item-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+}
+
+.ai-model-profile-item-main {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -385,16 +398,17 @@
   cursor: pointer;
 }
 
-.ai-model-custom-item-button:hover {
+.ai-model-profile-item-main:hover {
   background: color-mix(in srgb, var(--bg-primary) 88%, var(--accent-color) 12%);
 }
 
-.ai-model-custom-item-button:focus-visible {
+.ai-model-profile-item-main:focus-visible,
+.ai-model-profile-toggle:focus-visible {
   outline: 2px solid var(--accent-color);
   outline-offset: 1px;
 }
 
-.ai-model-custom-item-name {
+.ai-model-profile-item-name {
   overflow: hidden;
   color: var(--text-primary);
   font-size: 13px;
@@ -403,7 +417,7 @@
   white-space: nowrap;
 }
 
-.ai-model-custom-item-meta {
+.ai-model-profile-item-meta {
   display: flex;
   min-width: 0;
   align-items: baseline;
@@ -412,13 +426,13 @@
   line-height: 1.4;
 }
 
-.ai-model-custom-item-provider {
+.ai-model-profile-item-provider {
   flex: 0 0 auto;
   color: var(--text-secondary);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
 }
 
-.ai-model-custom-item-endpoint {
+.ai-model-profile-item-endpoint {
   overflow: hidden;
   min-width: 0;
   color: var(--text-secondary);
@@ -428,8 +442,33 @@
   white-space: nowrap;
 }
 
-/* 当前启用条目右侧的绿色小圆点（不只靠颜色：同时带 aria-label/role/图例文案）。 */
-.ai-model-custom-item-active-dot {
+/* 启用/关闭按钮：状态靠 aria-pressed 表达，样式只是视觉辅助。 */
+.ai-model-profile-toggle {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.ai-model-profile-toggle:hover {
+  border-color: var(--accent-color);
+}
+
+.ai-model-profile-toggle.is-on {
+  color: var(--success-color, #3c8b64);
+  border-color: color-mix(in srgb, var(--success-color, #3c8b64) 55%, var(--border-color) 45%);
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--success-color, #3c8b64) 8%);
+}
+
+/* 当前启用条目右侧的绿色小圆点（不只靠颜色：同时带 role/aria-label）。 */
+.ai-model-profile-active-dot {
   flex: 0 0 auto;
   width: 8px;
   height: 8px;
@@ -438,8 +477,49 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--success-color, #3c8b64) 24%, transparent);
 }
 
-.ai-model-custom-item .ai-model-icon-button {
+.ai-model-profile-item .ai-model-icon-button {
   flex: 0 0 auto;
+}
+
+/* ── 展开体 ── */
+
+.ai-model-profile-body {
+  min-width: 0;
+  padding: 10px 10px 12px;
+  border-top: 1px solid var(--border-color);
+  animation: ai-model-panel-in 140ms ease-out;
+}
+
+.ai-model-profile-body.is-standalone {
+  margin-top: 8px;
+  background: color-mix(in srgb, var(--bg-primary) 97%, var(--text-secondary) 3%);
+  border: 1px solid var(--accent-color);
+  border-radius: 7px;
+}
+
+.ai-model-profile-body-inner {
+  min-width: 0;
+}
+
+/* ── 「添加服务商」 ── */
+
+.ai-model-profile-add-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.ai-model-profile-add-label {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.ai-model-profile-add-select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .ai-model-custom-picker {
@@ -627,10 +707,34 @@
   .ai-model-custom-footer {
     margin-left: 19px;
   }
+
+  /* v0.15.6：窄窗下条目行换行，启用/关闭按钮与绿点单独占一行右侧。 */
+  .ai-model-profile-item-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .ai-model-profile-item-main {
+    flex-basis: 100%;
+  }
+
+  .ai-model-profile-add-row {
+    flex-wrap: wrap;
+  }
+
+  .ai-model-profile-add-label,
+  .ai-model-profile-add-select {
+    flex-basis: 100%;
+  }
+
+  .ai-model-profile-body {
+    padding: 8px 6px 10px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ai-model-panel {
+  .ai-model-panel,
+  .ai-model-profile-body {
     animation: none;
   }
 

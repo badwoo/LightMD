@@ -73,6 +73,16 @@ function openCustomTab() {
   fireEvent.click(screen.getByRole("tab", { name: "settings.ai.model.tabs.custom" }));
 }
 
+/** v0.15.6：自定义表单只在展开条目体内渲染；展开「新建」草稿条目。 */
+function openNewCustomDraft() {
+  fireEvent.click(screen.getByTestId("ai-model-custom-new"));
+}
+
+/** v0.15.6：从「添加服务商」下拉新增一条预设档案（会自动展开）。 */
+function addProvider(presetId: string) {
+  fireEvent.change(screen.getByTestId("ai-model-provider-add-select"), { target: { value: presetId } });
+}
+
 function fillRequiredCustomFields(providerId = "acme-api") {
   fireEvent.change(screen.getByTestId("ai-model-custom-provider-id"), {
     target: { value: providerId },
@@ -109,7 +119,10 @@ describe("v0.15.3 模型配置双页签", () => {
     mount();
 
     await waitFor(() => expect(currentAi().activeProfileId).toBe("ollama"));
-    expect(screen.getByTestId("ai-model-provider")).toHaveProperty("value", "ollama");
+    // v0.15.6：服务商页签是条目列表；默认 Ollama 条目已启用并自动展开。
+    expect(screen.getByTestId("ai-model-provider-item-ollama")).not.toBeNull();
+    expect(screen.getByTestId("ai-model-provider-item-toggle-ollama").getAttribute("aria-pressed"))
+      .toBe("true");
     expect(screen.getByTestId("ai-model-no-auth")).not.toBeNull();
     expect(screen.queryByTestId("ai-model-provider-key")).toBeNull();
 
@@ -127,26 +140,33 @@ describe("v0.15.3 模型配置双页签", () => {
     expect(screen.getByTestId("ai-model-provider-panel")).not.toBeNull();
   });
 
-  it("切换服务商使用独立档案，返回时保留已编辑端点", () => {
+  it("添加服务商建立独立档案；切回原条目后仍保留已编辑端点", () => {
     setAi([presetProfile("ollama")]);
     mount();
 
-    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "deepseek" } });
+    // v0.15.6：从「添加服务商」下拉新增 → 条目 +1、自动展开，但**不**自动启用。
+    addProvider("deepseek");
     expect(currentAi().profiles).toHaveLength(2);
-    expect(currentAi().activeProfileId).toBe("deepseek");
+    expect(currentAi().activeProfileId).toBe("ollama");
+    expect(screen.getByTestId("ai-model-provider-body-deepseek")).not.toBeNull();
 
     fireEvent.change(screen.getByTestId("ai-model-base-url"), {
       target: { value: "https://proxy.example.test/v1" },
     });
-    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "ollama" } });
-    expect(currentAi().activeProfileId).toBe("ollama");
+    // 编辑落在**展开的那条**（deepseek），不是启用的 ollama
+    expect(currentAi().profiles.find((profile) => profile.id === "deepseek")!.baseUrl)
+      .toBe("https://proxy.example.test/v1");
 
-    fireEvent.change(screen.getByTestId("ai-model-provider"), { target: { value: "deepseek" } });
-    expect(activeProfile().baseUrl).toBe("https://proxy.example.test/v1");
+    // 收起 deepseek → 展开 ollama（各条目各自独立保存）
+    fireEvent.click(screen.getByTestId("ai-model-provider-item-select-deepseek"));
+    fireEvent.click(screen.getByTestId("ai-model-provider-item-select-ollama"));
+    fireEvent.click(screen.getByTestId("ai-model-provider-item-select-deepseek"));
+    expect((screen.getByTestId("ai-model-base-url") as HTMLInputElement).value)
+      .toBe("https://proxy.example.test/v1");
     expect(currentAi().profiles).toHaveLength(2);
   });
 
-  it("编辑 API 地址、模型名称和采样温度后写入 activeProfile", () => {
+  it("编辑 API 地址、模型名称和采样温度后写入**展开的条目**", () => {
     setAi([presetProfile("deepseek")]);
     mount();
 
@@ -253,6 +273,7 @@ describe("v0.15.3 模型配置双页签", () => {
     const credentials = createMemoryCredentialStore();
     mount(credentials);
     openCustomTab();
+    openNewCustomDraft();
 
     fillRequiredCustomFields("Bad_ID");
     fireEvent.change(screen.getByTestId("ai-model-custom-protocol"), {
@@ -314,7 +335,7 @@ describe("v0.15.3 模型配置双页签", () => {
 
     // v0.15.5：自定义配置改为条目列表（下拉已移除）；该档案既是列表条目、也载入编辑区。
     expect(screen.getByTestId("ai-model-custom-item-acme")).not.toBeNull();
-    expect(screen.getByTestId("ai-model-custom-item-select-acme").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("ai-model-custom-item-select-acme").getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByTestId("ai-model-custom-provider-id")).toHaveProperty("readOnly", true);
 
     fireEvent.change(screen.getByTestId("ai-model-custom-name"), {
@@ -346,6 +367,7 @@ describe("v0.15.3 模型配置双页签", () => {
     setAi([presetProfile("deepseek")]);
     mount();
     openCustomTab();
+    openNewCustomDraft();
     fillRequiredCustomFields("deepseek");
 
     fireEvent.click(screen.getByTestId("ai-model-custom-save"));
