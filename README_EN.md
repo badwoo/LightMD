@@ -595,7 +595,7 @@ Quality: `tsc --noEmit` exit 0 (strict); Rust `cargo test` green; version **0.15
 
 Known trade-offs: ① workspace full-text search does **not** support regex in this first release (Rust regex and JS RegExp semantics differ — better to omit than silently change semantics), and there is no workspace-wide replace or index; ② undo keeps checkpoint semantics on full snapshots (oldest dropped when over budget, checkpoints retained), so in extreme large documents some early steps are not undoable; ③ heading fold state is session-only (keyed by `docKey + headingId`) and does not survive a restart; ④ lightbox zoom is not persisted; ⑤ when an AI endpoint does not report usage the UI says "not reported" — no token or cost estimation is performed.
 
-### v0.14.0 (2026-10-23 ~ 10-26, including eight fix rounds)
+### v0.14.0 (2026-10-23 ~ 10-26)
 
 **Two modes instead of three, a complete search stack, a built-in update check, and real-machine defect convergence**
 
