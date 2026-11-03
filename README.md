@@ -362,10 +362,10 @@ LightMD 是一款**专为 Windows 平台**打造的轻量级 Markdown 编辑器�
 
 ### Windows 用户（推荐）
 
-前往 [Releases](../../releases) 页面下载 0.15.2 版本安装包：
+前往 [Releases](../../releases) 页面下载 0.15.6 版本安装包：
 
-- **`LightMD_0.15.2_x64_en-US.msi`** — MSI 安装包，适合普通用户，支持卸载
-- **`LightMD_0.15.2_x64-setup.exe`** — 自解压安装包，单文件安装，免管理员权限
+- **`LightMD_0.15.6_x64_en-US.msi`** — MSI 安装包，适合普通用户，支持卸载
+- **`LightMD_0.15.6_x64-setup.exe`** — 自解压安装包，单文件安装，免管理员权限
 
 ### 系统要求
 

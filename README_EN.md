@@ -348,10 +348,10 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.15.2 installers:
+Visit the [Releases](../../releases) page to download the 0.15.6 installers:
 
-- **`LightMD_0.15.2_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.15.2_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.15.6_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.15.6_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
