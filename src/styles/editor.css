@@ -1303,7 +1303,11 @@
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-wrap: break-word;
-  tab-size: 4;
+  /* v0.16.0（D12）：此处是**无语言标记**的代码块（也是 contenteditable 层），
+     旧值硬编码 4，与 Prism 高亮层（code-theme.css，2）和源码 textarea（4）不一致。
+     改为读全局变量 `--lm-tab-size`，使「有/无语言代码块」与源码模式同一宽度。
+     兜底 2，与 indentUnit 默认 "2" 自洽。 */
+  tab-size: var(--lm-tab-size, 2);
 }
 
 .code-block-wrapper code[contenteditable] {
@@ -1731,7 +1735,9 @@ body.format-painter-armed .source-editor {
      打字机滚动、视口锚点、专注遮罩都在运行时读 `getComputedStyle(textarea)` 的
      line-height（resolveLineHeight），故这里改成变量后这些测量自动跟随。 */
   line-height: var(--editor-line-height, 1.8);
-  tab-size: 4;
+  /* v0.16.0（D12）：源码 textarea 的 tab 宽度也读全局变量（旧值硬编码 4），
+     保证编辑区与代码块/Prism 高亮层三处一致；兜底 2 与 indentUnit 默认 "2" 自洽。 */
+  tab-size: var(--lm-tab-size, 2);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-y: auto;

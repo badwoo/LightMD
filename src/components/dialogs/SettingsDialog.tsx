@@ -703,6 +703,24 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               </label>
             </div>
 
+            {/* v0.16.0（D14）：缩进单位（即时生效）。
+                store 侧 setIndentUnit 会同时写 `--lm-tab-size` CSS 变量，
+                code-theme.css / editor.css 的三处 tab-size 均引用该变量。 */}
+            <div className="settings-field">
+              <label>{t("settings.indentUnit")}</label>
+              <select
+                className="settings-select"
+                data-testid="settings-indent-unit"
+                value={settings.indentUnit}
+                onChange={(e) => settings.setIndentUnit(e.target.value as "tab" | "2" | "4")}
+              >
+                <option value="tab">{t("settings.indentUnit.tab")}</option>
+                <option value="2">{t("settings.indentUnit.two")}</option>
+                <option value="4">{t("settings.indentUnit.four")}</option>
+              </select>
+              <span className="settings-hint">{t("settings.indentUnitHint")}</span>
+            </div>
+
             {/* E17(v0.9.4)：代码块自动换行（关闭后双层同步 pre + 横向滚动） */}
             <div className="settings-field">
               <label>{t("settings.codeBlockWrap")}</label>

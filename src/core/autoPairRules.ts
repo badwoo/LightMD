@@ -304,9 +304,16 @@ export function decidePairBackspace(ctx: PairKeyContext): boolean {
   return pairAroundCaret(ctx.before, ctx.after, ctx.kinds) !== null;
 }
 
-/** Tab：光标在两个配对符号之间 → 跳到闭符号右侧（跳出配对） */
+/**
+ * Tab：光标在两个配对符号之间 → 跳到闭符号右侧（跳出配对）。
+ *
+ * v0.16.0 D16：补 `isComposing` 守卫（与 `decidePairBackspace` 对齐）。
+ * PM 侧不可达（框架前置拦截，见 `pairTabOut` 的注释），但**源码模式 textarea**
+ * 的 Tab 分支此前确实没有组合态守卫 → 拼音未上屏时按 Tab 会误跳配对。
+ * 守卫放在**规则层**而不是各适配层，两个调用点自动一致。
+ */
 export function decidePairTabOut(ctx: PairKeyContext): boolean {
-  if (!ctx.enabled || ctx.inDisabledContext) return false;
+  if (!ctx.enabled || ctx.isComposing || ctx.inDisabledContext) return false;
   if (!ctx.selectionEmpty) return false;
   return pairAroundCaret(ctx.before, ctx.after, ctx.kinds) !== null;
 }

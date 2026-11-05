@@ -12,13 +12,16 @@ import { undo, redo } from "prosemirror-history";
 import type { Command, EditorState } from "prosemirror-state";
 import { Plugin, TextSelection, NodeSelection } from "prosemirror-state";
 import { toggleMark, setBlockType, wrapIn, joinUp, lift, chainCommands, splitBlock } from "prosemirror-commands";
-import { wrapInList, splitListItem, liftListItem, sinkListItem } from "prosemirror-schema-list";
+// v0.16.0：`sinkListItem` / `liftListItem` 已下沉到 indentCommands.ts 的列表分支，
+// 本文件不再直接登记这两个命令（避免两处维护同一语义）。
+import { wrapInList, splitListItem } from "prosemirror-schema-list";
 import { keymap } from "prosemirror-keymap";
 import { lightMDSchema } from "./schema";
 import { matchShortcut } from "./shortcuts";
 // E2(v0.9.2):Tab 三处缺失的补齐
 import { tableTab, tableShiftTab, tableEnter } from "./tableNav";
-import { codeBlockIndent, codeBlockOutdent } from "./plugins/code-indent";
+// v0.16.0 决策 A：Tab / Shift-Tab 改为 `indent` / `outdent` 分派入口（见下方 Tab 链注释）
+import { indent, outdent } from "./indentCommands";
 // v0.12.1 需求6：代码块末尾按 → 退出代码块（落到块后的下一个块；末块则新建段落）
 import { exitCodeBlockForward } from "./plugins/code-block-exit";
 // v0.12.1 需求4：Tab 跳出配对（光标夹在配对符号之间时）
@@ -486,21 +489,29 @@ export function buildKeymap() {
     // Tab 缩进(E2:v0.9.2 补齐三处缺失——表格导航 > 代码块缩进 > 任务项/列表项嵌套)
     // v0.12.1 需求4：**最优先**判断「Tab 跳出配对」——光标夹在 ()/"" 之间时
     // 跳到闭符号右侧（VS Code/CodeMirror 同款习惯）；不在配对中则回落原有链。
-    // chainCommands 顺序即优先级;各命令在不适用的上下文返回 false,
-    // 全部不适用(普通段落)时交回浏览器默认行为,与既有行为一致
-    Tab: chainCommands(
-      pairTabOut,
-      tableTab,
-      codeBlockIndent,
-      sinkListItem(schema.nodes.task_item),
-      sinkListItem(schema.nodes.list_item),
-    ),
-    "Shift-Tab": chainCommands(
-      tableShiftTab,
-      codeBlockOutdent,
-      liftListItem(schema.nodes.task_item),
-      liftListItem(schema.nodes.list_item),
-    ),
+    //
+    // v0.16.0 决策 A（D3/D4/D5/D11）：链尾由 `indent` / `outdent` 统一分派。
+    // ─── 缺陷背景 ───
+    // 旧链 `chainCommands(pairTabOut, tableTab, codeBlockIndent,
+    //                     sinkListItem(task_item), sinkListItem(list_item))`
+    // 在段落 / 标题 / 引用块 / math_block / 列表首项 / NodeSelection 六类上下文里
+    // **全部返回 false** → 落到 `keymap(baseKeymap)`（无 Tab 条目）→ 浏览器原生 Tab
+    // → 焦点逃出编辑器（实测 `ProseMirror → sidebar-toggle-btn`）。
+    // 根因不是"漏了某个场景"，而是**链本身没有兜底**：每加一种块类型就多一个逃逸点。
+    //
+    // ─── 修复口径 ───
+    // `indent` / `outdent` **除表格分支外永不返回 false**（结构性保证），
+    // 内部再按块类型分派：代码类文本块 → 委托 `codeBlockIndent` / `codeBlockOutdent`
+    // （逐行算法单一实现在 `plugins/code-indent.ts`）；列表项 → `sinkListItem` /
+    // `liftListItem`（首项失败时通知 + 吞键）；引用块 → 加/减一层 `>`；
+    // 顶层段落 → 插/删缩进单位；标题 / NodeSelection / 其余 → 吞键。
+    // 原来的 `sinkListItem` / `liftListItem` 直接登记下沉到 `indentCommands.ts` 的
+    // 列表分支 —— 这样修列表首项兜底时不必再动 keymap 链。
+    //
+    // chainCommands 顺序即优先级：`pairTabOut`（D6/D7/D16 收窄后表格/代码类块内
+    // 不生效）> `tableTab`（表格逐格导航优先于一切）> `indent`（兜底）。
+    Tab: chainCommands(pairTabOut, tableTab, indent),
+    "Shift-Tab": chainCommands(tableShiftTab, outdent),
 
     // v0.11.0 B3-8：Alt+↑/↓ 由 joinUp/lift 改为**真正的块移动**。
     // 缺陷背景（P1）：原绑到 joinUp（与上块合并）/ lift（提升层级），

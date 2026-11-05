@@ -199,9 +199,20 @@ describe("E2: 代码块 Tab 缩进", () => {
     expect(state.doc.textContent).toBe("  x");
   });
 
-  it("无缩进 Shift+Tab 不处理", () => {
-    const { handled } = pressKey(codeDoc("x"), 1 + 1, "Shift-Tab");
-    expect(handled).toBe(false);
+  /**
+   * v0.16.0 D9 口径变更：**无缩进 Shift+Tab 必须吞键**。
+   *
+   * 旧断言 `expect(handled).toBe(false)` 锁定的正是缺陷本身 —— 返回 false 意味着
+   * 命令链放弃接管，按键落到浏览器原生 Tab，**焦点逃出编辑器**
+   * （真实浏览器实测：`.ProseMirror → sidebar-toggle-btn`）。
+   * 新链 `Shift-Tab: chainCommands(tableShiftTab, outdent)` 里 `outdent` 在
+   * 「行首无缩进」时吞键（return true）且**不派发任何事务** ⇒ 文档一字不变、
+   * 焦点留在编辑器内。此处断言两者：handled true + 文本不变。
+   */
+  it("无缩进 Shift+Tab 吞键且文本不变（v0.16.0 D9 改口径：旧 false 即焦点逃逸）", () => {
+    const { handled, state } = pressKey(codeDoc("x"), 1 + 1, "Shift-Tab");
+    expect(handled).toBe(true);
+    expect(state.doc.textContent).toBe("x");
   });
 
   it("mermaid_block 内 Tab 同样缩进(与 code_block 同构)", () => {
@@ -269,9 +280,14 @@ describe("E2: 任务项 Tab 嵌套", () => {
 });
 
 describe("E2: 既有行为回归", () => {
-  it("普通段落 Tab 全链不处理(浏览器默认)", () => {
-    const { handled } = pressKey(paraDoc("hello"), 1 + 5, "Tab");
-    expect(handled).toBe(false);
+  // v0.16.0 D3 改口径：旧行为是「普通段落 Tab 全链返回 false → 浏览器默认 Tab
+  // → 焦点逃出编辑器」。这正是 v0.16.0 要修的缺陷（实测焦点 `ProseMirror →
+  // sidebar-toggle-btn`），因此断言从 false 改为 true，并补「确有缩进产物」。
+  it("普通段落 Tab 由 indent 接管并插入缩进单位（v0.16.0 D3 改口径）", () => {
+    const { handled, state } = pressKey(paraDoc("hello"), 1 + 5, "Tab");
+    expect(handled).toBe(true);
+    // 缩进单位默认 "2"（Q3 已拍板），光标在段尾 → 追加两个空格
+    expect(state.doc.textContent).toBe("hello  ");
   });
 
   it("普通列表项 Tab 嵌套仍生效(既有能力)", () => {

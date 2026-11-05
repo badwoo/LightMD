@@ -13,7 +13,13 @@ pre[class*="language-"] {
   word-break: normal;
   word-wrap: normal;
   line-height: 1.5;
-  tab-size: 2;
+  /* v0.16.0（D12）：tab 宽度单源化 —— 此前这里硬编码 2，而 editor.css 的
+     `.code-block-wrapper code` / `.source-editor` 硬编码 4，且本选择器
+     （`code[class*=language-]`）**仅当代码块有语言标记才命中**，导致同一份含 `\t`
+     的文件：有语言 2 列、无语言 4 列、源码 textarea 4 列。现统一读全局变量
+     `--lm-tab-size`（由 useSettingsStore 的 `setIndentUnit` 写入，默认 "2" → 2 列）。
+     兜底值取 2，与 `indentUnit` 默认 `"2"` 自洽。 */
+  tab-size: var(--lm-tab-size, 2);
   hyphens: none;
 }
 

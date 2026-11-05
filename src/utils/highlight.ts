@@ -243,7 +243,7 @@ export function getPrismCss(dark: boolean): string {
     ? { text: "#abb2bf", comment: "#5c6370", punct: "#abb2bf", num: "#d19a66", str: "#98c379", op: "#56b6c2", kw: "#c678dd", fn: "#61afef", regex: "#e06c75", codeBg: "#282c34" }
     : { text: "#383a42", comment: "#a0a1a7", punct: "#383a42", num: "#986801", str: "#50a14f", op: "#383a42", kw: "#a626a4", fn: "#4078f2", regex: "#e45649", codeBg: "#f4f4f4" };
   return `
-code[class*="language-"], pre[class*="language-"] { color: ${c.text}; background: none; font-family: "Cascadia Code","Consolas",monospace; font-size: 0.9em; text-align: left; white-space: pre; line-height: 1.5; tab-size: 2; }
+code[class*="language-"], pre[class*="language-"] { color: ${c.text}; background: none; font-family: "Cascadia Code","Consolas",monospace; font-size: 0.9em; text-align: left; white-space: pre; line-height: 1.5; tab-size: var(--lm-tab-size, 2); }
 pre[class*="language-"] { background: ${c.codeBg}; padding: 12px; border-radius: 6px; overflow-x: auto; }
 .token.comment, .token.prolog, .token.doctype, .token.cdata { color: ${c.comment}; font-style: italic; }
 .token.punctuation { color: ${c.punct}; }

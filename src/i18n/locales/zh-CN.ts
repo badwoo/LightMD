@@ -40,6 +40,14 @@ export const zhCN: Record<string, string> = {
   "settings.loadLastFolderCount": "载入文件夹数量",
   "settings.showCodeLineNumbers": "显示代码行号",
   "settings.spellcheck": "拼写检查",
+  // v0.16.0（D14）：缩进单位设置项与提示（Tab 与缩进体系）
+  "settings.indentUnit": "缩进单位",
+  "settings.indentUnit.tab": "Tab（制表符）",
+  "settings.indentUnit.two": "2 个空格",
+  "settings.indentUnit.four": "4 个空格",
+  "settings.indentUnitHint": "按 Tab 时插入的缩进宽度，代码块与编辑区一致，修改即时生效",
+  // v0.16.0：列表首项不可再嵌套时的提示（Agent B1 列表守卫使用）
+  "indent.cannotNestFirstItem": "列表首项无法再缩进",
   // N1：自动配对补全开关
   "settings.autoPair": "自动配对补全",
   // v0.12.1 需求4：配对范围分组开关（总开关开启时生效）

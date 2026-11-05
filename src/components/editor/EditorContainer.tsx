@@ -34,7 +34,13 @@ import type { EditorView } from "prosemirror-view";
 import { useEditorStore, isTranslateSnapshotForFile, type ViewMode } from "../../stores/useEditorStore";
 // v0.15.0 需求 R6b：工作区搜索作用域取 openFolders（只读，不订阅）
 import { useFileStore } from "../../stores/useFileStore";
-import { useSettingsStore, isAiChatRectVisible, DOC_ZOOM_STEP } from "../../stores/useSettingsStore";
+import {
+  useSettingsStore,
+  isAiChatRectVisible,
+  DOC_ZOOM_STEP,
+  // v0.16.0 需求（Tab 与缩进体系）：缩进单位 → 实际字符串（唯一口径）
+  indentUnitString,
+} from "../../stores/useSettingsStore";
 // v0.12.1 需求9：设置弹窗拖滑条时的临时排版预览（非持久化，取消即还原）
 import { useTypographyPreviewStore, withPreview } from "../../stores/useTypographyPreviewStore";
 import { useAutoSave } from "../../hooks/useAutoSave";
@@ -106,6 +112,8 @@ import {
   type SourcePairInput,
   type SourcePairPlan,
 } from "../../utils/sourceAutoPair";
+// v0.16.0 需求（Tab 与缩进体系）：源码模式缩进/反缩进规划器（纯函数，落地复用 applySourcePairPlan）
+import { planSourceIndent, planSourceOutdent } from "../../utils/sourceIndent";
 import { isHttpUrl } from "../../core/plugins/smart-paste";
 import {
   buildFormatReplacement,
@@ -3916,6 +3924,30 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           applySourcePairPlan(ta, plan);
           return;
         }
+      }
+    }
+
+    // v0.16.0 需求（Tab 与缩进体系）：源码模式缩进（Tab / Shift+Tab）。
+    //
+    // 修 D2：v0.15.6 及之前源码模式 Tab 完全不缩进（value 不变、prevented=false、
+    // 焦点逃出 textarea）。这里补缩进落地，并**无论是否产出编辑都吞键**，
+    // 否则反缩进在"无可删"场景仍会让焦点逃逸。
+    if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !sourceGhostActiveRef.current) {
+      // IME 组合态守卫（与同函数内 Backspace 分支同款）
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      const ta = sourceTextareaRef.current;
+      if (ta) {
+        const input = {
+          value: ta.value,
+          start: ta.selectionStart ?? 0,
+          end: ta.selectionEnd ?? 0,
+          unit: indentUnitString(useSettingsStore.getState().indentUnit),
+        };
+        const plan = e.shiftKey ? planSourceOutdent(input) : planSourceIndent(input);
+        e.preventDefault();
+        e.stopPropagation();
+        if (plan.kind === "edit") applySourcePairPlan(ta, plan);
+        return; // 无论 edit 还是 none 都吞键（否则焦点逃逸依旧存在）
       }
     }
 
@@ -8402,6 +8434,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       contentMaxWidth: v("--editor-content-max-width", "860px"),
       // v0.12.0 需求5：文档缩放比例（注入 iframe :root，body 用 var 引用）
       docZoom: v("--doc-zoom", "1"),
+      // v0.16.0：缩进单位的 tab 视觉列数（Prism 高亮层的 tab-size 用 var 消费）。
+      // iframe 是独立文档，不继承父文档变量 —— 不注入则 getPrismCss() 恒取兜底 2。
+      tabSize: v("--lm-tab-size", "2"),
     };
   }, []);
 
@@ -8531,6 +8566,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         --editor-line-height: ${cv.lineHeight};
         --editor-paragraph-spacing: ${cv.paragraphSpacing};
         --editor-content-max-width: ${cv.contentMaxWidth};
+        /* v0.16.0：tab 视觉列数（getPrismCss() 的 tab-size 用 var 消费）。
+           与上面三项同理 —— iframe 不继承父文档变量，必须显式注入。 */
+        --lm-tab-size: ${cv.tabSize};
       }
       body {
         margin: 0; padding: 40px 60px; max-width: var(--editor-content-max-width, 860px); margin: 0 auto;

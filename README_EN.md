@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
 
-**Current Version: v0.15.6**
+**Current Version: v0.16.0**
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -317,7 +317,7 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 |                                         | `Ctrl+0`                    | Remove heading (to paragraph) (0.2.0)                                                 |
 | **Format (Preview Mode / ProseMirror)** | `Ctrl+Alt+S`                | Strikethrough (unified with source mode in 0.9.0; the old `Ctrl+Shift+S` is gone)     |
 |                                         | `Ctrl+/`                    | Toggle multi-line comment (`<!-- -->`); with no selection, toggle the current block (0.13.0) |
-| **Lists**                               | `Tab`                       | Increase indent                                                                       |
+| **Lists**                               | `Tab`                       | Increase indent (**list items only**; the first item does not nest)                    |
 |                                         | `Shift+Tab`                 | Decrease indent                                                                       |
 |                                         | `Ctrl+Shift+8`              | Bullet list                                                                           |
 |                                         | `Ctrl+Shift+9`              | Ordered list                                                                          |
@@ -771,7 +771,7 @@ Based on the [LightMD 0.12.1 assessment report](../_plan/lightmd-0.12.1-assessme
 
 **Quality verification**: frontend **253 files / 4092 tests all pass** (`v0122-convergence` adds **behavioural** assertions for P1/P2/P5/P6/P7/P8/P9 — real `createEditor` mounts, real edit→save→reopen round-trips, real render pipeline — not pure functions or source-text regex; 2 legacy assertions adapted); `tsc --noEmit` clean.
 
-**Known scope**: per request, P4 (`pairTabOut` winning Tab inside table cells) is **not** changed — it was confirmed to be the desired behaviour. DOCX/EPUB/LaTeX still have no style-customisation entry (PDF does); that is an unimplemented feature, not a defect.
+**Known scope**: P4 (`pairTabOut` winning Tab inside table cells) was believed to be desired behaviour at the time; it is now **confirmed to be a defect** — since v0.16.0, Tab inside a table cell always navigates to the next cell. DOCX/EPUB/LaTeX still have no style-customisation entry (PDF does); that is an unimplemented feature, not a defect.
 
 
 

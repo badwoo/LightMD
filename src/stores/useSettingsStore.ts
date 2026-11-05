@@ -203,6 +203,19 @@ export type OpenExternalFileIn = "currentWindow" | "newWindow" | "ask";
  */
 export type ExternalChangePolicy = "reload-clean" | "always-reload" | "ask";
 
+/**
+ * v0.16.0 需求（Tab 与缩进体系）：缩进单位。
+ *
+ * - `"tab"` → 插入一个 `\t`
+ * - `"2"`   → 插入 2 个空格（**默认**，与 v0.9.2 起 `codeBlockIndent` 的既有口径一致，
+ *             避免默认行为突变）
+ * - `"4"`   → 插入 4 个空格
+ *
+ * 同时驱动 CSS 变量 `--lm-tab-size`（代码块 / 源码 textarea 的 `tab-size`），
+ * 保证「实际插入的空格数」与「视觉缩进宽度」自洽（修 v0.15.6 的 tab-size 三态分裂）。
+ */
+export type IndentUnit = "tab" | "2" | "4";
+
 interface SettingsState {
   theme: Theme;
   fontSize: number;
@@ -232,6 +245,8 @@ interface SettingsState {
   showCodeLineNumbers: boolean;
   /** G10: 拼写检查开关（默认 false，使用浏览器原生 spellcheck） */
   spellcheckEnabled: boolean;
+  /** v0.16.0：缩进单位（默认 "2"）。见 `IndentUnit` 的注释。 */
+  indentUnit: IndentUnit;
   /** N1: 自动配对补全开关（默认 true，输入括号/引号自动补全配对） */
   autoPairEnabled: boolean;
   /**
@@ -363,6 +378,8 @@ interface SettingsState {
   setShowCodeLineNumbers: (v: boolean) => void;
   /** G10: 设置是否启用拼写检查 */
   setSpellcheckEnabled: (v: boolean) => void;
+  /** v0.16.0：设置缩进单位（"tab" / "2" / "4"），同步 `--lm-tab-size` CSS 变量。 */
+  setIndentUnit: (u: IndentUnit) => void;
   /** N1: 设置是否启用自动配对补全 */
   setAutoPairEnabled: (v: boolean) => void;
   /** v0.12.1 需求4：按分组开关自动配对（括号 / 引号 / 中文标点） */
@@ -558,6 +575,8 @@ export const useSettingsStore = create<SettingsState>()(
       showCodeLineNumbers: true,
       // G10：默认关闭拼写检查（用户按需开启）
       spellcheckEnabled: false,
+      // v0.16.0：默认缩进单位 2 空格（与 v0.9.2 起 codeBlockIndent 的既有口径一致）
+      indentUnit: "2" as IndentUnit,
       // N1：默认开启自动配对补全
       autoPairEnabled: true,
       // v0.12.1 需求4：三个分组默认全开（与 v0.12.0 及之前的行为一致）
@@ -681,6 +700,12 @@ export const useSettingsStore = create<SettingsState>()(
       setShowCodeLineNumbers: (showCodeLineNumbers) => set({ showCodeLineNumbers }),
       // G10：设置是否启用拼写检查
       setSpellcheckEnabled: (spellcheckEnabled) => set({ spellcheckEnabled }),
+      // v0.16.0：缩进单位（即时生效）——同时同步 CSS 变量 --lm-tab-size，
+      // 保证代码块 / 源码 textarea 的 tab 视觉宽度与实际插入的空格数自洽。
+      setIndentUnit: (indentUnit) => {
+        set({ indentUnit });
+        applyIndentUnitCssVar(indentUnit);
+      },
       // N1：设置是否启用自动配对补全
       setAutoPairEnabled: (autoPairEnabled) => set({ autoPairEnabled }),
       // v0.12.1 需求4：分组开关
@@ -808,6 +833,10 @@ export const useSettingsStore = create<SettingsState>()(
         if (state && state.language) {
           _setCurrentLanguage(state.language);
         }
+        // v0.16.0：hydration 后把缩进单位同步到 CSS 变量（首屏 tab 宽度即正确）
+        if (state && state.indentUnit) {
+          applyIndentUnitCssVar(state.indentUnit);
+        }
       },
     }
   )
@@ -819,3 +848,34 @@ useSettingsStore.subscribe((state) => {
   setShortcutOverrides(state.shortcuts);
 });
 setShortcutOverrides(useSettingsStore.getState().shortcuts);
+
+// v0.16.0：模块加载即写入一次 `--lm-tab-size`。
+// 覆盖「首次安装 / localStorage 为空 / 从未改过缩进设置」三种情况 ——
+// 否则变量不存在，只能靠 CSS 里的 `var(--lm-tab-size, 2)` 兜底；
+// 写了之后即使默认值改了也只需改一处。
+applyIndentUnitCssVar(useSettingsStore.getState().indentUnit);
+
+// ─── v0.16.0 需求（Tab 与缩进体系）：缩进单位 → CSS 变量 ──────────────
+/**
+ * 把缩进单位写成 `--lm-tab-size` CSS 变量（全局唯一 tab 宽度来源）。
+ *
+ * 为什么需要这个变量：v0.15.6 的 `tab-size` 分裂成三处——`code-theme.css` 的
+ * `code[class*=language-]`（2，且**仅当代码块有语言标记才命中**）、
+ * `editor.css` 的 `.code-block-wrapper code`（4）、`.source-editor`（4）。
+ * 同一份含 `\t` 的文件在编辑/阅读两面缩进宽度不同。
+ *
+ * 现在收敛为：一个变量 + 三个选择器统一引用（见 editor.css / code-theme.css），
+ * 值 = 缩进单位的"视觉列数"（tab → 4，2 → 2，4 → 4）。
+ * SSR / 无 document 环境（单测 jsdom 之外、纯 node）安全跳过。
+ */
+export function applyIndentUnitCssVar(unit: IndentUnit): void {
+  if (typeof document === "undefined") return;
+  // tab 字符在等宽字体里的视觉宽度按 4 列计（与 VS Code / Typora 默认一致）
+  const columns = unit === "tab" ? 4 : Number(unit);
+  document.documentElement.style.setProperty("--lm-tab-size", String(columns));
+}
+
+/** 缩进单位 → 实际插入的字符串（PM 命令与源码模式共用唯一口径） */
+export function indentUnitString(unit: IndentUnit): string {
+  return unit === "tab" ? "\t" : unit === "4" ? "    " : "  ";
+}

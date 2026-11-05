@@ -12,6 +12,7 @@ import { useState, useCallback } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/useSettingsStore";
+import { indentUnitString } from "../../stores/useSettingsStore";
 import { isTauri, fileService } from "../../services/fileService";
 import { notifySuccess, notifyError, notifyWarning } from "../../services/notificationService";
 import { getPrismCss } from "../../utils/highlight";
@@ -313,6 +314,17 @@ export interface ExportTypography {
   fontFamily?: string;
 }
 
+/**
+ * v0.16.0：`\t` 的视觉列数（与 `useSettingsStore.applyIndentUnitCssVar` 同一口径）。
+ *
+ * `"tab"` 按 4 列计（等宽字体下的惯例，与 VS Code / Typora 默认一致）；
+ * `"2"` / `"4"` 直接用空格数。
+ */
+function indentUnitTabColumns(): number {
+  const u = useSettingsStore.getState().indentUnit;
+  return u === "tab" ? 4 : Number(u);
+}
+
 export function buildExportCss(t?: ExportTypography): string {
   const fontSize = t?.fontSize && t.fontSize > 0 ? `${t.fontSize}px` : "16px";
   const lineHeight = t?.lineHeight && t.lineHeight > 0 ? t.lineHeight : 1.8;
@@ -326,6 +338,10 @@ export function buildExportCss(t?: ExportTypography): string {
   return `
 /* LightMD 导出样式（v0.12.2 P9：字号/行高/段间距/内容宽度/字体跟随应用设置） */
 /* body 选择器用于 HTML/PDF 导出；.markdown-body 选择器用于图片导出（临时 div 无 body 元素） */
+/* v0.16.0：导出是独立文档，**不继承**父文档 CSS 变量 —— 必须在这里把
+   --lm-tab-size 注入 :root，否则 getPrismCss() 里的 var(--lm-tab-size, 2)
+   恒取兜底 2，用户在设置里改缩进单位后导出的 tab 宽度不跟随。 */
+:root { --lm-tab-size: ${indentUnitTabColumns()}; }
 body, .markdown-body {
   font-family: ${fontFamily};
   font-size: ${fontSize};

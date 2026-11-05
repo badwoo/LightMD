@@ -49,6 +49,17 @@ export interface SourcePairInput {
   cfg: SourcePairConfig;
   /** 代码块 / 行内代码 / 公式上下文（由调用方用 isInCodeBlock + isInInlineCodeOrMath 计算） */
   inDisabledContext: boolean;
+  /**
+   * v0.16.0 D16：IME 组合态。**可选**，缺省 false —— 不破坏既有调用方
+   * （`planSourceChar` / `planSourceBackspace` / `planSourceCompositionCommit` 的
+   * 语义各自固定，只有 Tab 分支需要真实组合态）。
+   *
+   * 为什么 Tab 需要它：PM 侧的 `handleKeyDown` 在组合期被 prosemirror-view 前置拦住
+   * （`inOrNearComposition`），**源码模式 textarea 的 Tab 分支此前没有这个守卫** ——
+   * 拼音还没上屏时按 Tab 会把配对符号跳过去（真实缺陷，与 Backspace 分支
+   * `if (e.nativeEvent.isComposing || e.keyCode === 229) return;` 的口径不一致）。
+   */
+  isComposing?: boolean;
 }
 
 /** 取光标所在**行**内、光标两侧的文本（textarea 的"块"= 行） */
@@ -126,7 +137,12 @@ export function planSourceBackspace(input: SourcePairInput): SourcePairPlan {
   return { kind: "edit", edit: { from: start - 1, to: end + 1, text: "", caret: start - 1 } };
 }
 
-/** Tab：跳出配对的计划（移动到闭符号右侧） */
+/**
+ * Tab：跳出配对的计划（移动到闭符号右侧）。
+ *
+ * v0.16.0 D16：`isComposing` 从入参读（缺省 false），不再硬编码 —— 组合期必须
+ * 不跳配对（真实缺陷在源码侧，PM 侧由框架挡住，见 `SourcePairInput.isComposing`）。
+ */
 export function planSourceTab(input: SourcePairInput): SourcePairPlan {
   const { start, end, value } = input;
   const { before, after } = lineAround(value, start);
@@ -135,7 +151,7 @@ export function planSourceTab(input: SourcePairInput): SourcePairPlan {
     after,
     selectionEmpty: start === end,
     inDisabledContext: input.inDisabledContext,
-    isComposing: false,
+    isComposing: input.isComposing ?? false,
     enabled: input.cfg.enabled,
     kinds: input.cfg.kinds,
   });

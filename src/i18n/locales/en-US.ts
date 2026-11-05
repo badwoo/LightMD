@@ -39,6 +39,14 @@ export const enUS: Record<string, string> = {
   "settings.loadLastFolderCount": "Number of folders to load",
   "settings.showCodeLineNumbers": "Show code line numbers",
   "settings.spellcheck": "Spell Check",
+  // v0.16.0 (D14): indent unit setting and hint (Tab & indentation system)
+  "settings.indentUnit": "Indent unit",
+  "settings.indentUnit.tab": "Tab character",
+  "settings.indentUnit.two": "2 spaces",
+  "settings.indentUnit.four": "4 spaces",
+  "settings.indentUnitHint": "Indent width inserted on Tab; applies to code blocks and the editor immediately",
+  // v0.16.0: shown when the first list item cannot be nested further (used by Agent B1)
+  "indent.cannotNestFirstItem": "The first list item cannot be nested further",
   // N1：自动配对补全开关
   "settings.autoPair": "Auto Pair",
   // v0.12.1 requirement 4: per-kind pair switches (effective when master is on)

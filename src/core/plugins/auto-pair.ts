@@ -74,8 +74,39 @@ export function readAutoPairConfig(): AutoPairConfig {
   };
 }
 
-/** 代码块 / 行内代码 / 块级公式 / 行内公式内不做配对（"字符串与注释内不配对"的 Markdown 等价物） */
-const DISABLED_NODES = new Set(["code_block", "math_block", "code_inline", "math_inline"]);
+/**
+ * 自动配对被**完全禁用**的上下文：代码块 / 行内代码 / 块级公式 / 行内公式 / 图表源码。
+ *
+ * 为什么这些地方不配对：Markdown 里"字符串与注释内不配"的等价物 —— 代码/公式/图表源码
+ * 里的括号引号是**语法字符**，补全会直接写坏内容（`f(x` → `f(x)` 会改语义）。
+ *
+ * v0.16.0 D7：补 `mermaid_block`。它与 `code_block` 同为 `code:true`、`content:"text*"`
+ * 的文本块（schema.ts），`code-indent.ts` 早已认它、本文件却漏了 —— 两处口径打架，
+ * 结果 mermaid 块里 `f()` 按 Tab **只跳光标不缩进**。
+ */
+const DISABLED_NODES = new Set([
+  "code_block",
+  "mermaid_block", // ★ v0.16.0 D7：与 code_block 口径一致
+  "math_block",
+  "code_inline",
+  "math_inline",
+]);
+
+/**
+ * **仅「Tab 跳出配对」被禁用**的上下文（v0.16.0 D6）。
+ *
+ * = `DISABLED_NODES` ∪ {表格单元格}。
+ *
+ * 为什么必须**分两个集合**而不是把 `table_cell` 塞进 `DISABLED_NODES`：
+ * `DISABLED_NODES` 同时控制**自动补全**（`decideAutoPair`），而表格里输入 `(`
+ * **应该**补全 —— 用户确实会在单元格里写括号、写公式。若合并成一个集合，
+ * 修 D6 会连带把「表格内自动补全」一起禁掉。
+ *
+ * 表格里 Tab 的语义是**逐格导航**（Typora / Excel 同款），优先级高于「跳出配对」：
+ * 实测 `| () | B |` 光标在括号中按 Tab，旧实现 caret `17→18`（只右移 1），
+ * **没有换格**；对照同格写 `abc` 则正常跳到 B 格起点 —— 反证是 `pairTabOut` 抢键。
+ */
+const PAIR_TAB_DISABLED_NODES = new Set([...DISABLED_NODES, "table_cell", "table_header"]);
 
 /** 判断选区是否位于禁用自动配对的节点内（smart-paste 插件复用） */
 export function inDisabledNode(view: EditorView): boolean {
@@ -84,9 +115,23 @@ export function inDisabledNode(view: EditorView): boolean {
 
 /** 同上，但以 EditorState 为入口（Tab 命令没有 view） */
 export function inDisabledNodeState(state: EditorState): boolean {
+  return inNodeSet(state, DISABLED_NODES);
+}
+
+/**
+ * 是否位于「Tab 跳出配对」被禁用的上下文（= 代码/公式/图表 **或** 表格单元格）。
+ *
+ * `pairTabOut` 用本判定而不是 `inDisabledNodeState`，见 `PAIR_TAB_DISABLED_NODES` 的注释。
+ */
+export function inPairTabDisabledState(state: EditorState): boolean {
+  return inNodeSet(state, PAIR_TAB_DISABLED_NODES);
+}
+
+/** 祖先链上是否命中给定节点类型集合（两个判定共用同一遍历口径） */
+function inNodeSet(state: EditorState, names: Set<string>): boolean {
   const { $from } = state.selection;
   for (let d = $from.depth; d > 0; d--) {
-    if (DISABLED_NODES.has($from.node(d).type.name)) return true;
+    if (names.has($from.node(d).type.name)) return true;
   }
   return false;
 }
@@ -263,7 +308,11 @@ export function autoPairPlugin(): Plugin {
 
 /**
  * Tab：光标在两个配对符号之间 → 跳到闭符号右侧。
- * 由 keymap 的 Tab 链**最先**调用，未命中则回落表格导航 / 代码块缩进 / 列表嵌套。
+ * 由 keymap 的 Tab 链**最先**调用，未命中则回落表格导航 / `indent` 分派。
+ *
+ * v0.16.0 D6：`inDisabledContext` 改用 `inPairTabDisabledState`（含 table_cell /
+ * table_header）—— 表格里 Tab 必须交回 `tableTab` 逐格导航，不能被"跳出配对"抢走。
+ * 自动补全（`decideAutoPair`）仍用 `inDisabledNodeState`，表格内的 `(` 照常补全。
  */
 export const pairTabOut: Command = (state, dispatch) => {
   const cfg = readAutoPairConfig();
@@ -274,7 +323,11 @@ export const pairTabOut: Command = (state, dispatch) => {
     before,
     after,
     selectionEmpty: true,
-    inDisabledContext: inDisabledNodeState(state),
+    inDisabledContext: inPairTabDisabledState(state),
+    // v0.16.0 D16：此处恒 false 是安全的 —— prosemirror-view 的 editHandlers.keydown
+    // 开头有 `if (inOrNearComposition(view, event)) return;`，组合期 PM 根本不调用
+    // handleKeyDown，pairTabOut 拿不到事件。真实缺陷在源码侧（见 EditorContainer）。
+    // 因此不为一条不可达路径改 pairTabOut 的签名（Q6 已拍板）。
     isComposing: false,
     enabled: cfg.enabled,
     kinds: cfg.kinds,
