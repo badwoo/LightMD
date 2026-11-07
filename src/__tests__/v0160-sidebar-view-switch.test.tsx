@@ -43,11 +43,27 @@ function Harness() {
 }
 
 describe("v0.16.0 侧栏互斥视图", () => {
-  it("大新建按钮复用 file.new 命令", () => {
+  it("头部恢复「文件管理」标题 + 六个功能图标（不再有大号「＋ 新建」按钮）", () => {
+    const { container } = render(<Harness />);
+    const title = container.querySelector(".filetree-title") as HTMLElement | null;
+    expect(title?.textContent).toBe("文件管理");
+    const buttons = Array.from(container.querySelectorAll(".filetree-actions .filetree-btn"));
+    expect(buttons.map((b) => b.getAttribute("title"))).toEqual([
+      "新建文件",
+      "新建文件夹",
+      "打开文件夹",
+      "搜索文件",
+      "收藏",
+      "最近打开",
+    ]);
+    expect(container.querySelector(".filetree-new-primary")).toBeNull();
+  });
+
+  it("新建文件图标复用 file.new 命令", () => {
     const listener = vi.fn();
     window.addEventListener("lightmd:command", listener);
     render(<Harness />);
-    fireEvent.click(screen.getByRole("button", { name: "新建文件" }));
+    fireEvent.click(screen.getByTitle("新建文件"));
     expect(listener.mock.calls[0][0].detail.id).toBe("file.new");
     window.removeEventListener("lightmd:command", listener);
   });

@@ -216,7 +216,6 @@ export const zhCN: Record<string, string> = {
   "favorites.addedCount": "已添加 {count} 项收藏",
   "favorites.addedWithSkipped": "已添加 {added} 项收藏，{skipped} 项因 {limit} 条上限未添加",
   "recent.empty": "暂无最近打开记录",
-  "filetree.newPrimary": "新建",
   "filetree.favoritesToggle": "收藏",
   "filetree.recentToggle": "最近打开",
   "filetree.minimize": "缩小",

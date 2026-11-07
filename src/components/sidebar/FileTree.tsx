@@ -3057,20 +3057,24 @@ export function FileTree({
       onMouseEnter={() => { sidebarHoverRef.current = true; }}
       onMouseLeave={() => { sidebarHoverRef.current = false; }}
     >
-      {/* 头部工具栏 */}
+      {/* 头部工具栏
+          v0.16.0 第二轮调整：取消大号「＋ 新建」按钮，恢复为「文件管理」标题 + 功能图标
+          形式（与 v0.15.x 一致）。新建文件回到图标行第一个位置，仍复用 App 的 file.new 命令。 */}
       <div className="filetree-header">
-        <button
-          className="filetree-new-primary"
-          title={t("filetree.newFileTitle")}
-          aria-label={t("filetree.newFileTitle")}
-          onClick={() => {
-            window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "file.new" } }));
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
-          <span>{t("filetree.newPrimary")}</span>
-        </button>
-        <div className="filetree-actions" aria-label={t("filetree.title")}>
+        <span className="filetree-title">{t("filetree.title")}</span>
+        <div className="filetree-actions">
+          {/* v0.8.0 修复 P4-1：工具栏"新增文件"改为立即新建临时（未落盘）文件，
+              不再固定落到第一个打开的文件夹；保存时才由用户选择路径与命名。
+              复用 App 的 file.new 命令（与 Ctrl+N 同一路径，保证编辑器上下文同步） */}
+          <button
+            className="filetree-btn"
+            title={t("filetree.newFileTitle")}
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "file.new" } }));
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 1.1l3.4 3.5.1.4v4h-1V6H8V2H3v12h5v1H2.5l-.5-.5v-13l.5-.5h6.7l.3.1zM9 2v3h2.9L9 2z" fill="#5c9dff"/><path d="M14 8v2h2v1h-2v2h-1v-2h-2v-1h2V8h1z" fill="#4caf50"/></svg>
+          </button>
           {/* v0.4.1：新建文件夹图标重设计——蓝色文件夹 + 绿色加号（右下角叠加） */}
           <button className="filetree-btn" title={t("filetree.newFolderTitle")} onClick={() => handleNewFolder(rootPath || "")}>
             <svg width="14" height="14" viewBox="0 0 16 16">
@@ -3128,45 +3132,55 @@ export function FileTree({
       {/* v0.4.3 Issue 2：全局文件搜索面板
           v0.8.5 需求4：挂载即播展开动画（search-panel-open），关闭先播收回动画
           （search-panel-closing，收回期间 pointer-events:none 防误交互），
-          动画播完才由 closeSearchPanel 延迟卸载 */}
+          动画播完才由 closeSearchPanel 延迟卸载。
+          v0.16.0 第二轮调整（顺滑重做）：
+            - 面板高度改走 grid-template-rows 0fr↔1fr 关键帧动画 → 下方文件列表
+              被平滑推下 / 平滑回填，不再是"先瞬移、再擦除"；
+            - 搜索框内容走 translateX(-100%)↔0 → 展开时从左往右滑入、关闭时向左滑出；
+            - 多一层 .filetree-search-clip：grid 子项必须 min-height:0 + overflow:hidden，
+              0fr 才能把高度真正压到 0（否则内容最小高度会把面板撑住）。 */}
       {view === "files" && showSearch && (
         <div
           className={`filetree-search-panel ${
             searchClosing ? "search-panel-closing" : "search-panel-open"
           }`}
         >
-          <div className="filetree-search-box">
-            <input
-              ref={searchInputRef}
-              type="text"
-              className="filetree-search-input"
-              placeholder={t("filetree.searchPlaceholder")}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              // v0.8.5 需求4：Esc 关闭改走 closeSearchPanel（先播收回动画再延迟卸载）
-              onKeyDown={(e) => { if (e.key === "Escape") closeSearchPanel(); }}
-            />
-            {searchQuery && (
-              <button className="filetree-search-clear" onClick={() => setSearchQuery("")}>✕</button>
-            )}
-          </div>
-          {searchQuery && searchResults.length > 0 && (
-            <div className="filetree-search-results">
-              {searchResults.map((result) => (
-                <div
-                  key={result.path}
-                  className={`filetree-search-result ${result.path === activePath ? "active" : ""}`}
-                  onClick={() => handleSearchResultClick(result)}
-                >
-                  <span className="filetree-search-result-name">{result.name}</span>
-                  <span className="filetree-search-result-path">{result.path}</span>
+          <div className="filetree-search-clip">
+            <div className="filetree-search-inner">
+              <div className="filetree-search-box">
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  className="filetree-search-input"
+                  placeholder={t("filetree.searchPlaceholder")}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  // v0.8.5 需求4：Esc 关闭改走 closeSearchPanel（先播收回动画再延迟卸载）
+                  onKeyDown={(e) => { if (e.key === "Escape") closeSearchPanel(); }}
+                />
+                {searchQuery && (
+                  <button className="filetree-search-clear" onClick={() => setSearchQuery("")}>✕</button>
+                )}
+              </div>
+              {searchQuery && searchResults.length > 0 && (
+                <div className="filetree-search-results">
+                  {searchResults.map((result) => (
+                    <div
+                      key={result.path}
+                      className={`filetree-search-result ${result.path === activePath ? "active" : ""}`}
+                      onClick={() => handleSearchResultClick(result)}
+                    >
+                      <span className="filetree-search-result-name">{result.name}</span>
+                      <span className="filetree-search-result-path">{result.path}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+              {searchQuery && searchResults.length === 0 && (
+                <div className="filetree-search-empty">{t("filetree.searchNoResult")}</div>
+              )}
             </div>
-          )}
-          {searchQuery && searchResults.length === 0 && (
-            <div className="filetree-search-empty">{t("filetree.searchNoResult")}</div>
-          )}
+          </div>
         </div>
       )}
 

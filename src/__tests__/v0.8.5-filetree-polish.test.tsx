@@ -377,25 +377,40 @@ function extractRule(css: string, selector: string): string {
 }
 
 describe("v0.8.5 需求4/5：FileTree.css 动画源文本断言", () => {
-  it("搜索面板动画为水平方向：keyframes 含 max-width/opacity/translateX，无 max-height/translateY 残留", () => {
-    // 反馈2：动画通道从垂直（max-height + translateY）改为水平（max-width + translateX）
-    const inAnim = extractKeyframes(treeCss, "search-panel-in");
-    expect(inAnim).toContain("max-width");
-    expect(inAnim).toContain("opacity");
-    expect(inAnim).toContain("translateX(-8px)");
-    expect(inAnim).toContain("translateX(0)");
-    expect(inAnim).not.toContain("max-height");
-    expect(inAnim).not.toContain("translateY");
-    const outAnim = extractKeyframes(treeCss, "search-panel-out");
-    expect(outAnim).toContain("max-width");
-    expect(outAnim).toContain("opacity");
-    expect(outAnim).toContain("translateX(-8px)");
-    expect(outAnim).not.toContain("max-height");
-    expect(outAnim).not.toContain("translateY");
-    // 基础规则：max-height 已删除；overflow:hidden 保证宽度动画裁剪内容而非回流挤压
+  it("搜索面板动画 = 高度 + 水平双通道：grid-template-rows 0fr↔1fr + 内容 translateX(-100%)↔0", () => {
+    // v0.16.0 第二轮调整：旧的 max-width"擦除"动画已被替换——
+    // ①高度通道让下方文件列表被平滑推下/回填；②水平通道让搜索框右入左出。
+    const expand = extractKeyframes(treeCss, "search-panel-expand");
+    expect(expand).toContain("grid-template-rows: 0fr");
+    expect(expand).toContain("grid-template-rows: 1fr");
+    expect(expand).not.toContain("max-width");
+    const collapse = extractKeyframes(treeCss, "search-panel-collapse");
+    expect(collapse).toContain("grid-template-rows: 1fr");
+    expect(collapse).toContain("grid-template-rows: 0fr");
+    expect(collapse).not.toContain("max-height");
+
+    // 横向通道：展开时从左侧界外滑入（-100% → 0，视觉上向右移出）；收回反向（0 → -100%，向左滑出）
+    const slideIn = extractKeyframes(treeCss, "search-box-slide-in");
+    expect(slideIn).toContain("translateX(-100%)");
+    expect(slideIn).toContain("translateX(0)");
+    expect(slideIn).toContain("opacity");
+    const slideOut = extractKeyframes(treeCss, "search-box-slide-out");
+    expect(slideOut).toContain("translateX(0)");
+    expect(slideOut).toContain("translateX(-100%)");
+    expect(slideOut).toContain("opacity");
+
+    // 基础规则：grid 容器 + overflow hidden；grid 子项 min-height:0 才能让 0fr 压到 0
     const panelRule = extractRule(treeCss, ".filetree-search-panel {");
-    expect(panelRule).not.toContain("max-height");
+    expect(panelRule).toContain("display: grid");
+    expect(panelRule).toContain("grid-template-rows: 1fr");
     expect(panelRule).toContain("overflow: hidden");
+    expect(panelRule).not.toContain("max-height");
+    const clipRule = extractRule(treeCss, ".filetree-search-clip {");
+    expect(clipRule).toContain("min-height: 0");
+    expect(clipRule).toContain("overflow: hidden");
+    // 旧实现（max-width 宽度擦除）不得残留
+    expect(treeCss).not.toContain("@keyframes search-panel-in");
+    expect(treeCss).not.toContain("@keyframes search-panel-out");
   });
 
   it("排序下拉两组 keyframes 存在且含 opacity/translateY 动画通道", () => {

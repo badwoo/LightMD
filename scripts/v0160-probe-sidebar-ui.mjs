@@ -125,7 +125,7 @@ async function main() {
 
     await evaluate(`localStorage.clear(); location.reload(); return true;`);
     await sleep(2500);
-    await waitFor(`!!document.querySelector(".filetree-new-primary")`);
+    await waitFor(`!!document.querySelector(".filetree-title")`);
     await evaluate(`
       window.__v0160Command = "";
       window.addEventListener("lightmd:command", (event) => { window.__v0160Command = event.detail?.id || ""; });
@@ -139,14 +139,122 @@ async function main() {
     const initial = await evaluate(`
       const button = document.querySelector(".titlebar-sidebar-btn").getBoundingClientRect();
       const brand = document.querySelector(".titlebar-brand").getBoundingClientRect();
-      const create = document.querySelector(".filetree-new-primary");
+      const title = document.querySelector(".filetree-title");
+      const icons = Array.from(document.querySelectorAll(".filetree-actions .filetree-btn")).map((btn) => btn.title);
+      const create = document.querySelector('.filetree-btn[title="新建文件"]');
       create.click();
-      return { buttonRight: button.right, brandLeft: brand.left, createWidth: create.getBoundingClientRect().width,
+      return { buttonRight: button.right, brandLeft: brand.left,
+        title: title ? title.textContent : null,
+        titleVisible: !!title && getComputedStyle(title).display !== "none" && title.getBoundingClientRect().width > 40,
+        icons, createWidth: create.getBoundingClientRect().width,
+        bigButton: !!document.querySelector(".filetree-new-primary"),
         sidebarWidth: document.querySelector(".app-sidebar").getBoundingClientRect().width,
         headerHeight: document.querySelector(".filetree-header").getBoundingClientRect().height };
     `);
     check("侧栏按钮位于 LightMD 左侧", initial.buttonRight <= initial.brandLeft, JSON.stringify(initial));
-    check("大新建按钮保留原新建文件命令", await evaluate(`return window.__v0160Command === "file.new";`), `width=${initial.createWidth}`);
+    check("恢复「文件管理」标题 + 六个功能图标（无大号新建按钮，默认宽度下标题可见）",
+      initial.title === "文件管理" && initial.titleVisible && !initial.bigButton &&
+        initial.icons.join("|") === "新建文件|新建文件夹|打开文件夹|搜索文件|收藏|最近打开",
+      JSON.stringify({ title: initial.title, titleVisible: initial.titleVisible, icons: initial.icons, bigButton: initial.bigButton }));
+    check("新建文件图标保留原新建文件命令", await evaluate(`return window.__v0160Command === "file.new";`), `width=${initial.createWidth}`);
+
+    // ─── v0.16.0 第二轮：搜索面板展开/收回顺滑度（真实帧采样） ───────────────
+    const openTrace = await evaluate(`
+      const searchBtn = document.querySelector('.filetree-btn[title="搜索文件"]');
+      const host = document.querySelector(".filetree-view-host");
+      const startTop = host.getBoundingClientRect().top;
+      searchBtn.click();
+      const samples = [];
+      await new Promise((resolve) => {
+        const t0 = performance.now();
+        const tick = () => {
+          const panel = document.querySelector(".filetree-search-panel");
+          const inner = document.querySelector(".filetree-search-inner");
+          samples.push({
+            t: Math.round(performance.now() - t0),
+            hostTop: +host.getBoundingClientRect().top.toFixed(2),
+            panelH: panel ? +panel.getBoundingClientRect().height.toFixed(2) : 0,
+            innerX: inner ? +new DOMMatrix(getComputedStyle(inner).transform).m41.toFixed(2) : null,
+          });
+          if (performance.now() - t0 >= 420) resolve();
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+      const settled = samples[samples.length - 1];
+      return { startTop: +startTop.toFixed(2), samples, settled };
+    `);
+    const openSamples = openTrace.samples;
+    const grew = openTrace.settled.hostTop - openTrace.startTop;
+    const openMaxStep = Math.max(
+      ...openSamples.slice(1).map((s, i) => Math.abs(s.hostTop - openSamples[i].hostTop)),
+    );
+    const monotonicDown = openSamples.every((s, i) => i === 0 || s.hostTop >= openSamples[i - 1].hostTop - 0.3);
+    check("展开：下方文件列表被平滑推下（单调、无单帧跳变）",
+      monotonicDown && grew > 30 && openMaxStep <= Math.max(8, grew * 0.4),
+      `grew=${grew} maxStep=${openMaxStep.toFixed(2)}`);
+    check("展开：搜索框从左侧滑入（translateX 负值 → 0，视觉上往右移出）",
+      openSamples[0].innerX !== null && openSamples[0].innerX < -60 && Math.abs(openTrace.settled.innerX) < 1,
+      `x=${openSamples[0].innerX}→${openTrace.settled.innerX}`);
+    const lateFrames = openSamples.filter((s) => s.t >= 260);
+    const settledPanelH = Math.max(...lateFrames.map((s) => s.panelH));
+    const lateSpread = Math.max(...lateFrames.map((s) => s.hostTop)) - Math.min(...lateFrames.map((s) => s.hostTop));
+    check("展开：220ms 动画后高度已收敛（无二次弹跳）", settledPanelH > 30 && lateSpread <= 1,
+      `panelH=${settledPanelH} spread=${lateSpread.toFixed(2)}`);
+
+    const searchShot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(OUT_DIR, "v0160-sidebar-search-open.png"), Buffer.from(searchShot.result.data, "base64"));
+
+    const closeTrace = await evaluate(`
+      const searchBtn = document.querySelector('.filetree-btn[title="搜索文件"]');
+      const host = document.querySelector(".filetree-view-host");
+      const startTop = host.getBoundingClientRect().top;
+      searchBtn.click();
+      const samples = [];
+      await new Promise((resolve) => {
+        const t0 = performance.now();
+        const tick = () => {
+          const panel = document.querySelector(".filetree-search-panel");
+          const inner = document.querySelector(".filetree-search-inner");
+          samples.push({
+            t: Math.round(performance.now() - t0),
+            hostTop: +host.getBoundingClientRect().top.toFixed(2),
+            panelH: panel ? +panel.getBoundingClientRect().height.toFixed(2) : 0,
+            innerX: inner ? +new DOMMatrix(getComputedStyle(inner).transform).m41.toFixed(2) : null,
+            mounted: !!panel,
+          });
+          if (performance.now() - t0 >= 380) resolve();
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+      return { startTop: +startTop.toFixed(2), samples };
+    `);
+    const closeSamples = closeTrace.samples;
+    const closeMaxStep = Math.max(
+      ...closeSamples.slice(1).map((s, i) => Math.abs(s.hostTop - closeSamples[i].hostTop)),
+    );
+    const monotonicUp = closeSamples.every((s, i) => i === 0 || s.hostTop <= closeSamples[i - 1].hostTop + 0.3);
+    const last = closeSamples[closeSamples.length - 1];
+    check("收回：下方文件列表平滑上移回填、搜索框向左滑出后卸载",
+      monotonicUp && last.hostTop <= closeTrace.startTop + 0.5 && !last.mounted &&
+        closeMaxStep <= Math.max(8, (closeTrace.startTop - last.hostTop) * 0.45) &&
+        closeSamples.some((s) => s.innerX !== null && s.innerX < -60),
+      `hostTop=${closeTrace.startTop}→${last.hostTop} maxStep=${closeMaxStep.toFixed(2)} mounted=${last.mounted}`);
+
+    // 减少动态效果：搜索面板直接显隐（不做高度/位移动画）
+    await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    await evaluate(`document.querySelector('.filetree-btn[title="搜索文件"]').click(); return true;`);
+    await sleep(70);
+    check("减少动态效果时搜索面板直接显隐（无动画通道）", await evaluate(`
+      const panel = document.querySelector(".filetree-search-panel");
+      const inner = document.querySelector(".filetree-search-inner");
+      return !!panel && getComputedStyle(panel).animationName === "none" &&
+        getComputedStyle(inner).animationName === "none";
+    `));
+    await evaluate(`document.querySelector('.filetree-btn[title="搜索文件"]').click(); return true;`);
+    await sleep(260);
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
 
     await evaluate(`document.querySelector('.filetree-btn[title="收藏"]').click(); return true;`);
     await sleep(65);
@@ -255,13 +363,19 @@ async function main() {
 
     await evaluate(`document.querySelector(".titlebar-sidebar-btn").click(); return true;`);
     await sleep(250);
-    await evaluate(`document.documentElement.style.setProperty("--sidebar-width", "180px"); return true;`);
-    await sleep(80);
-    check("180px 最小宽度下工具栏不横向溢出", await evaluate(`
+    await evaluate(`document.body.classList.add("resizing"); document.documentElement.style.setProperty("--sidebar-width", "180px"); return true;`);
+    await sleep(140);
+    check("180px 最小宽度下头部不横向溢出（标题让位、图标完整可点）", await evaluate(`
+      const header = document.querySelector(".filetree-header");
       const actions = document.querySelector(".filetree-actions");
-      return actions.scrollWidth <= actions.clientWidth + 1 &&
-        document.querySelector(".filetree-new-primary").getBoundingClientRect().width > 100;
+      const buttons = Array.from(document.querySelectorAll(".filetree-actions .filetree-btn"));
+      return header.scrollWidth <= header.clientWidth + 1 &&
+        actions.scrollWidth <= actions.clientWidth + 1 &&
+        buttons.length === 6 &&
+        buttons.every((btn) => btn.getBoundingClientRect().width >= 20) &&
+        getComputedStyle(document.querySelector(".filetree-title")).display === "none";
     `));
+    await evaluate(`document.body.classList.remove("resizing"); return true;`);
 
     const screenshot = await cdp.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(path.join(OUT_DIR, "v0160-sidebar-ui.png"), Buffer.from(screenshot.result.data, "base64"));

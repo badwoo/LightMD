@@ -434,22 +434,24 @@ In v0.15.6 the Tab key was a **chain of commands** (`pairTabOut → tableTab →
 
 | Point | Implementation |
 | --- | --- |
-| File-section title merged with the new-file button | The sidebar's "Files" heading and the new-file icon in its top-right corner are merged into a single "＋ New" button that reuses the existing `file.new` command, so behaviour is unchanged |
+| File-section header (v0.16.0 second-round adjustment: restored) | The large "＋ New" button is removed and the original single-row form — **"Files" heading + six function icons** — is restored: the new-file icon is back as the first icon and still uses the `file.new` command. On very narrow sidebars (header content ≤232px, i.e. sidebar <~266px) the heading hides and the whole row is given to the icons, so even the 180px minimum never overflows horizontally |
 | Title-bar sidebar button | A sidebar button is added to the left of the LightMD title: in the file-manager view it **collapses / expands** the sidebar; in the Favorites or Recent view it **closes the current panel and returns to the file manager** |
 | Favorites / Recent as full-height views | Both become **mutually exclusive** full-height panels (only one visible at a time) with the sidebar toolbar kept; opening **slides in from the left**, closing **slides out to the right** |
 | The file tree is hidden, not unmounted | Switching to Favorites or Recent only **hides** the file tree, so scroll position and expanded folders survive the round trip |
 | Success paths return to the file manager | Opening a workspace from "Recent folders" or a shared-folder entry automatically switches back to the file-manager view, so the changed workspace is immediately visible |
 | Multi-select batch adding for Favorites | The Favorites panel gains "Add favorites": it reads the **already-saved** open tabs of the current window and supports circular multi-select, deselecting, closing with `Esc`, and staying in sync when a tab is closed; submission goes through the new atomic batch action `addFavorites`, which accepts up to a **50-entry** capacity and returns the actual `added` / `skipped` counts — **existing favorites are never evicted to make room for new ones**; files sharing a name include their full path in the accessible name so they remain distinguishable |
+| Search-file animation (v0.16.0 second-round adjustment: smoother) | Expanding animates the panel height with `grid-template-rows` **0fr→1fr**, so the file list below is **pushed down smoothly**; the search box simultaneously slides in from beyond the left edge (visually moving out to the right). Collapsing slides the box **out to the left** and retracts the panel height, so the file list **moves back up smoothly**. The old implementation only animated `max-width` while the panel was already at full height — content jumped down instantly on click and jumped back up when the collapse finished, which was the root cause of the "not smooth" animation |
 | Reduced motion and width restore | The "reduce motion" preference is honoured, weakening the slide transitions accordingly; the sidebar restores its original width after being collapsed |
 | Chinese and English copy | All new labels — the button, the selected count, the capacity-limit notice — ship in both languages |
 
-Verification: `npx tsc --noEmit` passes (exit 0); the full Vitest suite run as 4 sequential shards
-(all with `--no-file-parallelism`) totals **362 files / 6578 cases passing** (1 pre-existing skip,
-**0 failures**); the real-machine WebView2 probes `scripts/v0160-probe-sidebar-ui.mjs` reports
-**15/15 PASS** and `scripts/v0160-probe-tab-indent.mjs` reports **11 PASS / 1 FAIL** (the FAIL is the
-undo-coalescing window for consecutive indents described above, now documented as measured and listed
-as a known limitation); `npx tauri build` produces NSIS + MSI, `lightmd.exe` reports
-`FileVersion` / `ProductVersion` `0.16.0`, and the frontend dist entry `index-BKaYtI6H.js` is found
+Verification: `npx tsc --noEmit` passes (exit 0); the full Vitest suite run sequentially with
+`--no-file-parallelism` totals **363 files / 6586 cases passing** (1 pre-existing skip, **0 failures**);
+the real-machine WebView2 probes `scripts/v0160-probe-sidebar-ui.mjs` reports **21/21 PASS**
+(including the second-round header restore and frame-by-frame search-panel animation checks) and
+`scripts/v0160-probe-tab-indent.mjs` reports **11 PASS / 1 FAIL** (the FAIL is the undo-coalescing
+window for consecutive indents described above, now documented as measured and listed as a known
+limitation); `npx tauri build` produces NSIS + MSI, `lightmd.exe` reports
+`FileVersion` / `ProductVersion` `0.16.0`, and the frontend dist entry `index-CLAlxamI.js` is found
 in the exe byte stream.
 
 ### v0.15.6 (2026-11-03)
@@ -976,7 +978,7 @@ Based on the [LightMD 0.12.1 assessment report](../_plan/lightmd-0.12.1-assessme
 **UI Improvements**
 
 - **File icons** — Markdown files keep the 📝 icon; entries in the "Open Files" panel now use a hand-drawn open-book icon (blue for real files, yellow for unsaved scratch files) so the two kinds of entries are distinguishable at a glance
-- **File tree search box animation** — the search box slides in from the left (220ms) and collapses back to the left (180ms); clicks during the collapse are ignored
+- **File tree search box animation** — the search box slides in from the left (220ms) and collapses back to the left (180ms); clicks during the collapse are ignored. **Reworked in v0.16.0 (second round)**: it now uses a height + horizontal two-channel animation — the panel height animates 0fr↔1fr so the file list is pushed down / moves back up smoothly, while the search box itself slides in from the left and out to the left; the old width-only "wipe" animation is gone
 - **Sort dropdown animation** — the sort menu in folder headers now expands / collapses smoothly, with all three close paths (click outside / click an item / click the button again) running the collapse animation
 - **New-item dialog transition** — the New Folder / New File dialogs rise and settle with a slight scale; the dialog is fully opaque from the very first frame, so the background can never flicker through it
 - **Status-bar search panel open / close animation** — the search window grows smoothly out of the status-bar search button (it starts flush against the button, squashed and narrowed towards it, then expands into the middle of the screen); closing flattens it back into the same button. The direction follows the panel's current position, and it degrades to a plain show/hide when the system "reduce motion" preference is on

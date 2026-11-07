@@ -215,7 +215,6 @@ export const enUS: Record<string, string> = {
   "favorites.addedCount": "Added {count} favorites",
   "favorites.addedWithSkipped": "Added {added}; skipped {skipped} at the {limit}-favorite limit",
   "recent.empty": "No recent items",
-  "filetree.newPrimary": "New",
   "filetree.favoritesToggle": "Favorites",
   "filetree.recentToggle": "Recent",
   "filetree.minimize": "Minimize",

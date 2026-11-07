@@ -25,33 +25,24 @@
   scrollbar-gutter: stable;
 }
 
+/* 头部工具栏
+   v0.16.0 第二轮调整：恢复 v0.15.x 的「文件管理」标题 + 功能图标单行形式
+   （取消大号「＋ 新建」按钮）。标题在左、六个功能图标在右，space-between 对齐；
+   极窄侧栏（最小 180px）下不横向溢出：标题可被压缩裁切，图标按钮可从 28px 收到 22px。 */
 .filetree-header {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 10px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
+  min-width: 0;
+  /* v0.16.0 第二轮：以头部自身为容器查询上下文（仅 inline-size，不影响弹窗等 fixed 后代），
+     极窄侧栏（内容宽 ≤232px，约侧栏宽 <266px）放不下「标题 + 六图标」时由下方 @container
+     隐藏标题，把整行让给功能图标，避免标题被压缩成残字或图标互相挤压。 */
+  container-type: inline-size;
 }
-
-.filetree-new-primary {
-  min-height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid var(--accent-color);
-  border-radius: 6px;
-  background: var(--accent-color);
-  color: var(--bg-primary);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: filter var(--transition-fast), box-shadow var(--transition-fast);
-}
-.filetree-new-primary:hover { filter: brightness(1.08); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16); }
-.filetree-new-primary:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
 
 .filetree-view-host { flex: 1; min-height: 0; position: relative; display: flex; }
 .filetree-files-hidden { display: none; }
@@ -104,14 +95,23 @@
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--text-secondary);
+  /* v0.16.0 第二轮：窄侧栏下允许标题压缩（优先保证右侧功能图标完整可点） */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .filetree-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 2px;
+  /* v0.16.0 第二轮：极窄侧栏下整行可再压缩（按钮可收到 ~23px，图标仍完整可见），
+     与 @container 隐藏标题配合后，最小 180px 侧栏也不会横向溢出 */
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .filetree-btn {
@@ -121,6 +121,8 @@
   font-size: 15px;
   width: 28px;
   height: 28px;
+  min-width: 0;
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -129,6 +131,17 @@
   color: var(--text-secondary);
   line-height: 1;
   transition: background var(--transition-fast);
+}
+
+/* v0.16.0 第二轮：头部放不下「完整标题 + 六图标」时（内容宽 ≤232px）隐藏标题，
+   整行让给功能图标——标题只是分区标签，图标才是可点功能，优先保证图标完整可点。
+   阈值口径：内容宽 = 头部宽 - 28(padding)；标题 47 + 间距 8 + 图标行 178 = 233，
+   即内容宽 ≥ 233（头部宽 ≥ 261 / 侧栏宽约 ≥266）才能完整容纳。
+   ⚠️ 容器查询比较的是容器的**内容盒**（不含 padding），所以这里写 232 而不是 260。 */
+@container (max-width: 232px) {
+  .filetree-title {
+    display: none;
+  }
 }
 
 .filetree-btn:hover {
@@ -148,72 +161,86 @@
   line-height: 1.2;
 }
 
-/* ─── v0.4.3 Issue 2：全局文件搜索面板 ─────────────── */
+/* ─── v0.4.3 Issue 2：全局文件搜索面板 ───────────────
+   v0.16.0 第二轮调整（顺滑重做）：
+   ①高度：面板是 grid 容器，`grid-template-rows` 0fr ↔ 1fr 用关键帧动画 → 展开时
+     下方文件列表被平滑推下、关闭时平滑回填。旧实现只动 max-width（高度一直满高），
+     所以点击后内容先瞬间跳下去、收起动画结束后又瞬间跳回来——这就是"不顺滑"的来源。
+   ②横向：真正的搜索框内容（.filetree-search-inner）走 translateX(-100%) ↔ 0：
+     展开时从左侧界外滑入（视觉上向右"移出"）、关闭时向左滑出并淡出；
+     位移/透明度只用 transform/opacity，不触发回流。
+   ③grid 子项必须 min-height:0 + overflow:hidden，0fr 才能真正把高度压到 0。 */
 .filetree-search-panel {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: grid;
+  grid-template-rows: 1fr;
   flex-shrink: 0;
-  /* v0.8.5 反馈2：动画改水平方向（max-width 宽度过渡）——overflow:hidden 使宽度
-     小于内容时裁剪溢出而非回流挤压，避免文字换行变形（也因此不用 scaleX） */
   overflow: hidden;
 }
 
-/* v0.8.5 需求4 → 反馈2：搜索面板展开动画类（挂载即播，220ms ease-out，
-   与 FileTree.tsx SEARCH_PANEL_IN_MS 同步）——
-   改为水平方向，从左往右展开：max-width 0→480px（端点取侧栏宽度上限 480px，
-   任何侧栏宽度下动画首尾均无截断）+ opacity 0→1 + translateX(-8px)→0 增强方向感。
-   仅用 transform/opacity/max-width；不设 forwards，播完回落到默认 max-width:none，
-   内容随侧栏宽度自然铺满，结果列表高度自适应照旧 */
-.filetree-search-panel.search-panel-open {
-  animation: search-panel-in 220ms ease-out;
+.filetree-search-clip {
+  min-height: 0;
+  overflow: hidden;
 }
 
-/* v0.8.5 需求4：搜索面板收回动画类（180ms ease-in + forwards 停在收起态，
-   与 FileTree.tsx SEARCH_PANEL_OUT_MS 同步；到点后由 TSX 延迟卸载）；
-   收回期间 pointer-events: none 防止动画期间误点击 */
+.filetree-search-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  will-change: transform, opacity;
+}
+
+/* 展开：高度 0fr→1fr + 内容从左往右滑入（220ms，与 FileTree.tsx SEARCH_PANEL_IN_MS 同步）。
+   高度通道用 ease-out（点击后立即响应、末段缓慢落位）；
+   搜索框横向用 240ms 的 ease-in-out（起步轻、中段快、末段稳），
+   避免满宽滑动配快起曲线时"第一帧就飞过大半"的突兀感。 */
+.filetree-search-panel.search-panel-open {
+  animation: search-panel-expand 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.filetree-search-panel.search-panel-open .filetree-search-inner {
+  animation: search-box-slide-in 240ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 收回：高度 1fr→0fr + 内容向左滑出并淡出（180ms，与 SEARCH_PANEL_OUT_MS 同步）；
+   forwards 保持收起末态，等待 TSX 延迟卸载；pointer-events:none 防动画期间误点 */
 .filetree-search-panel.search-panel-closing {
-  animation: search-panel-out 180ms ease-in forwards;
+  animation: search-panel-collapse 180ms cubic-bezier(0.4, 0, 1, 1) forwards;
   pointer-events: none;
 }
-
-/* v0.8.5 反馈2：搜索面板展开 —— max-width/opacity/translateX 三通道（从左往右），220ms ease-out */
-@keyframes search-panel-in {
-  from {
-    max-width: 0;
-    opacity: 0;
-    transform: translateX(-8px);
-  }
-  to {
-    max-width: 480px;
-    opacity: 1;
-    transform: translateX(0);
-  }
+.filetree-search-panel.search-panel-closing .filetree-search-inner {
+  animation: search-box-slide-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards;
 }
 
-/* v0.8.5 反馈2：搜索面板收回 —— 展开的反向（480px→0 / 1→0 / 0→-8px，向左收合），180ms ease-in；
-   forwards 保持收起末态，等待 TSX 延迟卸载 */
-@keyframes search-panel-out {
-  from {
-    max-width: 480px;
-    opacity: 1;
-    transform: translateX(0);
-  }
-  to {
-    max-width: 0;
-    opacity: 0;
-    transform: translateX(-8px);
-  }
+/* 高度通道：0fr ↔ 1fr（grid 行高动画：Chromium 107+ / WKWebView 16+ 均支持） */
+@keyframes search-panel-expand {
+  from { grid-template-rows: 0fr; }
+  to { grid-template-rows: 1fr; }
+}
+@keyframes search-panel-collapse {
+  from { grid-template-rows: 1fr; }
+  to { grid-template-rows: 0fr; }
+}
+
+/* 横向通道：搜索框从左侧界外滑入 / 向左界外滑出（视觉方向：展开往右移出、关闭往左滑出） */
+@keyframes search-box-slide-in {
+  from { transform: translateX(-100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes search-box-slide-out {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(-100%); opacity: 0; }
 }
 
 /* v0.8.5 需求4：减弱动态效果偏好下直接显示/隐藏（收回以 display:none 立即隐藏，
    DOM 卸载仍由 TSX 延迟执行，用户无感知） */
 @media (prefers-reduced-motion: reduce) {
   .filetree-search-panel.search-panel-open,
-  .filetree-search-panel.search-panel-closing {
+  .filetree-search-panel.search-panel-closing,
+  .filetree-search-panel.search-panel-open .filetree-search-inner,
+  .filetree-search-panel.search-panel-closing .filetree-search-inner {
     animation: none;
+    will-change: auto;
   }
 
   .filetree-search-panel.search-panel-closing {
