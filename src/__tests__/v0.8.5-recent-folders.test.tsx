@@ -150,7 +150,7 @@ describe("v0.8.5 需求8：文件与文件夹混排", () => {
     });
   });
 
-  it("标题栏控制按钮仍渲染（回归：文件夹记录存在时栏结构完整）", () => {
+  it("文件夹记录存在时保留全高标题和列表，不渲染旧分区按钮", () => {
     const now = Date.now();
     useFileStore.setState({
       recentFolders: [{ path: "C:/work/a", name: "a", accessedAt: now }],
@@ -158,19 +158,22 @@ describe("v0.8.5 需求8：文件与文件夹混排", () => {
 
     render(<RecentFiles onOpen={vi.fn()} onClose={vi.fn()} />);
 
-    expect(screen.getByTitle("缩小")).toBeTruthy();
-    expect(screen.getByTitle("放大")).toBeTruthy();
-    expect(screen.getByTitle("关闭")).toBeTruthy();
+    expect(screen.getByText("最近打开")).toBeTruthy();
+    expect(document.querySelector(".recent-files-panel")).not.toBeNull();
+    expect(screen.queryByTitle("缩小")).toBeNull();
+    expect(screen.queryByTitle("放大")).toBeNull();
+    expect(screen.queryByTitle("关闭")).toBeNull();
   });
 });
 
 describe("v0.8.5 需求8：空态显隐", () => {
-  it("文件与文件夹记录全空时整栏不渲染", () => {
+  it("文件与文件夹记录全空时显示完整空态面板", () => {
     useFileStore.setState({ recentFiles: [], recentFolders: [] });
 
     const { container } = render(<RecentFiles onOpen={vi.fn()} />);
 
-    expect(container.firstChild).toBeNull();
+    expect(container.querySelector(".recent-files-panel")).not.toBeNull();
+    expect(screen.getByText("暂无最近打开记录")).toBeTruthy();
   });
 
   it("仅文件夹有记录（文件为空）时栏正常渲染", () => {

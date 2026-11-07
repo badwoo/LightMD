@@ -318,139 +318,47 @@ describe("useResizable 向后兼容（left/right/split 逻辑不变）", () => {
 
 // ─── 3. Favorites 组件 ──────────────────────────────────────
 
-describe("Favorites 组件 v0.4.1", () => {
+describe("Favorites 组件 v0.16.0 全高面板", () => {
   beforeEach(() => {
     cleanup();
-    useFileStore.setState({
-      favorites: [],
-      recentFiles: [],
-      tempFiles: [],
-    });
+    useFileStore.setState({ favorites: [], recentFiles: [], tempFiles: [] });
   });
 
-  it("渲染标题栏三个控制按钮（缩小/放大/关闭）", () => {
+  it("保留标题、添加收藏入口和文件列表，不再渲染内嵌分区控制", () => {
     useFileStore.setState({
       favorites: [{ path: "/test/a.md", name: "a.md", addedAt: Date.now() }],
     });
-
-    render(<Favorites onOpen={vi.fn()} onClose={vi.fn()} />);
-
-    expect(screen.getByTitle("缩小")).toBeTruthy();
-    expect(screen.getByTitle("放大")).toBeTruthy();
-    expect(screen.getByTitle("关闭")).toBeTruthy();
-  });
-
-  it("点击缩小按钮折叠列表（文件项消失）", () => {
-    useFileStore.setState({
-      favorites: [{ path: "/test/a.md", name: "a.md", addedAt: Date.now() }],
-    });
-
-    render(<Favorites onOpen={vi.fn()} onClose={vi.fn()} />);
-
-    // 折叠前文件名可见
-    expect(screen.getByText("a.md")).toBeTruthy();
-
-    // 点击缩小按钮
-    fireEvent.click(screen.getByTitle("缩小"));
-
-    // 折叠后文件名消失
-    expect(screen.queryByText("a.md")).toBeNull();
-  });
-
-  it("点击关闭按钮触发 onClose 回调", () => {
-    const onClose = vi.fn();
-    render(<Favorites onOpen={vi.fn()} onClose={onClose} />);
-
-    fireEvent.click(screen.getByTitle("关闭"));
-
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("未传 onClose 时不渲染关闭按钮", () => {
-    useFileStore.setState({
-      favorites: [{ path: "/test/a.md", name: "a.md", addedAt: Date.now() }],
-    });
-
     render(<Favorites onOpen={vi.fn()} />);
-
-    expect(screen.queryByTitle("关闭")).toBeNull();
-    // 缩小/放大按钮仍存在
-    expect(screen.getByTitle("缩小")).toBeTruthy();
-    expect(screen.getByTitle("放大")).toBeTruthy();
-  });
-
-  it("点击放大按钮展开（文件项仍可见，非折叠态）", () => {
-    useFileStore.setState({
-      favorites: [{ path: "/test/a.md", name: "a.md", addedAt: Date.now() }],
-    });
-
-    render(<Favorites onOpen={vi.fn()} onClose={vi.fn()} />);
-
-    // 点击放大按钮
-    fireEvent.click(screen.getByTitle("放大"));
-
-    // 文件项仍可见（放大不折叠）
+    expect(screen.getByTitle("添加收藏")).toBeTruthy();
     expect(screen.getByText("a.md")).toBeTruthy();
+    expect(screen.queryByTitle("缩小")).toBeNull();
+    expect(screen.queryByTitle("放大")).toBeNull();
+    expect(screen.queryByTitle("关闭")).toBeNull();
   });
 });
 
 // ─── 4. RecentFiles 组件 ──────────────────────────────────────
 
-describe("RecentFiles 组件 v0.4.1", () => {
+describe("RecentFiles 组件 v0.16.0 全高面板", () => {
   beforeEach(() => {
     cleanup();
-    useFileStore.setState({
-      favorites: [],
-      recentFiles: [],
-      tempFiles: [],
-    });
+    useFileStore.setState({ favorites: [], recentFiles: [], tempFiles: [] });
   });
 
-  it("渲染标题栏三个控制按钮（缩小/放大/关闭）", () => {
+  it("有记录时保留列表且不再渲染内嵌分区控制", () => {
     useFileStore.setState({
       recentFiles: [{ path: "/test/b.md", name: "b.md", accessedAt: Date.now() }],
     });
-
-    render(<RecentFiles onOpen={vi.fn()} onClose={vi.fn()} />);
-
-    expect(screen.getByTitle("缩小")).toBeTruthy();
-    expect(screen.getByTitle("放大")).toBeTruthy();
-    expect(screen.getByTitle("关闭")).toBeTruthy();
-  });
-
-  it("点击缩小按钮折叠列表（文件项消失）", () => {
-    useFileStore.setState({
-      recentFiles: [{ path: "/test/b.md", name: "b.md", accessedAt: Date.now() }],
-    });
-
-    render(<RecentFiles onOpen={vi.fn()} onClose={vi.fn()} />);
-
-    // 折叠前文件名可见
+    render(<RecentFiles onOpen={vi.fn()} />);
     expect(screen.getByText("b.md")).toBeTruthy();
-
-    // 点击缩小按钮
-    fireEvent.click(screen.getByTitle("缩小"));
-
-    // 折叠后文件名消失
-    expect(screen.queryByText("b.md")).toBeNull();
+    expect(screen.queryByTitle("缩小")).toBeNull();
+    expect(screen.queryByTitle("放大")).toBeNull();
+    expect(screen.queryByTitle("关闭")).toBeNull();
   });
 
-  it("点击关闭按钮触发 onClose 回调", () => {
-    const onClose = vi.fn();
-    useFileStore.setState({
-      recentFiles: [{ path: "/test/b.md", name: "b.md", accessedAt: Date.now() }],
-    });
-
-    render(<RecentFiles onOpen={vi.fn()} onClose={onClose} />);
-
-    fireEvent.click(screen.getByTitle("关闭"));
-
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("空状态返回 null（不渲染）", () => {
-    const { container } = render(<RecentFiles onOpen={vi.fn()} onClose={vi.fn()} />);
-
-    expect(container.firstChild).toBeNull();
+  it("空记录也渲染面板和空状态，不失去关闭出口", () => {
+    render(<RecentFiles onOpen={vi.fn()} />);
+    expect(screen.getByText("暂无最近打开记录")).toBeTruthy();
+    expect(document.querySelector(".recent-files-panel")).not.toBeNull();
   });
 });

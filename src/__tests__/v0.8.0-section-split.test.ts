@@ -167,11 +167,10 @@ describe("v0.8.0 修复 P9-1 标题栏拖拽语义（源码接线）", () => {
     "utf-8",
   );
 
-  it("文件夹/收藏/最近/temp 的标题栏都改为按 prevOf 配对（拖动自身改变上方区与本区）", () => {
-    // v0.8.2 功能3 起 FolderSection 渲染收拢进 renderFolderSection（closing 快照传 undefined）
+  it("文件夹/temp 保留 prevOf 配对，收藏/最近退出内嵌分区拖拽", () => {
     expect(fileTreeSrc).toContain("prevSectionKey={opts?.closing ? undefined : prevOf(fkey)}");
-    expect(fileTreeSrc).toContain('prevSectionKey={prevOf("favorites")}');
-    expect(fileTreeSrc).toContain('prevSectionKey={prevOf("recent")}');
+    expect(fileTreeSrc).not.toContain('prevSectionKey={prevOf("favorites")}');
+    expect(fileTreeSrc).not.toContain('prevSectionKey={prevOf("recent")}');
     // v0.8.2 功能4 起：新增 nextOf/nextSectionKey（第一个可见区域改拖「本区+下区」），
     // 原"不得出现 nextSectionKey"的断言随该能力引入而失效，改为正向断言两者共存
     expect(fileTreeSrc).toContain("nextOf");

@@ -130,13 +130,12 @@ describe("Issue 3: 最近打开标题栏上下拖拽调整高度", () => {
     });
   });
 
-  it("RecentFiles 接收 height prop 并应用到 style.height", () => {
-    const { container } = render(
-      <RecentFiles onOpen={vi.fn()} height={250} />
-    );
+  it("v0.16.0 全高 RecentFiles 不再应用旧 height prop", () => {
+    const { container } = render(<RecentFiles onOpen={vi.fn()} height={250} />);
     const recentEl = container.querySelector(".recent-files") as HTMLElement;
     expect(recentEl).toBeTruthy();
-    expect(recentEl.style.height).toBe("250px");
+    expect(recentEl.classList.contains("recent-files-panel")).toBe(true);
+    expect(recentEl.style.height).toBe("");
   });
 
   it("RecentFiles height=undefined 时不设置 inline height（由内容决定）", () => {
@@ -148,22 +147,15 @@ describe("Issue 3: 最近打开标题栏上下拖拽调整高度", () => {
     expect(recentEl.style.height).toBe("");
   });
 
-  it("RecentFiles maximized 状态覆盖 height prop（height=500）", () => {
-    // 先渲染，然后点击 maximize 按钮
-    const { container } = render(
-      <RecentFiles onOpen={vi.fn()} height={200} />
-    );
-    const maximizeBtn = container.querySelector(".section-maximize") as HTMLButtonElement;
-    expect(maximizeBtn).toBeTruthy();
-    // 用 act 包裹点击事件，确保 React 状态更新同步完成
-    act(() => { maximizeBtn.click(); });
-    const recentEl = container.querySelector(".recent-files") as HTMLElement;
-    expect(recentEl.style.height).toBe("500px");
+  it("RecentFiles 全高视图不再渲染 maximized 分区按钮", () => {
+    const { container } = render(<RecentFiles onOpen={vi.fn()} height={200} />);
+    expect(container.querySelector(".section-maximize")).toBeNull();
+    expect(container.querySelector(".recent-files-panel")).toBeTruthy();
   });
 
-  it("FileTree.tsx 中 RecentFiles 接收 sizeOf 计算的高度 prop", () => {
-    // v0.8.0 WP4 修复1：高度由 sectionSizes（持久化）驱动，而非旧的 recentResize.height
-    expect(fileTreeSource).toContain('height={sizeOf("recent")}');
+  it("FileTree.tsx 中 RecentFiles 由独立滑动层承载，不再接收分区高度", () => {
+    expect(fileTreeSource).toContain('<SidebarPanelSlide visible={showRecent}>');
+    expect(fileTreeSource).not.toContain('height={sizeOf("recent")}');
   });
 
   it("FileTree.tsx 中 RecentFiles 之前有垂直 resizer 绑定（相邻配对拖拽）", () => {

@@ -185,28 +185,13 @@ describe("v0.8.2 功能2：Favorites 标题栏双击切换折叠", () => {
     );
   }
 
-  it("第一次双击标题栏 → 折叠（出现 collapsed class）", () => {
+  it("v0.16.0 全高收藏标题不再折叠，只保留添加收藏入口", () => {
     renderFavorites();
-    const header = document.querySelector(".favorites-header")!;
+    const header = document.querySelector(".favorites-panel-header")!;
     fireEvent.dblClick(header);
-    const section = document.querySelector(".favorites-section")!;
-    expect(section.className).toContain("collapsed");
-  });
-
-  it("再次双击标题栏 → 还原（移除 collapsed class）", () => {
-    renderFavorites();
-    const header = document.querySelector(".favorites-header")!;
-    fireEvent.dblClick(header);
-    expect(document.querySelector(".favorites-section")!.className).toContain("collapsed");
-    fireEvent.dblClick(header);
-    expect(document.querySelector(".favorites-section")!.className).not.toContain("collapsed");
-  });
-
-  it("双击标题栏按钮不触发折叠", () => {
-    renderFavorites();
-    const btn = document.querySelector(".section-btn.section-minimize")!;
-    fireEvent.dblClick(btn);
-    expect(document.querySelector(".favorites-section")!.className).not.toContain("collapsed");
+    expect(document.querySelector(".favorites-panel")!.className).not.toContain("collapsed");
+    expect(document.querySelector(".favorites-add-btn")).toBeTruthy();
+    expect(document.querySelector(".section-minimize")).toBeNull();
   });
 });
 
@@ -314,7 +299,7 @@ describe("v0.8.2 功能5：section 内容高度测量", () => {
     document.body.removeChild(root);
   });
 
-  it("源码接线：四个栏的根元素都带 data-section-key（供测量定位）", () => {
+  it("源码接线：文件树分区保留 data-section-key，特殊面板使用独立语义", () => {
     const fileTreeSrc = readFileSync(
       resolve(__dirname, "../components/sidebar/FileTree.tsx"),
       "utf-8",
@@ -329,8 +314,8 @@ describe("v0.8.2 功能5：section 内容高度测量", () => {
     );
     expect(fileTreeSrc).toContain('data-section-key="temp"');
     expect(fileTreeSrc).toContain("data-section-key={sectionKey ?? `folder:${folder.path}`}");
-    expect(favoritesSrc).toContain('data-section-key={sectionKey ?? "favorites"}');
-    expect(recentSrc).toContain('data-section-key={sectionKey ?? "recent"}');
+    expect(favoritesSrc).toContain('className="favorites-panel"');
+    expect(recentSrc).toContain('className="recent-files recent-files-panel"');
   });
 });
 
@@ -440,26 +425,20 @@ describe("v0.8.2 源码接线（UI 结构锁定）", () => {
     expect(fileTreeSrc).not.toContain("closeAllConfirm");
   });
 
-  it("0.8.2 调整3：四个栏标题栏在折叠/放大状态下均禁用拖拽", () => {
-    // v0.9.5 问题6 修订2：temp 恢复 sizeOf 分区高度（收缩写入 sizeOf），拖拽正常
+  it("文件树分区保留拖拽守卫，特殊面板不再绑定分区拖拽", () => {
     expect(fileTreeSrc).toContain("if (tempCollapsed || tempMaximized) return;");
     expect(fileTreeSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");
-    expect(favoritesSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");
-    expect(recentSrc).toContain("if (!collapsed && !maximized) onMouseDown(e);");
+    expect(favoritesSrc).not.toContain("useSectionSplit");
+    expect(recentSrc).not.toContain("useSectionSplit");
   });
 
-  it("0.9.5 问题6 修订2：条目位空档由「打开的文件」栏收缩高度承担（面板内无 spacer）", () => {
-    // 收缩目标 = 列表内容自然高度 + 一个条目位（面板整体从空档之后开始）
+  it("v0.16.0 特殊面板独立于文件树高度分配，不再制造条目位空档", () => {
     expect(fileTreeSrc).toContain("export const SIDEBAR_ITEM_HEIGHT = 30;");
-    expect(fileTreeSrc).toContain("Math.max(MIN_SECTION_HEIGHT, contentH + SIDEBAR_ITEM_HEIGHT)");
-    // 面板内不再渲染空档，间距由上一栏高度承担
+    expect(fileTreeSrc).not.toContain("favRecentCompact");
     expect(favoritesSrc).not.toContain("filetree-temp-spacer");
     expect(recentSrc).not.toContain("filetree-temp-spacer");
-    // 末栏（含收藏/最近）无条件撑满到底部
     expect(fileTreeSrc).toContain("if (total < container) {");
-    expect(fileTreeSrc).not.toContain("lastIsFavOrRecent");
-    // 收缩高度不写回设置（否则收藏栏打开时退出会残留空档）
-    expect(fileTreeSrc).toContain("{ ...sectionSizes, temp: prevTempSizeRef.current }");
+    expect(fileTreeSrc).toContain('<div className="filetree-special-panels"');
   });
 
   it("0.8.2 调整3：beginSectionDrag 具备 buttons===0 检测与 blur 兜底（防监听器泄漏）", () => {
@@ -491,16 +470,16 @@ describe("v0.8.2 源码接线（UI 结构锁定）", () => {
     expect(fileTreeSrc).toContain("const SECTION_SLIDE_OUT_MS = 360;");
   });
 
-  it("功能2：四个栏标题栏都注册 onDoubleClick 切换折叠", () => {
-    // FolderSection / temp header 在 FileTree.tsx，Favorites/RecentFiles 在各自组件
+  it("文件树两个分区保留双击折叠，特殊面板不再注册旧折叠处理", () => {
     expect(fileTreeSrc.match(/onDoubleClick=/g)?.length).toBeGreaterThanOrEqual(2);
-    expect(favoritesSrc).toContain("onDoubleClick={handleHeaderDoubleClick}");
-    expect(recentSrc).toContain("onDoubleClick={handleHeaderDoubleClick}");
+    expect(favoritesSrc).not.toContain("handleHeaderDoubleClick");
+    expect(recentSrc).not.toContain("handleHeaderDoubleClick");
   });
 
-  it("功能3：正常渲染的文件夹/收藏/最近都包了 section-slide 动画（temp 走 SlideWrap）", () => {
+  it("temp 保留 SlideWrap，收藏/最近使用两个独立 SidebarPanelSlide", () => {
     expect(fileTreeSrc).toContain('className="section-slide"');
-    expect(fileTreeSrc.match(/<SlideWrap /g)?.length).toBe(4);
+    expect(fileTreeSrc.match(/<SlideWrap /g)?.length).toBe(2);
+    expect(fileTreeSrc.match(/<SidebarPanelSlide /g)?.length).toBe(2);
   });
 
   it("动画优化：滑入展开/滑出收起 wrapper + section 高度过渡 + 拖拽禁用过渡", () => {
@@ -526,10 +505,10 @@ describe("v0.8.2 源码接线（UI 结构锁定）", () => {
     expect(cssSrc).toContain("body.section-dragging .filetree-temp-section");
   });
 
-  it("功能4：FolderSection/Favorites/RecentFiles 都接线 nextSectionKey", () => {
+  it("功能4：FolderSection 保留 nextSectionKey，特殊面板退出分区配对", () => {
     expect(fileTreeSrc).toContain("nextSectionKey={opts?.closing ? undefined : nextOf(fkey)}");
-    expect(fileTreeSrc).toContain('nextSectionKey={nextOf("favorites")}');
-    expect(fileTreeSrc).toContain('nextSectionKey={nextOf("recent")}');
+    expect(fileTreeSrc).not.toContain('nextSectionKey={nextOf("favorites")}');
+    expect(fileTreeSrc).not.toContain('nextSectionKey={nextOf("recent")}');
   });
 
   it("功能6：新建菜单 hover 自动展开、移出整体区域收起", () => {

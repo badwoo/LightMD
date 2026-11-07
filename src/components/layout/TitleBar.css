@@ -61,6 +61,23 @@
   z-index: 1;
 }
 
+.titlebar-sidebar-btn {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.titlebar-sidebar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.titlebar-sidebar-btn:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 1px; }
+
 .titlebar-brand {
   font-size: 13px;
   font-weight: 600;

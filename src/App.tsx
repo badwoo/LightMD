@@ -23,7 +23,7 @@ import { TitleBar } from "./components/layout/TitleBar";
 import { StatusBar } from "./components/layout/StatusBar";
 import { TabBar } from "./components/layout/TabBar";
 import { EditorContainer } from "./components/editor/EditorContainer";
-import { FileTree, isFocusInEditable } from "./components/sidebar/FileTree";
+import { FileTree, isFocusInEditable, type SidebarView } from "./components/sidebar/FileTree";
 // v0.9.0 自定义快捷键：全局键位查表派发（默认表 + 用户覆盖，见 core/shortcuts.ts）
 import {
   matchShortcut,
@@ -303,6 +303,16 @@ function App() {
   const [showImageManager, setShowImageManager] = useState(false);
   // v0.9.0 自定义快捷键：标签栏折叠（Ctrl+Shift+B / 命令面板 view.toggleTag；会话级，不持久化）
   const [tabBarCollapsed, setTabBarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarView, setSidebarView] = useState<SidebarView>("files");
+  const handleSidebarViewChange = useCallback((view: SidebarView) => {
+    setSidebarCollapsed(false);
+    setSidebarView(view);
+  }, []);
+  const closeSidebarPanel = useCallback(() => {
+    setSidebarView("files");
+    setSidebarCollapsed(false);
+  }, []);
   // v0.4.0 功能4：版本快照窗口开关 + 目标文件路径
   const [showSnapshotDialog, setShowSnapshotDialog] = useState(false);
   const [snapshotFilePath, setSnapshotFilePath] = useState<string | null>(null);
@@ -3659,6 +3669,10 @@ function App() {
         </div>
       )}
       <TitleBar
+        sidebarCollapsed={sidebarCollapsed}
+        sidebarView={sidebarView}
+        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+        onCloseSidebarPanel={closeSidebarPanel}
         // v0.9.0 WP9：只读标签在标题上显式标记，避免用户误以为可以编辑
         fileName={`${activeIsReadonly ? `${t("multiwindow.readonlyBadge")} ` : ""}${fileName}${isDirty ? " ●" : ""}`}
         onNew={handleNewFile}
@@ -3693,7 +3707,9 @@ function App() {
         />
       )}
       <AppShell
-        sidebar={<FileTree />}
+        sidebarCollapsed={sidebarCollapsed}
+        onSidebarCollapsedChange={setSidebarCollapsed}
+        sidebar={<FileTree view={sidebarView} onViewChange={handleSidebarViewChange} />}
         outline={
           // v0.4.5 修复：仅 md 文件才显示大纲，切换至非 md 文件时自动关闭大纲栏
           // v0.8.0 修复 P11-2：临时文档（filePath 为空）按 markdown 处理，同样显示大纲

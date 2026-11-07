@@ -1,49 +1,63 @@
-/**
- * Favorites ── 收藏文件列表（G7）
- *
- * 显示在 RecentFiles 上方，列出已收藏的文件。
- * - 点击：调用 onOpen 打开文件
- * - 右键：显示"从收藏移除"菜单
- * - 空状态：显示"暂无收藏"
- * - v0.4.1：标题栏新增缩小/放大/关闭按钮（hover 浮现），支持折叠/最大化/关闭
- */
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useFileStore, type FileNode } from "../../stores/useFileStore";
+import { useEditorStore } from "../../stores/useEditorStore";
 import { useT } from "../../i18n";
-import { useSectionSplit } from "../../hooks/useSectionSplit";
+import { pathCompareKey } from "../../utils/path";
 import "./FileTree.css";
+
+interface FavoriteCandidate {
+  path: string;
+  key: string;
+  name: string;
+}
 
 interface FavoritesProps {
   onOpen: (node: FileNode) => void;
-  /** 可选高度（由父组件拖拽控制） */
-  height?: number;
-  /** 关闭回调（点击 × 按钮触发，父组件隐藏整个区域） */
+  /** @deprecated v0.16.0 起特殊面板不再使用内嵌分区属性。 */
   onClose?: () => void;
-  /** 本区 key（相邻配对拖拽用） */
+  height?: number;
   sectionKey?: string;
-  /** 上方相邻可见区 key（为空 = 本区最靠上，标题栏不可拖） */
   prevSectionKey?: string;
-  /** v0.8.2 功能4：下方相邻可见区 key（本区最靠上时标题栏改拖「本区+下区」） */
   nextSectionKey?: string;
-  /** v0.8.0 修复 P11-4：本区高度上限（仅最后一个可见区域给出 → 可拖到底部） */
   maxHeight?: number;
-  /** v0.9.5 问题6 修订2：紧凑内嵌形态——单行条目；高度模型与标题栏保持
-      普通分区行为，一个条目位的空档由上一栏（「打开的文件」栏）收缩高度承担 */
   compact?: boolean;
 }
 
-export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey, nextSectionKey, maxHeight, compact }: FavoritesProps) {
+/** 当前窗口已打开且已落盘的标签；未命名标签没有可持久化的路径。 */
+export function collectFavoriteCandidates(
+  tabs: ReadonlyArray<{ path?: string | null; name: string; isUntitled?: boolean }>,
+): FavoriteCandidate[] {
+  const byPath = new Map<string, FavoriteCandidate>();
+  for (const tab of tabs) {
+    if (!tab.path || tab.isUntitled) continue;
+    const key = pathCompareKey(tab.path);
+    if (!byPath.has(key)) byPath.set(key, { path: tab.path, key, name: tab.name });
+  }
+  return [...byPath.values()];
+}
+
+export function Favorites({ onOpen }: FavoritesProps) {
   const favorites = useFileStore((s) => s.favorites);
   const removeFavorite = useFileStore((s) => s.removeFavorite);
+  const addFavorites = useFileStore((s) => s.addFavorites);
+  const openTabs = useEditorStore((s) => s.openTabs);
   const t = useT();
-
-  // 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; path: string } | null>(null);
-  // v0.4.1：折叠/最大化状态
-  const [collapsed, setCollapsed] = useState(false);
-  const [maximized, setMaximized] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [feedback, setFeedback] = useState("");
 
-  // 点击外部关闭右键菜单
+  const candidates = useMemo(() => collectFavoriteCandidates(openTabs), [openTabs]);
+  const favoriteKeys = useMemo(
+    () => new Set(favorites.map((file) => pathCompareKey(file.path))),
+    [favorites],
+  );
+
+  const cancelPicker = useCallback(() => {
+    setShowPicker(false);
+    setSelectedPaths(new Set());
+  }, []);
+
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -51,141 +65,147 @@ export function Favorites({ onOpen, height, onClose, sectionKey, prevSectionKey,
     return () => window.removeEventListener("click", close);
   }, [contextMenu]);
 
-  // 计算 section 高度样式：最大化时固定 500px，否则用传入 height（折叠时不设高度，自适应标题栏）
-  // v0.9.5 问题6 修订：紧凑内嵌形态恢复固定分区高度(sizeOf)参与配对拖拽——
-  // 紧凑仅指「单行条目 + 顶部空一个条目位」，高度模型与普通分区一致
-  const sectionStyle: React.CSSProperties = {};
-  if (maximized) {
-    sectionStyle.height = 500;
-  } else if (height !== undefined && !collapsed) {
-    sectionStyle.height = height;
-  }
+  // 选择期间关闭标签时，候选和未提交选择同步失效。
+  useEffect(() => {
+    if (!showPicker) return;
+    const available = new Set(candidates.map((file) => file.key));
+    setSelectedPaths((previous) => {
+      const next = new Set([...previous].filter((key) => available.has(key) && !favoriteKeys.has(key)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [candidates, favoriteKeys, showPicker]);
 
-  // v0.8.0 修复 P9-1：标题栏拖拽移动本区上边界 → 配对「上方邻区 + 本区」
-  // v0.8.2 功能4：无上方邻区时改拖「本区 + 下区」（nextSectionKey）
-  const { onMouseDown } = useSectionSplit({
-    selfKey: sectionKey ?? "favorites",
-    prevKey: prevSectionKey,
-    nextKey: nextSectionKey,
-    maxHeight,
-  });
+  useEffect(() => {
+    if (!showPicker) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelPicker();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [cancelPicker, showPicker]);
 
-  // v0.8.2 功能2：双击标题栏切换缩小/放大（对应缩小按钮），折叠时禁用拖拽
-  const handleHeaderDoubleClick = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    setCollapsed((c) => !c);
-    setMaximized(false);
+  const toggleCandidate = (key: string) => {
+    if (favoriteKeys.has(key)) return;
+    setSelectedPaths((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const confirmPicker = () => {
+    const selected = candidates.filter((file) => selectedPaths.has(file.key) && !favoriteKeys.has(file.key));
+    const result = addFavorites(selected.map((file) => ({ path: file.path, name: file.name })));
+    cancelPicker();
+    if (result.skipped > 0) {
+      setFeedback(t("favorites.addedWithSkipped", { added: result.added, skipped: result.skipped, limit: 50 }));
+    } else if (result.added > 0) {
+      setFeedback(t("favorites.addedCount", { count: result.added }));
+    }
   };
 
   return (
-    <div
-      className={`favorites-section ${collapsed ? "collapsed" : ""} ${maximized ? "maximized" : ""}`}
-      style={sectionStyle}
-      // v0.8.2 功能5：data-section-key 供内容高度测量（重新打开栏时上一栏收缩到内容高度）
-      data-section-key={sectionKey ?? "favorites"}
-    >
-      <div
-        className="favorites-header"
-        onMouseDown={(e) => { if (!collapsed && !maximized) onMouseDown(e); }}
-        onDoubleClick={handleHeaderDoubleClick}
-      >
+    <section className="favorites-panel" aria-label={t("sidebar.favorites")}>
+      <header className="favorites-panel-header">
         <span className="filetree-title">
-          {favorites.length > 0
-            ? t("sidebar.favoritesCount", { count: favorites.length })
-            : t("sidebar.favorites")}
+          {favorites.length > 0 ? t("sidebar.favoritesCount", { count: favorites.length }) : t("sidebar.favorites")}
         </span>
-        {/* v0.4.1：标题栏控制按钮（hover 浮现） */}
-        <div className="section-controls">
-          <button
-            className="section-btn section-minimize"
-            title={t("filetree.minimize")}
-            onClick={() => { setCollapsed((c) => !c); setMaximized(false); }}
-          >
-            ▾
-          </button>
-          <button
-            className="section-btn section-maximize"
-            title={t("filetree.maximize")}
-            onClick={() => { setMaximized((m) => !m); setCollapsed(false); }}
-          >
-            ▴
-          </button>
-          {onClose && (
-            <button
-              className="section-btn section-close"
-              title={t("filetree.closeSection")}
-              onClick={onClose}
-            >
-              ×
-            </button>
-          )}
-        </div>
-      </div>
-      {/* 折叠时隐藏列表和空状态提示 */}
-      {/* v0.9.5 问题6 修订2：面板内不再塞空档——一个条目位的间距改由
-          「打开的文件」栏的收缩高度承担，面板整体（标题栏 + 列表）从该空位之后开始 */}
-      {!collapsed && favorites.length === 0 && (
-        <div className="favorites-empty">{t("sidebar.noFavorites")}</div>
-      )}
-      {!collapsed && favorites.length > 0 && (
-        <div className="favorites-list">
-          {favorites.map((file) => {
-            // 兼容 Windows 路径：取父目录用于显示
-            const dir = file.path.replace(/\\/g, "/").replace(/\/[^/]*$/, "");
-            return (
-              <div
-                key={file.path}
-                className={`filetree-node favorite-item ${compact ? "compact" : ""}`}
-                onClick={() =>
-                  onOpen({
-                    name: file.name,
-                    path: file.path,
-                    isDir: false,
-                    size: 0,
-                  })
-                }
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setContextMenu({ x: e.clientX, y: e.clientY, path: file.path });
-                }}
-                // v0.8.4 需求10（P2 拍板）：stale 条目（外部删除/移动）在 hover tooltip
-                // 追加失效提示（复用 RecentFiles 的 staleHint 文案，最小实现不加 ⚠ 图标）
-                title={`${file.path}${file.stale ? `\n${t("recent.staleHint")}` : ""}`}
-              >
-                <span className="filetree-icon favorite-star">★</span>
-                <div className="favorite-info">
-                  <span className="filetree-name">{file.name}</span>
-                  <span className="favorite-path">{dir}</span>
-                </div>
-              </div>
-            );
-          })}
+        <button
+          type="button"
+          className="section-btn favorites-add-btn"
+          title={t("favorites.add")}
+          aria-label={t("favorites.add")}
+          aria-expanded={showPicker}
+          onClick={() => { setFeedback(""); setShowPicker(true); }}
+        >
+          <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </button>
+      </header>
+
+      {feedback && <div className="favorites-feedback" role="status">{feedback}</div>}
+
+      {showPicker && (
+        <div className="favorites-add-picker">
+          <div className="favorites-picker-header">{t("favorites.selectOpened")}</div>
+          <div className="favorites-picker-list">
+            {candidates.length === 0 ? (
+              <div className="favorites-picker-empty">{t("favorites.noOpenedFiles")}</div>
+            ) : candidates.map((file) => {
+              const isFavorite = favoriteKeys.has(file.key);
+              const isSelected = selectedPaths.has(file.key);
+              return (
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={isFavorite ? true : isSelected}
+                  aria-label={`${file.name} — ${file.path}`}
+                  disabled={isFavorite}
+                  key={file.key}
+                  className={`favorite-picker-item ${isFavorite ? "disabled" : ""} ${isSelected ? "selected" : ""}`}
+                  onClick={() => toggleCandidate(file.key)}
+                >
+                  <span className="favorite-picker-info">
+                    <span className="filetree-name">{file.name}</span>
+                    <span className="favorite-path">{file.path}</span>
+                  </span>
+                  {isFavorite && <span className="favorite-picker-already">{t("favorites.alreadyAdded")}</span>}
+                  <span className={`favorite-picker-check ${isSelected || isFavorite ? "checked" : ""}`} aria-hidden="true">
+                    {(isSelected || isFavorite) && "✓"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="favorites-picker-footer">
+            <span className="favorites-selected-count">{t("favorites.selectedCount", { count: selectedPaths.size })}</span>
+            <div className="favorites-picker-actions">
+              <button type="button" className="favorites-picker-cancel" onClick={cancelPicker}>{t("common.cancel")}</button>
+              <button type="button" className="favorites-picker-confirm" disabled={selectedPaths.size === 0} onClick={confirmPicker}>
+                {t("favorites.addSelected")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* 右键菜单：从收藏移除 */}
+      {!showPicker && favorites.length === 0 && <div className="favorites-empty">{t("sidebar.noFavorites")}</div>}
+      {!showPicker && favorites.length > 0 && (
+        <div className="favorites-list">
+          {favorites.map((file) => (
+            <div
+              key={file.path}
+              className="filetree-node favorite-item"
+              onClick={() => onOpen({ name: file.name, path: file.path, isDir: false, size: 0 })}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setContextMenu({ x: event.clientX, y: event.clientY, path: file.path });
+              }}
+              title={`${file.path}${file.stale ? `\n${t("recent.staleHint")}` : ""}`}
+            >
+              <span className="filetree-icon favorite-star">★</span>
+              <div className="favorite-info">
+                <span className="filetree-name">{file.name}</span>
+                <span className="favorite-path">{file.path.replace(/\\/g, "/").replace(/\/[^/]*$/, "")}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {contextMenu && (
-        <div
-          className="filetree-context-menu"
-          style={{
-            left: contextMenu.x,
-            top: contextMenu.y,
-            position: "fixed",
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            className="context-menu-item danger"
-            onClick={() => {
-              removeFavorite(contextMenu.path);
-              setContextMenu(null);
-            }}
-          >
+        <div className="filetree-context-menu" style={{ left: contextMenu.x, top: contextMenu.y, position: "fixed" }} onClick={(event) => event.stopPropagation()}>
+          <button className="context-menu-item danger" onClick={() => { removeFavorite(contextMenu.path); setContextMenu(null); }}>
             {t("sidebar.removeFromFavorites")}
           </button>
         </div>
       )}
-    </div>
+    </section>
   );
 }

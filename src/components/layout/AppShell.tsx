@@ -8,11 +8,20 @@ interface AppShellProps {
   sidebar?: React.ReactNode;
   outline?: React.ReactNode;
   children?: React.ReactNode;
+  sidebarCollapsed?: boolean;
+  onSidebarCollapsedChange?: (collapsed: boolean) => void;
 }
 
-export function AppShell({ sidebar, outline, children }: AppShellProps) {
+export function AppShell({
+  sidebar,
+  outline,
+  children,
+  sidebarCollapsed: controlledSidebarCollapsed,
+  onSidebarCollapsedChange,
+}: AppShellProps) {
   const t = useT();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [internalSidebarCollapsed, setInternalSidebarCollapsed] = useState(false);
+  const sidebarCollapsed = controlledSidebarCollapsed ?? internalSidebarCollapsed;
   const [outlineCollapsed, setOutlineCollapsed] = useState(false);
 
   // v0.4.0：从 store 读取侧边栏/大纲栏宽度，支持持久化
@@ -29,20 +38,23 @@ export function AppShell({ sidebar, outline, children }: AppShellProps) {
     document.documentElement.style.setProperty("--outline-width", `${outlineWidth}px`);
   }, [outlineWidth]);
 
-  const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
+  const setSidebarCollapsed = useCallback((next: boolean) => {
+    if (controlledSidebarCollapsed === undefined) setInternalSidebarCollapsed(next);
+    onSidebarCollapsedChange?.(next);
+  }, [controlledSidebarCollapsed, onSidebarCollapsedChange]);
+  const toggleSidebar = useCallback(() => setSidebarCollapsed(!sidebarCollapsed), [sidebarCollapsed, setSidebarCollapsed]);
   const toggleOutline = useCallback(() => setOutlineCollapsed((v) => !v), []);
 
-  // v0.9.0 自定义快捷键：Ctrl+Alt+←/→ 折叠侧栏/大纲栏（App keydown 匹配后派发命令总线）。
-  // 折叠状态保持 AppShell 本地 state，不提升——命令总线解耦，避免把 UI 态塞进全局 store。
+  // 标题栏按钮、快捷键与面板入口共享同一可见性状态，避免关闭面板误收起侧栏。
   useEffect(() => {
     const handler = (e: Event) => {
       const id = (e as CustomEvent).detail?.id;
-      if (id === "view.toggleLeft") setSidebarCollapsed((v) => !v);
+      if (id === "view.toggleLeft") toggleSidebar();
       if (id === "view.toggleRight") setOutlineCollapsed((v) => !v);
     };
     window.addEventListener("lightmd:command", handler);
     return () => window.removeEventListener("lightmd:command", handler);
-  }, []);
+  }, [toggleSidebar]);
 
   // v0.4.0：侧边栏分割条（左侧栏，拖右移→宽度增加）
   const sidebarResizer = useResizable({
@@ -83,14 +95,7 @@ export function AppShell({ sidebar, outline, children }: AppShellProps) {
     <div className="app-shell">
       {sidebar && (
         <aside className={`app-sidebar ${sidebarCollapsed ? "app-sidebar-collapsed" : ""}`}>
-          <button
-            className="sidebar-toggle-btn sidebar-toggle-left"
-            title={sidebarCollapsed ? t("appshell.expandSidebar") : t("appshell.collapseSidebar")}
-            onClick={toggleSidebar}
-          >
-            {sidebarCollapsed ? "›" : "‹"}
-          </button>
-          <div className="app-sidebar-content">
+          <div className="app-sidebar-content" {...(sidebarCollapsed ? { inert: "" } : {})} aria-hidden={sidebarCollapsed}>
             {sidebar}
           </div>
           {/* v0.4.0：侧边栏右边缘分割条，折叠时不渲染 */}

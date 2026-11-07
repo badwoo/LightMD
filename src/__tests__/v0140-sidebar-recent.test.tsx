@@ -169,13 +169,13 @@ describe("v0.14.0 需求3：RecentFiles 渲染条件（文件与文件夹两类�
     expect(screen.getByText("a.md")).toBeTruthy();
   });
 
-  it("文件与文件夹都空 → 不渲染（新开软件什么都没打开时的正确行为）", () => {
+  it("文件与文件夹都空 → 仍渲染完整空态面板", () => {
     useFileStore.setState({ recentFiles: [], recentFolders: [] });
 
     const { container } = render(<RecentFiles onOpen={vi.fn()} />);
 
-    expect(container.querySelector(".recent-files")).toBeNull();
-    expect(container.firstChild).toBeNull();
+    expect(container.querySelector(".recent-files")).not.toBeNull();
+    expect(screen.getByText("暂无最近打开记录")).toBeTruthy();
   });
 
   it("两类都有 → 按 accessedAt 降序混排（v0.8.5 行为不回退）", () => {
@@ -234,7 +234,7 @@ describe("v0.14.0 需求3：时钟切换 → 面板出现/收起（行为契约�
           >
             clock
           </button>
-          {showRecent && hasData ? <RecentFiles onOpen={vi.fn()} /> : null}
+          {showRecent ? <RecentFiles onOpen={vi.fn()} /> : null}
         </div>
       );
     }
@@ -271,7 +271,7 @@ describe("v0.14.0 需求3：时钟切换 → 面板出现/收起（行为契约�
       return (
         <div>
           <button data-testid="clock" onClick={() => setShowRecent((v) => !v)}>clock</button>
-          {showRecent && hasData ? <RecentFiles onOpen={vi.fn()} /> : null}
+          {showRecent ? <RecentFiles onOpen={vi.fn()} /> : null}
         </div>
       );
     }
@@ -283,7 +283,7 @@ describe("v0.14.0 需求3：时钟切换 → 面板出现/收起（行为契约�
     expect(screen.getByText("docs")).toBeTruthy();
   });
 
-  it("完全没数据时点时钟 → 面板不出现（这是正确行为，不塞假数据）", () => {
+  it("完全没数据时点时钟 → 显示空态面板", () => {
     useFileStore.setState({ recentFiles: [], recentFolders: [] });
 
     function ToggleHarness() {
@@ -294,7 +294,7 @@ describe("v0.14.0 需求3：时钟切换 → 面板出现/收起（行为契约�
       return (
         <div>
           <button data-testid="clock" onClick={() => setShowRecent((v) => !v)}>clock</button>
-          {showRecent && hasData ? <RecentFiles onOpen={vi.fn()} /> : null}
+          {showRecent ? <RecentFiles onOpen={vi.fn()} /> : null}
         </div>
       );
     }
@@ -302,7 +302,8 @@ describe("v0.14.0 需求3：时钟切换 → 面板出现/收起（行为契约�
     const { container } = render(<ToggleHarness />);
     fireEvent.click(screen.getByTestId("clock"));
 
-    expect(container.querySelector(".recent-files")).toBeNull();
+    expect(container.querySelector(".recent-files")).not.toBeNull();
+    expect(screen.getByText("暂无最近打开记录")).toBeTruthy();
   });
 });
 
@@ -422,22 +423,17 @@ describe("v0.14.0 需求3：展开动画同步契约", () => {
     expect(block).toContain("const target = el.scrollHeight");
   });
 
-  it("收藏/最近面板**不叠** wrapper 高度动画（高度交给 section 0.3s transition）", () => {
-    // 实机第二轮时序采样（_verify-out/v0140-probe-sidebar-anim.txt）：wrapper 的
-    // 0→高 动画目标会与父组件布局提交赛跑（夹在 204px，371ms 后突然弹到 720px）。
-    // 因此面板高度只由 section 自身的 transition 驱动，wrapper 只做水平滑入。
-    expect(fileTreeSrc).toContain("<SlideInWrap animateHeight={false}>{children}</SlideInWrap>");
-    // 文件夹栏仍保留 v0.8.2 的"下方栏被平滑推下去"（wrapper 高度展开）
+  it("收藏/最近改为独立全高滑动层，不再参与文件树高度动画", () => {
+    expect(fileTreeSrc).toContain("function SidebarPanelSlide");
+    expect(cssSrc).toContain("@keyframes sidebar-panel-from-left");
+    expect(cssSrc).toContain("@keyframes sidebar-panel-to-right");
+    // 文件夹栏仍保留原有的高度展开动画。
     expect(fileTreeSrc).toContain("<SlideInWrap>{section}</SlideInWrap>");
   });
 
-  it("两个高度自适应 effect 用 useLayoutEffect（同一提交内完成，不跨帧）", () => {
-    // 收缩 effect：favRecentCompact 分支
-    expect(fileTreeSrc).toContain("useLayoutEffect(() => {\n    if (!favRecentCompact) {");
-    // auto-fill effect：orderedKey 分支
+  it("文件树高度自适应仍用 useLayoutEffect，旧收藏收缩 effect 已移除", () => {
     expect(fileTreeSrc).toContain("}, [orderedKey]);");
-    // 两个 effect 都不再包 requestAnimationFrame（跨帧会与 SlideInWrap 错拍）
-    expect(fileTreeSrc).not.toContain("return () => cancelAnimationFrame(raf);");
+    expect(fileTreeSrc).not.toContain("favRecentCompact");
   });
 
   it("reveal 不再用 5 个固定延时，改为布局稳定后至多一次校正", () => {
@@ -452,9 +448,9 @@ describe("v0.14.0 需求3：展开动画同步契约", () => {
     expect(fileTreeSrc.match(/sc\.scrollTo\(/g)?.length).toBe(1);
   });
 
-  it("收藏栏也接 reveal（用户同时抱怨星标与时钟，不能只修最近打开）", () => {
-    expect(fileTreeSrc).toContain('revealSectionAfterLayoutSettled(scrollRef.current, "favorites")');
-    expect(fileTreeSrc).toContain('revealSectionAfterLayoutSettled(scrollRef.current, "recent")');
+  it("独立收藏/最近视图不再改写文件树滚动位置", () => {
+    expect(fileTreeSrc).not.toContain('revealSectionAfterLayoutSettled(scrollRef.current, "favorites")');
+    expect(fileTreeSrc).not.toContain('revealSectionAfterLayoutSettled(scrollRef.current, "recent")');
   });
 
   it("滚动条槽位固定（scrollbar-gutter: stable）——滚动条闪现不再挤动内容宽度", () => {

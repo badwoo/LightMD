@@ -348,10 +348,10 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.15.6 installers:
+Visit the [Releases](../../releases) page to download the 0.16.0 installers:
 
-- **`LightMD_0.15.6_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.15.6_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.16.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.16.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -402,6 +402,55 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.16.0 (2026-11-07)
+
+**Tab and indentation system — one single source for tab width, a configurable indent unit, and documentation aligned with the implementation**
+
+In v0.15.6 the Tab key was a **chain of commands** (`pairTabOut → tableTab → codeBlockIndent → sinkListItem`), and when every link returned `false` the event fell through to the browser's native Tab and **focus escaped the editor** — the root cause was not a missing scenario but the chain having no fallback. This release adds the first-class `indent` / `outdent` commands in `core/indentCommands.ts`, which dispatch by block type and, **apart from the table branch, never return `false`**, turning focus escape from "fix it once per scenario" into something structurally impossible; the Tab chain is now `chainCommands(pairTabOut, tableTab, indent)`. The table below lists the 16 defects fixed in this release by severity.
+
+| Level / # | Issue | Fix |
+| --- | --- | --- |
+| P0 / D1 | **Pressing Tab with a selection inside a code block corrupted the code**: the old single-point `insertText(unit, $from.pos)` turned `"line1\nline2\nline3"` with `line2..line3` selected into `"line1\nl  ine2\nline3"` | Indent now applies **once to every line the selection covers** (back to front, single transaction) |
+| P0 / D2 | **Tab did not indent at all in source mode** | New pure planner `utils/sourceIndent.ts` wired through `handleSourceKeyDown`; the key is swallowed whether or not there is anything to indent (otherwise the "nothing left to remove" case still let focus escape) |
+| P1 / D3 | Paragraph / heading / quote blocks leaked **focus** on Tab | The `indent` dispatch takes over (paragraphs get an indent, headings swallow the key) |
+| P1 / D4 | **`math_block` was missing from `inCodeLikeBlock`**, so Tab threw focus to the ⋮ menu | Added to the `inCodeLikeBlock` check; focus stays in the editor |
+| P1 / D5 | On the **first** list / task-list item `sinkListItem` always fails, so Tab leaked focus | Shows "cannot indent the first list item" and swallows the key |
+| P1 / D6 | **`pairTabOut` stole Tab inside table cells** (with paired brackets `()` in the cell, Tab moved one character right instead of changing cell) | `PAIR_TAB_DISABLED_NODES` (including `table_cell` / `table_header`) is split out and kept **separate from `DISABLED_NODES`** so in-cell autocompletion still works |
+| P1 / D7 | **`mermaid_block` was absent from `DISABLED_NODES`**, conflicting with the code-block indent behaviour | Merged into `DISABLED_NODES`, giving one behaviour shared with code blocks |
+| P1 / D8 | Code-block Shift+Tab **ate spaces in the middle of a line** (`"a b"` → `"ab"`) | Now only removes indentation when everything from the caret back to the line start is whitespace |
+| P2 / D9 | **Real `\t` indentation was not recognised**: `outdentLen` always counted one `\t` as one unit | `outdentLen` recognises real `\t` and counts one unit by its actual width |
+| P2 / D10 | **Shift+Tab with a selection did not work line by line** | Shares `lineStartsInRange` with D1 and outdents each line the selection covers |
+| P2 / D11 | **A bare Tab in a `NodeSelection` state hit the raw key** | The key is swallowed instead of escaping |
+| P2 / D12 | **The same file containing `\t` showed different indent widths in Preview and Edit** (`code-theme.css` set 2 for `code[class*=language-]`, which only matched code blocks **that carried a language tag**, while `editor.css` hard-coded 4 for `.code-block-wrapper code` and `.source-editor`) | All three `tab-size` sites now read the global CSS variable `--lm-tab-size` (falling back to 2), driven by the `indentUnit` setting — code blocks with and without a language tag, and the source textarea, finally use one width. The variable is also injected into the preview iframe and exported documents, since a standalone document does not inherit the parent's variables |
+| P2 / D13 | **Documentation did not match the implementation** | `USER_GUIDE.md` gains a "Tab and indentation behaviour (unified as of 0.16.0)" section — a per-scenario table covering tables / code blocks / math blocks / diagram blocks / lists / task lists / quote blocks / plain paragraphs / headings / paired symbols / AI ghost text / all three modes; the list shortcut table now says indentation applies **inside list items only** and that the **first list item cannot be indented**. Also, what this README previously described as "`pairTabOut` stealing Tab inside tables is the expected behaviour" is rewritten as a **confirmed defect fixed in v0.16.0** (see D6) |
+| P2 / D14 | **There was no indent-unit setting** | **Settings → Editor → Indent unit** dropdown (`Tab` / `2 spaces` / `4 spaces`, default 2 spaces); changes apply **immediately** and update code blocks and the editor area together |
+| P2 / D15 | **Undo granularity was unpredictable** | Indent transactions carry `closeHistory` so that **within the ProseMirror undo stack** each indent is its own step (verified: two Tabs produce two `closeHistory` boundaries). However, the real `Ctrl+Z` path routes through `hostUndoCommand` to the **unified timeline**, which only observes the `pmAdapter` debounce window (`DEBOUNCE_MS=350` / `MAX_WAIT_MS=900`) and never reads `closeHistoryKey` — so **indents less than ~350ms apart are merged into a single undo step** (measured: merged at 150/250ms, separate at 400/500/700ms). Known limitation; it does not affect data correctness. |
+| P2 / D16 | **`decidePairTabOut` did not check `isComposing`** | Added (unreachable through ProseMirror; the real defect was on the source side) |
+
+> The 0.16.0 Tab rule: whatever block type the caret sits in, `Tab` / `Shift+Tab` never move focus out of the editor (the focus-escape problems of v0.15.6 and earlier are fixed in this release).
+
+**Sidebar UI rebuilt — a title-bar sidebar button, Favorites and Recent as mutually exclusive full-height views, and multi-select batch adding for Favorites**
+
+| Point | Implementation |
+| --- | --- |
+| File-section title merged with the new-file button | The sidebar's "Files" heading and the new-file icon in its top-right corner are merged into a single "＋ New" button that reuses the existing `file.new` command, so behaviour is unchanged |
+| Title-bar sidebar button | A sidebar button is added to the left of the LightMD title: in the file-manager view it **collapses / expands** the sidebar; in the Favorites or Recent view it **closes the current panel and returns to the file manager** |
+| Favorites / Recent as full-height views | Both become **mutually exclusive** full-height panels (only one visible at a time) with the sidebar toolbar kept; opening **slides in from the left**, closing **slides out to the right** |
+| The file tree is hidden, not unmounted | Switching to Favorites or Recent only **hides** the file tree, so scroll position and expanded folders survive the round trip |
+| Success paths return to the file manager | Opening a workspace from "Recent folders" or a shared-folder entry automatically switches back to the file-manager view, so the changed workspace is immediately visible |
+| Multi-select batch adding for Favorites | The Favorites panel gains "Add favorites": it reads the **already-saved** open tabs of the current window and supports circular multi-select, deselecting, closing with `Esc`, and staying in sync when a tab is closed; submission goes through the new atomic batch action `addFavorites`, which accepts up to a **50-entry** capacity and returns the actual `added` / `skipped` counts — **existing favorites are never evicted to make room for new ones**; files sharing a name include their full path in the accessible name so they remain distinguishable |
+| Reduced motion and width restore | The "reduce motion" preference is honoured, weakening the slide transitions accordingly; the sidebar restores its original width after being collapsed |
+| Chinese and English copy | All new labels — the button, the selected count, the capacity-limit notice — ship in both languages |
+
+Verification: `npx tsc --noEmit` passes (exit 0); the full Vitest suite run as 4 sequential shards
+(all with `--no-file-parallelism`) totals **362 files / 6578 cases passing** (1 pre-existing skip,
+**0 failures**); the real-machine WebView2 probes `scripts/v0160-probe-sidebar-ui.mjs` reports
+**15/15 PASS** and `scripts/v0160-probe-tab-indent.mjs` reports **11 PASS / 1 FAIL** (the FAIL is the
+undo-coalescing window for consecutive indents described above, now documented as measured and listed
+as a known limitation); `npx tauri build` produces NSIS + MSI, `lightmd.exe` reports
+`FileVersion` / `ProductVersion` `0.16.0`, and the frontend dist entry `index-BKaYtI6H.js` is found
+in the exe byte stream.
 
 ### v0.15.6 (2026-11-03)
 

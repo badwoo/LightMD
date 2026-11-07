@@ -13,6 +13,10 @@ import "./TitleBar.css";
 
 interface TitleBarProps {
   fileName?: string;
+  sidebarCollapsed?: boolean;
+  sidebarView?: "files" | "favorites" | "recent";
+  onToggleSidebar?: () => void;
+  onCloseSidebarPanel?: () => void;
   onNew?: () => void;
   onNewFile?: () => void;
   onNewFolder?: () => void;
@@ -58,6 +62,10 @@ export function windowDisplayName(
 
 export function TitleBar({
   fileName,
+  sidebarCollapsed = false,
+  sidebarView = "files",
+  onToggleSidebar = () => {},
+  onCloseSidebarPanel = () => {},
   onNew,
   onNewFile,
   onNewFolder,
@@ -137,12 +145,39 @@ export function TitleBar({
   };
 
   const slots = windowList.map((w) => w.label);
+  const sidebarLabelKey = sidebarView === "favorites"
+    ? "sidebar.closeFavorites"
+    : sidebarView === "recent"
+      ? "sidebar.closeRecent"
+      : sidebarCollapsed
+        ? "appshell.expandSidebar"
+        : "appshell.collapseSidebar";
 
   return (
     <div className="titlebar" data-tauri-drag-region>
       <div className="titlebar-left">
         {/* v0.8.1 需求6：无边框窗口靠 data-tauri-drag-region 拖动，
             直接命中的元素需自带该属性（子元素不会继承），故逐个补齐 */}
+        <button
+          type="button"
+          className="titlebar-sidebar-btn"
+          title={t(sidebarLabelKey)}
+          aria-label={t(sidebarLabelKey)}
+          aria-expanded={sidebarView === "files" ? !sidebarCollapsed : undefined}
+          onClick={sidebarView === "files" ? onToggleSidebar : onCloseSidebarPanel}
+        >
+          {sidebarView === "files" ? (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+              <line x1="6" y1="2.5" x2="6" y2="13.5" />
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+              <line x1="4" y1="4" x2="12" y2="12" />
+              <line x1="12" y1="4" x2="4" y2="12" />
+            </svg>
+          )}
+        </button>
         <span className="titlebar-brand" data-tauri-drag-region>LightMD</span>
         {/* 模式切换按钮组：阅读 / 编辑（v0.14.0 需求1：三模式合并为二模式） */}
         <div className="titlebar-mode-switch">

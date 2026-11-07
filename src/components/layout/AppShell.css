@@ -17,8 +17,9 @@
 }
 
 .app-sidebar-collapsed {
-  width: 20px;
-  min-width: 20px;
+  width: 0;
+  min-width: 0;
+  border-right: 0;
 }
 
 .app-sidebar-content {

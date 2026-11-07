@@ -739,7 +739,47 @@ export function revealSectionAfterLayoutSettled(
   return cancel;
 }
 
-export function FileTree() {
+export type SidebarView = "files" | "favorites" | "recent";
+
+/** 全高侧栏视图只做水平位移；退出期间保留快照，重开时取消旧卸载计时器。 */
+function SidebarPanelSlide({ visible, children }: { visible: boolean; children: React.ReactNode }) {
+  const [mounted, setMounted] = useState(visible);
+  const snapshotRef = useRef<React.ReactNode>(null);
+  if (visible && !mounted) setMounted(true);
+  if (visible) snapshotRef.current = children;
+  useEffect(() => {
+    if (visible) return;
+    if (!snapshotRef.current) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      snapshotRef.current = null;
+      setMounted(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      snapshotRef.current = null;
+      setMounted(false);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [visible]);
+  if (!mounted) return null;
+  return (
+    <div
+      className={visible ? "sidebar-panel-slide-enter" : "sidebar-panel-slide-exit"}
+      {...(!visible ? { inert: "" } : {})}
+      aria-hidden={!visible}
+    >
+      {visible ? children : snapshotRef.current}
+    </div>
+  );
+}
+
+export function FileTree({
+  view = "files",
+  onViewChange,
+}: {
+  view?: SidebarView;
+  onViewChange?: (view: SidebarView) => void;
+}) {
   const rootPath = useFileStore((s) => s.rootPath);
   const openFolders = useFileStore((s) => s.openFolders);
   const tempFiles = useFileStore((s) => s.tempFiles);
@@ -757,11 +797,6 @@ export function FileTree() {
   const addFavorite = useFileStore((s) => s.addFavorite);
   const removeFavorite = useFileStore((s) => s.removeFavorite);
   const favorites = useFileStore((s) => s.favorites);
-  // v0.8.0 修复 P12-4：布局列表需要知道"最近打开"栏是否会真正渲染（空列表时该栏返回 null）
-  // v0.14.0 需求3：RecentFiles 自 v0.8.5 需求8 起是「文件 + 文件夹」混排，
-  // 只要任一类有记录就渲染——所以可见性判定必须同样两类都算（见 recentHasData）。
-  const recentFiles = useFileStore((s) => s.recentFiles);
-  const recentFolders = useFileStore((s) => s.recentFolders);
   const renameFileEntry = useFileStore((s) => s.renameFileEntry);
   const t = useT();
   // 同步全局 filePath，确保关闭文件时能正确判断当前活跃文件
@@ -852,11 +887,10 @@ export function FileTree() {
     }
   }, [openFolders, pasteTargetDir]);
 
-  // v0.4.1：收藏/最近区域显示开关（标题栏 toggle 按钮控制）
-  // Issue 2 修复：收藏栏默认改为关闭状态
-  // v0.9.2 需求：「最近打开」区块同样默认关闭（点击标题栏时钟图标开启）
-  const [showFavorites, setShowFavorites] = useState(false);
-  const [showRecent, setShowRecent] = useState(false);
+  // v0.16.0：文件管理 / 收藏 / 最近打开是互斥视图，状态由 App 与标题栏共享。
+  const showFavorites = view === "favorites";
+  const showRecent = view === "recent";
+  const selectView = (next: SidebarView) => onViewChange?.(view === next ? "files" : next);
 
   // v0.8.2 功能1：「打开的文件」栏标题栏缩小/放大状态（与文件夹栏一致）。
   // v0.8.2 调整：去掉标题栏"关闭"按钮——本栏随文件数据自动出现/消失
@@ -915,11 +949,6 @@ export function FileTree() {
     () => ({ ...settingsSectionSizes }),
   );
   const scrollRef = useRef<HTMLDivElement>(null);
-  /** v0.9.5 问题6 修订2：收藏/最近打开期间「打开的文件」栏收缩前的记忆高度
-   * （null = 未处于收缩态）。同时用于持久化排除——收缩高度是运行时布局产物，
-   * 不应写回设置，否则在收藏/最近打开状态下退出应用，下次启动该栏会残留空档。 */
-  const prevTempSizeRef = useRef<number | null>(null);
-
   const sizeOf = useCallback(
     // v0.14.0 需求2：文件夹栏默认高度 = 「总 11 个条目位 = 10 文件栏位 + 1 空白栏位」
     // （362px，见 DEFAULT_FOLDER_SECTION_HEIGHT）；用户拖拽过的持久化高度仍优先。
@@ -937,12 +966,7 @@ export function FileTree() {
   useEffect(() => {
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
     persistTimer.current = window.setTimeout(() => {
-      // v0.9.5 问题6 修订2：收缩态下「打开的文件」栏高度不持久化（写回收缩前记忆值）
-      const toSave =
-        prevTempSizeRef.current !== null
-          ? { ...sectionSizes, temp: prevTempSizeRef.current }
-          : sectionSizes;
-      setSidebarSectionSizes(toSave);
+      setSidebarSectionSizes(sectionSizes);
     }, 250);
     return () => {
       if (persistTimer.current) window.clearTimeout(persistTimer.current);
@@ -951,24 +975,6 @@ export function FileTree() {
 
   // 可见 section 的顺序（决定相邻配对与分隔条位置）
   const tempVisible = tempFiles.length > 0 || untitledTabs.length > 0;
-  /**
-   * v0.14.0 需求3（根因①）：最近打开栏"有数据"的判定必须与 RecentFiles 的渲染条件一致。
-   *
-   * 实机证据（scripts/v0140-probe-recent.mjs 阶段3，_verify-out/v0140-probe-recent.txt）：
-   * 只开过文件夹、没开过任何文件时 recentFiles=[] 而 recentFolders=['工作区']。
-   * 旧判定只看 recentFiles.length > 0 → 点了时钟按钮（按钮已 active）但整栏
-   * 既不进 ordered、SlideWrap 也 visible=false → 面板一次都不挂载，
-   * 用户看到的就是「点击窗口没有出来」。
-   *
-   * RecentFiles 自身从 v0.8.5 需求8 起就是「文件 + 文件夹」混排，任一类有记录即渲染
-   * （见其 `if (recentFiles.length === 0 && recentFolders.length === 0) return null`），
-   * 布局/动画层却还在用旧的"只看文件"口径——两边口径不一致就是本缺陷。
-   * 现在统一为 recentHasData，三处（compact / ordered / SlideWrap）共用。
-   */
-  const recentHasData = recentFiles.length > 0 || recentFolders.length > 0;
-  // v0.9.5 问题6：收藏/最近打开任一栏展开时,「打开的文件」栏高度收缩为内容自适应,
-  // 收藏/最近面板以紧凑内嵌形态(无标题栏、单行条目)紧贴其列表之下(空一个条目位)
-  const favRecentCompact = showFavorites || (showRecent && recentHasData);
   const ordered: string[] = [];
   if (openFolders.length > 0) {
     openFolders.forEach((f) => ordered.push(`folder:${f.path}`));
@@ -976,12 +982,6 @@ export function FileTree() {
     ordered.push("temp");
   }
   if (openFolders.length > 0 && tempVisible) ordered.push("temp");
-  if (showFavorites) ordered.push("favorites");
-  // v0.8.0 修复 P12-4：最近打开栏为空（文件与文件夹都没记录）时该栏不渲染
-  // （RecentFiles 返回 null），布局列表需与"实际渲染的栏"一致，否则分隔条/拖拽配对
-  // 与自动填充会指向不存在的栏。
-  // v0.14.0 需求3：空判定改为「文件 + 文件夹都为空」（口径与 RecentFiles 对齐）。
-  if (showRecent && recentHasData) ordered.push("recent");
   const indexOfKey = (k: string) => ordered.indexOf(k);
   const prevOf = (k: string) => {
     const i = indexOfKey(k);
@@ -1048,15 +1048,6 @@ export function FileTree() {
   const autoFillRef = useRef<{ key: string; prevHeight: number; filledHeight: number } | null>(
     null,
   );
-  // v0.9.5 问题6 修订2：收藏/最近打开任一栏展开时,「打开的文件」栏**显式收缩**为
-  // 「列表内容自然高度 + 一个条目位(SIDEBAR_ITEM_HEIGHT)」并写入 sizeOf(与分区/
-  // 拖拽体系一致)。空档由本栏高度承担(不再在面板内部塞 spacer),收藏/最近面板
-  // 整体(标题栏 + 列表)因此从列表末尾的下一个条目位开始——5 条文件时第 7 行为
-  // 空档、面板标题栏位于第 8 行。关闭时恢复收缩前的记忆高度。
-  // 不依赖 autoFill 的还原路径——temp 从未被撑满过(autoFillRef 为空)时
-  // autoFill 不会收缩,显式收缩保证任何状态下都成立。
-  const sizeOfRef = useRef(sizeOf);
-  sizeOfRef.current = sizeOf;
   /**
    * v0.14.0 需求3（根因②，本轮修正）：两个高度自适应 effect 都改成
    * **useLayoutEffect（同一提交内、绘制前同步跑完）**，不再走 useEffect + rAF 的异步两拍。
@@ -1068,30 +1059,6 @@ export function FileTree() {
    * 若这里晚一帧，wrapper 会夹住旧高度、末了再弹开，且 temp 与面板错帧——
    * 时序采样实测总量中段凹 33px（_verify-out/v0140-probe-sidebar-anim.txt）。
    */
-  useLayoutEffect(() => {
-    if (!favRecentCompact) {
-      // 关闭收藏/最近打开:恢复收缩前记忆高度(随后 autoFill 会按需重新撑满)
-      const restore = prevTempSizeRef.current;
-      if (restore !== null) {
-        prevTempSizeRef.current = null;
-        setSectionSizes((prev) => ({ ...prev, temp: restore }));
-      }
-      return;
-    }
-    const tempEl = findSectionByKey(document, "temp");
-    const contentH = tempEl ? measureSectionContentHeight(tempEl) : null;
-    setSectionSizes((prev) => {
-      const next = { ...prev };
-      const cur = next.temp ?? sizeOfRef.current("temp");
-      if (prevTempSizeRef.current === null) prevTempSizeRef.current = cur;
-      const target =
-        contentH !== null
-          ? Math.max(MIN_SECTION_HEIGHT, contentH + SIDEBAR_ITEM_HEIGHT)
-          : cur;
-      next.temp = target;
-      return next;
-    });
-  }, [favRecentCompact]);
   useLayoutEffect(() => {
     if (skipAutoFillRef.current) {
       skipAutoFillRef.current = false;
@@ -1179,15 +1146,7 @@ export function FileTree() {
    *
    * 两栏各自独立触发（依赖各自的 showX）：两栏同时可见时，点时钟不会把视口抢去收藏栏。
    */
-  useEffect(() => {
-    if (!showFavorites) return;
-    return revealSectionAfterLayoutSettled(scrollRef.current, "favorites");
-  }, [showFavorites]);
-  useEffect(() => {
-    // 数据为空时该栏不渲染（与 RecentFiles / ordered 的口径一致），自然也不需要 reveal
-    if (!(showRecent && recentHasData)) return;
-    return revealSectionAfterLayoutSettled(scrollRef.current, "recent");
-  }, [showRecent, recentHasData]);
+  // 特殊面板为独立全高视图，不再校正文件树 scrollTop。
 
   // v0.8.4 需求7（C5）：排序模式按文件夹根记忆（settings persist），整树统一应用根的模式
   const fileTreeSort = useSettingsStore((s) => s.fileTreeSort);
@@ -1342,6 +1301,7 @@ export function FileTree() {
       const entries = await fileService.listDir(selected);
       const nodes = entries.map(mapToFileNode);
       updateFolderTree(target, nodes);
+      onViewChange?.("files");
       // 缓存根目录子节点（保留其他文件夹的缓存）
       // v0.8.4 需求3+7：排序统一出口 —— FileNode 渲染子节点优先取 childrenMap
       // （childrenByPath），因此缓存必须已按根排序模式/手动顺序排好
@@ -1368,7 +1328,7 @@ export function FileTree() {
     }
     // v0.15.0 F2：added 供调用方判断是否真正新增（提示/watcher 以"新增成功"为前提）
     return { added: !alreadyOpen };
-  }, [addOpenFolder, updateFolderTree, sortChildren, t]);
+  }, [addOpenFolder, updateFolderTree, sortChildren, t, onViewChange]);
 
   const openFolder = useCallback(async () => {
     if (isTauri()) {
@@ -1392,8 +1352,9 @@ export function FileTree() {
         { name: "guide.md", path: "/demo-project/guide.md", isDir: false, size: 1024 },
       ];
       updateFolderTree(mockPath, mockTree);
+      onViewChange?.("files");
     }
-  }, [addOpenFolder, updateFolderTree, t]);
+  }, [addOpenFolder, updateFolderTree, t, onViewChange]);
 
   // ─── 关闭文件夹 ──────────────────────────────
   // v0.4.0：移除指定文件夹，清理该文件夹相关的 childrenMap 和 expandedPaths
@@ -2056,6 +2017,7 @@ export function FileTree() {
         }
       }
       setShowNewFolderDialog(false);
+      if (failed.length < targets.length) onViewChange?.("files");
       if (failed.length === 0) {
         showMessage(t("newFolder.created", { name: folderName }));
       } else {
@@ -2072,7 +2034,7 @@ export function FileTree() {
       setExpandedPaths(next);
       await refreshTree();
     },
-    [refreshTree, t],
+    [refreshTree, t, onViewChange],
   );
 
   // ─── 删除文件（v0.8.5 需求2：删除 = 移到系统回收站，文案同步回收站语义） ────────────────────────────────
@@ -3097,20 +3059,18 @@ export function FileTree() {
     >
       {/* 头部工具栏 */}
       <div className="filetree-header">
-        <span className="filetree-title">{t("filetree.title")}</span>
-        <div className="filetree-actions">
-          {/* v0.8.0 修复 P4-1：工具栏"新增文件"改为立即新建临时（未落盘）文件，
-              不再固定落到第一个打开的文件夹；保存时才由用户选择路径与命名。
-              复用 App 的 file.new 命令（与 Ctrl+N 同一路径，保证编辑器上下文同步） */}
-          <button
-            className="filetree-btn"
-            title={t("filetree.newFileTitle")}
-            onClick={() => {
-              window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "file.new" } }));
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 1.1l3.4 3.5.1.4v4h-1V6H8V2H3v12h5v1H2.5l-.5-.5v-13l.5-.5h6.7l.3.1zM9 2v3h2.9L9 2z" fill="#5c9dff"/><path d="M14 8v2h2v1h-2v2h-1v-2h-2v-1h2V8h1z" fill="#4caf50"/></svg>
-          </button>
+        <button
+          className="filetree-new-primary"
+          title={t("filetree.newFileTitle")}
+          aria-label={t("filetree.newFileTitle")}
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent("lightmd:command", { detail: { id: "file.new" } }));
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+          <span>{t("filetree.newPrimary")}</span>
+        </button>
+        <div className="filetree-actions" aria-label={t("filetree.title")}>
           {/* v0.4.1：新建文件夹图标重设计——蓝色文件夹 + 绿色加号（右下角叠加） */}
           <button className="filetree-btn" title={t("filetree.newFolderTitle")} onClick={() => handleNewFolder(rootPath || "")}>
             <svg width="14" height="14" viewBox="0 0 16 16">
@@ -3138,7 +3098,8 @@ export function FileTree() {
             className={`filetree-btn ${showSearch ? "active" : ""}`}
             title={t("filetree.searchTitle")}
             onClick={() => {
-              if (showSearch && !searchClosing) closeSearchPanel();
+              onViewChange?.("files");
+              if (view === "files" && showSearch && !searchClosing) closeSearchPanel();
               else openSearchPanel();
             }}
           >
@@ -3148,14 +3109,16 @@ export function FileTree() {
           <button
             className={`filetree-btn ${showFavorites ? "active" : ""}`}
             title={t("filetree.favoritesToggle")}
-            onClick={() => setShowFavorites((v) => !v)}
+            aria-pressed={showFavorites}
+            onClick={() => selectView("favorites")}
           >
             <svg width="14" height="14" viewBox="0 0 16 16"><path d="M8 1l2.2 4.5 5 .7-3.6 3.5.9 5L8 12.8 3.5 14.7l.9-5L.8 6.2l5-.7z" fill={showFavorites ? "#ffa726" : "#888"}/></svg>
           </button>
           <button
             className={`filetree-btn ${showRecent ? "active" : ""}`}
             title={t("filetree.recentToggle")}
-            onClick={() => setShowRecent((v) => !v)}
+            aria-pressed={showRecent}
+            onClick={() => selectView("recent")}
           >
             <svg width="14" height="14" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke={showRecent ? "#5c9dff" : "#888"} strokeWidth="1.5"/><path d="M8 4v4l3 2" fill="none" stroke={showRecent ? "#5c9dff" : "#888"} strokeWidth="1.5" strokeLinecap="round"/></svg>
           </button>
@@ -3166,7 +3129,7 @@ export function FileTree() {
           v0.8.5 需求4：挂载即播展开动画（search-panel-open），关闭先播收回动画
           （search-panel-closing，收回期间 pointer-events:none 防误交互），
           动画播完才由 closeSearchPanel 延迟卸载 */}
-      {showSearch && (
+      {view === "files" && showSearch && (
         <div
           className={`filetree-search-panel ${
             searchClosing ? "search-panel-closing" : "search-panel-open"
@@ -3238,8 +3201,14 @@ export function FileTree() {
       {/* v0.8.1 需求3：文件属性对话框（替代原生 alert，无系统提示音） */}
       <FilePropertiesDialog file={propFile} onClose={() => setPropFile(null)} />
 
+      <div className="filetree-view-host">
       <SectionSizeContext.Provider value={sectionSplitCtx}>
-        <div className="filetree-scroll" ref={scrollRef}>
+        <div
+          className={`filetree-scroll ${view !== "files" ? "filetree-files-hidden" : ""}`}
+          ref={scrollRef}
+          {...(view !== "files" ? { inert: "" } : {})}
+          aria-hidden={view !== "files"}
+        >
           {/* v0.4.5 修复：左侧栏「打开的文件」和「文档」栏显示位置逻辑（见 WP4 施工图）
               v0.8.2 功能3：SlideWrap 提供"从左侧滑入/滑向左侧消失"动画（关闭时延迟卸载） */}
           <SlideWrap visible={openFolders.length === 0 && tempVisible}>
@@ -3465,50 +3434,19 @@ export function FileTree() {
         </div>
       )}
 
-      {/* v0.4.1：收藏区段（toggle 按钮控制显示，分隔条拖拽调整高度）
-          v0.8.2 功能3：SlideWrap 滑入/滑出动画 */}
-      <SlideWrap visible={showFavorites}>
-        <>
-          {prevOf("favorites") && (
-            <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("favorites")!, "favorites")} />
-          )}
-          <Favorites
-            onOpen={handleSelectFile}
-            height={sizeOf("favorites")}
-            sectionKey="favorites"
-            prevSectionKey={prevOf("favorites")}
-            nextSectionKey={nextOf("favorites")}
-            maxHeight={maxBottomFor(prevOf("favorites"), "favorites")}
-            onClose={() => setShowFavorites(false)}
-            compact={favRecentCompact}
-          />
-        </>
-      </SlideWrap>
-
-      {/* v0.4.1：最近文件（toggle 按钮控制显示，分隔条拖拽调整高度）
-          v0.8.2 功能3：SlideWrap 滑入/滑出动画
-          v0.14.0 需求3：visible 判定改用 recentHasData（文件或文件夹任一有记录），
-          与 RecentFiles 的渲染条件、ordered 布局列表三处口径统一 */}
-      <SlideWrap visible={showRecent && recentHasData}>
-        <>
-          {prevOf("recent") && (
-            <div className="filetree-v-resizer" onMouseDown={resizerDrag(prevOf("recent")!, "recent")} />
-          )}
-          <RecentFiles
-            onOpen={handleSelectFile}
-            height={sizeOf("recent")}
-            sectionKey="recent"
-            prevSectionKey={prevOf("recent")}
-            nextSectionKey={nextOf("recent")}
-            maxHeight={maxBottomFor(prevOf("recent"), "recent")}
-            onClose={() => setShowRecent(false)}
-            compact={favRecentCompact}
-          />
-        </>
-      </SlideWrap>
         </div>
-        <SidebarScrollArrows scrollRef={scrollRef} />
+        {view === "files" && <SidebarScrollArrows scrollRef={scrollRef} />}
       </SectionSizeContext.Provider>
+
+      <div className="filetree-special-panels" aria-hidden={view === "files"}>
+        <SidebarPanelSlide visible={showFavorites}>
+          <Favorites onOpen={handleSelectFile} />
+        </SidebarPanelSlide>
+        <SidebarPanelSlide visible={showRecent}>
+          <RecentFiles onOpen={handleSelectFile} onFolderOpened={() => onViewChange?.("files")} />
+        </SidebarPanelSlide>
+      </div>
+      </div>
 
       {/* v0.8.0 修复 P12-1：文件夹空白区右键菜单（粘贴；剪贴板为空时置灰）
           v0.8.4 需求8：扩为四项——新建文件 / 新建文件夹 / 刷新 / 粘贴，

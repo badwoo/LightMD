@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 // v0.15.0 F2：路径比较统一走 utils/path.ts（大小写/分隔符/尾斜杠归一 + 前缀边界匹配）
-import { isSameOrInsidePath } from "../utils/path";
+import { isSameOrInsidePath, pathCompareKey } from "../utils/path";
 
 interface FileNode {
   name: string;
@@ -137,6 +137,8 @@ interface FileState {
   removeRecentFile: (path: string) => void;
   /** G7：添加到收藏（按 path 去重，头插，最多 50 条） */
   addFavorite: (file: { path: string; name: string }) => void;
+  /** v0.16.0：批量添加，保留既有收藏，按容量接收并报告实际结果。 */
+  addFavorites: (files: Array<{ path: string; name: string }>) => { added: number; skipped: number };
   /** G7：从收藏中移除指定路径 */
   removeFavorite: (path: string) => void;
   /** G7：查询指定路径是否已收藏 */
@@ -355,6 +357,32 @@ export const useFileStore = create<FileState>()(
             ].slice(0, 50),
           };
         }),
+      // v0.16.0：批量添加与单条旧语义分离——不得为接纳新项静默淘汰既有收藏。
+      addFavorites: (files) => {
+        let result = { added: 0, skipped: 0 };
+        set((state) => {
+          const existing = new Set(state.favorites.map((file) => pathCompareKey(file.path)));
+          const unique: Array<{ path: string; name: string }> = [];
+          for (const file of files) {
+            const key = pathCompareKey(file.path);
+            if (!key || existing.has(key)) continue;
+            existing.add(key);
+            unique.push(file);
+          }
+          const remaining = Math.max(0, 50 - state.favorites.length);
+          const accepted = unique.slice(0, remaining);
+          result = { added: accepted.length, skipped: unique.length - accepted.length };
+          if (accepted.length === 0) return state;
+          const addedAt = Date.now();
+          return {
+            favorites: [
+              ...accepted.map((file) => ({ ...file, addedAt })),
+              ...state.favorites,
+            ],
+          };
+        });
+        return result;
+      },
       // G7：移除收藏（按 path 过滤；不存在时无副作用，不报错）
       removeFavorite: (path) =>
         set((state) => ({

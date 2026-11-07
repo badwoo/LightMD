@@ -119,7 +119,8 @@ describe("P11-4 侧栏末区可拖到底部", () => {
     expect(src).toContain("ordered[ordered.length - 1] !== bottomKey");
     // v0.8.2 功能3 起 FolderSection 渲染收拢进 renderFolderSection（closing 快照传 undefined）
     expect(src).toContain("maxHeight={opts?.closing ? undefined : maxBottomFor(prevOf(fkey), fkey)}");
-    expect(src).toContain('maxHeight={maxBottomFor(prevOf("recent"), "recent")}');
+    expect(src).not.toContain('maxHeight={maxBottomFor(prevOf("recent"), "recent")}');
+    expect(src).toContain('<SidebarPanelSlide visible={showRecent}>');
   });
 });
 
