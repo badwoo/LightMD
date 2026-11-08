@@ -61,13 +61,74 @@
 .favorites-add-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; }
 .favorites-feedback { padding: 6px 12px; font-size: 11px; color: var(--accent-color); border-bottom: 1px solid var(--border-light); }
 .favorites-add-picker { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* v0.16.0 第三次调整：展开/取消动画。clip 负责裁切（inner 从标题栏下方滑入），
+   inner 承载整段内容（header/filter/list/footer）的滑入淡入。 */
+.favorites-picker-clip { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.favorites-picker-inner { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.favorites-picker-open .favorites-picker-inner {
+  animation: favorites-picker-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.favorites-picker-closing .favorites-picker-inner {
+  animation: favorites-picker-out 180ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+.favorites-picker-closing { pointer-events: none; }
+.favorites-picker-closing .favorite-picker-item { animation: none; }
+@keyframes favorites-picker-in {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes favorites-picker-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-8px); }
+}
+/* 「+」展开态旋转 45° 视觉上变成 ×；transition 保证两段过程都顺滑 */
+.favorites-add-btn svg { transition: transform 160ms ease; transform-origin: center; }
+.favorites-add-btn.expanded svg { transform: rotate(45deg); }
 .favorites-picker-header { padding: 9px 12px; font-size: 12px; color: var(--text-secondary); }
+.favorites-picker-filter { flex-shrink: 0; padding: 0 10px 8px; }
+.favorites-picker-filter input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+  outline: none;
+}
+.favorites-picker-filter input:focus { border-color: var(--accent-color); }
+.favorites-picker-filter input::placeholder { color: var(--text-tertiary); }
+.favorites-picker-group-title {
+  padding: 8px 12px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.favorites-picker-hint { padding: 6px 12px; font-size: 10px; color: var(--text-tertiary); line-height: 1.5; }
+.favorites-picker-loading { padding: 10px 12px; font-size: 11px; color: var(--text-secondary); }
+.favorites-picker-error { padding: 8px 12px; font-size: 11px; color: var(--text-secondary); border-top: 1px solid var(--border-light); }
 .favorites-picker-list { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
 .favorite-picker-item { width: 100%; min-height: 42px; display: flex; align-items: center; gap: 6px; padding: 5px 10px 5px 12px; border: 0; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; }
 .favorite-picker-item:hover { background: var(--bg-hover); }
 .favorite-picker-item.selected { background: var(--bg-selection); }
 .favorite-picker-item:disabled { cursor: default; opacity: 0.58; }
 .favorite-picker-item:focus-visible { outline: 2px solid var(--accent-color); outline-offset: -2px; }
+/* 条目入场：轻微上移淡入；animationDelay 由 JSX 内联错峰（Math.min(index,8) * 22ms）。
+   animation-fill-mode 用 both（结束时停在终态），终态透明度走 CSS 变量：否则已收藏条目
+   的 opacity: 0.58 会被动画终态的 opacity: 1 永久盖掉（禁用项就不再显得「置灰」）。 */
+.favorite-picker-item { --favorite-item-end-opacity: 1; }
+.favorite-picker-item:disabled { --favorite-item-end-opacity: 0.58; }
+.favorites-picker-open .favorite-picker-item {
+  animation: favorite-picker-item-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes favorite-picker-item-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: var(--favorite-item-end-opacity, 1); transform: none; }
+}
 .favorite-picker-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .favorite-picker-info .filetree-name,
 .favorite-picker-info .favorite-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -87,6 +148,10 @@
 @media (prefers-reduced-motion: reduce) {
   .sidebar-panel-slide-enter,
   .sidebar-panel-slide-exit { animation: none; }
+  .favorites-picker-open .favorites-picker-inner,
+  .favorites-picker-closing .favorites-picker-inner,
+  .favorites-picker-open .favorite-picker-item { animation: none; }
+  .favorites-add-btn svg { transition: none; }
 }
 
 .filetree-title {

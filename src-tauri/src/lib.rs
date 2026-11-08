@@ -256,6 +256,8 @@ pub fn run() {
             watcher::unwatch_folder,
             file_ops::exists,
             file_ops::reveal_in_folder,
+            // v0.16.0：递归列出已打开工作区文件夹中的文件（收藏候选范围扩展的数据源）
+            file_ops::list_workspace_files,
             image::save_image,
             image::get_assets_dir,
             config::get_config,

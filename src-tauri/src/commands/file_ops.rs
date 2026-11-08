@@ -435,6 +435,188 @@ pub struct FileEntry {
     pub created_ms: u64,
 }
 
+// ─── v0.16.0：收藏候选范围扩展所需的工作区文件枚举 ─────────────────
+
+/// 「收藏」候选范围扩展（v0.16.0）：递归列出已打开工作区文件夹中的全部文件。
+///
+/// 前端 `Favorites` 面板点击「+」时，候选 = 已打开标签 ∪ 各工作区文件夹下的文件
+/// （含子目录）。本次只负责**提供数据源**：不做扩展名过滤（可打开文本类型的判定
+/// 留给前端 `isSupportedTextFile`），也不做内容读取，仅吐 `{ name, path }`。
+///
+/// 口径与 `list_dir_entries` / `workspace_search::collect_files` 保持一致：
+/// - 跳过 `.` 开头的隐藏条目（文件与目录一视同仁，与 `list_dir_entries` 同口径）；
+/// - 跳过 `EXCLUDED_DIRS`（大小写不敏感：Windows 下 `Target` / `Node_Modules` 同样命中）；
+/// - 目录遍历用**显式栈**（非递归），每个目录用 canonicalize 后的真实路径做环检测，
+///   符号链接形成的环不会进入死循环（同一真实目录只访问一次）；
+/// - 符号链接指向目录时按目录继续遍历（`entry.metadata()` 跟随链接判定，坏链跳过）；
+/// - 返回路径统一正斜杠（`\` → `/`），与 `list_dir_entries` 一致，前端可直接复用；
+/// - roots 静默跳过不存在/非目录项；先 canonicalize 去重，再剔除被其它根覆盖的
+///   嵌套根（避免同一子树被扫两遍产出重复条目）；
+/// - 硬上限 `MAX_WORKSPACE_FILES`：达到立即停止并置 `truncated = true`，
+///   防止超大仓库把 IPC 载荷（2 万 × 2 字段）撑爆；
+/// - 结果按 `path` 排序，保证同一目录树下多次调用结果确定。
+const MAX_WORKSPACE_FILES: usize = 20_000;
+
+/// 明确排除的重目录（不依赖"隐藏目录"规则，因为它们在 Windows 上不一定以 `.` 开头）。
+/// 与 `workspace_search::EXCLUDED_DIRS` 同一清单（按大小写不敏感比较）。
+const EXCLUDED_DIRS: &[&str] = &["node_modules", "target", "dist", "build", ".git"];
+
+/// 工作区内的一个文件条目（相对「收藏候选」展示所需的最小信息）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// `list_workspace_files` 的返回载荷：`files` + 是否因上限被截断。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkspaceFileList {
+    pub files: Vec<WorkspaceFileEntry>,
+    pub truncated: bool,
+}
+
+/// 递归列出已打开工作区文件夹中的文件（收藏候选范围扩展的数据源）。
+///
+/// 不存在的根、非目录根一律静默跳过（工作区可能已被删除/移走，不该让收藏面板报错）；
+/// 全部根无效时返回空列表而非 `Err`。
+#[tauri::command]
+pub async fn list_workspace_files(roots: Vec<String>) -> Result<WorkspaceFileList, String> {
+    // 与 list_dir 同风格：同步核心逻辑抽成可单测函数，命令只做薄封装
+    Ok(list_workspace_files_core(&roots))
+}
+
+/// `list_workspace_files` 的同步核心（供命令与单测共用）。
+fn list_workspace_files_core(roots: &[String]) -> WorkspaceFileList {
+    collect_workspace_files(roots, MAX_WORKSPACE_FILES)
+}
+
+/// 实际遍历实现。`max_files` 显式传入（生产用 `MAX_WORKSPACE_FILES`，单测用极小值
+/// 验证截断分支，无需真的造 2 万个文件）。
+fn collect_workspace_files(roots: &[String], max_files: usize) -> WorkspaceFileList {
+    let roots = normalize_workspace_roots(roots);
+    let mut files: Vec<WorkspaceFileEntry> = Vec::new();
+    let mut truncated = false;
+    if roots.is_empty() {
+        return WorkspaceFileList { files, truncated };
+    }
+
+    // 环检测集合：canonicalize 后的真实目录路径（跨根共享，嵌套根已在上一步剔除）
+    let mut visited_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    'outer: for root in &roots {
+        // 显式栈：禁止递归函数（超深目录树会爆栈）
+        let mut stack: Vec<PathBuf> = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            // 环检测：同一真实目录只访问一次（symlink 环不会无限展开）
+            let real = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+            if !visited_dirs.insert(real) {
+                continue;
+            }
+            // 读取失败（权限/网络盘等）静默跳过该目录，不影响其它子树
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // 隐藏条目（`.` 开头）文件与目录都跳过（与 list_dir_entries 同口径）
+                if name.starts_with('.') {
+                    continue;
+                }
+                let path = entry.path();
+                let file_type = match entry.file_type() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                // 目录判定：file_type 判不出时（符号链接）用 metadata() 跟随链接；
+                // 指向目录的链接按目录继续遍历，坏链（metadata 失败）直接跳过
+                let is_dir = if file_type.is_dir() {
+                    true
+                } else if file_type.is_symlink() {
+                    match entry.metadata() {
+                        Ok(m) => m.is_dir(),
+                        Err(_) => continue,
+                    }
+                } else {
+                    false
+                };
+                if is_dir {
+                    // 重目录大小写不敏感比对（Windows 常见 `Target`/`Node_Modules`）
+                    if EXCLUDED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
+                        continue;
+                    }
+                    stack.push(path);
+                    continue;
+                }
+                // 硬上限：还有文件未收集时立即停止并标记截断（恰好等于上限不算截断）
+                if files.len() >= max_files {
+                    truncated = true;
+                    break 'outer;
+                }
+                // 文件（含指向文件的符号链接）
+                files.push(WorkspaceFileEntry {
+                    name,
+                    path: path.to_string_lossy().replace('\\', "/"),
+                });
+            }
+        }
+    }
+
+    // 按 path 排序：同一目录树下多次调用结果确定（前端去重/展示都依赖稳定性）
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    WorkspaceFileList { files, truncated }
+}
+
+/// 规范化 roots：跳过无效项、canonicalize 去重、剔除嵌套根。
+///
+/// 返回按真实路径排序的根列表（父目录一定排在子孙目录前），因此"先收录的根覆盖
+/// 后出现的嵌套根"这条判断可以单向前缀比较，无需双向扫描。
+///
+/// 返回的根是 canonicalize（跟随符号链接）后**剥掉 Windows 扩展前缀**的绝对路径，
+/// 因此遍历产出的 path 一定是绝对路径且不带 `\\?\`（前端相对路径解析依赖这一点）。
+fn normalize_workspace_roots(roots: &[String]) -> Vec<PathBuf> {
+    // (小写规范路径键, 交给遍历用的根路径)
+    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    for r in roots {
+        let p = PathBuf::from(r);
+        // 不存在的根、文件根静默跳过（与"全部无效返回空列表"一致）
+        if !p.exists() || !p.is_dir() {
+            continue;
+        }
+        let real = p.canonicalize().unwrap_or_else(|_| p.clone());
+        let real = PathBuf::from(strip_extended_prefix(&real.to_string_lossy()));
+        // Windows 路径大小写不敏感：用小写键做去重/嵌套比较（canonicalize 保留原大小写）
+        // 去掉末尾分隔符，让"父目录覆盖子目录"能统一用 `${key}/` 前缀判断
+        let key = real
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase()
+            .trim_end_matches('/')
+            .to_string();
+        if candidates.iter().any(|(k, _)| k == &key) {
+            continue;
+        }
+        candidates.push((key, real));
+    }
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut kept: Vec<PathBuf> = Vec::new();
+    let mut kept_keys: Vec<String> = Vec::new();
+    for (key, root) in candidates {
+        // 已被收录的某个根覆盖（前缀 + 分隔符）→ 当前根是嵌套根，跳过
+        let covered = kept_keys
+            .iter()
+            .any(|k| key.starts_with(&format!("{}/", k)));
+        if covered {
+            continue;
+        }
+        kept_keys.push(key);
+        kept.push(root);
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,5 +863,178 @@ mod tests {
         let ghost = dir.join("ghost.md");
         let err = delete_path(&ghost).unwrap_err();
         assert!(err.contains("文件不存在"), "错误信息应包含'文件不存在': {}", err);
+    }
+
+    // ── v0.16.0：list_workspace_files（收藏候选数据源）──
+
+    /// 建一棵固定的测试目录树：
+    /// ```text
+    /// root/
+    ///   a.md              ← 收集
+    ///   sub/b.md          ← 收集
+    ///   sub/deep/c.md     ← 收集（多层嵌套）
+    ///   .hidden.md        ← 跳过（隐藏文件）
+    ///   .hidden_dir/d.md  ← 跳过（隐藏目录）
+    ///   node_modules/x.md ← 跳过（EXCLUDED_DIRS）
+    ///   sub/Target/y.md   ← 跳过（大小写不敏感的 EXCLUDED_DIRS）
+    /// ```
+    fn build_workspace_tree(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("lightmd_ws_files_{}", tag));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub").join("deep")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden_dir")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::create_dir_all(root.join("sub").join("Target")).unwrap();
+        std::fs::write(root.join("a.md"), "a").unwrap();
+        std::fs::write(root.join("sub").join("b.md"), "b").unwrap();
+        std::fs::write(root.join("sub").join("deep").join("c.md"), "c").unwrap();
+        std::fs::write(root.join(".hidden.md"), "h").unwrap();
+        std::fs::write(root.join(".hidden_dir").join("d.md"), "d").unwrap();
+        std::fs::write(root.join("node_modules").join("x.md"), "x").unwrap();
+        std::fs::write(root.join("sub").join("Target").join("y.md"), "y").unwrap();
+        root
+    }
+
+    fn temp_root_str(p: &std::path::Path) -> String {
+        p.to_string_lossy().to_string()
+    }
+
+    /// 递归收集：嵌套子目录（含多层）中的文件都被收集，路径为正斜杠绝对路径。
+    #[test]
+    fn list_workspace_files_collects_nested_files() {
+        let root = build_workspace_tree("nested");
+        let roots = vec![temp_root_str(&root)];
+        let result = list_workspace_files_core(&roots);
+
+        let names: Vec<&str> = result.files.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"a.md"), "根目录文件应被收集: {:?}", names);
+        assert!(names.contains(&"b.md"), "一层子目录文件应被收集: {:?}", names);
+        assert!(names.contains(&"c.md"), "多层子目录文件应被收集: {:?}", names);
+        assert!(!result.truncated, "小目录树不应触发截断");
+
+        // 路径统一正斜杠、无扩展长度前缀、且是绝对路径
+        for f in &result.files {
+            assert!(!f.path.contains('\\'), "路径必须为正斜杠: {}", f.path);
+            assert!(
+                !f.path.starts_with("//?/"),
+                "不得泄漏 Windows 扩展长度前缀: {}",
+                f.path
+            );
+            assert!(
+                !f.path.contains("/.hidden"),
+                "隐藏条目不应出现: {}",
+                f.path
+            );
+        }
+        // 结果按 path 排序（确定性）
+        let mut sorted = result.files.clone();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path));
+        let actual: Vec<&str> = result.files.iter().map(|f| f.path.as_str()).collect();
+        let expected: Vec<&str> = sorted.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(actual, expected, "结果必须按 path 排序");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 隐藏文件 / 隐藏目录 / EXCLUDED_DIRS（含大小写变体）全部跳过。
+    #[test]
+    fn list_workspace_files_skips_hidden_and_excluded() {
+        let root = build_workspace_tree("skip");
+        let result = list_workspace_files_core(&[temp_root_str(&root)]);
+        let names: Vec<String> = result.files.iter().map(|f| f.name.clone()).collect();
+        assert!(!names.iter().any(|n| n == ".hidden.md"), "隐藏文件应跳过");
+        assert!(!names.iter().any(|n| n == "d.md"), "隐藏目录内文件应跳过");
+        assert!(!names.iter().any(|n| n == "x.md"), "node_modules 应跳过");
+        assert!(
+            !names.iter().any(|n| n == "y.md"),
+            "Target（大小写变体）应跳过: {:?}",
+            names
+        );
+        assert!(names.iter().any(|n| n == "a.md"), "普通文件应保留");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 重复根（同一目录两种写法）只产出一次；嵌套根不重复扫描。
+    #[test]
+    fn list_workspace_files_dedups_repeated_and_nested_roots() {
+        let root = build_workspace_tree("dedup");
+        let sub = root.join("sub");
+        let roots = vec![
+            temp_root_str(&root),
+            // 重复根：末尾多一个分隔符也应识别为同一目录
+            format!("{}/", temp_root_str(&root)),
+            // 嵌套根：sub 已被 root 覆盖
+            temp_root_str(&sub),
+        ];
+        let result = list_workspace_files_core(&roots);
+        let paths: Vec<&str> = result.files.iter().map(|f| f.path.as_str()).collect();
+        // 整体不重复（重复根被 canonicalize 去重）
+        let mut unique = paths.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            paths.len(),
+            "同一路径不得重复产出: {:?}",
+            paths
+        );
+        // b.md / c.md 只应出现一次（若嵌套根被重复扫描这里会变成两份）
+        assert_eq!(
+            paths.iter().filter(|p| p.ends_with("/b.md")).count(),
+            1,
+            "嵌套根与父根同时给出时 b.md 只应出现一次: {:?}",
+            paths
+        );
+        assert_eq!(
+            paths.iter().filter(|p| p.ends_with("/c.md")).count(),
+            1,
+            "c.md 只应出现一次: {:?}",
+            paths
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 不存在的根 / 文件根静默跳过：返回空列表且 truncated = false，不报错。
+    #[test]
+    fn list_workspace_files_missing_roots_return_empty() {
+        let dir = std::env::temp_dir().join("lightmd_ws_files_missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_root = dir.join("plain.md");
+        std::fs::write(&file_root, "x").unwrap();
+
+        let roots = vec![
+            temp_root_str(&dir.join("ghost_dir")),
+            temp_root_str(&file_root),
+        ];
+        let result = list_workspace_files_core(&roots);
+        assert!(result.files.is_empty(), "无效根不应产出文件");
+        assert!(!result.truncated, "无效根不应标记截断");
+
+        // 全部无效 / 空 roots 同样返回空列表
+        let empty = list_workspace_files_core(&[]);
+        assert!(empty.files.is_empty() && !empty.truncated);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 硬上限：达上限立即停止并置 truncated = true（用极小上限避免造 2 万个文件）。
+    #[test]
+    fn collect_workspace_files_marks_truncated_at_limit() {
+        let root = build_workspace_tree("truncated");
+        // 该树有 3 个应收集文件（a/b/c），上限设 1 → 只收 1 个且 truncated
+        let result = collect_workspace_files(&[temp_root_str(&root)], 1);
+        assert_eq!(result.files.len(), 1, "达上限应立即停止收集");
+        assert!(result.truncated, "达上限必须置 truncated = true");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 上限恰好等于文件数时不应标记截断（避免"刚好 2 万"被误报为不完整）。
+    #[test]
+    fn collect_workspace_files_no_truncation_at_exact_limit() {
+        let root = build_workspace_tree("exact");
+        let result = collect_workspace_files(&[temp_root_str(&root)], 3);
+        assert_eq!(result.files.len(), 3, "上限等于文件数时应全部收集");
+        assert!(!result.truncated, "恰好等于上限不算截断");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -32,6 +32,24 @@ export interface FolderChangedPayload {
   hasRemove: boolean;
 }
 
+/**
+ * v0.16.0：工作区文件枚举条目（收藏候选范围扩展的数据源）。
+ * Rust 端定义见 src-tauri/src/commands/file_ops.rs 的 WorkspaceFileEntry。
+ */
+export interface WorkspaceFileEntry {
+  name: string;
+  path: string;
+}
+
+/** v0.16.0：listWorkspaceFiles 返回载荷；truncated = 命中 20000 上限被截断 */
+export interface WorkspaceFileList {
+  files: WorkspaceFileEntry[];
+  truncated: boolean;
+}
+
+/** v0.16.0：收藏候选的工作区扫描硬上限（与 Rust MAX_WORKSPACE_FILES 一致） */
+export const MAX_WORKSPACE_FILES = 20000;
+
 function wrapError(context: string, err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   return `${context}: ${msg}`;
@@ -89,6 +107,33 @@ export const fileService = {
     } catch (err) {
       const msg = wrapError("读取目录失败", err);
       // 静默模式下不弹 toast，仅抛错（用于拖拽时探测路径类型）
+      if (!opts?.silent) {
+        notifyError(msg);
+      }
+      throw new Error(msg);
+    }
+  },
+
+  /**
+   * v0.16.0：递归列出已打开工作区文件夹中的全部文件（收藏候选范围扩展的数据源）。
+   *
+   * 后端 list_workspace_files 只做"文件枚举"：跳隐藏条目与 node_modules/target/
+   * dist/build/.git，20k 上限内截断并置 truncated。可打开文本类型的过滤由调用方
+   * 用 isSupportedTextFile 完成，本方法不预判。
+   *
+   * 非 Tauri 环境（浏览器 dev / jsdom 单测）直接返回空列表且不抛错 —— 收藏面板
+   * 依赖这条路径静默降级为"只显示已打开标签"。
+   * @param opts.silent 静默模式：true 时不弹出错误提示，仅抛错
+   */
+  async listWorkspaceFiles(
+    roots: string[],
+    opts?: { silent?: boolean }
+  ): Promise<WorkspaceFileList> {
+    if (!isTauri()) return { files: [], truncated: false };
+    try {
+      return await invoke<WorkspaceFileList>("list_workspace_files", { roots });
+    } catch (err) {
+      const msg = wrapError("读取工作区文件失败", err);
       if (!opts?.silent) {
         notifyError(msg);
       }

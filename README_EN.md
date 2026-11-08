@@ -439,19 +439,25 @@ In v0.15.6 the Tab key was a **chain of commands** (`pairTabOut → tableTab →
 | Favorites / Recent as full-height views | Both become **mutually exclusive** full-height panels (only one visible at a time) with the sidebar toolbar kept; opening **slides in from the left**, closing **slides out to the right** |
 | The file tree is hidden, not unmounted | Switching to Favorites or Recent only **hides** the file tree, so scroll position and expanded folders survive the round trip |
 | Success paths return to the file manager | Opening a workspace from "Recent folders" or a shared-folder entry automatically switches back to the file-manager view, so the changed workspace is immediately visible |
-| Multi-select batch adding for Favorites | The Favorites panel gains "Add favorites": it reads the **already-saved** open tabs of the current window and supports circular multi-select, deselecting, closing with `Esc`, and staying in sync when a tab is closed; submission goes through the new atomic batch action `addFavorites`, which accepts up to a **50-entry** capacity and returns the actual `added` / `skipped` counts — **existing favorites are never evicted to make room for new ones**; files sharing a name include their full path in the accessible name so they remain distinguishable |
+| Multi-select batch adding for Favorites | The Favorites panel gains "Add favorites": supports circular multi-select, deselecting, closing with `Esc`, and staying in sync when a tab is closed; submission goes through the new atomic batch action `addFavorites`, which accepts up to a **50-entry** capacity and returns the actual `added` / `skipped` counts — **existing favorites are never evicted to make room for new ones**; files sharing a name include their full path in the accessible name so they remain distinguishable |
+| Favorite candidate scope (v0.16.0 third-round adjustment: widened) | Clicking "＋" now offers **two groups**: ① "Open files" — the current window's already-saved open tabs (unsaved scratch tabs have no persistable path and are not listed); ② "Workspace files" — **every openable file in all opened workspace folders, including any depth of subdirectory**, read recursively while skipping dot-entries and `node_modules` / `target` / `dist` / `build` / `.git`. Both groups are de-duplicated by full path, so an open file appears only in the first group. The old implementation only listed open tabs |
+| Large-workspace safeguards | Hard cap of **20000** workspace files (exceeding it reports "only the first 20000 were read"); each group renders at most **400** entries with a hint to narrow the search, so the sidebar cannot stall. If the workspace read fails it **silently degrades to open files only**, with an inline notice inside the picker — no error dialog, no stuck loading state |
+| Favorite picker opening / cancelling animation (v0.16.0 third-round adjustment) | Expanding the "＋" picker **slides its content in from under the header** and fades it in (240ms, entries entering with a slight staggered delay) while the "＋" icon rotates into a "×"; cancelling via "Cancel" / `Esc` / confirming **slides the content back out and fades it out** (180ms) and only then unmounts it, so the favorites list refills smoothly. A filter box matches **file name or path** case-insensitively without clearing the current selection. With the system "reduce motion" preference on, these transitions are disabled and cancelling takes effect immediately |
 | Search-file animation (v0.16.0 second-round adjustment: smoother) | Expanding animates the panel height with `grid-template-rows` **0fr→1fr**, so the file list below is **pushed down smoothly**; the search box simultaneously slides in from beyond the left edge (visually moving out to the right). Collapsing slides the box **out to the left** and retracts the panel height, so the file list **moves back up smoothly**. The old implementation only animated `max-width` while the panel was already at full height — content jumped down instantly on click and jumped back up when the collapse finished, which was the root cause of the "not smooth" animation |
 | Reduced motion and width restore | The "reduce motion" preference is honoured, weakening the slide transitions accordingly; the sidebar restores its original width after being collapsed |
 | Chinese and English copy | All new labels — the button, the selected count, the capacity-limit notice — ship in both languages |
 
 Verification: `npx tsc --noEmit` passes (exit 0); the full Vitest suite run sequentially with
-`--no-file-parallelism` totals **363 files / 6586 cases passing** (1 pre-existing skip, **0 failures**);
+`--no-file-parallelism` totals **364 files / 6614 cases passing** (1 pre-existing skip, **0 failures**);
 the real-machine WebView2 probes `scripts/v0160-probe-sidebar-ui.mjs` reports **21/21 PASS**
-(including the second-round header restore and frame-by-frame search-panel animation checks) and
+(including the second-round header restore and frame-by-frame search-panel animation checks),
+`scripts/v0160-probe-favorites-picker.mjs` reports **27/27 PASS** (third-round adjustment: recursive
+candidate scope, hidden/excluded-directory/non-text files kept out, frame-by-frame open and cancel
+animation, delayed unmount, reduced motion, empty-workspace degradation) and
 `scripts/v0160-probe-tab-indent.mjs` reports **11 PASS / 1 FAIL** (the FAIL is the undo-coalescing
 window for consecutive indents described above, now documented as measured and listed as a known
 limitation); `npx tauri build` produces NSIS + MSI, `lightmd.exe` reports
-`FileVersion` / `ProductVersion` `0.16.0`, and the frontend dist entry `index-CLAlxamI.js` is found
+`FileVersion` / `ProductVersion` `0.16.0`, and the frontend dist entry `index-Bs50u8Cg.js` is found
 in the exe byte stream.
 
 ### v0.15.6 (2026-11-03)
