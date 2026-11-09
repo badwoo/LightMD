@@ -264,6 +264,33 @@ export function oracleDocRoundtrip(markdown: string): string {
  * 存，克隆后全部 miss，于是 docToMarkdown 走**逐块规范序列化**路径。
  * 这与「用户在 PM 内编辑过一个块」的序列化形态等价（不注入内容变更，
  * 确保差异全部可归因于序列化实现而非被测数据）。
+ *
+ * ────────────────────────────────────────────────────────────────
+ * ⚠️ 本 oracle 测的是**旧 serializer 链路**，不是 B 线交付物
+ * ────────────────────────────────────────────────────────────────
+ *
+ * `docToMarkdown` 的内部实现本版**未切到 UnifiedDoc 树** —— 这是 v0.17.0
+ * 的方案 A 裁决（Lead 2026-11-09 裁定，见下）。
+ *
+ * · 它走 `markdownToDoc` + `docToMarkdown`（`core/markdown/serializer.ts`），
+ *   与本轮新增的 `parseUnified` + `treeToSource` **完全无关**
+ *   （`serializer.ts` 里没有任何 unified/treeToSource 的引用）。
+ * · 因此它产出的 **corrupt ≈ 207（1000 篇，seed=20261109）是「存量失真基线」**：
+ *   - **不是回归**（P0 阶段就在，且数值稳定）
+ *   - **不是 B 线门禁**（B 线门禁是 `md→tree→md` = `md-tree-md`，已 1000/1000）
+ *   - **不是"B 线没做完"**（新链路已零失真；这个数字衡量的是旧路径）
+ *
+ * · 何时会变绿：C 阶段若把 `docToMarkdown` 内部改为 `doc→tree→source`
+ *   （需要真正的 PmSync 直映射，工作量是 B2 的数倍），这 207 会自然归零。
+ *   设计稿 §3.3 B2 那句「docToMarkdown 内部改 doc→tree→source」与紧随其后的
+ *   「PmSync 暂时用 tree→markdown-it 二次 parse 过渡」**自相矛盾**
+ *   （同时要求"做直映射"和"不做直映射"），Lead 已裁定按方案 A 本版不动，
+ *   并把"PM 重建 doc 后 WeakMap 全 miss"的痛点明确列为 v0.18 候选。
+ *
+ * 📌 维护提示（写给下一个看这份 fuzz 报告的人）：
+ * 看到本行数字不为 0 **不要**当成缺陷去修 —— 先确认你要动的是哪条链路。
+ * 若你确实在 C 阶段切换了 `docToMarkdown` 的内部实现，那它应当归零；
+ * 若没有切换而它变了，才是真回归。
  */
 export function oracleDocRoundtripReserialized(markdown: string): string {
   const doc = markdownToDoc(markdown);
