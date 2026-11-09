@@ -11,6 +11,9 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
+    "fuzz:quick": "node scripts/v0170-fuzz.mjs --tier=quick",
+    "fuzz:full": "node scripts/v0170-fuzz.mjs --tier=full",
+    "bench": "node scripts/perf-bench.mjs",
     "smoke:real": "node scripts/real-machine-smoke.mjs",
     "smoke:real:close": "node scripts/real-machine-smoke-close.mjs"
   },
