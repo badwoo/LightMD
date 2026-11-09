@@ -403,7 +403,7 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
 
-### v0.16.0 (2026-11-07)
+### v0.16.0 (2026-11-05 ~ 11-08)
 
 **Tab and indentation system — one single source for tab width, a configurable indent unit, and documentation aligned with the implementation**
 
