@@ -28,21 +28,8 @@
 import type MarkdownIt from "markdown-it";
 import { createMarkdownIt } from "../markdown/parser";
 import { collectHeadings, type TocHeading } from "../markdown/heading-anchor";
-import { STRUCTURAL_TOKENS } from "../../utils/exportBlocks";
-
-/**
- * 该 token 是否应计入 `unknownTokens`（"未能映射"上报）。
- *
- * 口径与 `exportBlocks.parseBlockTokensDetailed` 的 `markUnknown` 一致：
- * - `*_close`：配对标记，由对应 open 处理 → 不计
- * - `STRUCTURAL_TOKENS`（脚注块/inline/text/换行等结构类）→ 不计
- * 其余计入（如未知插件产出的新块类型）。
- */
-function isUnknownToken(type: string): boolean {
-  if (type.endsWith("_close")) return false;
-  if (STRUCTURAL_TOKENS.has(type)) return false;
-  return true;
-}
+// 结构 token 清单来自**零依赖**模块（破循环依赖，说明见该文件头注释）
+import { STRUCTURAL_TOKENS, isUnknownTokenType } from "./tokenRegistry";
 import { parseImageSuffix } from "./imageSuffix";
 import type { InlineNode, MdNode, MdRaw, MdSpan, NodeKind, SourcePosMap } from "./model";
 
@@ -544,15 +531,16 @@ function parseTable(ctx: Ctx, startIdx: number): { node: MdNode; next: number } 
   interface Cell {
     inline: InlineNode[];
     header: boolean;
-    align: string;
+    /** 源码未声明对齐时为 null（不是 "left"） */
+    align: string | null;
     colspan: number;
     rowspan: number;
   }
   const rows: Cell[][] = [];
   let curRow: Cell[] = [];
   let isHeader = false;
-  let alignCol: string[] = [];
-  let pending: { inline: InlineNode[]; header: boolean; align: string; colspan: number; rowspan: number } | null = null;
+  let alignCol: Array<string | null> = [];
+  let pending: Cell | null = null;
 
   for (let i = startIdx + 1; i < closeIdx; i++) {
     const t = ctx.tokens[i]!;
@@ -564,7 +552,12 @@ function parseTable(ctx: Ctx, startIdx: number): { node: MdNode; next: number } 
     if (t.type === "th_open" || t.type === "td_open") {
       const style = attr(t, "style") || "";
       const m = /text-align\s*:\s*(left|center|right)/i.exec(style);
-      const align = m ? m[1]!.toLowerCase() : "left";
+      // ⚠️ 未声明对齐时必须是 **null**，不能填 "left"：
+      // markdown-it 只在源码写了 `:--` 这类对齐标记时才注入 style；
+      // 填 "left" 会让"无对齐标记"与"显式 left 对齐"混为一谈，
+      // 导出侧会把 `aligns` 输出成 ["left","left"] 而不是 [null,null]
+      // （实测 v0110-export-fixes 的「无对齐标记时 aligns 全为 null」断言失败）。
+      const align = m ? m[1]!.toLowerCase() : null;
       const col = curRow.length;
       if (alignCol.length <= col) alignCol[col] = align;
       const inline = inlineFromTokens(firstInlineChildren(ctx.tokens, i, Math.min(i + 3, closeIdx)) || [], ctx.lineStarts, ctx.source, ctx.breaks);
@@ -580,7 +573,7 @@ function parseTable(ctx: Ctx, startIdx: number): { node: MdNode; next: number } 
   if (curRow.length) rows.push(curRow);
 
   const node = makeNode(ctx, "table", deriveLines(ctx, startIdx, closeIdx), {
-    /** 列对齐（由 th/td 的 style 推出；序列化用 raw.alignSyntax 保写法） */
+    /** 列对齐（由 th/td 的 style 推出；**null = 源码未声明对齐**） */
     aligns: alignCol,
     /** 行 × 单元格（含 colspan/rowspan，来自格内 HTML 的 `<td colspan>`） */
     rows: rows.map((r) => r.map((c) => ({ inline: c.inline, header: c.header, colspan: c.colspan, rowspan: c.rowspan }))),
@@ -762,7 +755,7 @@ function parseTokenRange(ctx: Ctx, from: number, to: number, topLevel: boolean):
       continue;
     }
     // ── 未知 token（绝不静默丢内容）──
-    if (!STRUCTURAL_TOKENS.has(t.type) && isUnknownToken(t.type)) {
+    if (isUnknownTokenType(t.type)) {
       ctx.unknown.add(t.type);
     }
     i++;

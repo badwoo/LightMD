@@ -215,8 +215,14 @@ function listBlock(rng: Rng): GenBlock {
   if (depth >= 2) features.push("list-nested-2");
   if (depth >= 3) features.push("list-nested-3");
   // CommonMark：只有 `1.` 开头的有序列表能打断段落；`2.` 起头的会被当作
-  // 上一段的行内续行（实测 "para\n2. x" → 单段落文本）。bullet/task 可以打断。
-  const selfStarts = kind === 1 ? firstNumber === 1 : true;
+  // 上一段的行内续行（实测 "para\n2. x" → 单段落文本）。bullet/task 可以打断段落。
+  //
+  // ⚠️ 但**紧邻的 bullet list 会吞掉后续 task list 的标记**（实测：
+  // `- a\n    - b\n- [x] c` 被解析成单一 bullet_list，`[x]` 退化成字面文本，
+  // 整个 task_list 消失）。这是 CommonMark 的列表连续性行为，属**输入歧义**，
+  // 会制造与实现无关的假 lossy/corrupt（实测 doc#21/#65/#91 共 8 篇）。
+  // 故 task list 一律要求前面有块间空行（selfStarts=false）。
+  const selfStarts = kind === 1 ? firstNumber === 1 : kind === 2 ? false : true;
   return { lines, features, selfStarts };
 }
 
