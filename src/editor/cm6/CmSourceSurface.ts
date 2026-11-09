@@ -725,32 +725,44 @@ export class CmSourceSurface implements SourceSurface {
       keydown: (e) => {
         const h = this.domHandlers.onKeyDown;
         if (!h) return false;
-        // 返回 true 表示"已处理，CM6 不要再处理"
-        return h(toKeyLike(e)) === true;
+        /**
+         * ⚠️ 这里**不能只看返回值**判断"是否已处理"。
+         *
+         * 宿主的 `handleSourceKeyDown` 是 React 风格：处理时调 `e.preventDefault()` 然后
+         * 裸 `return`（返回 undefined），**从不返回 true**。若我们按 `=== true` 判断，
+         * 所有已处理的键都会被当成"未处理" → 交回 CM6 再处理一次 →
+         * **Tab 会缩进两次、Esc 关两次 ghost**。
+         *
+         * 正确判据：**返回值是 `true`，或者事件已被 `preventDefault()`**。
+         */
+        const before = e.defaultPrevented;
+        const ret = h(toKeyLike(e));
+        return ret === true || (!before && e.defaultPrevented);
       },
       paste: (e) => {
         const h = this.domHandlers.onPaste;
         if (!h) return false;
-        return (
-          h({
-            clipboardData: e.clipboardData,
-            preventDefault: () => e.preventDefault(),
-            stopPropagation: () => e.stopPropagation(),
-          }) === true
-        );
+        // 同 keydown：宿主是 React 风格，已处理的表现是 preventDefault，不是返回 true
+        const before = e.defaultPrevented;
+        const ret = h({
+          clipboardData: e.clipboardData,
+          preventDefault: () => e.preventDefault(),
+          stopPropagation: () => e.stopPropagation(),
+        });
+        return ret === true || (!before && e.defaultPrevented);
       },
       contextmenu: (e) => {
         const h = this.domHandlers.onContextMenu;
         if (!h) return false;
-        return (
-          h({
-            clientX: e.clientX,
-            clientY: e.clientY,
-            target: e.target,
-            preventDefault: () => e.preventDefault(),
-            stopPropagation: () => e.stopPropagation(),
-          }) === true
-        );
+        const before = e.defaultPrevented;
+        const ret = h({
+          clientX: e.clientX,
+          clientY: e.clientY,
+          target: e.target,
+          preventDefault: () => e.preventDefault(),
+          stopPropagation: () => e.stopPropagation(),
+        });
+        return ret === true || (!before && e.defaultPrevented);
       },
     });
   }

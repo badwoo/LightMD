@@ -601,17 +601,35 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * - CM6 实现：该元素作为 CM6 的 host。
    * 卸载时 `destroy()`：CM6 必须显式销毁才释放 DOM 监听，否则多次挂载会泄漏。
    */
+  /**
+   * 源码面内容的**最新值快照**（供 callback ref 在挂载瞬间读取）。
+   *
+   * ⚠️ 必须声明在 `sourceHostRef` **之前**：callback ref 在 React 首次挂载时同步执行，
+   * 那一刻它要读 `sourceContentRef.current` 作为 CM6 的初始文档。若声明在后面，
+   * 挂载时读到的是 `undefined` → CM6 以空文档建 view → **源码面空白**
+   * （实机探针 `v0170-probe-cm6` 实测：`.cm-line` 只有一行且内容为空）。
+   * 这是 v0.17.0 装配阶段的一个真实缺陷，不是假想风险。
+   */
+  const sourceContentRef = useRef(content);
+  sourceContentRef.current = sourceContent;
   const sourceHostRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
       sourceHostElRef.current = el;
-      if (el) sourceSurface.mount(el, { initialText: sourceContentRef.current });
-      else sourceSurface.destroy();
+      if (el) {
+        /**
+         * 挂载瞬间的初始文本：
+         * - textarea 实现：`mount()` 会在 `DOM 值 !== initialText` 时写回，传空串安全
+         *   （受控渲染已把 value 放好，条件不成立则完全不碰 DOM —— 见 A2 那次修复）；
+         * - CM6 实现：**这是它唯一能拿到初始文档的时机**，必须传真实内容。
+         *
+         * 用 `?? content` 兜底：若挂载发生在首帧、`sourceContentRef` 尚未被赋值的前一轮
+         * （React 严格模式下可能出现），退回 `content` prop（同一份数据的权威来源）。
+         */
+        sourceSurface.mount(el, { initialText: sourceContentRef.current ?? content });
+      } else sourceSurface.destroy();
     },
-    [sourceSurface],
+    [sourceSurface, content],
   );
-
-  const sourceContentRef = useRef(content);
-  sourceContentRef.current = sourceContent;
   const lastTextareaCursorRef = useRef(0);
   /**
    * v0.15.1 需求1：源码面**最近一次的滚动位置**（编辑前现场）。
@@ -5691,24 +5709,33 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !sourceGhostActiveRef.current) {
       // IME 组合态守卫（与同函数内 Backspace 分支同款）
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        const input = {
-          value: ta.value,
-          start: ta.selectionStart ?? 0,
-          end: ta.selectionEnd ?? 0,
-          unit: indentUnitString(useSettingsStore.getState().indentUnit),
-        };
-        const plan = e.shiftKey ? planSourceOutdent(input) : planSourceIndent(input);
-        e.preventDefault();
-        e.stopPropagation();
-        if (plan.kind === "edit") {
-          sourceJustPairedRef.current = true;
-           sourceSurface.applyEdit(plan);
-        }
-        return; // 无论 edit 还是 none 都吞键（否则焦点逃逸依旧存在）
+      /**
+       * v0.17.0 実机探针修复（`scripts/v0170-probe-cm6.mjs` 判定项 3 实测 FAIL）：
+       * **原先整段被 `if (ta)` 包住** —— CM6 路径下 `sourceTextareaRef.current` 为 null，
+       * 于是 Tab 缩进永远不执行，事件也**不被 preventDefault**，最终 CM6 的默认 keymap
+       * 也没接住（`setTabInterceptor` / `setIndentUnit` 都没人调用）→ **Tab 完全不缩进**。
+       *
+       * 而 A3 报告的结论"CM6 下缩进正常（走 handleTab）"是**错的**：
+       * `handleTab` 确实实现了缩进，但它的 keymap 在 `domEventHandlers.keydown` **之后**才跑，
+       * 而宿主这段代码先把 Tab 吞掉（`if (ta)` 不成立时又不吞），行为因此不一致。
+       *
+       * 现在改为**不依赖 textarea 句柄**：文本/选区一律走 `sourceSurface`，
+       * 缩进单位走设置 store。textarea 与 CM6 两条路径共用这一份逻辑。
+       */
+      const input = {
+        value: sourceSurface.getText(),
+        start: sourceSurface.getSelection().start,
+        end: sourceSurface.getSelection().end,
+        unit: indentUnitString(useSettingsStore.getState().indentUnit),
+      };
+      const plan = e.shiftKey ? planSourceOutdent(input) : planSourceIndent(input);
+      e.preventDefault();
+      e.stopPropagation();
+      if (plan.kind === "edit") {
+        sourceJustPairedRef.current = true;
+        sourceSurface.applyEdit(plan);
       }
+      return; // 无论 edit 还是 none 都吞键（否则焦点逃逸依旧存在）
     }
 
     // ─── v0.12.1 需求4：删除/跳过类交互（输入补全由 beforeinput 监听统一处理）───

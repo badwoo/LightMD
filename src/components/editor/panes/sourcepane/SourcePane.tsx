@@ -1182,24 +1182,33 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !sourceGhostActiveRef.current) {
       // IME 组合态守卫（与同函数内 Backspace 分支同款）
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        const input = {
-          value: ta.value,
-          start: ta.selectionStart ?? 0,
-          end: ta.selectionEnd ?? 0,
-          unit: indentUnitString(useSettingsStore.getState().indentUnit),
-        };
-        const plan = e.shiftKey ? planSourceOutdent(input) : planSourceIndent(input);
-        e.preventDefault();
-        e.stopPropagation();
-        if (plan.kind === "edit") {
-          sourceJustPairedRef.current = true;
-           sourceSurface.applyEdit(plan);
-        }
-        return; // 无论 edit 还是 none 都吞键（否则焦点逃逸依旧存在）
+      /**
+       * v0.17.0 実机探针修复（`scripts/v0170-probe-cm6.mjs` 判定项 3 实测 FAIL）：
+       * **原先整段被 `if (ta)` 包住** —— CM6 路径下 `sourceTextareaRef.current` 为 null，
+       * 于是 Tab 缩进永远不执行，事件也**不被 preventDefault**，最终 CM6 的默认 keymap
+       * 也没接住（`setTabInterceptor` / `setIndentUnit` 都没人调用）→ **Tab 完全不缩进**。
+       *
+       * 而 A3 报告的结论"CM6 下缩进正常（走 handleTab）"是**错的**：
+       * `handleTab` 确实实现了缩进，但它的 keymap 在 `domEventHandlers.keydown` **之后**才跑，
+       * 而宿主这段代码先把 Tab 吞掉（`if (ta)` 不成立时又不吞），行为因此不一致。
+       *
+       * 现在改为**不依赖 textarea 句柄**：文本/选区一律走 `sourceSurface`，
+       * 缩进单位走设置 store。textarea 与 CM6 两条路径共用这一份逻辑。
+       */
+      const input = {
+        value: sourceSurface.getText(),
+        start: sourceSurface.getSelection().start,
+        end: sourceSurface.getSelection().end,
+        unit: indentUnitString(useSettingsStore.getState().indentUnit),
+      };
+      const plan = e.shiftKey ? planSourceOutdent(input) : planSourceIndent(input);
+      e.preventDefault();
+      e.stopPropagation();
+      if (plan.kind === "edit") {
+        sourceJustPairedRef.current = true;
+        sourceSurface.applyEdit(plan);
       }
+      return; // 无论 edit 还是 none 都吞键（否则焦点逃逸依旧存在）
     }
 
     // ─── v0.12.1 需求4：删除/跳过类交互（输入补全由 beforeinput 监听统一处理）───

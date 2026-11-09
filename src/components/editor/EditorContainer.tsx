@@ -579,17 +579,35 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * - CM6 实现：该元素作为 CM6 的 host。
    * 卸载时 `destroy()`：CM6 必须显式销毁才释放 DOM 监听，否则多次挂载会泄漏。
    */
+  /**
+   * 源码面内容的**最新值快照**（供 callback ref 在挂载瞬间读取）。
+   *
+   * ⚠️ 必须声明在 `sourceHostRef` **之前**：callback ref 在 React 首次挂载时同步执行，
+   * 那一刻它要读 `sourceContentRef.current` 作为 CM6 的初始文档。若声明在后面，
+   * 挂载时读到的是 `undefined` → CM6 以空文档建 view → **源码面空白**
+   * （实机探针 `v0170-probe-cm6` 实测：`.cm-line` 只有一行且内容为空）。
+   * 这是 v0.17.0 装配阶段的一个真实缺陷，不是假想风险。
+   */
+  const sourceContentRef = useRef(content);
+  sourceContentRef.current = sourceContent;
   const sourceHostRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
       sourceHostElRef.current = el;
-      if (el) sourceSurface.mount(el, { initialText: sourceContentRef.current });
-      else sourceSurface.destroy();
+      if (el) {
+        /**
+         * 挂载瞬间的初始文本：
+         * - textarea 实现：`mount()` 会在 `DOM 值 !== initialText` 时写回，传空串安全
+         *   （受控渲染已把 value 放好，条件不成立则完全不碰 DOM —— 见 A2 那次修复）；
+         * - CM6 实现：**这是它唯一能拿到初始文档的时机**，必须传真实内容。
+         *
+         * 用 `?? content` 兜底：若挂载发生在首帧、`sourceContentRef` 尚未被赋值的前一轮
+         * （React 严格模式下可能出现），退回 `content` prop（同一份数据的权威来源）。
+         */
+        sourceSurface.mount(el, { initialText: sourceContentRef.current ?? content });
+      } else sourceSurface.destroy();
     },
-    [sourceSurface],
+    [sourceSurface, content],
   );
-
-  const sourceContentRef = useRef(content);
-  sourceContentRef.current = sourceContent;
   const lastTextareaCursorRef = useRef(0);
   /**
    * v0.15.1 需求1：源码面**最近一次的滚动位置**（编辑前现场）。
