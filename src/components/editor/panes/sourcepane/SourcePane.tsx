@@ -51,13 +51,13 @@ import {
   traceScroll,
   computeSlashInsert,
   buildSourcePairInput,
-  applySourcePairPlan,
 } from "../../EditorContainer";
 import type { SourcePaneParams, SourcePaneResult } from "./types";
 
 export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
   // 解构到本地同名绑定：函数体因此可以逐字节原样
   const {
+    sourceSurface,
     pendingSourceSelectionRef,
     sourceSelectionRestoreTokenRef,
     sourceGhostHandlersRef,
@@ -1052,8 +1052,21 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (isInCodeBlock(ta.value, start)) return;
     e.preventDefault();
     const selected = ta.value.slice(start, end);
-    // execCommand 触发 input 事件 → React onChange → undo 记录/内容同步
-    document.execCommand("insertText", false, `[${selected || text}](${text})`);
+    /**
+     * v0.17.0 A2（G7）：改经 `SourceSurface.applyEdit` 落地 —— **单事务单步**。
+     *
+     * 旧实现用 `document.execCommand("insertText")` 只是为了"制造一次原生 input
+     * 事件"从而让一次粘贴只占一步撤销；CM6 实现下 `applyEdit` 的单个 dispatch
+     * 天然就是一步，不需要这个 workaround。统一走接口后这段代码对两种实现都成立。
+     *
+     * 同时保留"一次粘贴 = 一步"的语义：applyEdit 会带 `userEvent: "input.pair"` 标记，
+     * 配合 sourceJustPastedRef（已在函数开头置位）让 adapter 归为 paste 组。
+     */
+    const inserted = `[${selected || text}](${text})`;
+    sourceSurface.applyEdit({
+      kind: "edit",
+      edit: { from: start, to: end, text: inserted, caret: start + inserted.length },
+    });
   }, []);
 
 
@@ -1120,7 +1133,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
           // ⚠️ v0.17.0 A2（修复 C14 第二处）：配对落地的**同一处**标记 justPaired，
           // 使"一次补全 = 一步撤销"成立（而不是事后靠文本形状推）。
           sourceJustPairedRef.current = true;
-          applySourcePairPlan(ta, plan);
+           sourceSurface.applyEdit(plan);
           return;
         }
       }
@@ -1147,7 +1160,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
         e.stopPropagation();
         if (plan.kind === "edit") {
           sourceJustPairedRef.current = true;
-          applySourcePairPlan(ta, plan);
+           sourceSurface.applyEdit(plan);
         }
         return; // 无论 edit 还是 none 都吞键（否则焦点逃逸依旧存在）
       }
@@ -1176,7 +1189,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
           // ⚠️ v0.17.0 A2（修复 C14 第二处）：配对落地的**同一处**标记 justPaired，
           // 使"一次补全 = 一步撤销"成立（而不是事后靠文本形状推）。
           sourceJustPairedRef.current = true;
-          applySourcePairPlan(ta, plan);
+           sourceSurface.applyEdit(plan);
           return;
         }
       }

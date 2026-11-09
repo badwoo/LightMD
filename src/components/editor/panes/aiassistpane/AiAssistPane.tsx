@@ -46,13 +46,13 @@ import { shouldClearFormatGhost } from "../.././sourceFormat";
 import type { EditorView as EditorView } from "prosemirror-view";
 import {
   buildSourcePairInput,
-  applySourcePairPlan,
 } from "../../EditorContainer";
 import type { AiAssistPaneParams, AiAssistPaneResult } from "./types";
 
 export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
   // 解构到本地同名绑定：函数体因此可以逐字节原样
   const {
+    sourceSurface,
     isSourceMode,
     isMdFile,
     sourceTextareaRef,
@@ -112,7 +112,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
       );
       if (plan.kind !== "edit") return;
       ie.preventDefault();
-      applySourcePairPlan(ta, plan);
+      sourceSurface.applyEdit(plan);
     };
 
     const onCompositionEnd = (e: Event) => {
@@ -130,7 +130,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
           commitEnd: pos,
         });
         if (plan.kind !== "edit") return;
-        applySourcePairPlan(ta, plan);
+        sourceSurface.applyEdit(plan);
       });
     };
 

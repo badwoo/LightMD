@@ -264,9 +264,22 @@ describe("v0.16.0 B4：EditorContainer handleSourceKeyDown 接线", () => {
     expect(seg).toMatch(/sourceGhostActiveRef\.current/);
   });
 
-  it("落地复用 applySourcePairPlan（一次 execCommand = 一次撤销）", () => {
+  /**
+   * v0.17.0 A2（G7）：落地方式从 `applySourcePairPlan`（execCommand 路径）
+   * 升级为 `SourceSurface.applyEdit`（单事务单步）。
+   *
+   * 这条断言随之从"源码里有某个函数名"升级为**契约断言**：
+   * 缩进分支必须经 surface 的 applyEdit 落地 —— 这才是"一次 Tab = 一步撤销"的机制。
+   * 判据（Lead 给的）：删掉 applyEdit 调用、改回直接改 DOM，本断言会红。
+   */
+  it("落地经 SourceSurface.applyEdit（单事务单步 = 一次 Tab 一步撤销）", () => {
     const seg = indentBranchSrc(src);
-    expect(seg).toMatch(/applySourcePairPlan\(ta, plan\)/);
+    expect(seg, "缩进分支必须经 surface.applyEdit 落地（G7：不再依赖 execCommand）").toMatch(
+      /sourceSurface\.applyEdit\(plan\)/,
+    );
+    expect(seg, "不得回退到 applySourcePairPlan（execCommand 路径）").not.toMatch(
+      /applySourcePairPlan\(/,
+    );
   });
 });
 

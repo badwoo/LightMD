@@ -18,10 +18,19 @@ import type { FormatPainterMode } from "../../../../utils/formatPainter";
 import type { WordCountResult } from "../../../../utils/wordCount";
 import type { InsertMode } from "../.././SlashCommand";
 import type { EditorView } from "prosemirror-view";
+import type { SourceSurface } from "../../../../editor/types";
 import type { HistoryEntry } from "../../EditorContainer";
 
 /** 容器传给 SourcePane 的全部入参（解构到本地名后 hook 体与拆分前逐字节一致） */
  export interface SourcePaneParams {
+  /**
+   * 源码面契约实现（A2）。
+   *
+   * 配对/缩进等**离散编辑**必须经 `applyEdit()` 落地（单事务单步），
+   * 不再走 `document.execCommand("insertText")` —— 那是任务卡 G7 要求退役的路径。
+   * 同一份实现（jsdom 下是 textarea，真实浏览器可能是 CM6）由容器统一注入。
+   */
+  sourceSurface: SourceSurface;
   pendingSourceSelectionRef: MutableRefObject<{ start: number; end: number; scrollTop: number | null; until: number; } | null>;
   sourceSelectionRestoreTokenRef: MutableRefObject<number>;
   sourceGhostHandlersRef: MutableRefObject<{ accept: () => boolean; cancel: () => boolean; invalidate: () => void; }>;

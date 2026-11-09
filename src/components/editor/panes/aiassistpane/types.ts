@@ -16,9 +16,15 @@ import type { BubbleAnchor } from "../../../../stores/translateStore";
 import type { ViewMode } from "../../../../stores/useEditorStore";
 import type { Base64Tokens } from "../../../../utils/base64ImageMask";
 import type { EditorView } from "prosemirror-view";
+import type { SourceSurface } from "../../../../editor/types";
 
 /** 容器传给 AiAssistPane 的全部入参（解构到本地名后 hook 体与拆分前逐字节一致） */
  export interface AiAssistPaneParams {
+  /**
+   * 源码面契约实现（A2）。配对落地必须经 `applyEdit()`（单事务单步），
+   * 不再走 `document.execCommand("insertText")`（任务卡 G7 退役路径）。
+   */
+  sourceSurface: SourceSurface;
   isSourceMode: boolean;
   isMdFile: boolean;
   sourceTextareaRef: RefObject<HTMLTextAreaElement>;
