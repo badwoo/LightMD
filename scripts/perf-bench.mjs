@@ -293,24 +293,28 @@ window.__pbSrc = function () {
 };
 
 /**
- * 源码面当前**长度**（不需要文本内容时的轻量路径）。
+ * 源码面当前**全文长度**。
  *
- * ⚠️ 不能每次都调 __pbSrcText()：CM6 下那是把 7 万+ 个 .cm-line 的 textContent
- * 拼成一个字符串，在 5MB 文档上**本身就有几十毫秒开销**，会污染输入延迟测量
- * （被误读成"CM6 慢了"）。可用性探测 / 装载判定只需长度，走这条。
+ * ⚠️ CM6 是**虚拟渲染**：.cm-editor 的 textContent 只含**视口内已渲染的行**
+ * ——实测 5MB / 154670 行文档，DOM 里只有 1036 字符。
+ * 所以不能用 DOM 文本长度当全文长度：那会把"装载完成"误判成"只装了一千字"，
+ * 并让 srcDelta 变成荒谬的负数（本轮实测 Δ-31）。
+ *
+ * CM6 的正确来源是 view 的 state.doc.length，但 view 不挂在 DOM 上
+ * （实机确认 .cmView / .view 均不存在）。故返回 **-1（未知）**，
+ * 由调用方跳过长度类断言 —— 给一个错误数字比给"未知"危险得多。
  */
 window.__pbSrcLen = function () {
   var s = window.__pbSrc();
   if (s.impl === "textarea") return s.el.value.length;
-  if (s.impl === "cm6") {
-    /**
-     * 用 document 层的 cm-editor 的 textContent（浏览器原生拼装，比 JS 循环快一个量级）。
-     * 注意：这条只为"长度量级判定"服务（装载是否完成），不用于逐字符比对。
-     */
-    var ed = s.el;
-    var t = ed.textContent || "";
-    return t.length;
-  }
+  return -1; // CM6：全文长度不可从 DOM 取得
+};
+
+/** 源码面**视口内可见**文本长度（CM6 下 = 当前 DOM 渲染出的字符数） */
+window.__pbSrcVisibleLen = function () {
+  var s = window.__pbSrc();
+  if (s.impl === "textarea") return s.el.value.length;
+  if (s.impl === "cm6") return (s.el.textContent || "").length;
   return 0;
 };
 
@@ -536,6 +540,7 @@ async function probeUsability(cdp, ev, log, expectedBytes) {
           impl: s.impl,
           ready: window.__pbSrcReady(),
           len: window.__pbSrcLen(),
+          visLen: window.__pbSrcVisibleLen(),
           sh: s.scroller ? s.scroller.scrollHeight : (s.el ? s.el.scrollHeight : -1),
           ch: s.scroller ? s.scroller.clientHeight : (s.el ? s.el.clientHeight : -1),
           pmLen: document.querySelector(".editor-container")
@@ -554,21 +559,24 @@ async function probeUsability(cdp, ev, log, expectedBytes) {
   }
   const allOk = results.every((r) => r.ok);
   const last = results[results.length - 1] || {};
-  // 判据同样要认两个面：阅读模式（PM）下 textarea 是隐藏的、len=0 属正常状态，
-  // 不能因此判"未装载"。真正的问题是**两个面都没有内容**。
-  const hasDoc = allOk && ((typeof last.len === "number" && last.len > 0) || last.pmLen > 0);
   /**
-   * v0.17.0：源码面可能是 CM6（没有 textarea），判据改为 `ready`（两实现统一）。
+   * v0.17.0：源码面可能是 CM6。
+   * - CM6 下 `len` 恒为 -1（虚拟渲染，全文长度不可得），**不能**用它判"没内容"；
+   * - 正确判据：源码面就绪（`ready`）且**视口内已有实质文本**（`visLen > 0`），
+   *   或阅读面（PM）有内容。大文档按设计不渲染 PM，所以只看源码面。
    */
-  const hasTa = allOk && (last.ready === true || last.hasTa === true);
+  const srcReady = last.ready === true;
+  const srcHasText = (typeof last.visLen === "number" && last.visLen > 0) || last.len > 0;
+  const hasDoc = allOk && ((srcReady && srcHasText) || last.pmLen > 0);
+  const hasTa = allOk && srcReady;
   const usable = hasDoc && (hasTa || (allOk && last.pmLen > 0));
   const reason = usable
     ? ""
     : !allOk
       ? `主线程持续阻塞：${results.filter((r) => !r.ok).length}/3 次轻量 evaluate 超时(5s)`
       : !hasDoc
-        ? `两个面都没有内容（textarea len=${last.len} / PM len=${last.pmLen}），文档未装入`
-        : "控件缺失（textarea 与 .editor-container 都不存在）";
+        ? `源码面就绪=${last.ready} 视口文本=${last.visLen} 全文=${last.len} / PM len=${last.pmLen}，文档未装入`
+        : "控件缺失（源码面与 .editor-container 都不存在）";
   log(
     `   可用性探测：${usable ? "可用" : "不可用"}（3 次 evaluate 耗时 ${results.map((r) => r.ms).join("/")}ms）` +
       (usable ? "" : ` → ${reason}`),
@@ -636,10 +644,17 @@ async function runTier(cdp, tier, args, log) {
       loaded = await ev(
         `
       const sc = document.querySelector(".editor-container");
+      const s = window.__pbSrc();
       const expect = ${docText.length};
-      const srcLen = window.__pbSrcLen();
-      const pmLen = sc ? (sc.textContent || "").length : 0;
-      return srcLen >= expect * 0.9 || pmLen >= expect * 0.9;
+      /**
+       * CM6 下全文长度不可得（虚拟渲染），所以装载完成判据改为：
+       * 「源码面已就绪 + 视口内已有实质内容」。大文档按设计不渲染 PM（pmLen 不再参与）。
+       * textarea 仍走全文长度精确判定。
+       */
+      const fullLen = window.__pbSrcLen();
+      if (fullLen >= 0) return fullLen >= expect * 0.9;
+      const visLen = window.__pbSrcVisibleLen();
+      return window.__pbSrcReady() && visLen > 200;
     `,
         evalTimeout,
       );
@@ -971,7 +986,12 @@ async function runTier(cdp, tier, args, log) {
       targetDurationMs: typeSeconds * 1000,
       actualKeys: sent,
       keysPerSecond: +(sent / (typeWallMs / 1000)).toFixed(2),
-      srcDelta: envAfter.srcLen - env.srcLen,
+      /**
+       * CM6 下全文长度不可得（-1）→ srcDelta 记为 null（未知），不伪造数字。
+       * textarea 路径保持原语义。
+       */
+      srcDelta:
+        envAfter.srcLen >= 0 && env.srcLen >= 0 ? envAfter.srcLen - env.srcLen : null,
       latency: summary,
       latencyConservative: slowSummary,
       longTasks: timing.longTasks.length,
