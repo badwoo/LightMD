@@ -4848,14 +4848,15 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
   // ─── 在光标处插入文本（统一入口，供对话框 onInsert 复用）────────────
   // 复用 sourceInsertHandler 的差异记录与光标恢复逻辑
   const insertTextAtCursor = useCallback((text: string, cursorOffset?: number) => {
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
+    // v0.17.0 A2 收敛：只需选区三个纯值 → 经 surface（CM6 下同样成立）
+    if (!sourceSurface.getText()) return;
+    const sel = sourceSurface.getSelection();
+    const start = sel.start;
+    const end = sel.end;
     const currentContent = sourceContentRef.current;
     const selected = currentContent.substring(start, end);
     const newContent = currentContent.substring(0, start) + text + currentContent.substring(end);
-    const scrollTop = textarea.scrollTop;
+    const scrollTop = sourceSurface.getScrollTop();
     // v0.6.6 问题4：插入内容含 base64 图片（如 ImageInsertDialog）→ mask 为短标记
     let finalContent = newContent;
     let newCursorPos = selected ? start + text.length : (cursorOffset !== undefined ? start + cursorOffset : start + text.length);
@@ -4875,14 +4876,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     setDirtyRef.current(true);
     lastContentRef.current = unmaskBase64Images(finalContent, base64TokensRef.current);
     const restore = () => {
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(newCursorPos, newCursorPos);
-        ta.scrollTop = scrollTop;
-        lastTextareaCursorRef.current = newCursorPos;
-      }
-    };
+      // v0.17.0 A2 收敛：恢复光标/滚动是**纯值语义**（不涉及布局几何），
+      // 改经 SourceSurface —— CM6 实现下同一段代码同样成立。
+      sourceSurface.focus();
+      sourceSurface.setSelection(newCursorPos, newCursorPos);
+      sourceSurface.setScrollTop(scrollTop);
+      lastTextareaCursorRef.current = newCursorPos;
+      };
     requestAnimationFrame(restore);
     setTimeout(restore, 50);
   }, [pushUndoEntry]);
@@ -4913,12 +4913,12 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
   // 菜单关闭由 SlashCommand 组件内部调用 onClose 处理，此处不主动关闭
   // 核心字符串变换逻辑提取为纯函数 computeSlashInsert（文件底部导出），便于单元测试
   const handleSlashInsert = useCallback((markdown: string, mode: InsertMode) => {
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
-    const cursorPos = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
+    // v0.17.0 A2 收敛：纯值语义（选区 + 滚动像素）→ 经 surface
+    const sel0 = sourceSurface.getSelection();
+    const cursorPos = sel0.start;
+    const selectionEnd = sel0.end;
     const currentContent = sourceContentRef.current;
-    const scrollTop = textarea.scrollTop;
+    const scrollTop = sourceSurface.getScrollTop();
 
     // 调用纯函数计算新内容与光标位置
     const { newContent, newCursorPos } = computeSlashInsert(
@@ -4942,14 +4942,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
 
     // 恢复光标位置（rAF + setTimeout 双保险，与 insertTextAtCursor 一致）
     const restore = () => {
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(newCursorPos, newCursorPos);
-        ta.scrollTop = scrollTop;
-        lastTextareaCursorRef.current = newCursorPos;
-      }
-    };
+      // v0.17.0 A2 收敛：恢复光标/滚动是**纯值语义**（不涉及布局几何），
+      // 改经 SourceSurface —— CM6 实现下同一段代码同样成立。
+      sourceSurface.focus();
+      sourceSurface.setSelection(newCursorPos, newCursorPos);
+      sourceSurface.setScrollTop(scrollTop);
+      lastTextareaCursorRef.current = newCursorPos;
+      };
     requestAnimationFrame(restore);
     setTimeout(restore, 50);
   }, [pushUndoEntry]);
@@ -5040,9 +5039,10 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
 
   // ─── 打开链接对话框（携带选中文本作为 initialText）────
   const openLinkDialog = useCallback(() => {
-    const textarea = sourceTextareaRef.current;
-    if (textarea) {
-      const selected = sourceContentRef.current.substring(textarea.selectionStart, textarea.selectionEnd);
+    // v0.17.0 A2 收敛：仅取选区子串 → 经 surface
+    {
+      const sel = sourceSurface.getSelection();
+      const selected = sourceContentRef.current.substring(sel.start, sel.end);
       setLinkInitialText(selected);
     }
     setLinkDialogOpen(true);
@@ -5209,13 +5209,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (/^h[1-6]$/.test(action)) {
       action = `heading${action[1]}`;
     }
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
+    // v0.17.0 A2 收敛：纯值语义 → 经 surface
+    const sel1 = sourceSurface.getSelection();
+    const start = sel1.start;
+    const end = sel1.end;
     const currentContent = sourceContentRef.current;
     const selected = currentContent.substring(start, end);
-    const scrollTop = textarea.scrollTop;
+    const scrollTop = sourceSurface.getScrollTop();
 
     // 行首类操作：Ctrl+1~6 在行首插入/替换标题，Ctrl+0 移除标题
     if (action === "paragraph") {
@@ -5233,13 +5233,12 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
       const newCursorPos = start + cursorOffset;
       const restore = () => {
-        const ta = sourceTextareaRef.current;
-        if (ta) {
-          ta.focus();
-          ta.setSelectionRange(newCursorPos, newCursorPos);
-          ta.scrollTop = scrollTop;
-        }
-      };
+        // v0.17.0 A2 收敛：恢复光标/滚动是**纯值语义**（不涉及布局几何），
+        // 改经 SourceSurface —— CM6 实现下同一段代码同样成立。
+        sourceSurface.focus();
+        sourceSurface.setSelection(newCursorPos, newCursorPos);
+        sourceSurface.setScrollTop(scrollTop);
+        };
       requestAnimationFrame(restore);
       setTimeout(restore, 50);
       return;
@@ -5266,14 +5265,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       formatGhostHandlersRef.current.clear("input");
       const newCursorPos = Math.max(0, Math.min(newText.length, start + cursorOffset));
       const restore = () => {
-        const ta = sourceTextareaRef.current;
-        if (ta) {
-          ta.focus();
-          ta.setSelectionRange(newCursorPos, newCursorPos);
-          ta.scrollTop = scrollTop;
-          lastTextareaCursorRef.current = newCursorPos;
-        }
-      };
+        // v0.17.0 A2 收敛：恢复光标/滚动是**纯值语义**（不涉及布局几何），
+        // 改经 SourceSurface —— CM6 实现下同一段代码同样成立。
+        sourceSurface.focus();
+        sourceSurface.setSelection(newCursorPos, newCursorPos);
+        sourceSurface.setScrollTop(scrollTop);
+        lastTextareaCursorRef.current = newCursorPos;
+        };
       requestAnimationFrame(restore);
       setTimeout(restore, 50);
       return;
@@ -5294,13 +5292,12 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       lastContentRef.current = unmaskBase64Images(newText, base64TokensRef.current);
       const newCursorPos = start + cursorOffset;
       const restore = () => {
-        const ta = sourceTextareaRef.current;
-        if (ta) {
-          ta.focus();
-          ta.setSelectionRange(newCursorPos, newCursorPos);
-          ta.scrollTop = scrollTop;
-        }
-      };
+        // v0.17.0 A2 收敛：恢复光标/滚动是**纯值语义**（不涉及布局几何），
+        // 改经 SourceSurface —— CM6 实现下同一段代码同样成立。
+        sourceSurface.focus();
+        sourceSurface.setSelection(newCursorPos, newCursorPos);
+        sourceSurface.setScrollTop(scrollTop);
+        };
       requestAnimationFrame(restore);
       setTimeout(restore, 50);
       // v0.12.0 需求1：无选中文本且当前行除已有前缀外为空 → 显示标题占位 ghost
@@ -5341,14 +5338,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
 
     const newCursorPos = start + cursorOffset;
     const restore = () => {
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(newCursorPos, newCursorPos);
-        ta.scrollTop = scrollTop;
-        lastTextareaCursorRef.current = newCursorPos;
-      }
-    };
+      // v0.17.0 A2 收敛：恢复光标/滚动是**纯值语义**（不涉及布局几何），
+      // 改经 SourceSurface —— CM6 实现下同一段代码同样成立。
+      sourceSurface.focus();
+      sourceSurface.setSelection(newCursorPos, newCursorPos);
+      sourceSurface.setScrollTop(scrollTop);
+      lastTextareaCursorRef.current = newCursorPos;
+      };
     requestAnimationFrame(restore);
     setTimeout(restore, 50);
 
@@ -5391,8 +5387,9 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     const ta = sourceTextareaRef.current;
     const text = e.clipboardData.getData("text/plain").trim();
     if (!ta || !isHttpUrl(text)) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
+    const psel = sourceSurface.getSelection();
+    const start = psel.start;
+    const end = psel.end;
     if (isInCodeBlock(ta.value, start)) return;
     e.preventDefault();
     const selected = ta.value.slice(start, end);
