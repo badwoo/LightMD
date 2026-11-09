@@ -583,7 +583,15 @@ async function runTier(cdp, tier, args, log) {
       loadMs,
       loadBlockedEvals: loadTimeoutEvidence,
       usability,
-      modeSwitch: [],
+      modeSwitch: {
+        applicable: false,
+        reason:
+          "HUGE_FILE_THRESHOLD 降级路径 + 该档整体不可操作（装载 285s、主线程持续阻塞 >5s×3 次），" +
+          "故模式切换基准不适用。",
+        degradedStrategyApplied: true,
+        observedMode: "edit",
+        measuredAt: new Date().toISOString(),
+      },
       typing: null,
       undo: null,
       note:
@@ -607,23 +615,25 @@ async function runTier(cdp, tier, args, log) {
   // 把它记入「模式切换基准」会把一个已知的设计取舍伪装成性能回归。
   // 故：常规档测模式切换；超大档改为**记录降级行为证据**，不做切换计时。
   const modeSwitch = [];
+  // 5MB+ 档：modeSwitch 必须是**带 applicable:false 的对象**，不能是空数组。
+  // 空数组会被后来的人误读成"没测"或"测了没数据"，而真相是"该档不适用"。
+  let modeSwitchNotApplicable = null;
   const isHuge = actualBytes >= HUGE_FILE_BYTES;
   if (isHuge) {
     log(`   [5MB+] 命中大文件降级策略（HUGE_FILE_THRESHOLD=${HUGE_FILE_BYTES} 字节）：常规模式切换不适用`);
-    // 只记录**降级策略是否生效**（这是既定行为证据，不是性能计时）。
+    // 只记录**降级策略是否生效**（既定行为证据，不是性能计时）。
     // 不主动触发切 preview：那会强制渲染 5MB 文档的 PM（实测 ≥24s），
     // 既污染后续输入延迟测量，也与「大文件禁用渲染」的设计意图相悖。
-    modeSwitch.push({
-      round: 0,
-      from: env0.mode,
-      to: env0.mode,
-      expected: "edit（降级策略要求）",
-      ok: env0.mode === "edit",
-      wallMs: null,
-      note:
-        "5MB+ 命中 HUGE_FILE_THRESHOLD：App.tsx:557-577 强制 setViewMode('edit') + 关闭预览，" +
-        "常规模式切换基准不适用；本条仅记录降级策略是否生效。",
-    });
+    modeSwitchNotApplicable = {
+      applicable: false,
+      reason:
+        "HUGE_FILE_THRESHOLD 降级路径：App.tsx:557-577 对 >5MB 文档强制 setViewMode('edit') 并关闭预览。" +
+        "主动切阅读模式需渲染全文档 PM（实测 ≥24s），正是该策略要规避的行为 —— " +
+        "记入切换基准会把既定设计取舍伪装成性能回归。",
+      degradedStrategyApplied: env0.mode === "edit",
+      observedMode: env0.mode,
+      measuredAt: new Date().toISOString(),
+    };
     log(`   降级策略生效：当前 mode=${env0.mode}（期望 edit）→ ${env0.mode === "edit" ? "OK" : "未生效"}`);
   }
   if (!isHuge) for (let round = 0; round < 3; round++) {
@@ -819,7 +829,7 @@ async function runTier(cdp, tier, args, log) {
     loadMs,
     loadBlockedEvals: loadTimeoutEvidence,
     env: env0,
-    modeSwitch,
+    modeSwitch: modeSwitchNotApplicable ?? modeSwitch,
     typing: {
       durationMs: typeWallMs,
       targetDurationMs: typeSeconds * 1000,
@@ -850,6 +860,68 @@ async function runTier(cdp, tier, args, log) {
     );
   }
   return result;
+}
+
+/**
+ * 由实测结果生成「口径说明」。规则：只陈述**本文件数据能支撑的结论**，
+ * 每句都指向具体数字，避免读的人把"降级策略"误读成"性能回归"或"没测"。
+ */
+function buildNotes(results) {
+  const notes = [];
+  const t20 = results.find((r) => r.tier === "20mb");
+  const t5 = results.find((r) => r.tier === "5mb");
+
+  // ① 20MB 档：必须写成"不可操作"的明确结论，而非"降级策略"
+  if (t20) {
+    if (t20.usability && !t20.usability.usable) {
+      const blocked = t20.usability.rounds.filter((r) => !r.ok).length;
+      const total = t20.usability.rounds.length;
+      notes.push(
+        `【20MB 档结论：不可操作，非探针故障】该档**只有可用性探测、没有延迟数字**，原因是实测不可测：` +
+          `装载耗时 ${(t20.loadMs / 1000).toFixed(1)}s，装载后主线程持续阻塞` +
+          `（${blocked}/${total} 次轻量 Runtime.evaluate 均超 5s，判据见 usability.reason="${t20.usability.reason}"）。` +
+          `按设计稿 C19/§7.4，20MB（${t20.lines} 行）已超出本机可测范围 —— ` +
+          `这与评估原文"10 万行 p95<16ms"被修正为"5MB 连续输入 60s"是同一性质的口径修正。` +
+          `此处只落盘阻塞证据：**给出假数字比不给数字更危险**。`,
+      );
+    } else if (t20.typing) {
+      notes.push(
+        `【20MB 档】可用（装载 ${(t20.loadMs / 1000).toFixed(1)}s），输入 p95=${t20.typing.latency.p95}ms。`,
+      );
+    }
+  }
+
+  // ② 5MB+ 档：模式切换为何"不适用"
+  const hugeTiers = results.filter((r) => !Array.isArray(r.modeSwitch) && r.modeSwitch && r.modeSwitch.applicable === false);
+  if (hugeTiers.length > 0) {
+    notes.push(
+      `【5MB+ 档模式切换：applicable=false，不是"没测"】命中 HUGE_FILE_THRESHOLD=${HUGE_FILE_BYTES} 字节` +
+        `（App.tsx:557-577 强制 setViewMode("edit") 并关闭预览）。` +
+        `主动切阅读模式需渲染全文档 PM（曾实测 ≥24s），那正是该策略要规避的行为；` +
+        `把它记入"模式切换基准"会把**既定设计取舍伪装成性能回归**。` +
+        `涉及档位：${hugeTiers.map((r) => r.tier).join("/")}。`,
+    );
+  }
+
+  // ③ 硬门禁档的数字（若有）
+  if (t5 && t5.gate) {
+    notes.push(
+      `【5MB 硬门禁】口径=设计稿 §3.1 P0-4 修正项「连续输入 60s 墙钟，每击键到下一次 paint 的 p95 < 16ms」。` +
+        `实测：${(t5.gate.actualDurationMs / 1000).toFixed(1)}s 窗口内发出 ${t5.gate.actualKeys} 键` +
+        `（${t5.gate.keysPerSecond} 键/秒），**p95=${t5.gate.p95}ms → ${t5.gate.pass ? "PASS" : "FAIL"}**。` +
+        `这是 v0.16.0 textarea 面的现状基线，A 线 CM6 的唯一对照基准。`,
+    );
+  }
+
+  // ④ 测量面说明
+  notes.push(
+    "【测量面】所有输入延迟都在源码面（textarea）测得 —— 5MB+ 文档按既有设计不渲染 PM 阅读面，" +
+      "这是 v0.16.0 的既定行为，也正是 v0.17.0 A 线（CM6）要替换的面。" +
+      "延迟 = 事件 timeStamp → 第一个 rAF（布局/绘制前，与「16ms 一帧」同刻度）；" +
+      "双 rAF 会因跨两帧产生 ~33ms 天然下限，曾把 p50 污染成 60ms，故不用。" +
+      "另记「到改动可见」的双帧保守值（latencyConservative），不参与门禁。",
+  );
+  return notes;
 }
 
 const main = async () => {
@@ -970,12 +1042,9 @@ const main = async () => {
         docShape: "按小节编号轮转（标题/段落/列表/表格/代码/引用/公式），非同段重复",
       },
       tiers: results,
-      notes: [
-        "20MB 档位按 v0.16.0 既有大文件策略（HUGE_FILE_THRESHOLD=5MB）会强制编辑模式并关闭预览，" +
-          "因此该档的模式切换测量反映的是「大文件降级路径」，不代表常规档位切换成本。",
-        "所有档位的输入延迟都在源码面（textarea）测得 —— 5MB+ 文档不会渲染 PM 阅读面，" +
-          "这是 v0.16.0 现有设计的既定行为，也是 v0.17.0 A 线（CM6）要替换的面。",
-      ],
+      // notes 由**实测结果动态生成**（不写死数字）：档位数据变了 notes 必须跟着变，
+      // 否则报告会说出与数据矛盾的话 —— 这是文档与证据脱钩的典型来源。
+      notes: buildNotes(results),
       rawLog: logLines,
     };
     fs.writeFileSync(OUT_JSON, JSON.stringify(baseline, null, 2), "utf-8");
