@@ -1735,6 +1735,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         onClose={() => { setShowSearch(false); setShowSearchReplace(false); }}
         editorView={viewRef.current}
         sourceTextareaRef={sourceTextareaRef}
+        sourceSurface={sourceSurface}
         sourceContent={sourceContent}
         onSourceContentChange={(newContent) => {
           // v0.14.0 需求1+2：统一走 `writeBackCurrentDoc`。

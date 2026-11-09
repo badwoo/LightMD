@@ -22,12 +22,11 @@
  * - 替换（单个/全部）与查找共用同一份 SearchOptions，范围外的文本永不被改写
  * - 纯函数层抽到 utils/searchEngine.ts（本文件只保留组件与兼容包装）
  */
+import type { SourceSurface } from "../../editor/types";
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import type { Node as PMNode } from "prosemirror-model";
 import { searchHighlightKey, searchMatchesKey, type SearchHighlightRange } from "../../core/editor";
 // v0.15.1 需求5：源码模式（textarea）搜索高亮的 overlay 构建（纯函数，可单测）
-import { buildSearchOverlayHtml, SOURCE_SEARCH_OVERLAY_CLASS, SEARCH_MATCH_CURRENT_CLASS } from "../../utils/highlight";
-import { syncTextareaMetrics } from "../../utils/focus-paragraph";
 import { useEditorStore } from "../../stores/useEditorStore";
 import { useT, getCurrentLanguage } from "../../i18n";
 import {
@@ -220,6 +219,14 @@ interface SearchReplaceProps {
   onClose: () => void;
   editorView: import("prosemirror-view").EditorView | null;
   sourceTextareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /**
+   * v0.17.0 A3：源码面契约实现。
+   *
+   * 源码模式的**搜索高亮**改走 `sourceSurface.setSearchRanges()`（CM6 Decoration /
+   * textarea 实现内部的 overlay），不再由本组件自建 overlay div ——
+   * 决议记录 §10.3「立即删、不留双路由」。
+   */
+  sourceSurface?: SourceSurface;
   sourceContent?: string;
   onSourceContentChange?: (content: string) => void;
   /** 初始是否显示替换行（Ctrl+H 时为 true） */
@@ -580,6 +587,7 @@ export function SearchReplaceDialog({
   onClose,
   editorView,
   sourceTextareaRef,
+  sourceSurface,
   sourceContent,
   onSourceContentChange,
   initialShowReplace = false,
@@ -703,8 +711,6 @@ export function SearchReplaceDialog({
    * 与 `pmRangesRef` 互斥：哪个模式生效由 `isSourceMode` 决定，切换时另一边会被清空。
    */
   const sourceHighlightRangesRef = useRef<MatchRange[]>([]);
-  /** 源码模式搜索高亮 overlay（懒创建，挂在 textarea 的 `.source-editor-wrapper` 里） */
-  const sourceOverlayRef = useRef<HTMLDivElement | null>(null);
   /**
    * v0.15.1 需求5：这批匹配是**基于哪一版 doc** 算出来的。
    *
@@ -815,12 +821,9 @@ export function SearchReplaceDialog({
         }
       }
       // v0.15.1 需求5：移除源码模式的高亮 overlay 节点（懒创建，得自己收尸）
-      const overlay = sourceOverlayRef.current;
-      if (overlay) {
-        overlay.innerHTML = "";
-        overlay.remove();
-        sourceOverlayRef.current = null;
-      }
+      // v0.17.0 A3：源码模式高亮改经 surface，这里是**唯一**清除出口
+      // （不再有自建 overlay 节点需要收尸）
+      sourceSurface?.clearSearchRanges();
       pmRangesRef.current = null;
       sourceHighlightRangesRef.current = [];
       // v0.4.3 Issue 3：清除非 md 文件阅读模式的选区高亮
@@ -1011,10 +1014,9 @@ export function SearchReplaceDialog({
   const clearHighlightRefs = useCallback(() => {
     pmRangesRef.current = null;
     sourceHighlightRangesRef.current = [];
-    const overlay = sourceOverlayRef.current;
-    if (overlay) overlay.innerHTML = "";
+    sourceSurface?.clearSearchRanges();
     setHighlightTruncated(false);
-  }, []);
+  }, [sourceSurface]);
 
   /**
    * 按当前缓存（`sourceHighlightRangesRef` + `matchesTextRef`）重绘 overlay 的**当前项**。
@@ -1023,18 +1025,25 @@ export function SearchReplaceDialog({
    * 成本是 O(命中数) 的字符串拼接 + 一次 innerHTML，与"点一次扫全文"完全不同量级。
    */
   const paintSourceOverlay = useCallback((current: number) => {
-    const ta = sourceTextareaRef?.current;
-    const overlay = sourceOverlayRef.current;
-    if (!ta || !overlay || !overlay.isConnected) return;
     const ranges = sourceHighlightRangesRef.current;
+    if (!sourceSurface) return;
     if (ranges.length === 0) {
-      overlay.innerHTML = "";
+      sourceSurface.clearSearchRanges();
       return;
     }
-    const text = matchesTextRef.current ?? ta.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-    overlay.innerHTML = buildSearchOverlayHtml(text, ranges, current);
-    overlay.scrollTop = ta.scrollTop;
-  }, [sourceTextareaRef]);
+    /**
+     * v0.17.0 A3：源码高亮改经 `SourceSurface.setSearchRanges` —— **单一出口**。
+     *
+     * - CM6 实现：Decorations（真实文档范围上色，不再需要与控件逐像素对齐的 mirror）；
+     * - textarea 实现：其内部 overlay（与原实现同机制，但收敛到实现层一处）。
+     *
+     * 原来的 `sourceOverlayRef` 自建 div 逻辑已删除（决议记录 §10.3「立即删、不留双路由」）。
+     * `current` 用 `active: true` 表达，与旧的 `SEARCH_MATCH_CURRENT_CLASS` 语义一致。
+     */
+    sourceSurface.setSearchRanges(
+      ranges.map((r, i) => ({ start: r.start, end: r.end, active: i === current })),
+    );
+  }, [sourceSurface]);
 
   /**
    * v0.15.1 需求5：源码模式（textarea）搜索高亮的 **overlay 渲染**。
@@ -1055,34 +1064,33 @@ export function SearchReplaceDialog({
    * @param ranges 命中区间（已按上限截断）
    * @param current 当前项在 `ranges` 里的下标（-1 = 无）
    */
+  /**
+   * v0.17.0 A3：源码模式搜索高亮的**渲染**。
+   *
+   * 原实现（v0.15.1 需求5）在这里自建一个 overlay div，手工 `syncTextareaMetrics`
+   * 把排版逐像素抄过来、再 `innerHTML` 拼 `<mark>` —— 因为 textarea 内部文字不是
+   * DOM 节点，没法直接上色。那套代码现在**整体删除**（决议记录 §10.3：立即删、不留双路由）。
+   *
+   * 改为单一出口 `sourceSurface.setSearchRanges`：
+   * - CM6 实现 → `Decoration.mark`，区间是**真实文档范围**，换行/缩放/字体变化都不会错位；
+   * - textarea 实现 → 它内部用同一套 overlay 机制（已收敛到实现层，宿主不再关心）。
+   *
+   * `text` 参数不再需要（实现层自己读文本），保留签名是为了让调用点改动最小。
+   */
   const renderSourceSearchOverlay = useCallback((
-    text: string,
+    _text: string,
     ranges: ReadonlyArray<MatchRange>,
     current: number,
   ) => {
-    const ta = sourceTextareaRef?.current;
-    const wrapper = ta?.parentElement;
-    if (!ta || !wrapper) return;
-    let overlay = sourceOverlayRef.current;
-    if (!overlay || !overlay.isConnected || overlay.parentElement !== wrapper) {
-      overlay = document.createElement("div");
-      overlay.className = SOURCE_SEARCH_OVERLAY_CLASS;
-      overlay.setAttribute("aria-hidden", "true");
-      wrapper.appendChild(overlay);
-      sourceOverlayRef.current = overlay;
+    if (!sourceSurface) return;
+    if (ranges.length === 0) {
+      sourceSurface.clearSearchRanges();
+      return;
     }
-    // 排版度量与 textarea 完全对齐（否则底色会和文字错位）。
-    // 只在"宽度变了"时重算：`syncTextareaMetrics` 内部要读 `getComputedStyle`，
-    // 那是强制样式重算，源码模式下每敲一个字符都会走到这里，不能无条件跑。
-    // 宽度是这里唯一会随窗口/分屏比例/滚动条出现而变的量，用它做变更闸门即可。
-    if (overlay.dataset.mw !== String(ta.clientWidth)) {
-      syncTextareaMetrics(ta, overlay);
-      overlay.dataset.mw = String(ta.clientWidth);
-    }
-    overlay.innerHTML = buildSearchOverlayHtml(text, ranges, current);
-    // 与 textarea 同步滚动（textarea 自己滚动时由下面的 scroll 监听同步）
-    overlay.scrollTop = ta.scrollTop;
-  }, [sourceTextareaRef]);
+    sourceSurface.setSearchRanges(
+      ranges.map((r, i) => ({ start: r.start, end: r.end, active: i === current })),
+    );
+  }, [sourceSurface]);
 
   /**
    * v0.15.1 需求5：**一算出匹配就推全部命中**（PM 两层 Decoration / 源码 overlay）。
@@ -1169,45 +1177,17 @@ export function SearchReplaceDialog({
     }
   }, [clearHighlightRefs, editorView]);
 
-  /** `renderSourceSearchOverlay` 的稳定引用（给 scroll/resize effect 用，避免重复绑监听） */
-  const renderSourceSearchOverlayRef = useRef<typeof renderSourceSearchOverlay | null>(null);
-  renderSourceSearchOverlayRef.current = renderSourceSearchOverlay;
-
   /**
-   * overlay 与 textarea 的滚动 / 尺寸同步。
+   * v0.17.0 A3：原「overlay 与 textarea 的滚动/尺寸同步」effect **整体删除**。
    *
-   * 不同步的后果：
-   * - 滚动：用户滚动 textarea 时底色留在原处 → 整篇"错行高亮"，比没有高亮更糟；
-   * - 尺寸：窗口缩放或分屏比例变化后 overall 换行位置与 textarea 不一致 → 底色错位。
-   *   `renderSourceSearchOverlay` 里按 `clientWidth` 做了闸门，这里把闸门清掉再重绘一次即可。
-   *
-   * 监听 `scroll` 必须绑在元素上（textarea 的滚动不冒泡到 window）。
+   * 旧实现必须自己绑 `scroll` + `resize` 去同步自建 overlay 的 `scrollTop` 与排版度量
+   *（textarea 内部文字不是 DOM 节点，只能靠 mirror 逐像素对齐），
+   * 连带需要 `renderSourceSearchOverlayRef` 这个"稳定引用"来避免重复绑监听。
+   * 改经 `setSearchRanges` 后这些全部不需要：
+   * - CM6 实现 → Decoration 天然随文档滚动与重排，**无需任何同步**；
+   * - textarea 实现 → 它在实现层内部自己绑（同一机制，收敛到一处）。
+   * 这是决议 §10.3「立即删、不留双路由」的直接结果：宿主不再持有第二套高亮生命周期。
    */
-  useEffect(() => {
-    const ta = sourceTextareaRef?.current;
-    if (!ta) return;
-    const syncScroll = () => {
-      const overlay = sourceOverlayRef.current;
-      if (overlay && overlay.isConnected) overlay.scrollTop = ta.scrollTop;
-    };
-    const syncResize = () => {
-      const overlay = sourceOverlayRef.current;
-      const ranges = sourceHighlightRangesRef.current;
-      if (!overlay || !overlay.isConnected || ranges.length === 0) return;
-      // 当前项下标：从 overlay 里已有的醒目 mark 反推，省掉一份重复状态
-      const marks = Array.from(overlay.querySelectorAll("mark"));
-      const cur = marks.findIndex((m) => m.classList.contains(SEARCH_MATCH_CURRENT_CLASS));
-      const text = matchesTextRef.current ?? ta.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-      if (overlay.dataset) overlay.dataset.mw = "";
-      renderSourceSearchOverlayRef.current?.(text, ranges, cur);
-    };
-    ta.addEventListener("scroll", syncScroll, { passive: true });
-    window.addEventListener("resize", syncResize);
-    return () => {
-      ta.removeEventListener("scroll", syncScroll);
-      window.removeEventListener("resize", syncResize);
-    };
-  }, [sourceTextareaRef, isSourceMode]);
 
   // 搜索
   const performSearch = useCallback(() => {

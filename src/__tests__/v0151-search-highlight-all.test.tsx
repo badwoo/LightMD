@@ -27,6 +27,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createElement, useState } from "react";
 import { render, fireEvent, cleanup, act } from "@testing-library/react";
+import { useEffect } from "react";
+import { createSourceSurface } from "../editor/createSourceSurface";
 import { createEditor, searchHighlightKey, searchMatchesKey } from "../core/editor";
 import { SearchReplaceDialog } from "../components/editor/SearchReplace";
 import { useEditorStore } from "../stores/useEditorStore";
@@ -387,7 +389,18 @@ describe("v0.15.1 需求5 · 高亮总量上限（不静默截断）", () => {
 
 // ═══ ③ 源码模式（textarea）：overlay 方案 ═══
 
-/** 受控宿主：模拟 EditorContainer 的源码态接线 */
+/**
+ * 受控宿主：模拟 EditorContainer 的源码态接线。
+ *
+ * v0.17.0 A3：源码高亮已从「SearchReplace 自建 overlay div」改为经
+ * `SourceSurface.setSearchRanges`（决议 §10.3 立即删、不留双路由）。
+ * 因此这里注入**真实的** `TextareaSourceSurface`，并把它的 setSearchRanges
+ * 调用记录下来供断言 —— 断言对象从"DOM 里有没有 mark"升级为
+ * "契约层有没有收到正确的命中区间"，这才是 A3 之后的正确护栏。
+ */
+type RangeCall = Array<{ start: number; end: number; active?: boolean }>;
+const searchRangeCalls: RangeCall[] = [];
+
 function SourceHost({ initial, onReady }: { initial: string; onReady?: (set: (s: string) => void) => void }) {
   const [content, setContent] = useState(initial);
   const [taRef] = useState(() => {
@@ -400,10 +413,29 @@ function SourceHost({ initial, onReady }: { initial: string; onReady?: (set: (s:
   });
   if (taRef.current && taRef.current.value !== content) taRef.current.value = content;
   onReady?.(setContent);
+  // 真实 surface（jsdom → textarea 实现），并记录 setSearchRanges 调用
+  const [surface] = useState(() => {
+    const s = createSourceSurface({ impl: "textarea" });
+    const el = taRef.current;
+    if (el) s.mount(el, { initialText: content });
+    const orig = s.setSearchRanges.bind(s);
+    s.setSearchRanges = (ranges: RangeCall) => {
+      searchRangeCalls.push(ranges.map((r) => ({ ...r })));
+      orig(ranges);
+    };
+    const origClear = s.clearSearchRanges.bind(s);
+    s.clearSearchRanges = () => {
+      searchRangeCalls.push([]); // 清除也记一条空记录 —— 契约上等价于"交出空集合"
+      origClear();
+    };
+    return s;
+  });
+  useEffect(() => () => surface.destroy(), [surface]);
   return createElement(SearchReplaceDialog, {
     onClose: () => {},
     editorView: null,
     sourceTextareaRef: taRef,
+    sourceSurface: surface,
     sourceContent: content,
     onSourceContentChange: (next: string) => setContent(next),
     initialShowReplace: true,
@@ -412,70 +444,91 @@ function SourceHost({ initial, onReady }: { initial: string; onReady?: (set: (s:
   });
 }
 
-describe("v0.15.1 需求5 · 源码模式：overlay 全量高亮", () => {
+describe("v0.17.0 A3 · 源码模式：搜索高亮经 SourceSurface 契约", () => {
+  /**
+   * ## 为什么这组断言从"查 overlay DOM"改成"查 setSearchRanges 契约"
+   *
+   * v0.15.1 需求5 时源码面是 textarea，内部文字不是 DOM 节点，SearchReplace 只能
+   * 自己在控件上叠一层 `div.source-search-overlay`，把排版逐像素抄过来再拼 `<mark>`。
+   * 那 4 条断言当时锁的是这层 DOM 的形状与生命周期。
+   *
+   * A3 把高亮改为 `SourceSurface.setSearchRanges`（决议 §10.3「立即删、不留双路由」），
+   * 那层 DOM 已被**整体删除**。于是断言必须升级 —— 不是放宽，而是换成**更靠前、
+   * 更稳的契约层**：
+   * - 旧断言锁"渲染出来的 DOM 长什么样"（实现细节，随实现变更必碎）；
+   * - 新断言锁"有没有把正确的命中区间交给实现"（真正的行为契约）。
+   *
+   * 关键点：**全量命中 + 当前项区分**这个用户可见行为仍然被完整锁住 ——
+   * `active: true` 承担原 `SEARCH_MATCH_CURRENT_CLASS` 的角色。
+   */
   beforeEach(() => {
     useEditorStore.setState({ viewMode: "edit" });
+    searchRangeCalls.length = 0;
   });
 
-  it("搜索后 overlay 里**每一处**命中都有 mark（当前项用另一个 class）", async () => {
+  it("搜索后把**每一处**命中都交给 surface，且当前项标 active", async () => {
     render(createElement(SourceHost, { initial: "cat dog cat" }));
     typeSearch("cat");
     await settle();
 
     expect(matchCount()).toBe(2);
-    const overlay = document.querySelector(".source-search-overlay") as HTMLElement | null;
-    expect(overlay).toBeTruthy();
-    const marks = overlay!.querySelectorAll("mark");
-    // ★ 两处都标出来（修复前源码模式没有任何全量高亮）
-    expect(marks).toHaveLength(2);
-    expect(Array.from(marks).map((m) => m.textContent)).toEqual(["cat", "cat"]);
-    expect(marks[0].className).toBe(SEARCH_MATCH_CURRENT_CLASS);
-    expect(marks[1].className).toBe(SEARCH_MATCH_CLASS);
+    // 最后一次非空调用就是"全量命中 + 当前项"的最终态
+    const last = [...searchRangeCalls].reverse().find((c) => c.length > 0);
+    expect(last, "必须把命中区间交给 SourceSurface（否则实现层无法上色）").toBeTruthy();
+    expect(last!.length, "★ 两处都要交出（修复前源码模式没有任何全量高亮）").toBe(2);
+    // 区间精确覆盖两处 "cat"
+    expect(last!.map((r) => [r.start, r.end])).toEqual([[0, 3], [8, 11]]);
+    // 当前项用 active 区分（等价于原 SEARCH_MATCH_CURRENT_CLASS 的角色）
+    expect(last!.filter((r) => r.active)).toHaveLength(1);
+    expect(last![0].active).toBe(true);
+    expect(last![1].active).toBe(false);
   }, 30000);
 
-  it("overlay 是纯展示层：pointer-events 关闭、文字透明、不遮挡交互类断言", async () => {
+  it("高亮绝不写进文档：命中只交给 surface，textarea.value 一字未改", async () => {
     render(createElement(SourceHost, { initial: "cat dog cat" }));
     typeSearch("cat");
     await settle();
-    const overlay = document.querySelector(".source-search-overlay") as HTMLElement;
-    expect(overlay.getAttribute("aria-hidden")).toBe("true");
-    // 不能把 textarea 的正文盖住：overlay 必须挂在 textarea 的**父元素**里
+
     const ta = document.querySelector("textarea") as HTMLTextAreaElement;
-    expect(overlay.parentElement).toBe(ta.parentElement);
-    // 原文档（textarea.value）一字未改 —— 高亮绝不进文档
+    // 原文档值未被改动 —— 这是"高亮是展示层"的实质判据（不再需要查 overlay 的 CSS）
     expect(ta.value).toBe("cat dog cat");
+    // 命中区间确实交给了 surface（说明高亮走的是展示通道，不是改文本）
+    const last = [...searchRangeCalls].reverse().find((c) => c.length > 0);
+    expect(last!.length).toBe(2);
   }, 30000);
 
-  it("点「下一个」→ overlay 里的当前项 mark 跟着走", async () => {
+  it("点「下一个」→ active 标记跟着走（当前项切换）", async () => {
     render(createElement(SourceHost, { initial: "cat dog cat" }));
     typeSearch("cat");
     await settle();
-    const overlay = () => document.querySelector(".source-search-overlay") as HTMLElement;
 
-    expect(overlay().querySelectorAll(`.${SEARCH_MATCH_CURRENT_CLASS}`)).toHaveLength(1);
-    expect(overlay().querySelectorAll(`.${SEARCH_MATCH_CURRENT_CLASS}`)[0].textContent).toBe("cat");
+    const activeAt = () => {
+      const last = [...searchRangeCalls].reverse().find((c) => c.length > 0);
+      return last!.findIndex((r) => r.active);
+    };
+    expect(activeAt(), "初始当前项应是第 1 处").toBe(0);
 
     clickByTitle("下一个");
-    const cur = overlay().querySelectorAll(`.${SEARCH_MATCH_CURRENT_CLASS}`);
-    expect(cur).toHaveLength(1);
-    // 当前项挪到第 2 处：标记里的文字仍是 cat，但它必须是**后一个** mark
-    const all = Array.from(overlay().querySelectorAll("mark")) as HTMLElement[];
-    expect(all.indexOf(cur[0] as HTMLElement)).toBe(1);
-    // 全量 mark 数量不变
-    expect(all).toHaveLength(2);
+    expect(activeAt(), "当前项必须挪到第 2 处").toBe(1);
+
+    // 全量命中数量不变（只是 active 换了位置）
+    const last = [...searchRangeCalls].reverse().find((c) => c.length > 0)!;
+    expect(last).toHaveLength(2);
+    expect(last.filter((r) => r.active)).toHaveLength(1);
   }, 30000);
 
-  it("清空搜索词 → overlay 内容清空", async () => {
+  it("清空搜索词 → 高亮被清除（clearSearchRanges 语义）", async () => {
     render(createElement(SourceHost, { initial: "cat dog cat" }));
     typeSearch("cat");
     await settle();
-    const overlay = document.querySelector(".source-search-overlay") as HTMLElement;
-    expect(overlay.querySelectorAll("mark")).toHaveLength(2);
+    expect([...searchRangeCalls].reverse().find((c) => c.length > 0)).toHaveLength(2);
 
     typeSearch("");
     await settle();
     expect(matchCount()).toBe(0);
-    expect(document.querySelector(".source-search-overlay")?.innerHTML ?? "").toBe("");
+    // 最后一次调用必须是"空区间"（= 清除），而不是留着旧命中
+    const last = searchRangeCalls[searchRangeCalls.length - 1];
+    expect(last ?? [], "清空搜索词必须把空集合交给 surface（清除高亮）").toHaveLength(0);
   }, 30000);
 });
 
