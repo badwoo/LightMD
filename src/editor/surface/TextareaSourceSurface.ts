@@ -120,6 +120,11 @@ export class TextareaSourceSurface implements SourceSurface {
       this.toBeCleanedUp = true;
     }
     this.ta = ta;
+    // ⚠️ 契约要求 mount 后 getText() 立即反映 initialText（工厂/契约测试依赖它）。
+    // 原先只记录到 lastReportedText、不写回 DOM —— 在受控路径（React 已经把 value 渲染上）
+    // 看不出问题，但**无宿主渲染时**（自建 textarea、单测、探针）getText 会读到空串。
+    // 因此只在"DOM 值与 initialText 不一致"时写回，避免与受控渲染抢写。
+    if (ta.value !== opts.initialText) ta.value = opts.initialText;
     this.lastReportedText = opts.initialText ?? ta.value ?? "";
     if (opts.readOnly) ta.readOnly = true;
     // 用原生 DOM 监听而非 React props：接口要对"实现"负责，不能靠容器传 onChange

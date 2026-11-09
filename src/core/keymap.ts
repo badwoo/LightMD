@@ -275,6 +275,13 @@ export function classifyGlobalEditorKeyTarget(target: Element | null): GlobalEdi
   const el = target as HTMLElement;
   const tag = el.tagName ?? "";
   if (tag === "TEXTAREA") return "textarea";
+  // ⚠️ v0.17.0 A 线（CM6 源码面）：`.cm-content` 也是 contenteditable。
+  // 若不在这里认出来，它会落到下面的 contenteditable 分支 → "editable" → return，
+  // 源码面 Ctrl+Z 就**零撤销**（窗口监听不接管，CM6 又被禁用了自带 history）。
+  // 因此必须与 textarea 归到**同一个落点**（"textarea"），走同一套自定义撤销栈。
+  // 判定顺序：`.cm-editor` 是外层容器、`.cm-content` 是编辑区；两者任一命中即可
+  // （keydown 的 target 通常是 `.cm-line`，它 `.closest(".cm-editor")` 成立）。
+  if (typeof el.closest === "function" && el.closest(".cm-editor")) return "textarea";
   // 必须在 contenteditable 判定之前：`.ProseMirror` 根节点本身就是 contenteditable
   if (typeof el.closest === "function" && el.closest(".ProseMirror")) return "prosemirror";
   if (tag === "INPUT" || tag === "SELECT") return "editable";

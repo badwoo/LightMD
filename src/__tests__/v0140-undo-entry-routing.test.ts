@@ -160,6 +160,31 @@ describe("classifyGlobalEditorKeyTarget：撤销键位落点分类（防双撤�
     expect(classifyGlobalEditorKeyTarget(host.querySelector("textarea"))).toBe("textarea");
   });
 
+  // v0.17.0 A 线：源码面换成 CM6 后，`.cm-content` 是 contenteditable。
+  // 必须与 textarea 归到**同一落点**，否则会落到 "editable" → return →
+  // 源码面 Ctrl+Z 零撤销（CM6 自带 history 已被硬约束禁用）。
+  it("CM6 源码面 → 必须归到 textarea 落点（否则源码面撤销失效）", () => {
+    const host = mk(
+      '<div class="cm-editor"><div class="cm-scroller"><div class="cm-content" contenteditable="true">' +
+        '<div class="cm-line" id="line1"># 标题</div></div></div></div>',
+    );
+    // 容器与编辑区本身都要命中
+    expect(classifyGlobalEditorKeyTarget(host.querySelector(".cm-editor"))).toBe("textarea");
+    expect(classifyGlobalEditorKeyTarget(host.querySelector(".cm-content"))).toBe("textarea");
+    // 真实 keydown 的 target 通常是光标所在行 → 也必须命中（这是最容易漏的一条）
+    expect(classifyGlobalEditorKeyTarget(host.querySelector("#line1"))).toBe("textarea");
+  });
+
+  it("CM6 与 ProseMirror 同存时仍按各自容器互斥分类（不串栈）", () => {
+    const host = mk(
+      '<div class="cm-editor"><div class="cm-content" contenteditable="true">' +
+        '<div class="cm-line" id="cm-line">源码</div></div></div>' +
+        '<div class="ProseMirror" contenteditable="true"><p><span id="pm-line">正文</span></p></div>',
+    );
+    expect(classifyGlobalEditorKeyTarget(host.querySelector("#cm-line"))).toBe("textarea");
+    expect(classifyGlobalEditorKeyTarget(host.querySelector("#pm-line"))).toBe("prosemirror");
+  });
+
   it("ProseMirror 根节点及其子节点 → prosemirror（必须让行给 PM 动态键位）", () => {
     const host = mk(
       '<div class="ProseMirror" contenteditable="true"><p><span id="inner">正文</span></p></div>',
