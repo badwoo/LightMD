@@ -1143,6 +1143,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     applyFileText,
   } = searchHost;
   const aiChatPane = useAiChatPane({
+    sourceSurface,
     renderSourceGhost,
     sourceTextareaRef,
     formatGhostRef,

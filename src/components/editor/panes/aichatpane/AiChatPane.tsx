@@ -81,6 +81,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     content,
     viewMode,
     isMdFile,
+    sourceSurface,
     isSourceMode,
     runAiBubble,
     runAiGhost,
@@ -299,13 +300,11 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       lastContentRef.current = unmaskBase64Images(rewrite.content, base64TokensRef.current);
       useAiAssistStore.getState().close();
       aiCtxRef.current = null;
-      const textarea = sourceTextareaRef.current;
-      if (textarea) {
-        requestAnimationFrame(() => {
-          textarea.focus();
-          textarea.setSelectionRange(rewrite.cursor, rewrite.cursor);
-        });
-      }
+      // v0.17.0 A2 收敛：纯值语义（光标定位）→ 经 surface
+      requestAnimationFrame(() => {
+        sourceSurface.focus();
+        sourceSurface.setSelection(rewrite.cursor, rewrite.cursor);
+      });
       return;
     }
 
@@ -323,8 +322,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
         view.dispatch(view.state.tr.insertText(text, pos, pos));
       }
     } else {
-      const textarea = sourceTextareaRef.current;
-      const pos = ctx.insertPos ?? textarea?.selectionStart ?? sourceContentRef.current.length;
+      // v0.17.0 A2 收敛：光标位置与滚动像素都是纯值 → 经 surface
+      const pos = ctx.insertPos ?? sourceSurface.getSelection().start ?? sourceContentRef.current.length;
       const content = sourceContentRef.current;
       const newContent = content.slice(0, pos) + text + content.slice(pos);
       // v0.15.1 需求6（再审计缺陷 2）：AI 续写 / 摘要的源码插入也是"外部写回"，
@@ -333,19 +332,18 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
         content,
         newContent,
         pos,
-        textarea?.scrollTop ?? 0,
+        sourceSurface.getScrollTop(),
         pos + text.length,
       );
       setSourceContent(newContent);
       onContentChangeRef.current?.(newContent);
       setDirtyRef.current(true);
       lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
-      const ta = sourceTextareaRef.current;
-      if (ta) {
+      {
         const cursor = pos + text.length;
         requestAnimationFrame(() => {
-          ta.focus();
-          ta.setSelectionRange(cursor, cursor);
+          sourceSurface.focus();
+          sourceSurface.setSelection(cursor, cursor);
         });
       }
     }
@@ -427,19 +425,19 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
 
     // 2. 源码模式（edit/split）：textarea
     if (isSourceMode) {
-      const textarea = sourceTextareaRef.current;
-      if (!textarea) return;
-      const hasSel = textarea.selectionStart !== textarea.selectionEnd;
+      // v0.17.0 A2 收敛：选区/全文都是纯值 → 经 surface
+      const asel = sourceSurface.getSelection();
+      const hasSel = asel.start !== asel.end;
 
       if (task === "continue") {
-        const head = textarea.value.slice(Math.max(0, textarea.selectionStart - 800), textarea.selectionStart);
+        const head = sourceSurface.getText().slice(Math.max(0, asel.start - 800), asel.start);
         if (!head.trim()) {
           notifyWarning(translate("ai.continueEmptyNotify"));
           return;
         }
         // v0.7.3 改进10(U3)：source 模式续写从"气泡渲染"改为"光标处 ghost 预览"
         // （Tab 采纳 / Esc 放弃），与 PM 模式交互手势统一
-        runSourceAiGhost(head, textarea.selectionStart);
+        runSourceAiGhost(head, asel.start);
         return;
       }
       if (task === "polish") {
@@ -447,25 +445,34 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
           notifyWarning(translate("ai.polishNoSelectionNotify"));
           return;
         }
-        const text = sourceContentRef.current.slice(textarea.selectionStart, textarea.selectionEnd);
+        const text = sourceContentRef.current.slice(asel.start, asel.end);
         if (!text.trim()) return;
-        runAiBubble("polish", text, "source", getTextareaSelectionAnchor(textarea), textarea.selectionStart, textarea.selectionEnd);
+        /**
+         * 选区两端走 surface（纯值）；但 `getTextareaSelectionAnchor` 需要真实 textarea
+         * 的**视口几何**（判据 1）→ 该函数仍收 ref 元素，A3 换 `coordsAtPos`。
+         */
+        const taEl = sourceTextareaRef.current;
+        if (taEl) {
+          runAiBubble("polish", text, "source", getTextareaSelectionAnchor(taEl), asel.start, asel.end);
+        }
         return;
       }
       // summary：优先选区，否则全文（sourceContent 已是 masked 显示层，base64 为短标记）
       // v0.7.0 修复5：有选区时锚点取选区坐标（气泡虚线连接用）；全文摘要锚点 {0,0}
       const text = hasSel
-        ? sourceContentRef.current.slice(textarea.selectionStart, textarea.selectionEnd)
+        ? sourceContentRef.current.slice(asel.start, asel.end)
         : sourceContentRef.current;
       if (!text.trim()) return;
+      // 锚点仍需真实几何（判据 1）→ 保留 ref 取值；光标位置是纯值 → 走 surface
+      const taEl = sourceTextareaRef.current;
       runAiBubble(
         "summary",
         text,
         "source",
-        hasSel ? getTextareaSelectionAnchor(textarea) : { x: 0, y: 0 },
+        hasSel && taEl ? getTextareaSelectionAnchor(taEl) : { x: 0, y: 0 },
         undefined,
         undefined,
-        textarea.selectionStart
+        asel.start
       );
     }
   }, [viewMode, isMdFile, isSourceMode, runAiBubble, runAiGhost, runSourceAiGhost]);
@@ -556,9 +563,9 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       if (isSourceMode) {
         const content = sourceContentRef.current;
         if (scope === "selection") {
-          const ta = sourceTextareaRef.current;
-          if (!ta || ta.selectionStart === ta.selectionEnd) return { raw: "", sourceMode: "source" };
-          return { raw: content.slice(ta.selectionStart, ta.selectionEnd), sourceMode: "source" };
+          const sel = sourceSurface.getSelection();
+          if (sel.start === sel.end) return { raw: "", sourceMode: "source" };
+          return { raw: content.slice(sel.start, sel.end), sourceMode: "source" };
         }
         return { raw: content, sourceMode: "source" };
       }
@@ -625,10 +632,9 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       };
     }
     if (isSourceMode) {
-      const ta = sourceTextareaRef.current;
-      if (!ta) return { mode: "source", from: 0, to: 0, text: "" };
-      const from = ta.selectionStart;
-      const to = ta.selectionEnd;
+      const sel = sourceSurface.getSelection();
+      const from = sel.start;
+      const to = sel.end;
       return {
         mode: "source",
         from,

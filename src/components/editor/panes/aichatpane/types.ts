@@ -8,6 +8,7 @@
  * 都要在入参/出参里有显式落点。
  */
 
+import type { SourceSurface } from "../../../../editor/types";
 import type { RefObject, MutableRefObject, Dispatch, SetStateAction } from "react";
 import type { AiTask } from "../../../../services/aiAssistService";
 import type { AiChatContextScope } from "../../../../services/aiChatService";
@@ -19,6 +20,8 @@ import type { EditorView } from "prosemirror-view";
 
 /** 容器传给 AiChatPane 的全部入参（解构到本地名后 hook 体与拆分前逐字节一致） */
  export interface AiChatPaneParams {
+  /** 源码面契约实现（A2）。选区/全文/滚动的读取与光标恢复经它落地。 */
+  sourceSurface: SourceSurface;
   renderSourceGhost: () => void;
   sourceTextareaRef: RefObject<HTMLTextAreaElement>;
   formatGhostRef: MutableRefObject<{ text: string; pos: number; start: number; end: number; content: string; tail?: string | undefined; maskTail?: boolean | undefined; } | null>;
