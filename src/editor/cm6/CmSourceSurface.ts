@@ -542,6 +542,29 @@ export class CmSourceSurface implements SourceSurface {
     }
   }
 
+  /**
+   * 光标/偏移在**内容坐标系**的 Y（A3-④：打字机与专注遮罩的数据源）。
+   *
+   * CM6 的 `coordsAtPos` 直接给出视口坐标，减 `documentTop` 即"相对内容顶"，
+   * 与 textarea 版的 `measureTextareaCursorY` 同语义 —— 但**不需要 mirror div**
+   *（那正是换实现要消掉的东西：mirror 必须与控件排版逐像素对齐，是漂移温床）。
+   */
+  offsetToContentY(offset?: number): number | null {
+    if (!this.layoutAvailable) return null;
+    const view = this.view;
+    if (!view) return null;
+    try {
+      const pos = offset === undefined
+        ? view.state.selection.main.from
+        : Math.max(0, Math.min(view.state.doc.length, offset));
+      const coords = view.coordsAtPos(pos);
+      if (!coords || !Number.isFinite(coords.top)) return null;
+      return coords.top - view.documentTop;
+    } catch {
+      return null;
+    }
+  }
+
   /** 恢复锚点（`captureViewportAnchor` 的逆操作） */
   restoreViewportAnchor(anchor: SourceAnchor | null | undefined): void {
     if (!anchor || !this.layoutAvailable) return;

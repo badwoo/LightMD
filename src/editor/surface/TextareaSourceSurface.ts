@@ -43,6 +43,7 @@ import {
   measureSourceLineAxis,
 } from "../../utils/blockScrollAlign";
 import { topLevelBlockStartLines } from "../../core/renderPipeline";
+import { measureTextareaCursorY } from "../../utils/focus-paragraph";
 import type {
   SourceAnchor,
   SourceChangeEvent,
@@ -242,6 +243,25 @@ export class TextareaSourceSurface implements SourceSurface {
       textOffset: anchor.offset,
       viewportY: anchor.viewportY,
     } as SourceAnchor;
+  }
+
+  /**
+   * 光标/偏移在**内容坐标系**的 Y（A3-④）。
+   *
+   * textarea 实现直接复用既有 `measureTextareaCursorY`（mirror div 复刻排版）——
+   * **原函数一行未改**：它是经过软换行实测验证的实现，A3 只是把它收进接口，
+   * 让宿主不必再直接拿 textarea 计算。
+   */
+  offsetToContentY(offset?: number): number | null {
+    const ta = this.ta;
+    if (!ta) return null;
+    try {
+      const pos = offset === undefined ? ta.selectionStart : offset;
+      if (!Number.isFinite(pos)) return null;
+      return measureTextareaCursorY(ta, Math.max(0, Math.min(ta.value.length, pos)));
+    } catch {
+      return null;
+    }
   }
 
   /** 恢复内容锚点（`captureViewportAnchor` 的逆操作） */

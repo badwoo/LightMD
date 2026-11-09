@@ -8,6 +8,7 @@
  * 都要在入参/出参里有显式落点。
  */
 
+import type { SourceSurface } from "../../../../editor/types";
 import type { RefObject, MutableRefObject, Dispatch, SetStateAction } from "react";
 import type { ViewMode } from "../../../../stores/useEditorStore";
 import type { Theme } from "../../../../stores/useSettingsStore";
@@ -17,6 +18,11 @@ import type { EditorView } from "prosemirror-view";
 
 /** 容器传给 PreviewPane 的全部入参（解构到本地名后 hook 体与拆分前逐字节一致） */
  export interface PreviewPaneParams {
+  /**
+   * 源码面契约实现（A3-④）。打字机/专注遮罩的**光标几何**经它取，
+   * 使同一段机制在 textarea（mirror）与 CM6（coordsAtPos）下都成立。
+   */
+  sourceSurface: SourceSurface;
   viewMode: ViewMode;
   isMdFile: boolean;
   isSourceMode: boolean;

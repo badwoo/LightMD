@@ -1257,6 +1257,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     handleSlashClose,
   } = formatMenuHost;
   const previewPane = usePreviewPane({
+    sourceSurface,
     viewMode,
     isMdFile,
     isSourceMode,

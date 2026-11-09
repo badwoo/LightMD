@@ -56,6 +56,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     isSourceMode,
     previewShown,
     editorRef,
+    sourceSurface,
     sourceTextareaRef,
     previewIframeRef,
     effFontSize,
@@ -755,10 +756,17 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     const scrollCursorToCenter = () => {
       requestAnimationFrame(() => {
         if (!typewriterModeRef.current) return;
-        const cursorPos = textarea.selectionStart;
-        // 使用 mirror div 测量光标所在位置的实际 Y 坐标（准确处理软换行）
-        // 早期实现基于硬换行行号 * lineHeight 计算，软换行场景下 Y 坐标偏小，居中位置不准
-        const cursorY = measureTextareaCursorY(textarea, cursorPos);
+        /**
+         * v0.17.0 A3-④：光标 Y 的数据源改经 `SourceSurface.offsetToContentY`。
+         *
+         * **机制完全未改**（`computeTypewriterScrollTop` 纯函数、阈值抖动过滤、
+         * smooth/instant 取舍、keydown 基线恢复策略全部照搬）—— 只换"Y 从哪来"：
+         * - textarea 实现 → 内部仍用 `measureTextareaCursorY`（mirror，原函数一行未改）；
+         * - CM6 实现 → `coordsAtPos - documentTop`，**不再需要 mirror**。
+         */
+        const cursorPos = sourceSurface.getSelection().start;
+        const cursorY = sourceSurface.offsetToContentY(cursorPos);
+        if (cursorY === null) return; // 布局不可用：跳过居中，不写 0（与既有降级口径一致）
         // 使用纯函数计算目标滚动位置（内置视口溢出检查和阈值抖动过滤）
         const target = computeTypewriterScrollTop(
           cursorY,
@@ -821,9 +829,13 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         // 导航键：smooth 滚动到中央
         scrollCursorToCenter();
       } else {
-        // 普通字符：检查光标是否偏离中央
-        const cursorPos = textarea.selectionStart;
-        const cursorY = measureTextareaCursorY(textarea, cursorPos);
+        // 普通字符：检查光标是否偏离中央（A3-④：Y 数据源改经 surface，机制不变）
+        const cursorPos = sourceSurface.getSelection().start;
+        const cursorY = sourceSurface.offsetToContentY(cursorPos);
+        if (cursorY === null) {
+          textarea.scrollTo({ top: savedScrollTop, behavior: "instant" });
+          return;
+        }
         const target = computeTypewriterScrollTop(
           cursorY,
           textarea.clientHeight,

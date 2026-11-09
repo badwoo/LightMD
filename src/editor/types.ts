@@ -203,6 +203,23 @@ export interface SourceSurface {
    */
   captureViewportAnchor(): SourceAnchor | null;
 
+  /**
+   * 光标（或指定偏移）在**内容坐标系**里的 Y 像素位置（A3：专注模式/打字机）。
+   *
+   * 语义与 `utils/focus-paragraph.measureTextareaCursorY(ta, pos)` 一致：
+   * 返回「该偏移相对**文档内容顶部**的 Y」（不含 scrollTop），供打字机计算居中目标
+   * 与专注遮罩绘制。
+   *
+   * 为什么要收进接口：现状源码面的打字机**只有 mirror 一条路**
+   *（`measureTextareaCursorY` 建 mirror div 复刻排版）。CM6 下 `coordsAtPos` 能直接
+   * 给出真实坐标，不需要 mirror —— 这正是 A3-④「数据源换 scrollDOM/coordsAtPos，
+   * 机制照搬」的落点。切到 CM6 后 mirror 那条路对源码面不再需要。
+   *
+   * @param offset 字符偏移（缺省 = 当前主选区光标）
+   * @returns 内容坐标 Y；布局不可用/越界时返回 null（调用方跳过居中，不写 0）
+   */
+  offsetToContentY(offset?: number): number | null;
+
   /** 滚动到某字符偏移附近（搜索跳转 / 撤销恢复） */
   scrollToOffset(offset: number, opts?: { center?: boolean }): void;
 
