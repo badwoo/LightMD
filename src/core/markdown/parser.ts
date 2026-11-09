@@ -16,6 +16,8 @@ import { taskListPlugin } from "./task-list-plugin";
 import { headingAnchorPlugin, collectHeadings, type TocHeading } from "./heading-anchor";
 import { tocPlugin } from "./toc-plugin";
 import { setBlockSource } from "./blockSourceMap";
+// v0.17.0 B1：图片 `|WIDTH|ALIGN` 后缀解析单点化（与 renderPipeline 收敛为一份）
+import { parseImageSuffix } from "../unified/imageSuffix";
 // v0.13.0 需求12：表格合并单元格形态识别（`<td colspan>` 包裹）
 import {
   extractTdWrapper,
@@ -1317,74 +1319,23 @@ function parseInlineTokens(tokens: Token[], inTableCell = false): Node[] {
 
     if (t.type === "image") {
       // E11a(v0.9.3):alt 支持 Typora 风格尺寸后缀 ![alt|300](src) → alt + width
-      // v0.13.0 需求4：再扩展一档对齐后缀。三种写法都要支持：
-      //   ![alt|300|center](src)  宽度 + 对齐
-      //   ![alt|center](src)      仅对齐（无宽度）
-      //   ![alt|300](src)         仅宽度（E11a 既有）
+      // v0.13.0 需求4：再扩展一档对齐后缀（![alt|300|center] / ![alt|center] / ![alt|300]）。
       //
-      // **只在后缀确实是「宽度或合法对齐值」时才剥离**——否则 alt 原样保留。
-      // 这样 alt 本身含竖线（如 "a|b"、"x|y|z"）不会被误判，与 E11a 的
-      // 「只有纯数字段才算宽度」口径一致。
+      // **v0.17.0 B1 单点化**：后缀解析不再是本文件的内联实现，改调
+      // `core/unified/imageSuffix.parseImageSuffix` —— 那是 PM 侧与渲染侧
+      // （renderPipeline 的尾剥离实现）收敛后的**唯一事实源**。
+      // 两套旧实现在畸形输入上的实测分叉由 `v0170-unified/image-suffix.test.ts` 锁死，
+      // 本处采用的 segs 语义（alt 永远是第一段）即该单点实现的语义。
       const rawAlt = getAttr(t, "alt") || t.content || "";
-      let alt = rawAlt;
-      let width: number | null = null;
-      let align: "left" | "center" | "right" = "left";
-      // v0.13.0 返修：按**未转义的竖线**切分。
-      // 序列化会把 alt 里的 `|` 写成 `\|`（否则会被当成宽度/对齐后缀），
-      // 这里必须跳过 `\|`，否则含竖线的 alt 仍会被误切（宽度丢失 / 凭空多出宽度）。
-      const segs: string[] = [];
-      {
-        let cur = "";
-        for (let k = 0; k < rawAlt.length; k++) {
-          const ch = rawAlt[k];
-          if (ch === "\\" && rawAlt[k + 1] === "|") {
-            cur += "\\|";
-            k++;
-            continue;
-          }
-          if (ch === "|") {
-            segs.push(cur);
-            cur = "";
-            continue;
-          }
-          cur += ch;
-        }
-        segs.push(cur);
-      }
-      if (segs.length >= 2) {
-        // 后缀段从第二段（下标 1）开始；按「宽度 → 对齐」顺序消费。
-        // alt 永远是**第一段**（下标 0），消费掉的后缀段不影响它。
-        let idx = 1;
-        let consumedAny = false;
-        // 宽度段：纯数字
-        if (/^\d+$/.test(segs[idx].trim())) {
-          const w = Number(segs[idx]);
-          if (Number.isFinite(w) && w > 0) {
-            width = Math.round(w);
-            idx++;
-            consumedAny = true;
-          }
-        }
-        // 对齐段：只认 center/right
-        if (idx < segs.length) {
-          const a = segs[idx].trim().toLowerCase();
-          if (a === "center" || a === "right") {
-            align = a;
-            idx++;
-            consumedAny = true;
-          }
-        }
-        // 只有真的消费掉至少一个后缀段才改写 alt（否则 alt 可能本身含竖线）
-        if (consumedAny) alt = segs[0];
-      }
-      // 还原 alt 里的 `\|`（序列化时转义的竖线）
-      alt = alt.replace(/\\\|/g, "|");
+      const parsed = parseImageSuffix(rawAlt);
+      // schema 的 align 默认值是 "left"（源码未声明时即 left），
+      // 而 parseImageSuffix 用 undefined 表示"源码没写"，这里做一次默认值换算。
       nodes.push(schema.nodes.image.create({
         src: getAttr(t, "src") || "",
-        alt,
+        alt: parsed.alt,
         title: getAttr(t, "title") || "",
-        width,
-        align,
+        width: parsed.width ?? null,
+        align: parsed.align ?? "left",
       }));
       i++;
       continue;

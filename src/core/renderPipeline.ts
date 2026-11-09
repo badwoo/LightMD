@@ -23,6 +23,8 @@
  */
 import type MarkdownIt from "markdown-it";
 import { createMarkdownIt } from "./markdown/parser";
+// v0.17.0 B1：图片后缀解析单点化（与 parser 收敛为一份，见 imageSuffix.ts 头注释）
+import { parseImageSuffix } from "./unified/imageSuffix";
 import { imageAlignCss } from "./schema";
 import { useSettingsStore } from "../stores/useSettingsStore";
 import { highlightCodeBlocksInHtml } from "../utils/highlight";
@@ -57,44 +59,27 @@ import { highlightCodeBlocksInHtml } from "../utils/highlight";
  * 只有**未转义**的竖线才是宽度/对齐后缀的分隔符。若直接对内容做贪婪正则
  * （如 `^(.*)\|(center|right)$`），alt 结尾正好是 `\|center` 时会被误判成对齐后缀。
  */
-function lastUnescapedPipe(s: string): number {
-  for (let i = s.length - 1; i >= 0; i--) {
-    if (s[i] !== "|") continue;
-    let bs = 0;
-    for (let k = i - 1; k >= 0 && s[k] === "\\"; k--) bs++;
-    if (bs % 2 === 0) return i;
-  }
-  return -1;
-}
-
 /**
  * v0.13.0 需求4 + 返修：拆出图片的 `|宽度` / `|对齐` 后缀。
  *
- * 后缀顺序与序列化一致：`![alt|300|center](src)` / `![alt|center](src)` /
- * `![alt|300](src)`。从尾部依次剥离「对齐」再「宽度」，且只认**合法值**——
- * 这样 alt 自身含竖线（`a|b`）不会被误当后缀。
+ * **v0.17.0 B1 单点化（评估报告 §2.2 校准项）**：本函数此前是本文件一份
+ * 独立的「尾剥离」实现，而 `parser.ts:1318-1360` 另有一份「segs 切分」内联实现
+ * —— 两套**语义同构、实现异构**，是设计稿 G4「删重复渲染补丁」要收敛的对象。
+ * 现统一调用 `core/unified/imageSuffix.parseImageSuffix`（唯一事实源）。
+ *
+ * ⚠️ **行为变化（有意收口，非回归）**：单点实现采用 parser 的 segs 语义
+ * （alt 永远是第一段），与本文件旧的尾剥离在**畸形输入**上有实测分叉，
+ * 差异清单与证据见 `src/__tests__/v0170-unified/image-suffix.test.ts`。
+ * 合法输入（单宽度 / 单对齐 / 宽度+对齐）两套实现结果完全一致，渲染无变化。
  */
 function splitImageSuffix(content: string): { alt: string; width?: string; align?: string } {
-  let rest = content;
-  let align: string | undefined;
-  let width: string | undefined;
-  let p = lastUnescapedPipe(rest);
-  if (p >= 0) {
-    const tail = rest.slice(p + 1).trim().toLowerCase();
-    if (tail === "center" || tail === "right") {
-      align = tail;
-      rest = rest.slice(0, p);
-    }
-  }
-  p = lastUnescapedPipe(rest);
-  if (p >= 0) {
-    const tail = rest.slice(p + 1).trim();
-    if (/^\d+$/.test(tail)) {
-      width = tail;
-      rest = rest.slice(0, p);
-    }
-  }
-  return { alt: rest, width, align };
+  const parsed = parseImageSuffix(content);
+  return {
+    alt: parsed.alt,
+    // 本文件的 renderer 用字符串形态拼 `width="${w}"`，保持与旧实现同形
+    width: parsed.width === undefined ? undefined : String(parsed.width),
+    align: parsed.align,
+  };
 }
 
 export function imageSizePlugin(md: MarkdownIt): void {
