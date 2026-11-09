@@ -6316,31 +6316,39 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
   // 显示灰斜体 ghost 片断。Tab 采纳即把 ghost 文本插入光标处。
 
   /** 渲染 source ghost overlay（同步样式 + 写入当前累积文本） */
+  /**
+   * v0.17.0 A3：源码 ghost 渲染改经 `SourceSurface.showGhost`（Decoration.widget）。
+   *
+   * 原实现往 `sourceGhostOverlayRef` 自建 overlay 里 `innerHTML` 拼一段"透明全文 +
+   * ghost 片段"，再用 `syncTextareaMetrics` 把排版逐像素抄过来 —— 因为 textarea
+   * 内部文字不是 DOM 节点。
+   *
+   * 改经接口后：
+   * - CM6 实现 → `Decoration.widget({ side: 1 })`，ghost 是**行内** widget（不是块级，
+   *   否则会在块边界换行、占位提示跑到下一行），位置由文档坐标决定，天然跟随排版；
+   * - textarea 实现 → 它内部仍用 overlay 机制（收敛到实现层一处）。
+   *
+   * ⚠️ 用户可见行为完全保留：占位态（placeholder）不显示"Tab 采纳"提示、
+   * 非占位态显示提示文案 —— 提示文案随 ghost 一起交给实现层。
+   */
   const renderSourceGhost = useCallback(() => {
-    const overlay = sourceGhostOverlayRef.current;
-    const textarea = sourceTextareaRef.current;
-    if (!overlay || !textarea) return;
-    syncTextareaMetrics(textarea, overlay);
-    const text = textarea.value;
+    if (!sourceSurface) return;
+    const text = sourceSurface.getText();
     const pos = Math.max(0, Math.min(sourceGhostPosRef.current, text.length));
     // v0.7.5 优化3：占位态不显示采纳提示（此时尚不可采纳）
     const placeholder = sourceGhostPlaceholderRef.current;
-    overlay.innerHTML = buildSourceGhostHtml(
-      text,
+    sourceSurface.showGhost({
+      text: sourceGhostTextRef.current,
       pos,
-      sourceGhostTextRef.current,
-      placeholder ? "" : translate("settings.translate.ghostHint"),
-      placeholder
-    );
-    // ghost 在光标之后追加：同步 overlay 滚动位置到 textarea，保证预览与视口对齐
-    overlay.scrollTop = textarea.scrollTop;
-  }, []);
+      // 提示文案走 tail 通道（实现层渲染成 ghost 尾部提示，pointer-events:none）
+      tail: placeholder ? "" : translate("settings.translate.ghostHint"),
+    });
+  }, [sourceSurface]);
 
 
   /** 清除 source ghost overlay */
   const clearSourceGhost = useCallback(() => {
-    const overlay = sourceGhostOverlayRef.current;
-    if (overlay) overlay.innerHTML = "";
+    sourceSurface?.clearGhost();
     sourceGhostActiveRef.current = false;
     sourceGhostPlaceholderRef.current = false;
     sourceGhostTextRef.current = "";
@@ -6353,27 +6361,30 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
    * textarea 当前值与快照不一致（用户已编辑/撤销）时自清除，防幽灵内容错位残留。
    */
   const renderFormatGhost = useCallback(() => {
-    const overlay = sourceGhostOverlayRef.current;
-    const textarea = sourceTextareaRef.current;
     const ghost = formatGhostRef.current;
-    if (!overlay || !textarea || !ghost) return;
+    if (!sourceSurface || !ghost) return;
     // AI ghost 优先（异步任务不被打断视觉）
     if (sourceGhostActiveRef.current) return;
-    // 文档已偏离 ghost 快照（真实输入/撤销/其它写路径）→ ghost 语义失效，清除
-    if (textarea.value !== ghost.content) {
+    /**
+     * 文档已偏离 ghost 快照（真实输入/撤销/其它写路径）→ ghost 语义失效，清除。
+     *
+     * ⚠️ 必须保留这道判据：它是"幽灵内容错位残留"的唯一护栏
+     *（用户编辑后 ghost 还显示在旧位置，会让用户以为可以采纳已失效的建议）。
+     */
+    if (sourceSurface.getText() !== ghost.content) {
       formatGhostRef.current = null;
-      overlay.innerHTML = "";
+      sourceSurface.clearGhost();
       return;
     }
-    syncTextareaMetrics(textarea, overlay);
     // hintText 为空（格式 ghost 无需"Tab 采纳"提示）；
     // v0.12.0 返修：携带尾部符号 + 遮罩开关 → 占位文字落在左右格式符中间
-    overlay.innerHTML = buildSourceGhostHtml(ghost.content, ghost.pos, ghost.text, "", false, {
+    sourceSurface.showGhost({
+      text: ghost.text,
+      pos: ghost.pos,
       tail: ghost.tail,
-      maskBg: ghost.maskTail,
+      maskTail: ghost.maskTail,
     });
-    overlay.scrollTop = textarea.scrollTop;
-  }, []);
+  }, [sourceSurface]);
 
 
   /** v0.12.0 需求1：按清除时机判定清除格式 ghost（kind 见 shouldClearFormatGhost） */
@@ -6381,11 +6392,8 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     if (!shouldClearFormatGhost(kind)) return;
     if (!formatGhostRef.current) return;
     formatGhostRef.current = null;
-    // 仅当 AI ghost 未占用 overlay 时清空可见内容
-    if (!sourceGhostActiveRef.current) {
-      const overlay = sourceGhostOverlayRef.current;
-      if (overlay) overlay.innerHTML = "";
-    }
+    // 仅当 AI ghost 未占用时清空可见内容
+    if (!sourceGhostActiveRef.current) sourceSurface?.clearGhost();
   }, []);
 
 
