@@ -1117,6 +1117,49 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * - 不传 selection：外部写入不该抢用户光标（textarea 的 `value=` 同样不保留光标位置，
    *   两者行为一致）。
    */
+  /**
+   * ## v0.17.0 装配修复：`content` prop 变化时必须同步 `sourceContent`
+   *
+   * **缺陷（5MB 大文件场景，实机 `perf-bench` 暴露）**：
+   * `sourceContent` 由 `useState(content)` 初始化 —— **只在挂载时取一次值**。
+   * 之后 App 把 `content` 换成 5MB 新文档时，`sourceContent` **不会跟随**，
+   * 仍停留在挂载时的 32 字符欢迎文档。
+   *
+   * 于是 CM6（内容完全来自 `sourceContent`）显示的是欢迎文档、而不是打开的文件；
+   * 在 5MB 场景下表现为**编辑器一片空白**（大文件先以空态/欢迎页挂载，
+   * 随后才被 openFile 换成真实内容）。
+   *
+   * 实机证据（`scripts/v0170-diag-5mb-empty.mjs`）：
+   * ```
+   * [APPDIAG] setContent len=5452669              ← App 确实设为 5MB
+   * [SYNCDIAG] contentPropLen=5452669             ← prop 已是 5MB
+   * [SYNCDIAG] stateLen=32 head="# 欢迎使用 LightMD"  ← 但 state 还是欢迎文档
+   * ```
+   *
+   * ## ⚠️ 关键：只跟踪 **`content` prop 的变化**，绝不能把 `sourceContent` 放进依赖
+   *
+   * 我第一版写成 `if (sourceContent === content) return; setSourceContent(content);`
+   * 并把 `sourceContent` 放进依赖 —— **这是错的，会吃掉所有用户编辑**：
+   *
+   * - 用户打字 → `sourceContent` 变为新文本，但 `content` prop 仍是旧磁盘内容；
+   * - effect 因 `sourceContent` 变化而重跑 → 判定"不相等" → **把编辑回滚成旧 prop**；
+   * - 表现：打字立刻被还原、撤销时间线全乱（实测 6 条 undo 套件红）。
+   *
+   * 正确语义：prop 是**外部权威来源**（openFile / 切标签 / 外部重载），
+   * 只有在 **prop 自身变化**时才把内容推进 state；用户编辑期间 prop 不变，
+   * 因此 effect 不会跑。用 `lastContentPropRef` 记住上次见过的 prop 值。
+   *
+   * 这条对两种实现都成立：textarea 路径的 `value={sourceContent}` 同样依赖它。
+   */
+  const lastContentPropRef = useRef(content);
+  useEffect(() => {
+    // 只在 prop **自身变化**时同步（用户编辑不改 prop，所以不会触发回滚）
+    if (lastContentPropRef.current === content) return;
+    lastContentPropRef.current = content;
+    setSourceContent(content);
+    sourceContentRef.current = content;
+  }, [content]);
+
   useEffect(() => {
     if (sourceSurface.impl !== "cm6") return;
     /**
@@ -1130,7 +1173,6 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
      * 语义与 textarea 的"首次 `value=` 渲染"一致。
      */
     if (!sourceSurface.isMounted()) return;
-    if (sourceSurface.getText() === sourceContent) return;
     sourceSurface.setText(sourceContent);
   }, [sourceContent, sourceSurface]);
 

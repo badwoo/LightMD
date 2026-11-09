@@ -96,6 +96,47 @@ describe("A3 装配：真实 EditorContainer + 强制 CM6", () => {
     expect(cmText(), "mount 时应把初始内容注入 CM6").toContain("alpha");
   });
 
+  it("★ content prop 换成新文档时，CM6 必须显示新内容（5MB 大文件路径）", () => {
+    /**
+     * ## 这条为什么必须单独存在
+     *
+     * 本文件其它用例都是「mount 时 content 就非空」——`sourceContent` 由
+     * `useState(content)` 初始化，天然正确，**缺陷不会暴露**。
+     *
+     * 真实的大文件路径是：先以**欢迎页/空态**挂载 → `openFile` 后 App 把
+     * `content` 换成 5MB 文档 → 若 `sourceContent` 不跟随 prop，CM6 就停在欢迎页。
+     * 实机表现：**5MB 文件打开后编辑器一片空白**（`renderedLines=1`）。
+     *
+     * 所以这里必须模拟"**先小后大**"的替换顺序。
+     *
+     * ## ⚠️ 本用例锁的是"**至少一条同步链路必须存在**"（破坏性验证过）
+     *
+     * 实测：只破坏其中任一处（`EditorContainer` 的 prop 跟进 effect **或**
+     * `ModeSync` 文件切换 effect 里的 `setSourceContent`），本用例**仍然通过**
+     * —— 因为两条链路互为冗余，任一条都能把内容送进源码面。
+     * **两处同时破坏才会红**（已验证）。
+     *
+     * 这是**有意的双保险**，不是冗余代码：
+     * - `EditorContainer` 的 effect 覆盖"prop 变化但没走文件切换"的情况
+     *   （如外部重载、跨窗口同步）；
+     * - `ModeSync` 的 effect 在**文件切换**时同步，那一刻还需要处理
+     *   `lastContentRef`／撤销历史／PM doc 替换等一整套语义。
+     * 两者时机不同、职责不同，**删掉任一条都会留下某条路径的空白**。
+     */
+    const { container, rerenderWith } = mount("# 欢迎使用 LightMD\n\n开始输入 Markdown...");
+    expect(cmText()).toContain("欢迎使用 LightMD");
+
+    // 模拟 openFile：content 换成真实大文档
+    const bigDoc = "# BIG\n\n" + "正文行内容。\n".repeat(200);
+    act(() => rerenderWith(bigDoc, 1));
+
+    expect(
+      cmText(),
+      "content prop 换成新文档后，CM6 必须显示新内容（否则 5MB 文件打开就是空白）",
+    ).toContain("正文行内容。");
+    expect(cmText(), "旧欢迎页内容不得残留").not.toContain("欢迎使用 LightMD");
+  });
+
   it("连续内容替换不产生 CM6 实例泄漏（每次仍只有一个 .cm-editor）", () => {
     const { rerenderWith } = mount("v0");
     for (let i = 1; i <= 5; i++) {

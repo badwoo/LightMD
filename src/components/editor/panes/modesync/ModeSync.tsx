@@ -696,6 +696,30 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         tr.setMeta("restoreHistory", restored.pmHistory);
       }
       view.dispatch(tr);
+      /**
+       * ## v0.17.0 装配修复：文件切换时必须同步 `sourceContent`
+       *
+       * **缺陷（5MB 大文件场景，实机 `perf-bench` 暴露）**：
+       * 大文件（> HUGE_FILE_THRESHOLD）打开时 App 会**强制切到编辑模式**，
+       * 此时走的就是这条"文件切换"effect。但它过去**只更新 PM 的 doc**，
+       * 从不调 `setSourceContent(content)` —— 在 textarea 时代这没问题
+       *（源码面由 React 的 `value={sourceContent}` 受控渲染，`sourceContent`
+       * 的初值来自 `useState(content)`）；
+       *
+       * 而 CM6 渲染的是中性 div，内容完全靠 `sourceContent` state → effect `setText` 同步。
+       * 于是：
+       * - `sourceContent` 停留在挂载时的旧值（空串）；
+       * - CM6 收到空文档 → **5MB 文件打开后编辑器一片空白**。
+       *
+       * 实机证据（`scripts/v0170-diag-5mb-empty.mjs`）：
+       * `tabs=1` 且状态栏显示 `big.md ●`（文件确实打开了），
+       * 但 30s 内 `.cm-line` 恒为 1 条、`.cm-scroller` 高 1170px（= 视口高，无内容）。
+       *
+       * 修法：与 PM 同步**同一处**把文本推进源码面 state。两个实现都受益
+       *（textarea 路径下是一次等价重渲染，行为不变）。
+       */
+      setSourceContent(content);
+      sourceContentRef.current = content;
       // v0.13.2 需求5：源码模式的撤销栈同样按文档存取（与 PM 侧同一口径）。
       // 旧实现换文档即清空两条栈 —— 那正是"切回来撤不了"的另一半原因。
       undoStackRef.current = (restored?.sourceUndo as HistoryEntry[] | undefined) ?? [];
