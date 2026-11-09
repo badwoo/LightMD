@@ -99,6 +99,20 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     handleFormatAction,
   } = p;
 
+
+  // ─── v0.12.1 需求9（二轮）：排版变化时保持阅读焦点 ────────────────
+  //
+  // 用户反馈：在设置里调字号 / 行高 / 段间距 / 内容区宽度时，文档会重排，视口内容漂移
+  // （和没做窗口缩放焦点保持之前一样）。字号/行高只改文本高度、内容区宽度只改
+  // `.ProseMirror` 的 max-width —— 外层滚动容器的**盒子尺寸都没变**，所以既有的
+  // ResizeObserver 锚点（只在容器宽度变化时补偿）在这里不会生效，必须显式补偿。
+  //
+  // 做法：**在同一个 layout effect 里完成「先量旧位置 → 写新变量 → 立刻量新位置 → 补 scrollTop」**。
+  // 用 useLayoutEffect 而非 useEffect，整段发生在浏览器绘制之前 → 不会闪一帧。
+  // 量 getBoundingClientRect 会强制同步布局，所以写变量后立刻测量拿到的一定是新排版。
+  //   · 阅读模式 → 块锚点（视口内首个顶层块 + 其相对视口顶的偏移）
+  //   · 编辑/分屏左侧 → textarea 内容锚点（视口顶部字符偏移 + 视口 Y）
+  // 内容不足一屏（无可滚动空间）时两个 capture 都返回 null，安全跳过。
   const captureTypographyAnchor = useCallback(() => {
     const container = viewMode === "preview" && isMdFile ? editorRef.current : null;
     const blockAnchor = container ? captureAnchor(container, ".ProseMirror > *") : null;
@@ -122,6 +136,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     return { container, blockAnchor, ta, textAnchor, iframeScroller, iframeBlockAnchor };
   }, [viewMode, isMdFile, isSourceMode, previewShown]);
 
+
   const restoreTypographyAnchor = useCallback(
     (anchor: ReturnType<typeof captureTypographyAnchor>) => {
       if (anchor.container && anchor.blockAnchor) restoreAnchor(anchor.container, anchor.blockAnchor);
@@ -134,6 +149,22 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     [],
   );
 
+
+  // ─── 字体 ──────────────────────────────────────
+  // v0.11.0 B4-1：字号/字体同时写到 **:root**（原先只写在 .ProseMirror 元素上）。
+  //
+  // 缺陷背景（P1）：collectCssVars 从 `document.documentElement`（即 :root）读取
+  // `--editor-font-size/family` 来生成 iframe 的分屏预览样式，但变量只设在
+  // .ProseMirror 上 → 取不到，回落 "16px"/"sans-serif" → **改设置后左右两侧
+  // 字号不一致**（所见非所得）。
+  //
+  // 修复：写到 :root，:root 与 .ProseMirror 都能取到；collectCssVars 无需改动。
+  // 同时保留 .ProseMirror 上的设置（局部覆盖，语义更明确）。
+  //
+  // v0.12.1 需求9：排版预览值优先（设置弹窗里拖滑条 → 立即改用预览值，
+  // 未拖动时 preview 为 null，行为与以前完全一致）。
+  // v0.12.1 需求9（二轮）：改为 useLayoutEffect，并在写变量前后做一次视口锚点补偿
+  // （见上方 captureTypographyAnchor 的说明）——保证调字号/字体时阅读焦点不丢。
   useLayoutEffect(() => {
     const anchor = captureTypographyAnchor();
     const root = document.documentElement;
@@ -147,6 +178,14 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     restoreTypographyAnchor(anchor);
   }, [effFontSize, effFontFamily, captureTypographyAnchor, restoreTypographyAnchor]);
 
+
+  // v0.11.0 B4-10：排版三项（行高 / 段间距 / 内容区最大宽度）注入 CSS 变量。
+  // 机制与上面字号/字体一致（写到 :root，iframe 预览的 collectCssVars 也能取到）。
+  // 值为 0 表示「跟随主题默认」→ 此时清空属性，让 CSS 的 var() 兜底值生效。
+  // v0.12.1 需求9：同样支持预览值覆盖（实时预览）。
+  // v0.12.1 需求9（二轮）：同样改为 useLayoutEffect + 视口锚点补偿
+  // （行高/段间距只改文本高度、内容区宽度只改 .ProseMirror 的 max-width，
+  //  外层滚动容器盒子不变 → 既有 ResizeObserver 锚点不会触发，必须在这里显式补偿）。
   useLayoutEffect(() => {
     const anchor = captureTypographyAnchor();
     const root = document.documentElement;
@@ -160,6 +199,21 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     restoreTypographyAnchor(anchor);
   }, [effLineHeight, effParagraphSpacing, effContentMaxWidth, captureTypographyAnchor, restoreTypographyAnchor]);
 
+
+  // v0.12.0 需求5：文档缩放比例注入 --doc-zoom（:root，值为比例：1 = 100%）。
+  // 消费方：阅读 .ProseMirror 的 CSS zoom、分屏 iframe body 的 zoom（经 collectCssVars）、
+  // 编辑 textarea 的字号 calc（见 textarea 内联样式）、table-editor 的 rect→布局值换算。
+  //
+  // v0.12.0 返修（问题3）：缩放同样要求"阅读焦点不偏移"。
+  // zoom 是布局属性——内容整体按比例变高/变矮，而 scrollTop 是绝对像素，
+  // 不动它时放大后视口会落到更靠前的内容（用户看到"内容往回流"）。
+  // 纯缩放是**等比变换**：滚动百分比天然守恒，所以在写入新 --doc-zoom 之前记下百分比、
+  // 布局生效后（rAF）按新高度还原即可。两类阅读容器都走百分比：
+  //   · 阅读模式 → .editor-container；
+  //   · 分屏模式 → iframe 文档滚动元素（iframe 的 body innerHTML 会随缩放被重写，
+  //     块锚点的元素引用会失效，故不能用块锚点）。
+  // 编辑/分屏左侧 textarea 的字号换算另由下方内容锚点效应处理（字体变化会重排，
+  // 百分比不守恒）。
   const lastDocZoomRef = useRef(docZoom);
 
   useEffect(() => {
@@ -214,6 +268,11 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     return () => cancelAnimationFrame(raf);
   }, [docZoom, viewMode, isMdFile]);
 
+
+  // v0.12.0 需求5：Ctrl+滚轮调整文档缩放（阅读/编辑/分屏三模式通用）。
+  // 监听挂在 .editor-main-area（不影响侧栏/标签栏）；
+  // passive:false + preventDefault 阻止 WebView2 的页面级缩放与默认滚动。
+  // 向上滚（deltaY < 0）= 放大，向下滚 = 缩小。
   useEffect(() => {
     const container = mainAreaRef.current;
     if (!container) return;
@@ -226,14 +285,33 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     return () => container.removeEventListener("wheel", onWheel);
   }, [adjustDocZoom]);
 
+
+  // v0.12.0 返修（需求4/5）：视口锚点补偿的时间抑制 —— 文件切换/模式切换/缩放恢复
+  // 期间不补偿（只重建锚点），避免 RO 用"切换前"的锚点抢跑主动恢复。
   useEffect(() => {
     anchorSuppressUntilRef.current = performance.now() + 600;
   }, [viewMode, filePath, forceUpdateKey]);
 
+  // v0.12.0 需求5：缩放恢复（行高/内容尺寸变化）同样抑制，交由下面的锚点效应补偿
   useEffect(() => {
     anchorSuppressUntilRef.current = performance.now() + 300;
   }, [docZoom]);
 
+
+  // ─── v0.12.0 需求4：视口锚点（窗口/侧栏尺寸变化时保持阅读焦点） ─────────
+  // 尺寸变化会重排文本；scrollTop（像素）不变时视口内容漂移。
+  // 方案：变化前记录"视口首个可见块 + 偏移"，ResizeObserver 回调（重排完成后）
+  // 用差值补偿 scrollTop；rAF 双保险避开侧栏 width transition（250ms）的中间帧。
+  // 副作用：补偿触发 scroll → fileScrollProgress 自动记录新百分比，无需处理。
+  //
+  // v0.12.0 返修（需求4 bug）：最大化→缩小→再放大会跳到文档末尾。
+  // 根因：窗口 resize 期间 Chromium 会把焦点光标（阅读模式 PM 选区常在文档末尾）
+  // 程序性滚入视口——该滚动先于 RO 回调触发 scroll 事件，把锚点"刷新"成了末尾，
+  // 随后的补偿反而把视口恢复到末尾。修复：window resize 事件先于 scroll 步骤
+  // 触发，用它打时间标，抑制窗口内的 scroll 锚点刷新。
+  // v0.12.0 返修2（问题4/5）：再叠加两道闸门——
+  //  ① 仅在**容器宽度变化**时补偿（内容增高/异步渲染引发的 RO 不算，避免抢跑主动恢复）；
+  //  ② 主动恢复（切文件/切模式/缩放）后的 600ms 内只重建锚点、不补偿。
   useEffect(() => {
     if (viewMode !== "preview" || !isMdFile) return;
     const container = editorRef.current;
@@ -269,6 +347,11 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
   }, [viewMode, isMdFile, forceUpdateKey]);
 
+
+  // v0.12.0 返修（问题2）：textarea 改用**内容锚点**（视口顶部字符偏移 + 视口 Y）。
+  // - 捕获：滚动停止 150ms 后（debounce，避免滚动中每帧二分测量）与进入模式时；
+  // - 还原：仅在**宽度变化**且不在主动恢复窗口时补偿（软换行重排后准确回到原内容）；
+  // - resize 抑制：窗口缩放时浏览器会把光标滚入视口，其 scroll 事件不得刷新锚点。
   useEffect(() => {
     if (!isSourceMode) return;
     const ta = sourceTextareaRef.current;
@@ -326,6 +409,10 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
   }, [isSourceMode, viewMode, forceUpdateKey]);
 
+
+  // v0.12.0 需求5：缩放（字号换算）变化后按内容锚点还原 textarea 滚动位置。
+  // 字号/缩放变化后行高与换行都变，像素 scrollTop 不变会让视口跳到别处；
+  // 用"视口顶部内容偏移"还原，视觉上视口顶部内容保持不动。
   useEffect(() => {
     if (!isSourceMode) return;
     const ta = sourceTextareaRef.current;
@@ -337,6 +424,25 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     return () => cancelAnimationFrame(raf);
   }, [docZoom, isSourceMode]);
 
+
+  // v0.11.0 B4-10：阅读进度上报（状态栏显示百分比）。
+  //
+  // 缺陷背景：此前无任何滚动进度可视化 —— 长文档阅读时完全不知道还剩多少。
+  // 注意与 fileScrollProgress（跨会话位置恢复）区分：那是**位置**（像素/行号），
+  // 本项是**百分比**（仅供 UI 展示），两者互不干扰。
+  //
+  // 用 rAF 节流：scroll 事件在拖动滚动条时可达 60+/s，直接 setState 会造成
+  // 持续重渲染；且只在百分比变化时（整数）才 dispatch，进一步降低更新次数。
+  //
+  // ─── v0.12.2 P8 修复：分屏/编辑模式恒显 100% ───
+  //
+  // 原实现只监听 `editorRef.current`（PM 阅读容器），而该容器在 split 模式
+  // 是 `display:none`（见下方 render：仅 preview 模式 flex:1）→
+  // `scrollHeight - clientHeight = 0` → 判定为"无可滚动空间" → **恒报 100%**。
+  // 分屏实际滚动发生在左侧 textarea 与右侧 iframe，编辑模式发生在 textarea。
+  //
+  // 现按模式选择真正的滚动容器（阅读 → editor-container，编辑/分屏 → textarea），
+  // 分屏时以左侧 textarea 为准（与状态栏"光标行列"同源，语义一致）。
   useEffect(() => {
     const container = isSourceMode ? sourceTextareaRef.current : editorRef.current;
     if (!container) return;
@@ -368,6 +474,11 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     // isSourceMode 变化（切模式）时重新绑定到正确的滚动容器
   }, [setScrollProgress, isSourceMode, viewMode]);
 
+
+  // ─── G10：ProseMirror spellcheck 属性同步 ──────
+  // 浏览器原生 spellcheck 通过 contenteditable 元素的 spellcheck 属性控制
+  // 切换开关时同步更新 .ProseMirror 的 spellcheck 属性，
+  // 开启后浏览器自动渲染拼写错误的红色波浪下划线，右键菜单原生提供纠正建议
   useEffect(() => {
     const editorDom = editorRef.current?.querySelector(".ProseMirror") as HTMLElement;
     if (editorDom) {
@@ -391,10 +502,31 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     }
   }, [spellcheckEnabled]);
 
+
+  // ─── 主题变化时更新 mermaid 主题 ──────────────────
+  // 修复：原 mermaid 主题硬编码为 'default'，暗色主题下图表渲染异常
   useEffect(() => {
     setMermaidTheme(isDarkTheme(theme));
   }, [theme]);
 
+
+  // ─── ProseMirror 滚动处理（阅读模式）──────────────────
+  // 统一处理键盘输入后的滚动行为，彻底解决编辑时屏幕闪动问题
+  //
+  // 闪动根因与解决：
+  // ProseMirror updateState 内部调用 selectionToDOM 将 state.selection 同步到
+  // DOM 选区，浏览器原生 selection 滚动会改变 scrollTop。由于 scroll 事件是
+  // 异步触发的，无法在浏览器重绘前恢复 scrollTop，用户会看到中间状态（闪动）。
+  //
+  // 解决方案：在 editor.ts 的 dispatchTransaction 中，updateState 前后同步
+  // 保存/恢复 scrollTop。浏览器不会在 updateState 内部重绘，所以用户看不到
+  // 中间状态。此处的 keyup/click 监听只负责"主动滚动"（换行后跟随光标）。
+  //
+  // 滚动策略（由 keyup/click 监听统一处理）：
+  // - 光标 Y 不变（同行输入）：scrollTop 已被 dispatchTransaction 同步恢复，无需处理
+  // - 光标 Y 变化（换行/软换行）：
+  //   * 打字机开启：smooth 滚动到中央
+  //   * 打字机关闭：instant 滚动让光标可见
   useEffect(() => {
     if (viewMode !== "preview") return;
     const editorDom = editorRef.current?.querySelector(".ProseMirror") as HTMLElement;
@@ -611,6 +743,8 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
   }, [viewMode, forceUpdateKey, typewriterMode]);
 
+
+  // textarea 打字机滚动（编辑/分屏模式）
   useEffect(() => {
     if (!typewriterMode || viewMode === "preview") return;
     const textarea = sourceTextareaRef.current;
@@ -733,8 +867,45 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
 
   const justEnteredSplitRef = useRef(false);
 
+  /**
+   * v0.14.0 需求1：右侧预览面板「上一帧是否可见」。
+   * 旧实现用 `prevViewModeRef` 判"刚进 split"，但预览开关现在是独立状态
+   * （编辑模式内反复开关、阅读↔编辑来回切），必须按 previewShown 的**边沿**判定，
+   * 否则从阅读模式切回编辑（预览本来开着）不会触发"立即渲染"，
+   * 右屏会先空白 300ms 再出现。
+   */
   const prevPreviewShownRef = useRef(false);
 
+  /**
+   * v0.14.0 第六批（用户实测缺陷）：**预览开关期间的滚动位置冻结**。
+   *
+   * ## 缺陷（用户原话）
+   * 「文档拉到底，在编辑模式不断重复关闭预览和打开预览（不断双击 Shift），
+   *  结果发现文档进度每一次会细微的往上滚动，这样文档不断在滚动就造成了阅读焦点不断变化。」
+   *
+   * ## 实测根因（`scripts/v0140-probe-toggle-geometry.mjs` / `-scrollwriter.mjs`）
+   * 文档在底部时：关闭态 `scrollTop=7582`（gap=1px，到底）；打开预览后变成
+   * `scrollTop=7553.198`（gap=29.667px）—— 每轮净丢 **28.67px**，且值是带循环小数的
+   * 浮点，证明是 **JS 计算写回** 而非原生滚动（hook `Element.prototype.scrollTop`
+   * 抓到调用者是联动同步 `syncToSource`）。
+   *
+   * 关键事实：开关预览**不改变 textarea 的 scrollHeight**（实测两态都是 8833，
+   * `max` 都是 7583 —— 因为 `.source-editor` 是 flex 布局，宽度变但内容高度不变）。
+   * 既然内容和可滚动空间都没变，**任何**对左屏 scrollTop 的写入都是多余的，
+   * 而左右块锚点映射是**有损往返**（底部 ↔ 底部映射回来少 28.67px），
+   * 于是每开合一次就丢一点 → 累积上漂。
+   *
+   * ## 修法
+   * 预览开关（`previewShown` 边沿）触发的这一小段窗口内：
+   * 1. **冻结左屏滚动位置**：进入窗口前记下 `textarea.scrollTop`；
+   * 2. 窗口内左右联动同步一律不写左屏（见 `syncToSource` 的 `isScrollFrozen` 守卫），
+   *    也不让宽度过渡期的 ResizeObserver 锚点补偿改写它；
+   * 3. 窗口结束（宽度过渡 420ms + 一帧布局稳定后）**精确还原**到记下的值。
+   *
+   * 为什么不是"修好映射往返"：映射往返在**中间位置**本来就有损（两个锚点之间的
+   * 真实块高与插值必然有亚像素/结构差），要求它对所有位置恒等既不现实也没必要 ——
+   * 用户抱怨的是「开关预览会动滚动位置」，而开关预览**根本不应该动它**。
+   */
   const scrollFreezeRef = useRef<{
     scrollTop: number;
     /** 冻结窗口截止时间（performance.now() 口径） */
@@ -766,30 +937,78 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     programTop: number;
   } | null>(null);
 
+  /**
+   * v0.14.0 第七批：冻结窗口的**上一个** viewMode / previewShown。
+   *
+   * 冻结只能用于"编辑模式内**单纯**开合预览"；阅读↔编辑切换时 previewShown 也会翻转
+   * （编辑默认带预览），若不排除，冻结窗口会把 applyScroll 刚按百分比恢复好的
+   * 阅读进度又拉回开合前的 textarea 位置（实测就是用户报的"阅读模式和分屏模式
+   * 的阅读进度联动丢失"）。
+   */
   const freezePrevViewModeRef = useRef(viewMode);
 
   const freezePrevShownRef = useRef(previewShown);
 
+  /**
+   * v0.14.0 第七批：解冻后按**块锚点映射**把左屏位置主动推给右屏。
+   *
+   * 为什么不能继续用百分比：实测重开预览后右屏偏差 6px/37px，且章节越深偏差越大
+   * （百分比在长文档上与块锚点映射不等价）。这个 ref 由分屏同步 effect 注册，
+   * 指向带 force 的 syncToPreview（跳过方向锁，但保留 isSyncing 重入守卫）。
+   */
   const syncPreviewAfterToggleRef = useRef<(() => void) | null>(null);
 
+  /**
+   * v0.15.3 返修（缺陷 B）：模式切换进编辑后「延时重对齐右屏」的**代际**。
+   *
+   * 为什么需要：`PREVIEW_REALIGN_DELAYS` 排了 5 个定时器（末点 1600ms）。用户在
+   * 1600ms 内再次切模式 / 内容再次变化时，上一批定时器必须**整批作废**，否则会把
+   * 新一轮刚对齐好的右屏又按旧左屏位置写一遍（与 v0.15.1 滚动恢复的"代际"同一套路）。
+   */
   const previewRealignGenRef = useRef(0);
 
+  /**
+   * v0.15.3 返修（缺陷 B）：**"右屏内容刚就绪"事件 → 重对齐** 的入口。
+   *
+   * 为什么必须由内容侧主动通知，而不是只靠定时器：
+   * iframe 的 `doc.open()/write()` → body 就绪 → 贴标 → mermaid/katex 异步渲染
+   * 每一步耗时都在**机器负载**下浮动。实机同一台机器两次跑出：
+   *   · 480ms 采样时"已贴标 + Δ0.29 行"（定时器晚于贴标，对齐成功）；
+   *   · 480ms 采样时"刚重写完、标签还没贴上 → 定时器跳过 → Δ89.81 行"。
+   * 固定时点无法赢过这种调度抖动。由 `tagWhenBodyReady` / 增量贴标处
+   * `requestPreviewRealignRef.current?.()` 主动推一次，才是确定性的。
+   * 该 ref 由分屏同步 effect 注册，指向同一套带**就绪闸门**的重对齐实现。
+   */
   const requestPreviewRealignRef = useRef<(() => void) | null>(null);
 
+  /**
+   * v0.14.0 第六批：**本帧的 scrollTop 写入是"冻结还原"而非用户滚动**。
+   *
+   * 用途：`syncToPreview`（左→右）监听 textarea 的 scroll 事件。冻结还原也会派发
+   * scroll 事件，若不加标记会被当成用户滚动 → 又把右屏推一次（右屏本来就不该动）。
+   * 置位 → 同步 → 立刻清位（同步派发的 scroll 事件是异步的，故不能用同步标志；
+   * 这里改用"时间戳 + 还原后跳过下一次 scroll"的方式，见 syncToPreview 的守卫）。
+   */
   const isFrozenRestoreRef = useRef(false);
 
+  /** 预览开关过渡总时长（与 editor.css 的 `transition: width 0.42s` 对齐，留一点余量） */
   const PREVIEW_TOGGLE_FREEZE_MS = 620;
 
+  // iframe 初始化状态追踪：首次进入分屏完整加载脚本，后续只更新 body
   const previewIframeInitRef = useRef<{ mermaid: boolean; math: boolean; theme: string }>({
     mermaid: false,
     math: false,
     theme: "",
   });
 
+  // v0.12.1 需求9：分屏预览的增量判据——区分"正文变了"与"只是排版预览变了"。
+  // 纯排版变化只需刷新 iframe 的 <style>，不必重排 body（拖滑条时避免每帧重建 DOM）。
   const lastIframeHtmlRef = useRef("");
 
   const lastIframeTypoKeyRef = useRef("");
 
+
+  // 追踪是否刚打开右侧预览面板（v0.14.0 需求1：由「切到 split」改为「预览面板展开」）
   useEffect(() => {
     if (previewShown && !prevPreviewShownRef.current) {
       justEnteredSplitRef.current = true;
@@ -799,6 +1018,20 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     prevPreviewShownRef.current = previewShown;
   }, [previewShown]);
 
+
+  /**
+   * v0.14.0 第六/七批：**预览开合期间冻结左屏滚动位置**（缺陷见 scrollFreezeRef 的注释）。
+   *
+   * 只在**编辑模式内单纯开合预览**时随 `previewShown` 的边沿生效（关→开、开→关各一次）；
+   * 阅读↔编辑切换虽然也会翻转 previewShown，但由下方的 `modeChanged` 闸门排除，
+   * 否则会覆盖 applyScroll 刚恢复的阅读进度。
+   *
+   * 时序：
+   *   t0             记录 scrollTop / 是否贴顶贴底 / 视口中央内容锚点，窗口开启
+   *   t0 ~ 稳定      联动同步与 RO 锚点补偿都不许改写左屏；每帧按中央锚点还原
+   *   布局稳定后     关窗（ResizeObserver 盯 scrollHeight，静默 320ms；上限 4s），
+   *                  关窗后再做 5 次幂等裁决校验，并用块锚点映射主动对齐右屏
+   */
   useLayoutEffect(() => {
     // v0.14.0 第七批：**只有"编辑模式内单纯开合预览"才冻结**。
     // 阅读↔编辑切换时 previewShown 也会翻转（编辑默认带预览），而那条路径由
@@ -1078,6 +1311,9 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewShown, viewMode]);
 
+
+  // 防抖：首次展开预览立即渲染，编辑时延迟渲染
+  // 大文件（>1MB）增加防抖时间到 1000ms，减少渲染开销
   useEffect(() => {
     if (!previewShown) return;
     if (justEnteredSplitRef.current) {
@@ -1091,6 +1327,10 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     return () => clearTimeout(timer);
   }, [sourceContent, previewShown]);
 
+
+  // 右侧预览 HTML（仅预览面板展开时计算，基于防抖内容）
+  // Markdown 文件：渲染 markdown + mermaid + 代码高亮
+  // 非 Markdown 文件（txt/代码等）：v0.4.0 用 PrismJS 对整个内容语法高亮，不渲染 markdown
   const previewHtml = useMemo(
     () => {
       if (!previewShown) return "";
@@ -1111,6 +1351,15 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     [debouncedSourceContent, previewShown, isMdFile, filePath, currentLanguage]
   );
 
+
+  /**
+   * v0.13.1 需求13（按块定位对齐）：分屏预览所用的**源码文本**。
+   *
+   * 与 `previewHtml` 同源同表达式，保证"行号表"与"实际渲染出来的 DOM"严格对应。
+   * （若两者用了不同的字符串——例如一个 mask 过 base64、一个没有——行号就会整体偏移，
+   * 块对齐反而会跳到错误位置。故此处显式抽成一份 memo 复用。）
+   * 非 md 文件（代码预览）不参与块对齐：那种预览是整段高亮，没有"块"的概念。
+   */
   const previewSourceMarkdown = useMemo(
     () =>
       previewShown && isMdFile
@@ -1119,12 +1368,21 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     [previewShown, isMdFile, debouncedSourceContent],
   );
 
+
+  // v0.4.0：阅读模式下非 Markdown 文件的语法高亮 HTML（用 useMemo 缓存避免重复计算）
+  // 仅在阅读模式 + 非 md 文件时计算，依赖 sourceContent 和 currentLanguage
   const codePreviewHtml = useMemo(() => {
     if (isMdFile || viewMode !== "preview") return "";
     // v0.6.6 问题4：unmask 还原 base64（显示层短标记不进预览）
     return renderCodeFilePreview(unmaskBase64Images(sourceContent, base64TokensRef.current), currentLanguage);
   }, [sourceContent, isMdFile, viewMode, currentLanguage]);
 
+
+  // 将预览 HTML 写入 iframe，隔离 DOM 减少 GC 压力
+  // 优化：首次进入分屏写入完整 HTML（含脚本），后续只更新 body 内容并重新触发渲染
+  // 避免 CDN 脚本反复加载，大幅减少闪烁和卡顿
+
+  // 收集主文档的 CSS 变量，注入 iframe 使分屏样式与阅读模式一致
   const collectCssVars = useCallback(() => {
     const s = getComputedStyle(document.documentElement);
     const v = (name: string, fallback: string) => s.getPropertyValue(name).trim() || fallback;
@@ -1163,6 +1421,22 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
   }, []);
 
+
+  /**
+   * v0.13.1 需求13（按块定位对齐）：给预览文档的**顶层元素**贴上"源码起始行"标签。
+   *
+   * ## 为什么不改渲染 HTML
+   * `renderMarkdownHtml` 同时服务分屏预览、阅读模式与各类导出；往里注入属性会让
+   * 导出产物出现无意义的 `data-src-line`（也会破坏"纯管道零 diff"一类的逐字节断言）。
+   * 因此这里在 **iframe DOM 层**贴标：`renderMarkdownHtml` 的输出保持逐字节不变。
+   *
+   * ## 为什么必须数量自校验
+   * `topLevelBlockStartLines` 只统计"一个 token 恰好产出一个顶层元素"的块。
+   * 本渲染管线 `htmlBlockDisabled: true`（原始 HTML 被转义成段落），实测数量总是相等；
+   * 但这条不变量依赖实现细节 —— 一旦开启 html、插件新增无 `map` 的 token，或渲染规则
+   * 改成包裹/拆分元素，顺序就会**整体错位**。错位比"退回百分比映射"严重得多
+   * （右侧会跳到完全无关的位置），故用一次 O(1) 数量比较把它挡在门外。
+   */
   const tagPreviewSourceLines = useCallback(
     (body: HTMLElement, markdownSource: string) => {
       try {
@@ -1196,6 +1470,16 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     [],
   );
 
+
+  /**
+   * v0.15.0 需求（阅读区标题折叠）：右侧预览（iframe）的折叠桥。
+   *
+   * PM 阅读面由插件走 Decoration；iframe 是独立 document、不在 PM 里，
+   * 只能 DOM 注入。两个面共享同一份折叠状态（`readingFold`），键用 headingId。
+   *
+   * `isActive` 只有「编辑模式 + 预览显示 + md 文件」为真——代码文件预览不做标题折叠
+   * （它们没有 Markdown 标题语义）。
+   */
   const foldBridge = useMemo(
     () =>
       createIframeFoldBridge({
@@ -1205,7 +1489,9 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     [previewShown, isMdFile],
   );
 
+  /** 折叠状态变化 → 重新应用到 iframe（PM 面由插件自行响应） */
   useEffect(() => readingFold.subscribe(() => foldBridge.apply()), [foldBridge]);
+
 
   useEffect(() => {
     if (!previewShown) return;
@@ -1506,6 +1792,12 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     }
   }, [previewHtml, viewMode, theme, collectCssVars, docZoom, typographyPreviewKey, previewSourceMarkdown, tagPreviewSourceLines]);
 
+
+  // v0.12.0 需求4：分屏 iframe 尺寸变化时保持预览焦点。
+  // iframe 的 contentDocument 有独立滚动盒，不在主文档 ResizeObserver 的观察范围内：
+  // ① 对 iframe 元素本身观察（宽度变化会传导，含拖分割条/侧栏折叠）；
+  // ② 滚动监听挂在 contentWindow 上（doc.open() 重写文档后 window 对象仍稳定，
+  //    而 scroller 元素会被替换 —— 每次捕获/恢复时动态获取 scrollingElement）。
   useEffect(() => {
     if (!previewShown) return;
     const iframe = previewIframeRef.current;
@@ -1547,6 +1839,25 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
   }, [viewMode]);
 
+
+  // ─── 分屏模式：**双向映射**滚动联动（v0.13.2 需求8）──────────────
+  //
+  // 用户最新要求：「左右屏滚动要跟着联动，但左右屏不是共用滚动条，而是映射关系。
+  // 因为左屏的文档长度会比右屏渲染的文档长度小，如果共用滚动条就导致左右看到的
+  // 内容不一致或有偏差，所以你要实现这个左右两屏能联动滚动，但左右两屏看到的
+  // 内容尽量能对齐。」
+  //
+  // 与 v0.13.1（仅左 → 右）的差别：**恢复双向**，但两边都不再用"共用百分比"，
+  // 而是走**块锚点映射**（`utils/blockScrollAlign.ts`）：
+  //   · 左 → 右：源码行 → 所属顶层块 → 该块在右侧的块内比例位置；
+  //   · 右 → 左：右侧视口顶 → 所属顶层块 → 块内比例 → 反算源码行 → textarea scrollTop。
+  // 由于两侧都锚在**同一个块的同一相对位置**，块高差异再大也能对齐。
+  //
+  // 防拉扯（v0.13.2 返修的核心）：浏览器对 `el.scrollTop = x` 派发的 scroll 事件是
+  // **异步**的（下一帧），同步执行期置位的 `isSyncingScrollRef` 到那时早已被清除，
+  // 于是被同步的一侧会把滚动再反推回来 —— 两屏互相拉扯、最终停在随机位置（实测还会
+  // 把左屏 scrollTop 写成 0）。现在改用 `utils/splitScrollSync` 的**时间窗方向锁**：
+  // 哪一侧先发起滚动，谁在窗口期内拥有同步权，另一侧的 scroll 事件一律按回声忽略。
   useEffect(() => {
     if (!previewShown) return;
     const textarea = sourceTextareaRef.current;
@@ -2051,6 +2362,10 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
   }, [viewMode, previewHtml, previewSourceMarkdown]); // 依赖 previewHtml / 源码文本，因为 iframe 内容更新后需要重新同步
 
+
+  // ─── 格式工具栏 ────────────────────────────────
+  // link/image/table 打开对应对话框；mermaid 打开模板下拉；其余走 handleFormatAction
+  // v0.12.0 需求2：detail=2（双击）用于格式刷的"持续应用"入口
   const onFormatBtnClick = useCallback((action: string, detail = 1) => {
     if (action === "undo") { handleUndo(); return; }
     if (action === "redo") { handleRedo(); return; }

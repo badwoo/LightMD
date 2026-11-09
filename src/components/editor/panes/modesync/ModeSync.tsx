@@ -134,6 +134,8 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     scrollRestoreGenRef,
   } = p;
 
+
+  // ─── 语法插入回调 ────────────────────────────────
   useEffect(() => {
     if (isSourceMode) {
       const insertHandler = (
@@ -207,12 +209,24 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     return () => setSourceInsertHandler(null);
   }, [isSourceMode, setSourceInsertHandler, pushUndoEntry]);
 
+
+  // ─── 打字机模式 ref ──────────────────────────────
+  // 提前定义，供 createEditor 的 dispatchTransaction 拦截 ProseMirror 自动滚动
+  // 原理：在特定操作（回车换行/方向键/点击）后滚动，使光标所在行位于视口中央
+  // 注意：不监听 input 事件，避免每输入一个字符就跳动；
+  //       内容未超出视口时不滚动，保证单行/少量内容时屏幕稳定
+  // 核心判断逻辑已提取到 utils/typewriter.ts，便于单元测试
   const typewriterModeRef = useRef(typewriterMode);
 
   typewriterModeRef.current = typewriterMode;
 
+
+  // v0.8.0 修复4：阅读模式 scrollToCenter 函数提升为 ref，供 onSelectionChange 复用
+  // （打字机开启且移动光标时即时居中），避免重复实现滚动逻辑
   const scrollToCenterRef = useRef<() => void>(() => {});
 
+
+  // ─── 初始化编辑器（只执行一次）──────────────────
   useEffect(() => {
     const parent = editorRef.current;
     if (!parent) return;
@@ -375,6 +389,10 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+
+  // ─── v0.9.0 WP9：只读标记变化时刷新 ProseMirror 的 contenteditable ──────────
+  // PM 在 updateStateInner 内重新计算 `this.editable`，故用同一 state 调一次
+  // updateState 即可（不产生事务、不触发 onDocChange）。
   const activeIsReadonly = useEditorStore((s) => !!s.openTabs[s.activeTabIdx]?.isReadonly);
 
   useEffect(() => {
@@ -383,6 +401,11 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     view.updateState(view.state);
   }, [activeIsReadonly]);
 
+
+  // ─── 持续追踪 ProseMirror 滚动百分比 ──────────
+  // 编辑器创建后设置监听，在滚动时实时记录百分比
+  // 注意：元素变为 display:none 时 scrollHeight/clientHeight 均为 0，max=0，
+  // 此时不应更新百分比（否则会被错误地置为 0，导致模式切换后滚动位置丢失）
   useEffect(() => {
     // 问题4修复：滚动容器从 .ProseMirror 改为 .editor-container
     // 移除 .ProseMirror overflow-y: auto 后，滚动发生在 editor-container 上
@@ -410,11 +433,34 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     return () => container.removeEventListener("scroll", handler);
   }, [content, forceUpdateKey]);
 
+
+  // ─── v0.13.0 返修（问题6）：同步「文档是否含图片」标志 ──────────
+  // 用于决定右上角「图片管理」悬浮入口是否显示。
+  //
+  // v0.13.0 返修第三轮（问题9）：**改为只依据 `content` 文本判定**。
+  //
+  // 缺陷背景（用户报告「打开带图片的文档，右上角的图片管理图标没有自动出现」）：
+  // 旧实现在阅读模式下读 `viewRef.current.state.doc`，但本 effect 的声明位置在
+  // 「文件切换重建 doc」那个 effect **之前**（React 按声明顺序执行 effect）→
+  // 切文件时这里读到的还是**上一个文档**的文档树；而依赖数组 `[content, viewMode,
+  // forceUpdateKey]` 在「无图文档 → 有图文档」且两者 content 结构不同时虽会变化，
+  // 但读到的仍是旧 doc，于是标志被算成 false。实测：从无图文档切到有图文档后
+  // 图标不出现；反向切回后图标也不消失（双向错）。
+  //
+  // `markdownHasImage(content)` 已经在**文本层**判定并剔除了围栏/行内代码里的假图片
+  // （v0.13.0 返修问题6 引入，有单测），而 `content` 是 App 侧的唯一内容源、
+  // 文件切换与每次编辑都会更新 → 与 effect 执行顺序无关，不存在读到旧文档的问题。
   useEffect(() => {
     const has = markdownHasImage(content);
     setDocHasImageFlag((prev) => (prev === has ? prev : has));
   }, [content, viewMode, forceUpdateKey, filePath]);
 
+
+  // ─── v0.7.4 修复1/2 / v0.7.5 功能2/3：AI 气泡设置变化 → 刷新浮动按钮 ──────────
+  // AI 气泡的显示/颜色由设置驱动，而设置变化不会产生 PM 事务，
+  // 插件因此无法感知（此前右键隐藏后需重新选文本才恢复显示、改色不生效）。
+  // 用 store 订阅（不引起组件重渲染）+ 空事务 dispatch 触发插件 view().update
+  // → updateFloating 重读 isBubbleHidden/getBubbleColor/getTranslateColor，即时生效。
   useEffect(() => {
     const unsubscribe = useSettingsStore.subscribe((state, prevState) => {
       const cur = state.translate;
@@ -437,6 +483,8 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     return unsubscribe;
   }, []);
 
+
+  // ─── 持续追踪 textarea 滚动百分比 + **缓存源码面块几何** ──────────────
   useEffect(() => {
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
@@ -476,6 +524,16 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     };
   }, [cacheSourceGeometry]); // textarea 始终在 DOM 中，只需绑定一次
 
+
+  /**
+   * v0.15.1 需求3：源码面几何缓存的**主动刷新点**。
+   *
+   * ⚠️ 只在这些**低频**时机刷新，**不要**挂 `sourceContent`（每次按键都变）：
+   * `measureSourceBlocks` 会建一个覆盖全文的镜像 div 再逐块量 `getBoundingClientRect`
+   * —— 大文档上是 O(全文) 的强制布局，挂在输入路径上会直接拖慢打字。
+   * 输入后的新鲜几何在**切换的那一帧现量**就够了（见 `captureSourceContentAnchor`：
+   * render 期 textarea 仍可见 → 现量优先，缓存只是量不到时的兜底）。
+   */
   useEffect(() => {
     if (isSourceMode) {
       // 刚切进编辑面：等两帧（React 提交 + 浏览器布局）后采一次
@@ -489,6 +547,10 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     return;
   }, [isSourceMode, cacheSourceGeometry, viewMode]);
 
+
+  // ─── v0.8.3 需求3：源码模式（textarea）光标行列 / 选中字符数 ──────────
+  // textarea 的 selectionStart/End 是唯一真相源；用 rAF 合并同一帧内的多次事件
+  // （select → click → input 常连续触发），避免重复写 store。
   const sourceCursorRafRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -527,6 +589,9 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     };
   }, [isSourceMode]);
 
+
+  // ─── 文件切换：更新编辑器内容 ──────────────────
+  // 非 md 文件不需要更新 ProseMirror（阅读模式使用纯文本视图）
   useEffect(() => {
     if (!isMdFile) return;
     const view = viewRef.current;
@@ -645,6 +710,13 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     closeLightbox();
   }, [content, forceUpdateKey, isMdFile, filePath]);
 
+
+  // ─── v0.7.0 bug修复：文件切换保留浏览进度 ─────────
+  // 需求：切换不同打开的文件时浏览进度不重置；重新打开该文件时重置到顶部。
+  // 实现：scroll 事件已按 filePath 实时写入 fileScrollProgress；
+  // 此处文件切换（forceUpdateKey 变化，App 层所有切换路径都会 +1）时读取
+  // 新文件的进度并恢复。重新打开场景 App 层已 clear → get 返回 null → 不恢复（顶部）。
+  // 性能：Map.get 单次哈希查询；恢复仅在切换时执行一次（双 rAF 等布局稳定）。
   useEffect(() => {
     // v0.8.3 WP4 需求6：进度键从"文件路径"改为"tab 键"（临时文本 = untitled:<id>），
     // 这样跨会话恢复的临时标签也能记住阅读位置。
@@ -685,6 +757,15 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceUpdateKey]);
 
+
+  // ─── 模式切换时同步内容 ──────────────────────
+  // 核心原则：三个模式操作同一个文件，切换时内容不丢失
+  // 滚动百分比已在 scroll 事件中持续追踪，此处直接使用
+  //
+  // 切换方向逻辑：
+    // - 阅读 → 编辑/分屏：从 ProseMirror 同步到 textarea（ProseMirror 是最新的）
+    // - 编辑/分屏 → 阅读：从 textarea 同步到 ProseMirror（textarea 是最新的）
+    // - 编辑 ↔ 分屏：不需要同步内容（textarea 内容已经是最新的，只恢复滚动位置）
   useEffect(() => {
     const view = viewRef.current;
     const prevMode = prevViewModeRef.current;
@@ -906,6 +987,11 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode]);
 
+  // v0.15.0 需求（图片灯箱）：切模式时关闭灯箱（阅读↔编辑两侧的采集 root 会变）
+
+  // ─── 延迟恢复滚动位置 ──────────────────────────
+  // 等内容渲染完成后再恢复滚动，使用 sourceContent 和 viewMode 作为触发
+  // 双重 rAF 确保浏览器完成布局计算
   useEffect(() => {
     if (!pendingScrollRef.current) return;
     const { targetMode, percent, anchorLine, anchorColumn, contentAnchor } = pendingScrollRef.current;

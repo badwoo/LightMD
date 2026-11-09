@@ -101,6 +101,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
   const lastTranslateSnapshotRef = useRef({ path: "", at: 0 });
 
 
+
+  /** 执行 source 模式续写 ghost：流式更新 overlay，完成后保留 ghost 等待 Tab 采纳 / Esc 放弃 */
   const runSourceAiGhost = useCallback((head: string, pos: number) => {
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
@@ -166,6 +168,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       });
   }, [renderSourceGhost]);
 
+
+  /** 采纳 source ghost（Tab）：将 ghost 文本插入光标处，清除 overlay */
   const acceptSourceGhost = useCallback(() => {
     if (!sourceGhostActiveRef.current) return false;
     // v0.7.5 优化3：占位提示（续写中…）不是正文，不可采纳——消费掉本次 Tab
@@ -198,6 +202,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     return true;
   }, [clearSourceGhost]);
 
+
+  /** 放弃 source ghost（Esc）：取消任务 + 清除 overlay */
   const cancelSourceGhost = useCallback(() => {
     if (!sourceGhostActiveRef.current) return false;
     sourceGhostActiveRef.current = false;
@@ -206,6 +212,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     return true;
   }, [clearSourceGhost]);
 
+
+  /** 用户编辑导致 source ghost 位置语义失效：取消任务 + 清除 overlay */
   const invalidateSourceGhost = useCallback(() => {
     if (sourceGhostActiveRef.current) {
       sourceGhostActiveRef.current = false;
@@ -214,12 +222,16 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     }
   }, [clearSourceGhost]);
 
+
+  // 每次渲染将最新实现转发到 ref（handleSourceKeyDown/handleSourceChange 仅挂载一次）
   sourceGhostHandlersRef.current = {
     accept: acceptSourceGhost,
     cancel: cancelSourceGhost,
     invalidate: invalidateSourceGhost,
   };
 
+
+  /** AI 结果应用（气泡操作按钮）：润色=替换选中，续写/摘要=插入到任务启动时光标处 */
   const handleAiApply = useCallback((task: AiTask, text: string) => {
     const ctx = aiCtxRef.current;
     if (!ctx || !text.trim()) return;
@@ -341,6 +353,13 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     aiCtxRef.current = null;
   }, []);
 
+
+  /** AI 助手触发入口（StatusBar AI 抽屉 ai.* 命令统一走这里）。
+   * 与翻译共享单任务槽：全文翻译运行中禁止 AI 任务（避免取消整篇翻译）。
+   * - continue：PM=ghost 流式；source=气泡（完成后插入光标处）
+   * - polish：选中文本（无选区静默返回）
+   * - summary：优先选区，否则全文（base64 先 mask 省 token）
+   * v0.7.0 修复1：全局 AI 总开关关闭时所有 AI 助手入口静默（与底部栏禁用态双保险） */
   const startAiAssist = useCallback((task: AiTask) => {
     // v0.7.3 U1：禁用/冲突状态由静默改为 toast（用户主动点 AI 抽屉里的功能，需有反馈）
     if (!useSettingsStore.getState().aiEnabled) {
@@ -453,6 +472,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
 
   startAiAssistRef.current = startAiAssist;
 
+
+  /** 重试上次 AI 任务（复用任务上下文，锚点取当前气泡位置） */
   const handleAiRetry = useCallback(() => {
     const ctx = aiCtxRef.current;
     if (!ctx) return;
@@ -462,6 +483,10 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     runAiBubble(ctx.task, ctx.text, ctx.sourceMode, anchor, ctx.start, ctx.end, ctx.insertPos);
   }, [runAiBubble]);
 
+
+  // ─── v0.7.4 修复3：无路径文档的 AI 气泡归属兜底 ──────────
+  // 尚未保存的新文件 filePath 均为 null，无法据此区分归属；文件切换
+  // （forceUpdateKey 变化）时直接作废残留气泡，防跨文档串写内容。
   useEffect(() => {
     const st = useAiAssistStore.getState();
     if (st.status === "idle" || st.filePath !== null) return;
@@ -470,8 +495,15 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     aiCtxRef.current = null;
   }, [forceUpdateKey]);
 
+
+  // ─── v0.7.5 功能1：AI 对话接线（浮动窗口 / 上下文 / 动作回写）─────────
+  /** 对话任务序号：新任务/关闭窗口后旧 promise 的 chunk/finish 一律丢弃 */
   const aiChatSeqRef = useRef(0);
 
+  /**
+   * 对话任务「发送时快照」（动作回写与 DOC_CHANGED 守卫用）。
+   * 落实体检报告 D1 教训：回写不得使用"当前选区"，必须用发送时快照 clamp。
+   */
   const chatCtxRef = useRef<{
     sourceMode: AiAssistSourceMode;
     /** 实际生效的上下文范围（选区丢失时已降级） */
@@ -496,8 +528,17 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     docSnapshot: string;
   } | null>(null);
 
+  /** 对话窗打开状态（驱动选区变化时的 chip 预览刷新） */
   const chatOpen = useAiChatStore((s) => s.open);
 
+
+  /**
+   * v0.7.5：提取 AI 对话上下文（预览与发送共用；始终取"当下"的编辑器状态）
+   * - PM 阅读模式（md 文件）：选区走 extractFromSelection（Markdown 保真）；
+   *   全文走 maskBase64Images(getMarkdownFromDoc)（base64 短标记省 token）
+   * - 源码模式（edit/split）：选区/全文取 textarea 切片（sourceContent 已是显示层坐标）
+   * - preview + 非 md（纯文本预览）：不支持上下文，返回空（仅发送指令本身）
+   */
   const extractChatContext = useCallback(
     (scope: AiChatContextScope): { raw: string; sourceMode: AiAssistSourceMode } => {
       if (scope === "none") return { raw: "", sourceMode: "pm" };
@@ -526,6 +567,12 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     [viewMode, isMdFile, isSourceMode]
   );
 
+
+  /**
+   * v0.7.5：刷新对话窗上下文 chip 预览（打开窗口 / 切换范围 / 选区变化时调用）
+   * - scope=selection 但选区已丢失 → 自动降级为全文，并置 degraded（chip 明示）
+   * - 超上限截断 → chip 标注「已截断」（chars 仍显示原始字数）
+   */
   const refreshChatPreview = useCallback(
     (scope: AiChatContextScope) => {
       const store = useAiChatStore.getState();
@@ -550,6 +597,16 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     [extractChatContext]
   );
 
+
+  /**
+   * v0.15.4 需求9：读取**当下**的编辑器选区（PM 通道 / 源码 textarea 通道）。
+   *
+   * 为什么不用 `document.activeElement`：窗口焦点在对话输入框时，PM 的
+   * `view.state.selection` 与 textarea 的 selectionStart/End **都还在**，
+   * 只是 DOM 焦点挪走了。旧实现看到 activeElement 在对话框内就直接 return，
+   * 于是「点过输入框之后在编辑器里选文本」永远不刷新 chip —— 正是用户报的 bug。
+   * 这里直接读编辑器自身的选区状态，与焦点无关。
+   */
   const readChatSelection = useCallback((): {
     mode: "pm" | "source";
     from: number;
@@ -582,6 +639,13 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     return { mode: "pm", from: 0, to: 0, text: "" };
   }, [viewMode, isMdFile, isSourceMode]);
 
+
+  /**
+   * v0.15.4 需求7：指令模板展开所需的两个变量值（按上下文上限截断后）。
+   *
+   * 指令库的 `{{selection}}` / `{{document}}` 由这里取"当下"的真实文本，
+   * 而不是 chip 预览里的字数——展开后的指令要能直接发送。
+   */
   const getChatContextValues = useCallback((): { selection: string; document: string } => {
     return {
       selection: truncateChatContext(extractChatContext("selection").raw, "selection").text,
@@ -589,13 +653,27 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     };
   }, [extractChatContext]);
 
+
+  /** 上次记录的选区签名（用于辨别"真实选区变化"；见 chatSelectionSignature） */
   const chatSelSigRef = useRef<string>("");
 
+
+  /** 读取当下选区签名（"pm:from:to" / "source:from:to"；空选区统一为 "mode:"） */
   const currentChatSelectionSignature = useCallback((): string => {
     const sel = readChatSelection();
     return chatSelectionSignature(sel.mode, sel.from, sel.to);
   }, [readChatSelection]);
 
+
+  /**
+   * v0.7.5 功能1：AI 对话入口（底部栏「AI对话」/ Ctrl+K / 选区「问」气泡共用）。
+   *
+   * - 未打开：新建会话，默认上下文范围 = 有可用选区 → 选区；否则全文
+   * - 已打开：**不重置会话**（避免顺手再按一次 Ctrl+K 把对话历史清空），
+   *   仅展开折叠态、按当下选区刷新 chip 预览并把焦点交回输入框
+   * - 总开关关闭 → toast 提示（修复体检报告 U1 的静默失败）
+   * - 全文翻译运行中禁止（与 startAiAssist 同源约束，避免取消整篇翻译）
+   */
   const startAiChat = useCallback(() => {
     if (!useSettingsStore.getState().aiEnabled) {
       notifyWarning(translate("ai.disabledNotify"));
@@ -639,6 +717,45 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
 
   startAiChatRef.current = startAiChat;
 
+
+  /**
+   * v0.7.5 / v0.15.4 需求9：对话窗打开期间，编辑器选区变化时**自动跟随**并刷新 chip。
+   *
+   * 旧实现的三个问题（用户实测「选了文本也不生效」）：
+   * 1. `if (active?.closest?.(".ai-chat-dialog")) return;` —— 点过输入框后焦点
+   *    长期在窗内，这个分支会让选区变化**永远**不刷新。焦点在不在窗内与
+   *    "编辑器有没有选区"是两件事：PM 的 `state.selection` 与 textarea 的
+   *    selectionStart/End 都还在，直接读编辑器状态即可。现改为只跳过
+   *    **窗内自己的选区**（用户拖选 AI 回答文本时 `document.getSelection()` 的
+   *    anchorNode 落在 `.ai-chat-dialog` 里），那确实不是编辑器选区。
+   * 2. 只刷新预览、不改范围 → chip 一直显示上次算出的范围。
+   *    现在按 `planChatSelectionChange` 决策：真实选区变化 → 自动切「选区」；
+   *    选区消失且处于自动跟随 → 回落全文；手动锁定则保持不动。
+   * 3. v0.15.4：250ms 防抖，用户拖选时高频触发只落地最后一次。
+   *
+   * v0.15.5（用户实测「快速选中文字会经常失效，没有显示选区文字」）再修两处：
+   *
+   * ## 缺陷 A：`isSelectionInsideChatDialog()` 吞掉了真实选区变化
+   *
+   * v0.15.4 加的那个 guard 本意是忽略「拖选 AI 回答文本」，但它检查的是 **DOM 选区**。
+   * 而「DOM 选区落在哪里」与「编辑器选区有没有变」是两件事：
+   * 用户选完正文后**点一下对话输入框**（最常见的动作：选完就去打字），
+   * DOM 选区立刻落进 `.ai-chat-dialog` 的 textarea → 下一次回调被 early return
+   * → **已经选好的正文永远没被应用**，chip 停在「全文」。
+   * 实机探针 `scripts/v0155-probe-quick-selection.mjs` 的 M3 场景 100% 复现：
+   * 选中 16 字 → 点输入框 → chip 仍是「全文 4,773 字」。
+   *
+   * 正确判据是**编辑器自己的选区签名**：`readChatSelection()` 读 PM 的
+   * `state.selection` / textarea 的 `selectionStart/End`，与焦点、与 DOM 选区无关。
+   * 窗内拖选 AI 回答时编辑器签名**根本不变** → `planChatSelectionChange` 返回 null
+   * （只刷新预览、不动范围），原语义自动保留，因此 guard 已删除。
+   *
+   * ## 缺陷 B：防抖让「手快」看不到反馈
+   *
+   * 拖选松手后要等 250ms 才更新，观感就是「没生效」。
+   * 现在 `selectionchange` 用 120ms 短防抖（合并拖选过程中的连续事件），
+   * 但**真实手势结束（mouseup / pointerup / keyup）立刻落地**，松手那一帧 chip 就跟随。
+   */
   useEffect(() => {
     if (!chatOpen) return;
     // 打开瞬间先记录基线签名：此后只有**变化**才算真实选区变化
@@ -714,6 +831,15 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     };
   }, [chatOpen, refreshChatPreview, currentChatSelectionSignature, readChatSelection]);
 
+
+  /**
+   * v0.7.5：编辑模式切换时上下文来源通道随之改变（PM 选区 ↔ textarea 切片），
+   * 立即刷新 chip 预览，避免显示上一模式的过期选区字数。
+   *
+   * v0.15.4 需求9：模式切换 = 选区通道切换，也算一次真实选区观测 ——
+   * 自动跟随态下按新模式里的选区重新跟随（例如"源码模式选了文本 → 切阅读模式"）。
+   * 同时更新签名，避免紧随其后的 selectionchange 把刚算好的范围又判成"变化"。
+   */
   useEffect(() => {
     const store = useAiChatStore.getState();
     if (!store.open) return;
@@ -730,6 +856,9 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     refreshChatPreview(store.contextScope);
   }, [viewMode, isSourceMode, isMdFile, refreshChatPreview, currentChatSelectionSignature, readChatSelection]);
 
+
+  // v0.7.5：切换文件时作废对话窗（无路径新文件的 filePath 均为 null，无法区分归属，
+  // 与 v0.7.4 AI 气泡同款兜底：宁可关闭也不跨文档串写内容）
   useEffect(() => {
     const st = useAiChatStore.getState();
     if (!st.open) return;
@@ -740,6 +869,11 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     st.closeWindow();
   }, [forceUpdateKey]);
 
+
+  // ─── v0.7.4 修复5：滚动时摘要锚点跟随选区 ──────────
+  // 摘要锚点是触发时刻的屏幕坐标，滚动后选区在视口中的位置已变化，必须按
+  // 文档位置（coordsAtPos / textarea 几何）重算。滚动事件高频 → rAF 节流，
+  // 每帧至多一次重算；setAnchor 对坐标未变化的情况跳过通知（零重渲染）。
   useEffect(() => {
     const targets: HTMLElement[] = [];
     const container = editorRef.current;
@@ -786,6 +920,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     };
   }, [viewMode, isSourceMode, forceUpdateKey]);
 
+
+  // ghost 存在时：Tab 采纳（markdown 解析插入，失败降级纯文本）/ Esc 放弃（取消+清除）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!ghostActiveRef.current) return;
@@ -820,6 +956,9 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
+
+  // v0.7.3 改进10(U3)：离开源码模式 / 文件切换时清理 source ghost overlay
+  // （防止 overlay 内容残留在切换到阅读模式后的 DOM 中）
   useEffect(() => {
     if (!isSourceMode) {
       sourceGhostActiveRef.current = false;
@@ -828,6 +967,13 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     }
   }, [isSourceMode, activeKeyRef.current]);
 
+
+  /**
+   * 全文翻译回写（一次性替换整篇文档）。
+   * - preview+md：直接替换 PM doc（单事务，Ctrl+Z 可整体撤销）
+   * - 任意模式：同步 sourceContent 与 App 层 content state，置脏
+   * - v0.6.1 问题2：undoSnapshot 非空时记录原文快照（显示"取消翻译"气泡）
+   */
   const applyFullTranslation = useCallback((newContent: string, undoSnapshot?: string) => {
     // v0.6.6 问题4：坐标归一化——输入可能来自全文翻译（真实内容）或
     // 选中翻译回写的快照（masked 坐标），先 unmask 统一为真实内容
@@ -876,6 +1022,12 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     }
   }, [viewMode]);
 
+
+  /**
+   * v0.6.1 问题2：取消翻译 —— 用原文快照整体恢复文档。
+   * 恢复的是原文（磁盘已知内容），不抑制自动保存；
+   * 恢复后内容与最近磁盘同步一致时清除脏标记
+   */
   const undoTranslation = useCallback(() => {
     const snap = useEditorStore.getState().translateUndoSnapshot;
     if (snap === null) return;
@@ -903,6 +1055,16 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     }
   }, [applyFullTranslation]);
 
+
+  // ─── v0.7.5 功能1/F5：AI 对话发送与结果动作回写 ─────────────────
+  /**
+   * 发送一条对话指令（对话框输入区提交）。
+   *
+   * 上下文在**发送这一刻**重新提取（窗口可能开了很久，选区/文档已变），
+   * 同时记录「发送时快照」供动作回写与 DOC_CHANGED 校验使用（§2.4 决策）。
+   * 历史只携带最近 3 轮且为"裸指令"，文档上下文仅挂在当前这条 user 消息上
+   * （见 aiChatService 注释：避免每轮重复整篇文档导致 token 线性膨胀）。
+   */
   const sendAiChat = useCallback(
     (instruction: string, templateId: string | null) => {
       const store = useAiChatStore.getState();
@@ -993,12 +1155,16 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     [extractChatContext, readChatSelection, viewMode, isMdFile]
   );
 
+
+  /** 停止对话流式任务（作废后续回调；半截回答不入历史，避免污染下一轮上下文） */
   const stopAiChat = useCallback(() => {
     aiChatSeqRef.current += 1;
     aiChatService.cancel().catch(() => undefined);
     useAiChatStore.getState().cancelStream();
   }, []);
 
+
+  /** 重新生成最后一条回复（复用同一指令；上下文按当下重新提取） */
   const regenerateAiChat = useCallback(() => {
     const store = useAiChatStore.getState();
     if (!store.open) return;
@@ -1011,6 +1177,12 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     sendAiChat(ctx.instruction, lastUser?.meta?.templateId ?? null);
   }, [sendAiChat]);
 
+
+  /**
+   * 结果动作：插入到光标处（发送时光标快照 clamp 后插入）。
+   * PM 走 markdownToDoc 解析插入——```mermaid 围栏与 $$ 公式由此进入
+   * mermaid-block / math-block 实时渲染管线，零额外渲染代码（本功能差异点）。
+   */
   const chatInsertAtCursor = useCallback((text: string) => {
     if (!text.trim()) return;
     const ctx = chatCtxRef.current;
@@ -1047,6 +1219,11 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     view.focus();
   }, []);
 
+
+  /**
+   * 结果动作：替换发送时的选区（快照位置；不使用"当前选区"，防错位 —— D1 教训）。
+   * 回写前记录原文快照，支持 Esc / 「取消翻译」气泡整体恢复。
+   */
   const chatReplaceSelection = useCallback((text: string) => {
     if (!text.trim()) return;
     const ctx = chatCtxRef.current;
@@ -1132,6 +1309,12 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     });
   }, []);
 
+
+  /**
+   * 结果动作：替换全文（复用全文翻译同款安全链）。
+   * DOC_CHANGED 守卫：当前全文必须与**发送时快照**完全一致才允许整体替换，
+   * 否则拒绝并提示（整篇替换会静默丢弃对话期间的用户编辑 —— v0.6.3 P0-3 同源）。
+   */
   const chatReplaceDocument = useCallback(
     (text: string) => {
       if (!text.trim()) return;
@@ -1155,10 +1338,20 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     [viewMode, isMdFile, applyFullTranslation]
   );
 
+
+  /** 复制对话结果到剪贴板 */
   const chatCopy = useCallback((text: string) => {
     navigator.clipboard?.writeText(text).catch(() => undefined);
   }, []);
 
+
+  /**
+   * 上下文范围切换（对话框 chip / 指令作用域联动触发）。
+   *
+   * v0.15.4 需求9：这里的调用一律视为**用户手动指定** → 锁定该范围。
+   * 自动跟随产出的范围由 selectionchange effect 走 `setContextScopeWithAuto`，
+   * 不经本入口，因此不会被误锁定。
+   */
   const chatScopeChange = useCallback(
     (scope: AiChatContextScope) => {
       useAiChatStore.getState().setContextScope(scope);
@@ -1167,16 +1360,27 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     [refreshChatPreview]
   );
 
+
+  // ── v0.6.4 问题1c：失败段气泡 ──────────────────────────────
+  // 翻译失败的段在内容首处以气泡提示（底部栏不再显示失败），5 秒后自动消失
   const [segmentFailTip, setSegmentFailTip] = useState<{ text: string; count: number } | null>(null);
 
   const segmentFailTipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+
+  /** 显示失败段气泡（重复调用重置计时；切文档/再次翻译时由调用方清除） */
   const showSegmentFailTip = useCallback((failedText: string, totalFailed: number) => {
     if (segmentFailTipTimerRef.current) clearTimeout(segmentFailTipTimerRef.current);
     setSegmentFailTip({ text: failedText, count: totalFailed });
     segmentFailTipTimerRef.current = setTimeout(() => setSegmentFailTip(null), 5000);
   }, []);
 
+
+  /**
+   * 全文翻译入口（悬浮按钮 / Shift+F6 / 命令面板统一走这里）。
+   * 流程：取全文 → 切分 → 快照 → 逐段串行翻译（进度/取消）→ 一次性重组回写。
+   * 失败安全：任何失败/中断/标签切换路径均不写入，原文零破坏。
+   */
   const startFullTranslate = useCallback(() => {
     const ftStore = useFullTranslateStore.getState();
     // 运行中再次触发 = 取消
@@ -1299,6 +1503,9 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
 
   startFullTranslateRef.current = startFullTranslate;
 
+
+  // v0.6.4 问题1b：切换文档时清除上一文档的翻译状态（done 提示/系统性错误/运行进度
+  // 均不跨文档残留；运行中的任务由 shouldAbort 上下文检测中止）
   useEffect(() => {
     const s = useFullTranslateStore.getState();
     if (s.status !== "idle") s.reset();
@@ -1307,6 +1514,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filePath]);
 
+
+  // 全文翻译运行中：Esc 中断
   const fullTranslateRunning = useFullTranslateStore((s) => s.status === "running");
 
   useEffect(() => {
@@ -1323,6 +1532,9 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     return () => window.removeEventListener("keydown", onKey);
   }, [fullTranslateRunning]);
 
+
+  // v0.6.2 问题2：翻译回写成功后（"取消翻译"气泡可见期间），Esc 恢复原文。
+  // 翻译气泡打开时（status 非 idle）Esc 优先关闭气泡，不触发恢复原文
   const translateUndoSnapshot = useEditorStore((s) => s.translateUndoSnapshot);
 
   useEffect(() => {
@@ -1343,6 +1555,8 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     return () => window.removeEventListener("keydown", onKey);
   }, [translateUndoSnapshot, undoTranslation]);
 
+
+  // 监听命令面板/快捷键转发的 edit.translate 命令（App.tsx 派发，统一入口 startTranslate）
   useEffect(() => {
     const handler = (e: Event) => {
       const id = (e as CustomEvent).detail?.id;

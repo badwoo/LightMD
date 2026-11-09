@@ -96,6 +96,8 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     sourceGhostActiveRef,
   } = p;
 
+
+  // ─── 源码编辑内容变化 ──────────────────────────
   const handleSourceChange = useRef((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     // v0.15.1 需求1：真实用户输入 = 选区保护窗立即失效（否则撤销后的光标还原
     // 会跟用户的输入抢光标）。
@@ -191,6 +193,23 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     }
   });
 
+
+  /**
+   * v0.15.1 需求1：撤销/恢复落地后**保住阅读面的滚动位置**。
+   *
+   * 缺陷（用户原话「进行撤销时候文档会滚动底」）：撤销把整篇 doc `replaceWith` 成更短的
+   * 内容后，`scrollHeight` 立刻变小 → 浏览器把 `scrollTop` 钳到**新的 max**（= 底部），
+   * 而 `editor.ts` 的 dispatchTransaction 里那段"保存/恢复 scrollTop"也会被同一个钳位
+   * 打回（它写的是旧像素值，超过新 max 就被钳到 max）。
+   * 结果：撤销一次，视口就贴到底。
+   *
+   * 修法：**锚内容不锚像素**。撤销前采「视口中央是哪个块 + 块内比例」，落地后按新几何
+   * 反算 scrollTop；块表在异步布局（图片/mermaid 撑高）里会变，故 0/60/160ms 各校正一次，
+   * 用户一旦自己滚了就停手（`userScrolled` 判据用输入事件，不用 scrollTop 差值 ——
+   * 浏览器钳位会被误判成用户操作，见语义地图 §4-31）。
+   *
+   * @returns 一个"落地后调用"的还原函数（撤销前先调 `capturePreviewScrollAnchor`）
+   */
   const restorePreviewScrollFromAnchor = (
     anchor: ContentAnchor | null,
     userScrolledRef: { current: boolean },
@@ -216,6 +235,8 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     });
   };
 
+
+  /** 撤销前采集阅读面滚动锚点（阅读面此刻可见，几何可信） */
   const capturePreviewScrollAnchor = (): ContentAnchor | null => {
     const container = editorRef.current;
     if (!container || container.clientHeight <= 0) return null;
@@ -226,6 +247,16 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     });
   };
 
+
+  /**
+   * v0.15.0 需求（跨模式撤销统一）：把时间线条目的目标文本**写回宿主**。
+   *
+   * 这是 coordinator 唯一的落地通道（通过 `applyHistoryTextRef` 注入），必须保证：
+   * - 阅读模式：整篇 replaceWith 的 bridge 事务带 `addToHistory:false` + `historyBridge:true`，
+   *   否则 pmAdapter 会把"撤销动作本身"当成新编辑再记一条 → 一次按键双撤销/来回弹；
+   * - 源码模式：写 `setSourceContent` + `sourceContentRef` + 上层通知，并按 selection 恢复光标；
+   * - 两条路径都**不得**再走旧 `pushUndoEntry/recordUndoEntry`（已退休）。
+   */
   applyHistoryTextRef.current = (text, restore, meta) => {
     const bridgeMeta = meta as { bridge?: boolean; direction?: "undo" | "redo" } | undefined;
     const isBridge = bridgeMeta?.bridge === true;
@@ -450,6 +481,9 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     }
   };
 
+
+  // ─── 在光标处插入文本（统一入口，供对话框 onInsert 复用）────────────
+  // 复用 sourceInsertHandler 的差异记录与光标恢复逻辑
   const insertTextAtCursor = useCallback((text: string, cursorOffset?: number) => {
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
@@ -490,6 +524,10 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     setTimeout(restore, 50);
   }, [pushUndoEntry]);
 
+
+  // ─── E1(v0.9.2):阅读模式下对话框插入直接写入 ProseMirror ────
+  // 此前 LinkDialog/ImageInsertDialog 确认后走 insertTextAtCursor(textarea 通道),
+  // 阅读模式无 textarea → 静默失败。preview 模式下改走 markdownToDoc → replaceSelection。
   const insertMarkdownIntoPM = useCallback((md: string) => {
     const view = viewRef.current;
     if (!view) return;
@@ -505,6 +543,12 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     }
   }, [insertTextAtCursor]);
 
+
+  // ─── SlashCommand 插入回调 ────────────────────────
+  // mode="block"：删除当前行从行首（含 / 和过滤文字）到光标的内容，在行首插入 markdown
+  // mode="inline"：用 markdown 替换当前选中文本（markdown 已是完整包裹字符串）
+  // 菜单关闭由 SlashCommand 组件内部调用 onClose 处理，此处不主动关闭
+  // 核心字符串变换逻辑提取为纯函数 computeSlashInsert（文件底部导出），便于单元测试
   const handleSlashInsert = useCallback((markdown: string, mode: InsertMode) => {
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
@@ -547,6 +591,8 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     setTimeout(restore, 50);
   }, [pushUndoEntry]);
 
+
+  // ─── 对话框 open 状态 ────────────────────────────
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
 
   const [linkInitialText, setLinkInitialText] = useState("");
@@ -555,6 +601,10 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
 
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
 
+  // ─── G3：图片编辑对话框状态 ────────────────────
+  // imageEditSrc 为 resolve 后的可显示 URL（asset:// 或 data:）
+  // imageEditPos 为 ProseMirror 文档中图片节点的位置，确认后通过 setNodeMarkup 修改 attrs.src
+  // E11b(v0.9.3)：同时携带节点 alt/width，对话框内可编辑并写回
   const [imageEditDialogOpen, setImageEditDialogOpen] = useState(false);
 
   const [imageEditSrc, setImageEditSrc] = useState("");
@@ -563,14 +613,17 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
 
   const [imageEditWidth, setImageEditWidth] = useState<number | null>(null);
 
+  /** v0.13.0 需求4：图片水平对齐（打开图片编辑对话框时从节点 attrs 带入） */
   const [imageEditAlign, setImageEditAlign] = useState<"left" | "center" | "right">("left");
 
   const [imageEditPos, setImageEditPos] = useState<number | null>(null);
 
+  // ─── 右键菜单状态 ────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; hasSelection: boolean }>({
     open: false, x: 0, y: 0, hasSelection: false,
   });
 
+  // v0.12.0 需求2：PM 模式右键菜单状态（选区信息在 rAF 内主动读取后填入）
   const [pmContextMenu, setPmContextMenu] = useState<{
     open: boolean;
     x: number;
@@ -597,6 +650,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     hasTextClipboard: false,
   });
 
+  // ─── v0.13.0 需求1：块右上角三点菜单（blockKebab 派发 lightmd:blockAction） ───
   const [blockKebabMenu, setBlockKebabMenu] = useState<{
     open: boolean;
     x: number;
@@ -607,14 +661,21 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     hasClipboard: boolean;
   }>({ open: false, x: 0, y: 0, pos: 0, hasClipboard: false });
 
+  // v0.12.0 需求2：格式刷状态（订阅以驱动光标样式 / Esc 监听 / 状态栏提示）
   const formatPainterMode = useFormatPainterStore((s) => s.mode);
 
+  // ─── Mermaid 模板下拉状态 ────────────────────────
   const [mermaidMenuOpen, setMermaidMenuOpen] = useState(false);
 
+  // ─── v0.12.1 需求5：任务列表图标样式下拉（方形 / 圆形）───
   const [taskStyleMenuOpen, setTaskStyleMenuOpen] = useState(false);
 
+  // ─── SlashCommand 菜单 open 状态 ───────────────────
+  // 仅在源码模式 + Markdown 文件 + 行首输入 / 时打开
   const [slashCommandOpen, setSlashCommandOpen] = useState(false);
 
+
+  // ─── 打开链接对话框（携带选中文本作为 initialText）────
   const openLinkDialog = useCallback(() => {
     const textarea = sourceTextareaRef.current;
     if (textarea) {
@@ -624,6 +685,8 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     setLinkDialogOpen(true);
   }, []);
 
+
+  // ─── E1(v0.9.2):命令面板/工具栏在阅读模式下发的链接/图片对话框打开事件 ────
   useEffect(() => {
     const handler = (e: Event) => {
       const kind = (e as CustomEvent).detail?.kind;
@@ -637,6 +700,16 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     return () => window.removeEventListener("lightmd:pm-dialog", handler);
   }, [openLinkDialog]);
 
+
+  // ─── v0.13.2 需求10：图片编辑入口改为「右上角手柄」 ────────────────
+  //
+  // 用户要求：「原来点击文档中图片会弹窗进入编辑，现在需要在图片右上角加上小手柄按钮，
+  // 鼠标移动到图片上就会显现，将弹窗进入编辑的功能放在这个按钮里点击即可进入；
+  // 而原来点击图片改为激活该图片，通过鼠标拖拽图片边缘可以进行图片大小调整。」
+  //
+  // 因此旧的「捕获阶段点击 img → 打开编辑弹窗」整段移除：
+  // - 点击/拖拽由 `core/plugins/image-node.ts` 的 ImageView 接管（激活 / 缩放）；
+  // - 手柄点击时派发 `lightmd:image-edit`，由本 effect 打开编辑弹窗。
   useEffect(() => {
     const handler = (e: Event) => {
       const pos = (e as CustomEvent).detail?.pos as number | undefined;
@@ -659,6 +732,15 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     return () => window.removeEventListener("lightmd:image-edit", handler);
   }, []);
 
+
+  // ─── v0.9.5 问题3：文档内链接点击导航 ────────────────
+  // 此前全项目无链接点击处理——阅读模式 <a href> 点击被 WebView2 当作页面内导航,
+  // 相对路径链接点击无任何反应。统一分发:内部文件 → lightmd:open-path 事件
+  // (App 层 openFileByPath 复用打开链路);http(s)/mailto → 外部打开;
+  // 锚点 → 编辑器内滚动到标题
+  // v0.12.0 需求8：外部打开逻辑抽出为 utils/openExternal（设置弹窗「关于」复用），
+  // openExternalHref 现为模块级静态函数，无需 useCallback 包装
+
   const scrollEditorToAnchor = useCallback((anchor: string) => {
     const container = editorRef.current;
     if (!container) return;
@@ -671,6 +753,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       }
     }
   }, []);
+
 
   const handleLinkNav = useCallback(
     (href: string) => {
@@ -686,6 +769,8 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     [filePath, scrollEditorToAnchor]
   );
 
+
+  // 阅读模式：ProseMirror 容器内链接点击(捕获阶段,先于 PM 的选区处理)
   useEffect(() => {
     if (viewMode !== "preview") return;
     const container = editorRef.current;
@@ -704,6 +789,8 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     return () => container.removeEventListener("click", handler, true);
   }, [viewMode, handleLinkNav]);
 
+
+  // 分屏：iframe 内链接点击经 postMessage 桥接回主文档(桥接脚本在完整重写时注入 head)
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type !== "lightmd-preview-link") return;
@@ -714,6 +801,12 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     return () => window.removeEventListener("message", handler);
   }, [handleLinkNav]);
 
+
+  /**
+   * G3：图片编辑确认回调 —— 通过 setNodeMarkup 修改 image 节点 attrs
+   * E11b(v0.9.3)：除 src 外同时写回对话框编辑的 alt 与 width
+   * v0.13.0 需求4：同时写回水平对齐（非 left 时序列化为 `<img style>`）
+   */
   const handleImageEditConfirm = useCallback((newSrc: string, meta: { alt: string; width: number | null; align: "left" | "center" | "right" }) => {
     const view = viewRef.current;
     if (!view || imageEditPos === null) {
@@ -743,6 +836,10 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     setImageEditAlign("left");
   }, [imageEditPos]);
 
+
+  // ─── 格式工具栏操作 ────────────────────────────
+  // 通过 buildFormatReplacement 纯函数生成 replacement + cursorOffset，
+  // 减少 switch 重复代码；mermaid 按钮点击改为打开下拉，不走此路径
   const handleFormatAction = useRef((action: string) => {
     // 归一化 H1-H6 按钮 action（"h1"~"h6"）到 heading 前缀路径（"heading1"~"heading6"），
     // 与快捷键 Ctrl+1~6 一致走行首替换逻辑，而非在光标位置插入文本
@@ -917,6 +1014,10 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     }
   });
 
+
+  // ─── N2：智能粘贴 URL→链接（源码模式） ──────────
+  // 粘贴单个 http(s) URL 时转为 Markdown 链接：无选区 → [url](url)；
+  // 有选区 → [选中文字](url)。代码块内不处理。
   const handleSourcePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const ta = sourceTextareaRef.current;
     const text = e.clipboardData.getData("text/plain").trim();
@@ -930,6 +1031,10 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     document.execCommand("insertText", false, `[${selected || text}](${text})`);
   }, []);
 
+
+  // ─── 源码模式快捷键处理器 ────────────────────────
+  // 在 textarea 的 keydown 中拦截 Ctrl/Cmd 组合键，分发到对应 action
+  // 注意：Ctrl+Shift+S 已被 App.tsx 占用为「另存为」，删除线改用 Ctrl+Alt+S
   const handleSourceKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!isSourceMode || !isMdFile) return;
 

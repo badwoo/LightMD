@@ -89,7 +89,9 @@ describe("v0.15.3 · 缺陷 B 静态契约：延时时点的单一来源", () =>
     // （散落字面量正是 v0.14.0 时代 finalize 里 timerAt(160/480/1000) 的写法，
     //  那次修好后模式切换路径并没有受益 —— 因为写的不是同一份常量）。
     expect(tsx, "EditorContainer 必须从 textOffsetRemap import 该常量").toMatch(
-      /import\s*\{[^}]*PREVIEW_REALIGN_DELAYS[^}]*\}\s*from\s*["']\.\.\/\.\.\/utils\/textOffsetRemap["']/,
+      // v0.17.0 P0-1：该接线搬进 panes/previewpane/PreviewPane.tsx，比原容器深两层。
+      // 断言只锁「从 textOffsetRemap import 该常量」，不锁目录深度（深度是拆分的副产品）。
+      /import\s*\{[^}]*PREVIEW_REALIGN_DELAYS[^}]*\}\s*from\s*["'](?:\.\.\/)+utils\/textOffsetRemap["']/, 
     );
     // 真正被使用（只 import 不调用是无效接线）
     expect(tsx).toMatch(/for\s*\(\s*const\s+d\s+of\s+PREVIEW_REALIGN_DELAYS\s*\)\s*runRealign\(d\)/);

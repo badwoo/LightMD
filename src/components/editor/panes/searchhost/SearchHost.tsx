@@ -36,6 +36,22 @@ export function useSearchHost(p: SearchHostParams): SearchHostResult {
     writeBackCurrentDoc,
   } = p;
 
+
+  /**
+   * v0.14.0 需求2：「查找所有打开文件」的数据源。
+   *
+   * 三条硬约束：
+   * 1. `getText()` 必须是**实时**读取（面板会在条幅展开期间多次调用），
+   *    所以这里给的是闭包而不是字符串快照；
+   * 2. 当前文档要取**编辑区里最新的内容**：
+   *    · 编辑模式 → `sourceContentRef`（textarea 实时文本，可能还没回写 store）；
+   *    · 阅读模式 → `openTabs[activeTabIdx].content`（PM 编辑已通过 onContentChange
+   *      写进标签；从 PM doc 现序列化会与"用户眼前看到的"不一致，且代价高）；
+   * 3. 其余标签取 `tab.content`（就是该标签最后保存/同步的内存内容）。
+   *
+   * ⚠️ 不 unmask base64：搜索是按用户可见文本匹配的，显示层短标记与原文
+   * 里都不是用户要找的关键词；两者混用会让行号错位。
+   */
   const collectSearchFiles = useCallback((): SearchableFile[] => {
     const st = useEditorStore.getState();
     const curKey = currentDocKey();
@@ -62,6 +78,22 @@ export function useSearchHost(p: SearchHostParams): SearchHostResult {
     return out;
   }, [currentDocKey, isSourceMode]);
 
+
+  /**
+   * v0.14.0 需求4：把某次「跨文件全部替换」的结果写回指定文件。
+   *
+   * 两条分支（缺一不可）：
+   * - **当前文档**：必须走与 `onSourceContentChange` 完全相同的写回路径
+   *   （编辑区 state + ref + onContentChange + 脏标记 + lastContentRef 基线）。
+   *   若这里直接改 store 的 tab.content，编辑区 state 会与标签内容分叉，
+   *   下一次击键就会把替换结果冲掉。
+   * - **其他标签**：它们的内容只存在于 `openTabs[i].content`，只能经 store 写回。
+   *   ⚠️ 必须同时置脏 —— 否则这些文件看起来"没改过"，关闭窗口时不会提示保存，
+   *   用户以为替换成功、实际磁盘上还是旧内容。
+   *
+   * fileKey 口径与 `collectSearchFiles()` 严格一致（真实文件 = path、
+   * 临时标签 = `untitled:<id>`），否则会把别的文件当当前文档、写错地方。
+   */
   const applyFileText = useCallback((fileKey: string, newText: string) => {
     const curKey = currentDocKey();
     if (curKey && fileKey === curKey) {

@@ -80,6 +80,20 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     formatGhostHandlersRef,
   } = p;
 
+
+  // ─── v0.12.1 需求4：textarea 自动配对的输入路径（beforeinput / compositionend）───
+  //
+  // 为什么用 beforeinput 而不是 keydown：
+  //  · keydown 能拿到按键但拿不到"本次究竟插入了什么字符"，且组合输入提交的中文标点
+  //    没有可用的单字符 keydown（Chromium 走 composition 路径，实测 key=Process/keyCode=229）；
+  //  · beforeinput（inputType=insertText、isComposing=false）是**插入前**唯一可靠的钩子，
+  //    在这里 preventDefault + execCommand 落地补全，用户只看到最终 `()`，无中间态。
+  //  · 组合提交（compositionend 是这一串事件的**最后一个**，实测顺序：
+  //    beforeinput(isComposing=true) → input → compositionend）无法在插入前拦截，
+  //    故提交后用 rAF 做一次"补闭符号"的补救——即需求里的"等组合提交后再处理"。
+  //
+  // 与旧实现的关系：旧实现把补全放在 keydown 里（PAIR_MAP[key]），中文标点依赖
+  // IME 恰好派发单字符 keydown，属偶然可用；现在两条路径都由 sourceAutoPair 规划器裁决。
   useEffect(() => {
     if (!isSourceMode || !isMdFile) return;
     const ta = sourceTextareaRef.current;
@@ -128,6 +142,9 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     };
   }, [isSourceMode, isMdFile]);
 
+
+  // ─── v0.6.0：AI 翻译入口接线 ────────────────────
+  /** 当前翻译任务上下文（原文/来源通道/textarea 选区位置；重试与回写用） */
   const translateCtxRef = useRef<{
     text: string;
     sourceMode: TranslateSourceMode;
@@ -139,14 +156,20 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     doc?: PMNode;
   } | null>(null);
 
+  // v0.7.3 D2：翻译任务序号守卫（与 AI 助手 aiSeqRef 同款）——
+  // 旧任务 promise 完成/失败时若序号已变则丢弃，防止旧译文写入新任务气泡
   const translateSeqRef = useRef(0);
 
   const handleTranslateApplyRef = useRef<(mode: "replace" | "bilingual", translated: string) => void>(() => {});
 
+  // v0.7.0 修复1：选区「译」浮动按钮右键菜单位置（null=关闭）
+  // 插件 contextmenu 回调经 ref 转发（createEditor 仅初始化一次，避免闭包过期）
   const [triggerMenuPos, setTriggerMenuPos] = useState<{ x: number; y: number } | null>(null);
 
   triggerMenuPosRef.current = (x, y) => setTriggerMenuPos({ x, y });
 
+  // v0.7.4 功能7 / v0.7.5 功能2：任一 AI 气泡（续/润/摘/问）右键菜单位置 + 目标任务
+  // （null 位置 = 关闭；task 用于「隐藏『X』气泡」动态文案与独立隐藏）
   const [aiMenuPos, setAiMenuPos] = useState<{
     x: number;
     y: number;
@@ -155,6 +178,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
 
   aiMenuPosRef.current = (x, y, task) => setAiMenuPos({ x, y, task });
 
+  /** 右键菜单动作后立即隐藏已显示的浮动按钮（设置变化不触发 PM 重渲染，需主动 dispatch） */
   const hideTranslateTrigger = useCallback(() => {
     const view = viewRef.current;
     if (view && !view.isDestroyed) {
@@ -162,10 +186,21 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     }
   }, []);
 
+
+  // v0.6.3 P0-1/P0-2：当前活跃文档上下文（latest-ref，每次渲染刷新）。
+  // - 全文翻译 shouldAbort 用「任务启动闭包快照 vs 此 ref」检测标签切换
+  // - 翻译撤销快照的写入/校验用它读写当前 filePath/forceUpdateKey
+  //   （handleTranslateApply 等空依赖 useCallback 拿不到最新 props，必须走 ref）
   const activeFileRef = useRef<string | null | undefined>(undefined);
 
   activeFileRef.current = filePath;
 
+
+  // ─── v0.8.3 WP4 需求6：浏览进度的独立键 ──────────────────────
+  // activeFileRef 的语义是"当前文档的真实磁盘路径"（AI 上下文归属 / 翻译快照
+  // 归属判断依赖它，临时文档恒为 null），**不能**被改写成 tab 键。
+  // 浏览进度需要按"标签"维度记录（临时标签也要能记住位置），故新增独立 ref：
+  // 真实文件 = path，临时标签 = "untitled:<id>"（见 utils/tabKey.ts 单源）。
   const activeProgressKey = useEditorStore((s) => {
     const tab = s.openTabs[s.activeTabIdx];
     if (!tab) return null;
@@ -180,6 +215,15 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
 
   activeKeyRef.current = forceUpdateKey ?? 0;
 
+
+  /**
+   * v0.14.0 需求2：搜索面板用的「当前文档稳定键」。
+   *
+   * 与 `currentDocKeyFromStore()` 同口径（真实文件 = 路径 / 临时标签 = `untitled:<id>`），
+   * 但**走 React 派生**而不是 store 快照：搜索面板在渲染期就需要这个值，
+   * 直接读 store 会拿到与本次渲染不同步的值（切标签时 setActiveTab 与 setContent
+   * 是两次 setState，面板可能先用新 key 渲染、内容却还是旧的）。
+   */
   const currentDocKey = useCallback((): string | null => {
     const st = useEditorStore.getState();
     const tab = st.openTabs[st.activeTabIdx];
@@ -189,6 +233,18 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
       : tab.path || null;
   }, []);
 
+
+  /**
+   * v0.14.0 需求5（补充说明）：搜索结果条幅的「跳到别的文件」由 App 层切标签
+   * （见 App.tsx 的 SEARCH_JUMP_EVENT 监听）。
+   *
+   * 为什么不在本组件里切：切标签要同步 filePath / content / 语言 / forceUpdateKey
+   * / 撤销历史，这些逻辑只在 App.handleTabSwitch 一处维护；在这里重复实现必然漏项。
+   * 本组件只负责「切过来之后」的事：SearchReplace 自己的 effect 会
+   * `takeSearchJump(docKey)` 取走目标并定位/高亮（同一实例跨标签常驻，docKey 变化即触发）。
+   */
+
+  /** 执行翻译任务：打开气泡 → 流式调用 → finish/fail；resultMode 非 bubble 时自动应用结果 */
   const runTranslate = useCallback((
     text: string,
     sourceMode: TranslateSourceMode,
@@ -258,6 +314,18 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
       });
   }, []);
 
+
+  /**
+   * 翻译触发入口（右键菜单 / F6 / 命令面板 / PM 选区浮动按钮统一走这里）。
+   * 总开关关闭时所有入口静默返回。
+   * 按当前模式选择提取通道：
+   * - preview+md：PM 选区（Markdown 结构保真，可回写）
+   * - edit/split：textarea 选区（Markdown 源码直接回写）
+   * - split 且 textarea 无选区：iframe 预览选区（纯文本，仅复制）
+   * - preview+非 md：DOM 选区（纯文本，仅复制）
+   * v0.6.2 问题3：fallbackToFull=true 时（「译」按钮入口），所有通道均无有效选区
+   * 则回退到全文翻译（非 md 文件全文翻译不支持，静默返回）
+   */
   const startTranslate = useCallback((fallbackToFull?: boolean) => {
     // v0.7.0 修复1：双开关——全局 AI 总开关 + 翻译子开关都开启才响应
     // v0.7.3 U1：由静默返回改为 toast，用户能感知被禁用
@@ -344,6 +412,8 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
 
   startTranslateRef.current = startTranslate;
 
+
+  /** 译文回写：pm 通道走 translateBridge（replace 失败降级 bilingual）；source 通道走 buildSourceRewrite */
   const handleTranslateApply = useCallback((mode: "replace" | "bilingual", translated: string) => {
     const ctx = translateCtxRef.current;
     if (!ctx || !translated.trim()) return;
@@ -441,10 +511,14 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
 
   handleTranslateApplyRef.current = handleTranslateApply;
 
+
+  /** 复制译文到剪贴板 */
   const handleTranslateCopy = useCallback((text: string) => {
     navigator.clipboard?.writeText(text).catch(() => undefined);
   }, []);
 
+
+  /** 重试上次翻译（复用任务上下文的原文与来源通道，锚点取当前气泡位置） */
   const handleTranslateRetry = useCallback(() => {
     const ctx = translateCtxRef.current;
     if (!ctx) return;
@@ -452,6 +526,9 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     runTranslate(ctx.text, ctx.sourceMode, anchor, ctx.start, ctx.end);
   }, [runTranslate]);
 
+
+  // ─── v0.7.0：AI 助手接线（续写 ghost / 润色 / 摘要气泡）─────────
+  /** AI 助手任务上下文（重试与应用结果用；start/end 为 source 通道选区，insertPos 为续写/摘要插入点） */
   const aiCtxRef = useRef<{
     task: AiTask;
     text: string;
@@ -464,18 +541,30 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     filePath: string | null;
   } | null>(null);
 
+  /** 任务序号：新任务自动取消旧任务时，旧 promise 的 finish/fail 不得污染新任务状态 */
   const aiSeqRef = useRef(0);
 
+  /** ghost 续写活跃标记（用户编辑致 ghost 失效 / 采纳 / 放弃后置 false，停止流式更新） */
   const ghostActiveRef = useRef(false);
 
+
+  // v0.7.3 改进10(U3)：source 模式续写 ghost 对齐——
+  // textarea 上层叠加 ghost overlay（样式与 textarea 完全同步），续写在光标处
+  // 显示灰斜体预览，Tab 采纳 / Esc 放弃，与 PM 模式 ghost 手势一致。
+  /** source ghost overlay DOM 引用 */
   const sourceGhostOverlayRef = useRef<HTMLDivElement>(null);
 
+  /** v0.7.5 优化3：source ghost 是否处于"续写中…"占位态（占位不可采纳） */
   const sourceGhostPlaceholderRef = useRef(false);
 
+  /** source 续写累积 ghost 文本 */
   const sourceGhostTextRef = useRef("");
 
+  /** source 续写插入点（发起任务时光标位置；与 PM 的 ghost.pos 语义一致） */
   const sourceGhostPosRef = useRef(0);
 
+
+  /** 执行气泡型 AI 任务（润色/摘要/源码续写）：openBubble → 流式 → finish/fail */
   const runAiBubble = useCallback((
     task: AiTask,
     text: string,
@@ -511,6 +600,8 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
       });
   }, []);
 
+
+  /** 执行 ghost 续写（PM 阅读模式）：流式 setAiGhost，完成后保留 ghost 等待 Tab 采纳 / Esc 放弃 */
   const runAiGhost = useCallback((head: string, pos: number) => {
     const view = viewRef.current;
     if (!view) return;
@@ -588,6 +679,15 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
       });
   }, []);
 
+
+  // ─── v0.7.3 改进10(U3)：source 模式续写 ghost 对齐 ────────
+  // 目标：让 edit/split（textarea）模式的续写与 PM 模式统一为"光标处 ghost 预览，
+  // Tab 采纳 / Esc 放弃"，替代原来的"气泡渲染 + 点按钮插入"。
+  // 实现：在 textarea 上层叠加一个 .source-ghost-overlay div，样式与 textarea
+  // 完全同构（syncTextareaMetrics），透明复刻全文保证换行对齐，仅在插入点
+  // 显示灰斜体 ghost 片断。Tab 采纳即把 ghost 文本插入光标处。
+
+  /** 渲染 source ghost overlay（同步样式 + 写入当前累积文本） */
   const renderSourceGhost = useCallback(() => {
     const overlay = sourceGhostOverlayRef.current;
     const textarea = sourceTextareaRef.current;
@@ -608,6 +708,8 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     overlay.scrollTop = textarea.scrollTop;
   }, []);
 
+
+  /** 清除 source ghost overlay */
   const clearSourceGhost = useCallback(() => {
     const overlay = sourceGhostOverlayRef.current;
     if (overlay) overlay.innerHTML = "";
@@ -616,6 +718,12 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     sourceGhostTextRef.current = "";
   }, []);
 
+
+  /**
+   * v0.12.0 需求1：渲染格式 ghost（占位提示）到 overlay；AI ghost 活跃时让位不渲染。
+   * 返修：基于插入时的全文快照（ghost.content）渲染，保证 ghost 一定落在格式符中间；
+   * textarea 当前值与快照不一致（用户已编辑/撤销）时自清除，防幽灵内容错位残留。
+   */
   const renderFormatGhost = useCallback(() => {
     const overlay = sourceGhostOverlayRef.current;
     const textarea = sourceTextareaRef.current;
@@ -639,6 +747,8 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     overlay.scrollTop = textarea.scrollTop;
   }, []);
 
+
+  /** v0.12.0 需求1：按清除时机判定清除格式 ghost（kind 见 shouldClearFormatGhost） */
   const clearFormatGhost = useCallback((kind: string) => {
     if (!shouldClearFormatGhost(kind)) return;
     if (!formatGhostRef.current) return;
@@ -650,6 +760,12 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     }
   }, []);
 
+
+  /**
+   * v0.12.0 需求1 返修④：退格删除整个格式符。
+   * ghost 活跃且光标仍停在插入点时按 Backspace → 整段删除本次插入的语法符号
+   * （如 `****`/`- [ ] `），光标回到插入前位置；删除本身推入撤销栈，Ctrl+Z 可恢复。
+   */
   const removeFormatGhostSyntax = useCallback(() => {
     const ghost = formatGhostRef.current;
     const textarea = sourceTextareaRef.current;
@@ -687,6 +803,8 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
 
   formatGhostHandlersRef.current = { render: renderFormatGhost, clear: clearFormatGhost, remove: removeFormatGhostSyntax };
 
+
+  // v0.12.0 需求1：切文件 / 切模式时清除格式 ghost（防跨文档、跨模式残留）
   useEffect(() => {
     formatGhostHandlersRef.current.clear("file-switch");
   }, [filePath]);

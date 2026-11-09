@@ -364,26 +364,44 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const t = useT();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  // v0.12.0 需求4：主内容区 ref（Ctrl+滚轮缩放监听 + ZoomRuler 锚定）
   const mainAreaRef = useRef<HTMLDivElement>(null);
+  // v0.12.0 返修（问题2）：textarea **内容锚点**（视口顶部字符偏移 + 视口 Y）。
+  // 此前用"行索引锚点"，但软换行下视觉行序号在宽度变化后指向不同内容 → 编辑/分屏
+  // 模式窗口缩放时焦点漂移（用户反馈"编辑和分屏模式下还不行"）。
   const textAnchorRef = useRef<TextContentAnchor | null>(null);
+  /**
+   * v0.12.0 返修（问题4/5）：视口锚点补偿的抑制截止时间戳。
+   * 文件切换 / 模式切换 / 缩放恢复会主动设置滚动位置，此刻若 ResizeObserver 用
+   * "切换前"的锚点做补偿就会抢跑（用户看到的就是"进度没联动/丢失"）。
+   * 这些时点打时间标，窗口内的 RO 回调只重建锚点、不做补偿。
+   */
   const anchorSuppressUntilRef = useRef(0);
+  // 专注模式遮罩层 ref（源码模式下使用）
   const focusOverlayRef = useRef<HTMLDivElement>(null);
   const onContentChangeRef = useRef(onContentChange);
   const onEditorReadyRef = useRef(onEditorReady);
+  // v0.6.6 问题4：源码显示层 base64 短标记表（marker → dataUrl，会话内有效，不落盘）
   const base64TokensRef = useRef<Base64Tokens>(new Map());
+  // 出口统一 unmask：上层（App.tsx 的 content state / Ctrl+S 保存 / localStorage）
+  // 拿到的始终是真实内容（含完整 base64），磁盘格式不受显示层折叠影响
   onContentChangeRef.current = (masked: string) => {
     onContentChange?.(unmaskBase64Images(masked, base64TokensRef.current));
   };
   onEditorReadyRef.current = onEditorReady;
+
   const setDirty = useEditorStore((s) => s.setDirty);
   const setCursorLine = useEditorStore((s) => s.setCursorLine);
+  // v0.11.0 B4-10：阅读进度（状态栏显示）
   const setScrollProgress = useEditorStore((s) => s.setScrollProgress);
+  // v0.8.3 需求3：光标列号 / 选中字符数
   const setCursorColumn = useEditorStore((s) => s.setCursorColumn);
   const setSelectedChars = useEditorStore((s) => s.setSelectedChars);
   const setWordCount = useEditorStore((s) => s.setWordCount);
   const focusMode = useEditorStore((s) => s.focusMode);
   const viewMode = useEditorStore((s) => s.viewMode);
   const setViewMode = useEditorStore((s) => s.setViewMode);
+  // v0.14.0 需求1：编辑模式内的预览面板开关（双击 Shift / 分割线竖排文字同源）
   const splitPreviewOpen = useEditorStore((s) => s.splitPreviewOpen);
   const toggleSplitPreview = useEditorStore((s) => s.toggleSplitPreview);
   const setSourceInsertHandler = useEditorStore((s) => s.setSourceInsertHandler);
@@ -394,35 +412,70 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const showSearchReplace = useEditorStore((s) => s.showSearchReplace);
   const setShowSearchReplace = useEditorStore((s) => s.setShowSearchReplace);
   const fontSize = useSettingsStore((s) => s.fontSize);
+  // v0.11.0 B4-10：排版三项（0 = 跟随主题默认）
   const lineHeight = useSettingsStore((s) => s.lineHeight);
   const paragraphSpacing = useSettingsStore((s) => s.paragraphSpacing);
   const contentMaxWidth = useSettingsStore((s) => s.contentMaxWidth);
   const fontFamily = useSettingsStore((s) => s.fontFamily);
+  // v0.12.1 需求9：设置弹窗拖滑条期间的**临时排版预览**（非持久化）。
+  // 预览值为 undefined 时用已保存值——不拖动时行为与以前完全一致。
   const typographyPreview = useTypographyPreviewStore((s) => s.preview);
   const effFontSize = withPreview(fontSize, typographyPreview?.fontSize);
   const effFontFamily = withPreview(fontFamily, typographyPreview?.fontFamily);
   const effLineHeight = withPreview(lineHeight, typographyPreview?.lineHeight);
   const effParagraphSpacing = withPreview(paragraphSpacing, typographyPreview?.paragraphSpacing);
   const effContentMaxWidth = withPreview(contentMaxWidth, typographyPreview?.contentMaxWidth);
+  // 供分屏 iframe 判断"这次是不是纯排版预览"（仅刷新样式表，不重排正文）
   const typographyPreviewKey = typographyPreview
     ? `${effFontSize}:${effFontFamily}:${effLineHeight}:${effParagraphSpacing}:${effContentMaxWidth}`
     : "";
+  // v0.12.0 需求5：文档整体缩放（百分比；阅读/分屏右用 CSS zoom、编辑 textarea 用字号换算）
   const docZoom = useSettingsStore((s) => s.docZoom);
   const setDocZoom = useSettingsStore((s) => s.setDocZoom);
   const adjustDocZoom = useSettingsStore((s) => s.adjustDocZoom);
   const typewriterMode = useSettingsStore((s) => s.typewriterMode);
   const theme = useSettingsStore((s) => s.theme);
+  // G10：拼写检查开关，控制 textarea 与 ProseMirror contenteditable 的 spellcheck 属性
   const spellcheckEnabled = useSettingsStore((s) => s.spellcheckEnabled);
+  // N1：自动配对补全开关（textarea 源码模式；PM 端插件内部读取 store）
   const autoPairEnabled = useSettingsStore((s) => s.autoPairEnabled);
+  // v0.4.0：分屏比例（持久化），用于 split 模式左右宽度分配
   const splitRatio = useSettingsStore((s) => s.splitRatio);
   const setSplitRatio = useSettingsStore((s) => s.setSplitRatio);
+  // v0.6.0：AI 翻译总开关（右键菜单项显示 + 入口判断）
   const translateEnabled = useSettingsStore((s) => s.translate.translateEnabled);
+
+  /**
+   * v0.13.0 返修（问题6）：文档中是否有图片（决定图片管理入口是否显示）。
+   *
+   * 用 PM 文档而非 content 字符串判断——字符串里可能是代码围栏内的示例
+   * `![x](y)`，那并不是真实图片节点。
+   */
   const [docHasImageFlag, setDocHasImageFlag] = useState(false);
+
+  // v0.14.0 需求1：三模式合并为二模式后，源码编辑区在**所有非阅读模式**下都可见。
+  // （旧写法 `viewMode === "edit" || viewMode === "split"` 已随 split 一起废弃。）
   const isSourceMode = viewMode !== "preview";
+
+  /**
+   * v0.14.0 需求1：是否显示右侧预览面板。
+   *
+   * `viewMode === "edit" && splitPreviewOpen` 等价于旧的三模式里的 `split`；
+   * 关掉预览后即为旧的 `edit`（纯源码，左栏铺满）。
+   * 非 Markdown 文件也显示代码预览（与旧 split 行为一致）。
+   */
   const previewShown = viewMode === "edit" && splitPreviewOpen;
+  /**
+   * v0.15.0 需求 R6b：工作区搜索可用的根目录（订阅 openFolders）。
+   *
+   * 用选择器只取 path 数组并 `join` 成字符串再切分，避免 openFolders 每次引用变化
+   * 都让 EditorContainer 重渲染（它内部会触发整棵编辑器树的重渲染）。
+   */
   const workspaceRoots = useFileStore(
     (s) => s.openFolders.map((f) => f.path).join("\u0000"),
   ).split("\u0000").filter(Boolean);
+
+  // v0.4.0：分屏分割条拖拽 hook（direction="split"，按容器总宽计算 ratio）
   const splitResizer = useResizable({
     initialWidth: 0,
     minWidth: 0,
@@ -431,12 +484,32 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     initialRatio: splitRatio,
     onSplitChange: (r) => setSplitRatio(r),
   });
+  // 分屏比例（优先用拖拽中的实时值，确保拖拽过程跟手）
   const effectiveSplitRatio = splitResizer.isDragging ? splitResizer.ratio : splitRatio;
+  // v0.14.0 需求3：拖拽期间禁用两栏 width 过渡所需的 `body.split-resizing`
+  // 由 `useResizable` 自己挂/摘（见其 handleMouseUp 的 teardown），这里**不再重复管理**——
+  // 两处各 toggle 同一个类，会在"一边结束、另一边还以为在拖"时互相清掉标记。
+  // 判断当前文件是否为 Markdown 文件
+  // 非 Markdown 文件（txt/代码文件）不显示格式栏、不渲染 Markdown
+  //
+  // v0.8.0 修复 P11-2：临时（未落盘）文档的 filePath 为空串，isMarkdownFile("") 返回 false
+  // → 会被当成"非 Markdown 文件"，preview 模式渲染只读的 plaintext-preview（空白文件更只剩
+  // 空状态 Logo），用户看到"新建后没跳转、也不能编辑"。未命名文档按 Markdown 处理。
   const isMdFile = filePath ? isMarkdownFile(filePath) : true;
+
+  /**
+   * v0.13.0 返修（问题6）：「译」入口是否真的渲染。
+   *
+   * 必须与下方 JSX 的渲染条件**完全一致**——图片管理入口的槽位取决于它
+   * （AI 翻译开启 → 图片管理在第 3 格；未开启 → 接在模式切换之后第 2 格）。
+   */
   const translateSlotShown =
     (viewMode === "preview" || previewShown) && isMdFile && translateEnabled;
+  // v0.8.0 修复 P11-2：是否有已打开的文档（用于区分"新建的空临时文档"与"确实没打开文件"）
   const openTabCount = useEditorStore((s) => s.openTabs.length);
+  // v0.4.0：当前文件语言标识（由 App.tsx 在打开文件时设置），用于代码文件语法高亮
   const currentLanguage = useEditorStore((s) => s.currentLanguage);
+
   const setDirtyRef = useRef(setDirty);
   const setCursorLineRef = useRef(setCursorLine);
   const setCursorColumnRef = useRef(setCursorColumn);
@@ -447,24 +520,66 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   setCursorColumnRef.current = setCursorColumn;
   setSelectedCharsRef.current = setSelectedChars;
   setWordCountRef.current = setWordCount;
+
   const wordCountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastContentRef = useRef(content);
   const lastForceUpdateKeyRef = useRef(forceUpdateKey);
   const lastSyncDiskRef = useRef(content);
+
+  // v0.6.1 问题3：翻译回写进行中标记（PM dispatch 同步触发 onDocChange，用此 ref 区分翻译修改与用户输入）
   const applyingTranslationRef = useRef(false);
+
+  // 源码内容
   const [sourceContent, setSourceContent] = useState(content);
   const sourceTextareaRef = useRef<HTMLTextAreaElement>(null);
   const sourceContentRef = useRef(content);
   sourceContentRef.current = sourceContent;
   const lastTextareaCursorRef = useRef(0);
+  /**
+   * v0.15.1 需求1：源码面**最近一次的滚动位置**（编辑前现场）。
+   *
+   * 为什么需要单独记：`onChange` 触发时 DOM 的 scrollTop 已经是"编辑之后"的值
+   * （浏览器可能因内容变高/变矮或光标滚入视口而调整它），拿它当 beforeSelection
+   * 会让撤销后的滚动位置对不上。由 scroll 监听持续维护，onChange 里读它才是旧值。
+   */
   const lastSourceScrollTopRef = useRef(0);
+  /**
+   * v0.15.1 需求1：待应用的源码选区（撤销/恢复落地后恢复光标用）。
+   *
+   * 为什么必须经 `useLayoutEffect([sourceContent])`：`setSourceContent` 是受控组件，
+   * React 提交新 value 时会把 textarea 的 selection 重置掉，而那次提交可能晚于
+   * 我们在 rAF 里设的光标 → 直接设会被覆盖（实测 12 → 0）。
+   * layout effect 在 DOM 提交之后、浏览器绘制之前执行，是唯一"设了就不会被覆盖"的时机。
+   *
+   * 为什么要带 `until` 时间戳（而不是应用一次就清）：撤销会连带触发
+   * `onContentChange → App.setContent → content prop 变化 → 再 setSourceContent`，
+   * 也就是**第二次**受控提交，它同样会把选区重置成 0。实测时序是
+   * `set 12 → React 提交(重置 0) → 60ms 兜底(12)`，中间有一帧光标在文首。
+   * 因此把它保持 ~200ms 的"选区保护窗"，窗口内每次 sourceContent 提交都重新应用；
+   * 窗口结束或用户主动输入（onChange / 点击）即失效，不会干扰正常编辑。
+   */
   const pendingSourceSelectionRef = useRef<{
     start: number;
     end: number;
     scrollTop: number | null;
     until: number;
   } | null>(null);
+  /**
+   * v0.15.1 需求6（撤销再审计抓出的缺陷）：撤销选区还原的**代际 token**。
+   *
+   * 缺陷（实测）：撤销后 60ms 内开始打字，字符本身插对了，但 250ms 后光标会被
+   * **撤销的兜底定时器**抢回撤销时的位置 → 下一个字符插到错误位置。
+   * 根因：`applyHistoryText` 里除了 pending ref 还排了
+   * `requestAnimationFrame(applySelection)` 与 `setTimeout(applySelection, 60)`
+   * 两个**定时器**，而 `handleSourceChange` 只清了 pending ref，管不到它们。
+   *
+   * 修法：用户一旦真实输入就 `++token`；定时器回调里比对代际号，过期即自觉退场。
+   */
   const sourceSelectionRestoreTokenRef = useRef(0);
+
+  // 自动保存：需要在 sourceContentRef 声明之后调用
+  // v0.6.6 问题4：getter ref 拦截读取——自动保存/版本快照拿到 unmask 后的真实内容
+  // （textarea 显示层为短标记，写盘必须还原完整 base64）
   const autoSaveSourceRef = {
     get current() {
       return unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
@@ -473,9 +588,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   useAutoSave(viewRef, autoSaveSourceRef);
 
   // ─── v0.17.0 P0-1：由 pane 提升到容器的作用域（跨 pane 共享，逐字节原样）───
+
+  // 待恢复的 iframe 滚动百分比：分屏模式下 iframe 内容异步加载，
+  // applyScroll 执行时 iframe 可能还未写入内容或 scrollHeight 不准确，
+  // 需在 iframe 写入完成后再设置 scrollTop
   const pendingIframeScrollRef = useRef<number | null>(null);
+  // ─── v0.6.6 问题2：阅读模式 Slash 触发状态（由 ProseMirror 插件回调更新）───
   const [pmSlash, setPmSlash] = useState<SlashState | null>(null);
+  // v0.13.0 需求10：阅读模式 Emoji 短码补全触发状态
   const [pmEmoji, setPmEmoji] = useState<EmojiState | null>(null);
+  // ─── v0.12.1 需求1：标题级别下拉菜单状态（点击标题左侧 H1/H2 徽标打开）───
   const [headingMenu, setHeadingMenu] = useState<{
     open: boolean;
     anchor: DOMRect | null;
@@ -484,10 +606,20 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     /** 标题节点起始位置（改级别用） */
     pos: number;
   }>({ open: false, anchor: null, level: 1, pos: 0 });
+  // startTranslate/handleTranslateApply 的最新引用转发（createEditor 只初始化一次 + 命令监听挂载一次）
+  // v0.6.2 问题3：startTranslate 支持 fallbackToFull 参数（「译」按钮无选区时回退全文翻译）
   const startTranslateRef = useRef<(fallbackToFull?: boolean) => void>(() => {});
   const triggerMenuPosRef = useRef<(x: number, y: number) => void>(() => {});
   const aiMenuPosRef = useRef<(x: number, y: number, task: AiAssistTask | null) => void>(() => {});
   const progressKeyRef = useRef<string | null>(null);
+  /**
+   * v0.13.2 需求5：**同步**读取当前活动文档键。
+   *
+   * 为什么不用 `activeProgressKey` 这个 React 派生值：换文档 effect 在 React
+   * 提交阶段执行，此时 store 里的 activeTabIdx 已更新，但 `activeProgressKey`
+   * 是**上一次渲染**的闭包值（切标签是 setActiveTab + setContent 两次 setState，
+   * 同一次提交里 effect 读到的仍是旧闭包）。直接从 store 取才是权威值。
+   */
   const currentDocKeyFromStore = useCallback((): string | null => {
     const st = useEditorStore.getState();
     const tab = st.openTabs[st.activeTabIdx];
@@ -496,12 +628,26 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       ? `${UNTITLED_PROGRESS_PREFIX}${tab.id ?? st.activeTabIdx}`
       : tab.path || null;
   }, []);
+  /** source 续写 ghost 活跃标记 */
   const sourceGhostActiveRef = useRef(false);
+  /** source ghost 采纳/放弃/失效回调引用（handleSourceKeyDown 仅挂载一次，经 ref 转发最新实现） */
   const sourceGhostHandlersRef = useRef<{
     accept: () => boolean;
     cancel: () => boolean;
     invalidate: () => void;
   }>({ accept: () => false, cancel: () => false, invalidate: () => {} });
+
+  // ─── v0.12.0 需求1：格式 ghost（占位提示，不写入文档） ───
+  // 无选区点击格式按钮（粗体/斜体/H1~H6 等）时，文档只插入语法符号（如 `****`），
+  // 占位提示（如"粗体文本"）由 overlay 以灰色幽灵文本渲染；用户直接键入即替换之，
+  // 不键入则永不落盘（修复"占位文字残留进文件"）。
+  // 与 AI ghost 共用 overlay：AI ghost 优先（异步任务不被打断视觉），
+  // 格式操作触发时经 sourceGhostHandlersRef.invalidate() 让 AI ghost 让位。
+  //
+  // v0.12.0 返修：
+  // - content：插入语法符号后的全文快照。渲染 overlay 时使用快照而非 textarea.value，
+  //   消除"setState 未提交 → rAF 读到旧文本 → ghost 位置漂移（浮动）"的时序问题；
+  // - start/end：本次插入的语法符号区间，供退格键整段删除格式符（用户返修需求④）。
   const formatGhostRef = useRef<{
     text: string;
     pos: number;
@@ -513,16 +659,53 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     /** v0.12.0 返修：是否用底色遮住 textarea 中被占位压住的尾部符号 */
     maskTail?: boolean;
   } | null>(null);
+
+  // 每次渲染转发最新实现（handleFormatAction 为挂载时创建一次的 ref 函数，避免闭包过期）
   const formatGhostHandlersRef = useRef<{
     render: () => void;
     clear: (kind: string) => void;
     remove: () => boolean;
   }>({ render: () => {}, clear: () => {}, remove: () => false });
+  // latest-ref 转发（lightmd:command 监听只挂载一次）
   const startAiAssistRef = useRef<(task: AiTask) => void>(() => {});
   const startAiChatRef = useRef<() => void>(() => {});
+
+  // ─── v0.6.1：全文翻译 ────────────────────
   const startFullTranslateRef = useRef<() => void>(() => {});
+
+  // ─── 分屏预览防抖渲染 ──────────────────────────────
+  // 首次进入分屏模式立即渲染，编辑时延迟 300ms 防抖，减少连续击键时的渲染开销
   const [debouncedSourceContent, setDebouncedSourceContent] = useState(sourceContent);
+  // iframe 引用，用于分屏预览（隔离 DOM，减少主文档节点数）
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
+
+  /**
+   * v0.14.0 需求2：按百分比恢复滚动位置，**容器尚不可滚动时短间隔重试**。
+   *
+   * 为什么必须有重试（P1 的根因）：阅读→编辑切换时 applyScroll 的双 rAF 在 ~44ms
+   * 执行，此时左栏 textarea 的 `scrollHeight - clientHeight === 0`（内容还没写入 /
+   * 还没布局），`computeRestoreScrollTop` 返回 null；旧代码 `scrollTop = newTop ?? 0`
+   * 当场写成 0 且**不再重试** → 左栏停在顶部，splitScrollSync 又把 0 推给右屏
+   * iframe → 两屏都掉到 0（实测 iframe=0.006）。
+   * 60ms 后内容就绪（实测 +120ms 时 scrollHeight 已 17416），故用 60ms 间隔、
+   * 最多 24 次（≈1.5s，覆盖 mermaid/katex 异步渲染继续撑高的场景）。
+   *
+   * ⚠️ 关键语义：**永远不在"容器不可滚动"时写 0**（那正是旧 bug）。
+   * 只在 `plan.append` 为真时写入；期望位置本来就是顶部时直接放弃（不写也是顶部）。
+   *
+   * @param target 滚动容器（textarea / iframe 文档滚动元素 / .editor-container）
+   * @param percent 目标百分比 0~1
+   * @param attempt 当前重试次数（首次传 0）
+   * @param shouldContinue 每次重试前的守卫（如"已经不在恢复窗口了就别再改用户滚动位置"）
+   * @returns 是否已成功写入
+   */
+  /**
+   * v0.15.0 需求（阅读↔编辑内容对齐）：把内容锚点换算成 textarea 的 scrollTop。
+   *
+   * 源码面没有子元素可量，块几何只能由 `measureSourceLineAxis` 的**实测按行轴**
+   * 还原（线性估算在软换行长行上会偏 4 倍）。这里每次现量（测量函数内部带
+   * scrollHeight 缓存键，重复调用不贵），量不到就返回 null 交给百分比兜底。
+   */
   const textareaTopFromContentAnchor = (
     textarea: HTMLTextAreaElement,
     anchor: ContentAnchor | null | undefined,
@@ -553,6 +736,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
       return null;
     }
   };
+
   const restoreScrollWithRetry = (
     target: ScrollRestoreTarget | null,
     percent: number,
@@ -574,6 +758,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     }, SCROLL_RESTORE_RETRY_MS);
     return false;
   };
+
+  /**
+   * v0.14.0 需求2：消费 `pendingIframeScrollRef`（右侧预览的待恢复百分比）。
+   *
+   * 为什么不能只靠「iframe 内容写入 effect」消费：那个 effect 的依赖是 `previewHtml`，
+   * 而阅读→编辑切换时 previewHtml 往往**根本没变**（右屏内容早就渲染好了，只是外壳
+   * 宽度从 0 变正）→ effect 不重跑 → pending 永远没人消费 → 右屏停在顶部。
+   * 故这里独立做一次"重试直到 iframe 可滚动"，与内容写入 effect 末尾的消费互为双保险
+   * （先成功者把 pending 清成 null，后者看到 null 直接返回）。
+   */
   const restorePendingIframeScroll = (): void => {
     const target = (): ScrollRestoreTarget | null => {
       const iframe = previewIframeRef.current;
@@ -1042,6 +1236,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     codePreviewHtml,
     onFormatBtnClick,
   } = previewPane;
+
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>

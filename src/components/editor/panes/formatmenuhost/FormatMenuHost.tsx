@@ -94,6 +94,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     sourceContent,
   } = p;
 
+
+  // ─── textarea 右键菜单 ──────────────────────────
   const handleTextareaContextMenu = useCallback((e: React.MouseEvent<HTMLTextAreaElement>) => {
     if (!isSourceMode || !isMdFile) return;
     e.preventDefault();
@@ -102,6 +104,10 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     setContextMenu({ open: true, x: e.clientX, y: e.clientY, hasSelection });
   }, [isSourceMode, isMdFile]);
 
+
+  // ─── 右键菜单 action 分发 ─────────────────────────
+  // 撤销/恢复走 handleUndo/handleRedo；行内格式走 handleFormatAction；
+  // 插入链接/图片/表格打开对应对话框；剪切/复制/粘贴调用原生命令
   const handleContextMenuAction = useCallback((action: string) => {
     switch (action) {
       case "undo": handleUndo(); return;
@@ -154,6 +160,12 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     }
   }, [handleUndo, handleRedo, openLinkDialog, insertTextAtCursor]);
 
+
+  // ─── v0.12.0 需求2：格式刷（三模式通用 + 双击持续） ───────────────
+  // 采集（源侧）→ armed → 下一次「单击」应用（目标侧，覆盖式）；Esc 退出。
+  // 跨模式可用：PM 采集 → 切编辑模式应用（反向亦可），快照为模式无关中间表示。
+
+  /** 采集当前选区格式并 arm（persistent=true 为双击持续模式；持续态下再次双击 = 结束） */
   const armFormatPainter = useCallback((persistent: boolean) => {
     const store = useFormatPainterStore.getState();
     if (persistent && store.mode === "persistent") {
@@ -181,10 +193,14 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     else store.armOnce(snapshot);
   }, [viewMode]);
 
+
+  // 经 ref 转发（handleContextMenuAction / 格式栏按钮的闭包可能早于本定义创建，避免闭包过期）
   const armFormatPainterRef = useRef<(persistent: boolean) => void>(() => {});
 
   armFormatPainterRef.current = armFormatPainter;
 
+
+  /** 应用格式刷到 PM 点击处所在段落（覆盖式：先清后套；块级 setBlockType 一并处理） */
   const applyFormatPainterToPm = useCallback((clientX: number, clientY: number) => {
     const view = viewRef.current;
     const snapshot = useFormatPainterStore.getState().snapshot;
@@ -210,6 +226,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return applied;
   }, []);
 
+
+  /** 应用格式刷到源码点击处所在行（块级前缀替换 + 行内容包裹，覆盖式） */
   const applyFormatPainterToSource = useCallback((cursorPos: number) => {
     const snapshot = useFormatPainterStore.getState().snapshot;
     const textarea = sourceTextareaRef.current;
@@ -267,6 +285,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return true;
   }, [recordDiscreteSourceEdit]);
 
+
+  // armed 时单击应用：PM（阅读模式；点击处所在段落为应用目标）
   useEffect(() => {
     if (viewMode !== "preview") return;
     const container = editorRef.current;
@@ -281,6 +301,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return () => container.removeEventListener("click", onClick);
   }, [viewMode, applyFormatPainterToPm]);
 
+
+  // armed 时单击应用：源码（编辑/分屏；点击处所在行为应用目标）
   useEffect(() => {
     if (!isSourceMode) return;
     const ta = sourceTextareaRef.current;
@@ -296,6 +318,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return () => ta.removeEventListener("click", onClick);
   }, [isSourceMode, viewMode, applyFormatPainterToSource]);
 
+
+  // Esc 退出格式刷（window 捕获阶段；与 PM 菜单的 Esc 关闭并存互不阻塞）
   useEffect(() => {
     if (formatPainterMode === "idle") return;
     const onKey = (e: KeyboardEvent) => {
@@ -306,15 +330,28 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return () => window.removeEventListener("keydown", onKey, true);
   }, [formatPainterMode]);
 
+
+  // armed 全局光标（刷子形状，见 editor.css 的 .format-painter-armed）
   useEffect(() => {
     document.body.classList.toggle("format-painter-armed", formatPainterMode !== "idle");
     return () => document.body.classList.remove("format-painter-armed");
   }, [formatPainterMode]);
 
+
+  // 切文件 / 切模式 → 自动退出（防快照跨文档误用）
   useEffect(() => {
     useFormatPainterStore.getState().exit();
   }, [filePath, viewMode]);
 
+
+  // v0.12.0 需求2：阅读模式右键菜单（首次为 PM 模式引入）。
+  // v0.12.0 返修（问题1）：**无选区时不再拦截** —— v0.12.0 首次为阅读模式接管了右键，
+  // 把 v0.11.0 的原生菜单（表情符号 / 书写方向 / 更多工具等 WebView2 项）挤掉了，
+  // 用户反馈"右键菜单变成了插入链接、插入图片这些"。现改为按需接管：
+  //   · 有文本选区 / 已选中块（NodeSelection）→ 应用菜单（行内格式 / 格式刷 / 删除块 / AI 翻译）；
+  //   · 其余（普通空白处右键）→ 不 preventDefault，交回 WebView2 原生菜单。
+  // 判定必须**同步**读取选区：preventDefault 只能在事件分发期生效（放到 rAF 里太晚）；
+  // PM 的 mousedown 处理器已先于 contextmenu 执行，此处读到的选区即最新值。
   useEffect(() => {
     if (viewMode !== "preview" || !isMdFile) return;
     const container = editorRef.current;
@@ -348,6 +385,11 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return () => container.removeEventListener("contextmenu", onContextMenu);
   }, [viewMode, isMdFile]);
 
+
+  /**
+   * v0.12.1 需求1：把标题级别徽标选中的级别落到文档（一次事务 = 一次撤销）。
+   * 判定/落地逻辑抽到模块级 applyHeadingLevelToView（可单测）。
+   */
   const applyHeadingLevel = useCallback((pos: number, level: number) => {
     const view = viewRef.current;
     if (!view || view.isDestroyed) return;
@@ -355,6 +397,13 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     view.focus();
   }, []);
 
+
+  /**
+   * v0.13.0 需求1：监听块右上角三点按钮派发的 `lightmd:blockAction`。
+   *
+   * NodeView 只负责派发（含块的 pos），这里统一弹菜单——业务层只在一处。
+   * 菜单复用 MiniContextMenu（portal + 视口自适应 + 键盘导航，既有实现）。
+   */
   useEffect(() => {
     const container = editorRef.current;
     if (!container) return;
@@ -389,6 +438,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return () => container.removeEventListener(BLOCK_ACTION_EVENT, onBlockAction);
   }, [viewMode]);
 
+
+  /** v0.13.0 需求1：三点菜单 action 分发（复用块级剪贴板/移动/格式刷既有实现） */
   const handleBlockKebabAction = useCallback(
     (action: string) => {
       const view = viewRef.current;
@@ -446,6 +497,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     [armFormatPainter, blockKebabMenu.pos],
   );
 
+
+  /** PM 右键菜单 action 分发 */
   const handlePmMenuAction = useCallback((action: string) => {
     const view = viewRef.current;
     switch (action) {
@@ -552,11 +605,15 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     }
   }, [armFormatPainter, insertMarkdownIntoPM, openLinkDialog]);
 
+
+  // ─── Mermaid 模板插入 ──────────────────────────────
   const handleMermaidTemplateSelect = useCallback((syntax: string) => {
     setMermaidMenuOpen(false);
     insertTextAtCursor(syntax);
   }, [insertTextAtCursor]);
 
+
+  // 关闭 Mermaid 下拉：失焦或外部点击时
   useEffect(() => {
     if (!mermaidMenuOpen) return;
     const handle = (e: MouseEvent) => {
@@ -569,11 +626,17 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return () => document.removeEventListener("mousedown", handle);
   }, [mermaidMenuOpen]);
 
+
+  // ─── v0.12.1 需求5：任务列表样式下拉（格式栏「任务列表」按钮）──────
+  // 点击插入对应符号的任务项：方形 = `- [ ] `、圆形 = `* [ ] `
+  // （样式口径见 core/markdown/task-style.ts，阅读模式手柄下拉走同一套符号）
   const handleTaskStyleSelect = useCallback((style: "square" | "circle") => {
     setTaskStyleMenuOpen(false);
     handleFormatAction.current(style === "circle" ? "task-circle" : "task");
   }, []);
 
+
+  // 关闭任务样式下拉：外部点击时（与 Mermaid 下拉同款处理）
   useEffect(() => {
     if (!taskStyleMenuOpen) return;
     const handle = (e: MouseEvent) => {
@@ -586,6 +649,11 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     return () => document.removeEventListener("mousedown", handle);
   }, [taskStyleMenuOpen]);
 
+
+  // ─── SlashCommand 菜单关闭回调 ──────────────────
+  // 根因：onClose 调用 setSlashCommandOpen(false) + handleSourceChange 调用 setSourceContent
+  // 触发 React 重新渲染，textarea 的 value 被重设，浏览器把 selectionStart 重置到文档末尾。
+  // 修复：关闭前保存光标位置和滚动位置，在 rAF（重新渲染后）恢复。
   const handleSlashClose = useCallback(() => {
     const textarea = sourceTextareaRef.current;
     const savedCursor = textarea?.selectionStart ?? 0;
@@ -603,12 +671,21 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     }
   }, []);
 
+
+  // ─── 切换文件/模式时关闭 SlashCommand 菜单（防止残留）─────────
+  // 根因：SlashCommand 通过 portal 渲染到 body，模式切换时 textarea 隐藏但菜单可能残留；
+  // 文件切换时 textarea 内容变化但不会触发 input 事件，菜单 query 与新内容脱节
+  // 注意：依赖 filePath 而非 content，因为用户输入 "/" 时会触发 onContentChange → content 变化，
+  // 如果依赖 content 会导致菜单刚打开就被关闭（菜单一闪而过）
   useEffect(() => {
     setSlashCommandOpen(false);
     // v0.6.6 问题2：阅读模式 Slash 菜单同步关闭（防止模式/文件切换后残留）
     setPmSlash(null);
   }, [filePath, viewMode]);
 
+
+  // ─── 专注模式 ──────────────────────────────────
+  // 通过 ProseMirror 插件状态控制 decoration，CSS 类用于样式触发
   useEffect(() => {
     const editorDom = editorRef.current?.querySelector(".ProseMirror") as HTMLElement | null;
     if (editorDom) editorDom.classList.toggle("focus-mode", focusMode);
@@ -651,6 +728,31 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     }
   }, [focusMode, isSourceMode]);
 
+
+  // ─── 源码模式（edit/split）专注遮罩 ──────────────────
+  // textarea 无法像 ProseMirror 那样对部分文本加装饰，因此用 overlay div 实现：
+  // 覆盖在 textarea 之上（pointer-events:none 不影响交互），
+  // 通过线性渐变 background-image 在活跃段落位置开窗（transparent），
+  // 其余位置覆盖半透明遮罩，使非活跃段落视觉变暗，达到与阅读模式专注效果一致的体验。
+  // 段落定义：以空行（\n\n）分隔的连续文本块，与 Markdown 段落语义一致。
+  //
+  // ─── 修复：使用 mirror div 准确测量段落 Y 坐标 ──────────
+  // 早期实现基于硬换行（\n）计算行号，再乘以 lineHeight 得到 Y 坐标。
+  // 但 textarea 配置 `white-space: pre-wrap; word-break: break-word;` 会导致长行软换行，
+  // 实际显示行数多于硬换行行数，导致高亮 Y 坐标偏上（用户报告"高亮在点击位置的上一行"）。
+  //
+  // 修复方案：使用 mirror div（与 textarea 样式一致的隐藏 div），复制文本内容，
+  // 通过 getBoundingClientRect 测量段落起止位置的实际 Y 坐标，准确处理软换行。
+  //
+  // ─── 修复：移除 rAF 节流，立即重绘 ──────────────────
+  // 早期实现使用 rAF 节流，导致回车换行时高亮延迟一帧重绘（用户报告"输入文字后才高亮"）。
+  // 现在改为同步立即重绘，确保光标位置变化时高亮即时跟随。
+  //
+  // 关键设计：事件监听与 sourceContent 解耦
+  // useEffect 只依赖 focusMode/isSourceMode/viewMode/forceUpdateKey，
+  // updateOverlay 通过 sourceContentRef.current 读取最新内容；
+  // 内容变化时通过单独的 useEffect 调用 updateOverlayRef.current() 触发重绘，
+  // 不重绑事件、不清空遮罩。
   const updateOverlayRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -768,6 +870,9 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     };
   }, [focusMode, isSourceMode, viewMode, forceUpdateKey, theme]);
 
+
+  // ─── sourceContent 变化时重绘专注遮罩（不重绑事件）────────
+  // 解耦后：内容变化仅触发 updateOverlay 重绘，避免事件重绑和遮罩清空
   useEffect(() => {
     if (!updateOverlayRef.current) return;
     updateOverlayRef.current();

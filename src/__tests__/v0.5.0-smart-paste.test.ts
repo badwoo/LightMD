@@ -149,7 +149,10 @@ describe("v0.5.0 N2：智能粘贴 URL→链接", () => {
 
   it("textarea 端：EditorContainer 源码模式接入 onPaste 智能粘贴", () => {
     const src = readSrc("src/components/editor/EditorContainerSource.ts.txt");
-    expect(src).toMatch(/import \{ isHttpUrl \} from "\.\.\/\.\.\/core\/plugins\/smart-paste"/);
+    // v0.17.0 P0-1：拆分后该接线搬进 panes/sourcepane/SourcePane.tsx，比原容器深两层，
+    // 相对路径因此变为 ../../../../core/...。断言改为「容忍任意 ../ 深度」——
+    // 目录深度是拆分的正常结果、不是契约；写死深度会让以后加深目录时假红。
+    expect(src).toMatch(/import \{ isHttpUrl \} from "(?:\.\.\/)+core\/plugins\/smart-paste"/);
     expect(src).toMatch(/onPaste=\{handleSourcePaste\}/);
     // 无选区 → [url](url)；有选区 → [选中](url)
     expect(src).toMatch(/`\[\$\{selected \|\| text\}\]\(\$\{text\}\)`/);
