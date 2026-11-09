@@ -68,6 +68,7 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 
 import type {
   SourceAnchor,
@@ -198,11 +199,12 @@ const ghostField = StateField.define<DecorationSet>({
 // 因此主题切换（浅色/暗色）行为与既有编辑器一致。
 
 /**
- * ⚠️ 目前**未启用**：需要 `@codemirror/lang-markdown`（本任务卡依赖清单未含、未安装）。
- * 保留定义是为了后续接上时零改动 —— 它把 lezer tag 映射到既有的 CSS 类名，
- * 使源码面高亮与编辑器其它部分的视觉语义一致。启用方式见 `buildExtensions` 的注释。
+ * Markdown 源码面的语法高亮样式。
+ *
+ * 用**语义化 CSS 类名**（`cm-md-heading` / `cm-md-code` / …）而不是内联颜色：
+ * 这样浅色/暗色主题切换只需要改 CSS 变量，与既有的 `.source-editor` 主题体系同源，
+ * 不会在源码面引入第二套配色真相。
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const markdownHighlightStyle = HighlightStyle.define([
   { tag: tags.heading1, class: "cm-md-heading cm-md-heading1" },
   { tag: tags.heading2, class: "cm-md-heading cm-md-heading2" },
@@ -309,15 +311,17 @@ export class CmSourceSurface implements SourceSurface {
       rectangularSelection(),
       crosshairCursor(),
       highlightActiveLine(),
-      // 语法高亮：v0.17.0 A1 **不引入 @codemirror/lang-markdown**（它不在任务卡依赖清单里，
-      // 且未安装；手工用 @lezer/markdown 组装 Language 会因 NodeSet 结构不匹配而抛
-      // "nodeSet.types is not iterable"，实测过）。
-      // 因此 A1 阶段源码面**不做 token 级高亮**，只用 CSS 把行号/光标/选区/折叠做好；
-      // Markdown 语法着色仍由既有的预览侧负责，源码面此前也没有 Prism 着色（textarea 是纯文本）。
-      // 若后续要加：装 @codemirror/lang-markdown 后在此处插 markdown({base: markdownLanguage})
-      // + syntaxHighlighting(markdownHighlightStyle)（样式映射已在本文件下方备好）。
-      // 注意：没有语言时 syntaxHighlighting 是空转（不报错也不上色），因此这里不挂，
-      // 免得让人误以为"高亮已接好"。
+      // 语法高亮：Markdown 语言支持 + lezer tag → 既有 CSS 类映射。
+      //
+      // ⚠️ 这里**必须**经 @codemirror/lang-markdown 的 `markdown()`，不能直接把
+      // @lezer/markdown 的 parser 塞给 `new Language(...)`：后者会抛
+      // `nodeSet.types is not iterable`（lezer 的裸 parser 没有 CM6 需要的 NodeSet 包装）。
+      // 这是设计稿 §2.1「新依赖只有一个包族，加 @lezer/markdown 即可」的一处疏漏，
+      // 已由 Lead 校准并装上 @codemirror/lang-markdown 6.5.2。
+      // `addKeymap: false`：Markdown 自带的键位（如 `Mod-Enter`）不接管 ——
+      // 源码面的键位由本文件的 keymap 与宿主统一时间线负责。
+      markdown({ base: markdownLanguage, addKeymap: false }),
+      syntaxHighlighting(markdownHighlightStyle),
       // ⚠️ 硬约束 1：**不装 history()**，撤销归统一时间线
       // 只保留基础编辑键位（去掉 history 相关的默认绑定由下面 keymap 再拦一次）
       keymap.of([...defaultKeymap]),

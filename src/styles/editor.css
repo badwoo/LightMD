@@ -2387,3 +2387,115 @@ iframe.split-preview {
   margin-top: calc(0.8em * var(--editor-paragraph-spacing, 1));
   margin-bottom: calc(0.8em * var(--editor-paragraph-spacing, 1));
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   v0.17.0 A 线：CodeMirror 6 源码面视觉对齐
+   ────────────────────────────────────────────────────────────────────────────
+   目标：换成 CM6 后源码面**不应看起来像另一个编辑器**。
+   - 字体/行高/内边距沿用既有的 `.source-editor` 变量（见上文该类的定义）；
+   - Markdown token 颜色复用 `--prism-*` 色板（与预览侧 code-theme 同一套），
+     因此浅色/暗色/其它 4 个主题切换时，源码面与预览面**不会出现两套配色**。
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* 编辑区主体：与 .source-editor 同一套排版口径 */
+.cm-editor {
+  height: 100%;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  font-family: var(--editor-font-family, "Cascadia Code", "Consolas", monospace);
+  font-size: var(--editor-font-size, 16px);
+  line-height: var(--editor-line-height, 1.8);
+}
+
+.cm-editor .cm-scroller {
+  font-family: inherit;
+  line-height: inherit;
+  /* 与 .source-editor 的正文列口径一致：滚动条贴最右，正文靠内边距居中 */
+  padding-block: 40px;
+  padding-inline: max(
+    60px,
+    calc((100% - var(--editor-content-max-width, 960px)) / 2 + 60px)
+  );
+}
+
+.cm-editor .cm-content {
+  font-family: inherit;
+  line-height: inherit;
+  caret-color: var(--text-primary);
+  /* 源码面不折行由 CM6 的 lineWrapping 扩展决定，这里只管字形 */
+}
+
+.cm-editor .cm-line {
+  padding: 0;
+}
+
+/* 行号槽：弱化为辅助元素，不抢正文注意力 */
+.cm-editor .cm-gutters {
+  background: var(--bg-primary);
+  color: var(--text-tertiary);
+  border-right: 1px solid var(--border-color);
+  font-size: 0.85em;
+}
+
+.cm-editor .cm-activeLineGutter,
+.cm-editor .cm-activeLine {
+  background: transparent;
+}
+
+/* 选中态：与读者熟悉的文本选区一致 */
+.cm-editor .cm-selectionBackground,
+.cm-editor .cm-content ::selection {
+  background: var(--selection-bg, rgba(80, 130, 246, 0.25));
+}
+
+/* 光标 */
+.cm-editor .cm-cursor {
+  border-left-color: var(--text-primary);
+}
+
+/* ── Markdown token 着色（lezer tag → --prism-* 同一套色板）────────────── */
+.cm-md-heading {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+.cm-md-heading1 { font-size: 1.4em; }
+.cm-md-heading2 { font-size: 1.25em; }
+.cm-md-heading3 { font-size: 1.12em; }
+
+.cm-md-strong { font-weight: 700; }
+.cm-md-emphasis { font-style: italic; }
+.cm-md-strikethrough { text-decoration: line-through; }
+
+.cm-md-link,
+.cm-md-url { color: var(--prism-operator); }
+
+.cm-md-code {
+  color: var(--prism-string);
+  background: var(--code-bg);
+  border-radius: 3px;
+}
+
+.cm-md-keyword { color: var(--prism-keyword); }
+.cm-md-comment { color: var(--prism-comment); font-style: italic; }
+.cm-md-string { color: var(--prism-string); }
+.cm-md-number { color: var(--prism-number); }
+.cm-md-punct { color: var(--prism-punctuation); }
+
+/* ── 搜索命中（A3：CM6 Decoration.mark，真实文档范围上色）─────────────── */
+.cm-source-search-hit {
+  background: var(--search-hit-bg, rgba(255, 213, 0, 0.28));
+  border-radius: 2px;
+}
+
+.cm-source-search-hit-active {
+  background: var(--search-hit-active-bg, rgba(255, 145, 0, 0.55));
+  box-shadow: 0 0 0 1px var(--search-hit-active-border, rgba(255, 145, 0, 0.9));
+}
+
+/* ── ghost 占位（AI 续写 / 格式提示，不写入文档）────────────────────── */
+.cm-source-ghost {
+  color: var(--text-tertiary);
+  opacity: 0.75;
+  pointer-events: none;
+  white-space: pre;
+}
