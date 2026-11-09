@@ -292,7 +292,29 @@ window.__pbSrc = function () {
   return { impl: "none", el: null };
 };
 
-/** 源码面当前文本（CM6 由渲染出的 .cm-line 聚合） */
+/**
+ * 源码面当前**长度**（不需要文本内容时的轻量路径）。
+ *
+ * ⚠️ 不能每次都调 __pbSrcText()：CM6 下那是把 7 万+ 个 .cm-line 的 textContent
+ * 拼成一个字符串，在 5MB 文档上**本身就有几十毫秒开销**，会污染输入延迟测量
+ * （被误读成"CM6 慢了"）。可用性探测 / 装载判定只需长度，走这条。
+ */
+window.__pbSrcLen = function () {
+  var s = window.__pbSrc();
+  if (s.impl === "textarea") return s.el.value.length;
+  if (s.impl === "cm6") {
+    /**
+     * 用 document 层的 cm-editor 的 textContent（浏览器原生拼装，比 JS 循环快一个量级）。
+     * 注意：这条只为"长度量级判定"服务（装载是否完成），不用于逐字符比对。
+     */
+    var ed = s.el;
+    var t = ed.textContent || "";
+    return t.length;
+  }
+  return 0;
+};
+
+/** 源码面当前文本（CM6 由渲染出的 .cm-line 聚合；**重操作，仅按需调用**） */
 window.__pbSrcText = function () {
   var s = window.__pbSrc();
   if (s.impl === "textarea") return s.el.value;
@@ -318,7 +340,7 @@ window.__pbEnv = function () {
   return JSON.stringify({
     impl: ta ? "textarea" : ed ? "cm6" : "none",
     mode: sc && sc.clientHeight > 0 ? "preview" : window.__pbSrcReady() ? "edit" : "none",
-    srcLen: window.__pbSrcText().length,
+    srcLen: window.__pbSrcLen(),
     pmBlocks: sc ? (sc.querySelectorAll(".ProseMirror > *").length || 0) : 0,
     longTasksSupported: window.__pbLongTaskHooked === true,
   });
@@ -438,7 +460,7 @@ window.__pbWatchSrcLen = function (fromLen, ms) {
     const t0 = performance.now();
     const deadline = t0 + (ms || 4000);
     const check = function () {
-      const len = window.__pbSrcText().length;
+      const len = window.__pbSrcLen();
       if (len !== fromLen && len !== 0) {
         requestAnimationFrame(function () {
           requestAnimationFrame(function () {
@@ -513,7 +535,7 @@ async function probeUsability(cdp, ev, log, expectedBytes) {
         return JSON.stringify({
           impl: s.impl,
           ready: window.__pbSrcReady(),
-          len: window.__pbSrcText().length,
+          len: window.__pbSrcLen(),
           sh: s.scroller ? s.scroller.scrollHeight : (s.el ? s.el.scrollHeight : -1),
           ch: s.scroller ? s.scroller.clientHeight : (s.el ? s.el.clientHeight : -1),
           pmLen: document.querySelector(".editor-container")
@@ -615,7 +637,7 @@ async function runTier(cdp, tier, args, log) {
         `
       const sc = document.querySelector(".editor-container");
       const expect = ${docText.length};
-      const srcLen = window.__pbSrcText().length;
+      const srcLen = window.__pbSrcLen();
       const pmLen = sc ? (sc.textContent || "").length : 0;
       return srcLen >= expect * 0.9 || pmLen >= expect * 0.9;
     `,
@@ -628,7 +650,7 @@ async function runTier(cdp, tier, args, log) {
           const sc = document.querySelector(".editor-container");
           return JSON.stringify({
             impl: s.impl,
-            srcLen: window.__pbSrcText().length,
+            srcLen: window.__pbSrcLen(),
             expected: ${docText.length},
             mode: sc && sc.clientHeight > 0 ? "preview" : "edit",
             previewLen: sc ? (sc.textContent || "").length : -1,
