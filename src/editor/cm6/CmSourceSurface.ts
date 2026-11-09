@@ -533,7 +533,28 @@ export class CmSourceSurface implements SourceSurface {
   setText(text: string, opts?: { selection?: SourceSelectionLike; scrollTop?: number }): void {
     const view = this.view;
     if (!view) return;
-    if (text === view.state.doc.toString() && !opts?.selection) return;
+    /**
+     * ⚠️ 相等判定**不能**用 `view.state.doc.toString()`（v0.17.0 性能修复）。
+     *
+     * 原实现：`if (text === view.state.doc.toString() && !opts?.selection) return;`
+     * ——每调用一次就把**全文**序列化成字符串。5MB 文档 = 约 300 万字符的 O(n) 展开。
+     *
+     * 而这个方法在**每次按键**都会被调用：`sourceContent` 一变化，
+     * EditorContainer 的受控写入 effect 就会跑一次（见其注释「比较后再写」）。
+     * 于是每键都额外付一次 3MB 字符串构造 + 全量比较 —— 实机 5MB 输入延迟
+     * p95=18.0ms 中就有它的份额。
+     *
+     * 修法：先用**长度**快速排除（`doc.length` 是 O(1)），长度相同再退化到
+     * 「与上次本类写入/报告的文本做引用或值比较」——命中就不必展开全文。
+     * 只有长度相同且内容来源不明时才真正做全文比较（罕见）。
+     */
+    const sameLength = text.length === view.state.doc.length;
+    if (sameLength && !opts?.selection) {
+      // 命中"刚由本类写入过的同一份文本"（引用相等或值相等）→ 直接跳过
+      if (text === this.lastProgrammaticText) return;
+      // 长度相同但来源不同：这才是唯一需要真正展开全文比较的情形
+      if (text === view.state.doc.toString()) return;
+    }
     try {
       this.programmaticUpdate = true;
       const tr = view.state.update({
