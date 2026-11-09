@@ -39,7 +39,8 @@ describe("A1 工厂：jsdom 兜底是 A 线的保绿前提", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     surface.mount(host, { initialText: "abc" });
-    expect(surface.legacyTextareaRef()).not.toBeNull();
+    // A3 收尾后 legacyTextareaRef 已删除 → 用构造器名识别实现
+    expect(surface.constructor.name).toBe("TextareaSourceSurface");
     expect(surface.getText()).toBe("abc");
     surface.destroy();
     host.remove();

@@ -292,21 +292,4 @@ export interface SourceSurface {
 
   // ── 过渡能力（仅 textarea 参考实现提供）──────────────────────
 
-  /**
-   * ⚠️ **过渡能力，A3 后删除** —— 取底层 textarea 的 DOM 句柄。
-   *
-   * 存在的唯一原因：`src/components/editor/SearchReplace.tsx` 的既有 props 是
-   * `sourceTextareaRef?: React.RefObject<HTMLTextAreaElement | null>`，它自己要做
-   * 源码模式的搜索 overlay（度量 textarea 字体、跟随 scrollTop）。P0 不改
-   * `SearchReplace.tsx`（A3 会把它的 overlay 整体换成 CM6 Decoration，见设计稿
-   * 决议记录 §10.3「立即删、不留双路由」）。
-   *
-   * 因此这里把"迟早要淘汰的东西"标成一个**显式、单一出口**的临时能力：
-   * - textarea 参考实现返回真实 ref；
-   * - **CM6 实现返回 `null`** —— A3 之后 `SearchReplace` 改为消费 `setSearchRanges`，
-   *   该方法的唯一调用方消失，删一处即可（不需要翻遍组件）。
-   *
-   * 命名刻意带 `legacy`：不要把它当正式契约用，新代码禁止调用。
-   */
-  legacyTextareaRef(): { current: HTMLTextAreaElement | null } | null;
 }

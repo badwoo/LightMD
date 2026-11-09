@@ -830,17 +830,6 @@ export class CmSourceSurface implements SourceSurface {
     return !!this.view?.hasFocus;
   }
 
-  /**
-   * ⚠️ **过渡能力，A3 后删除** —— CM6 实现返回 `null`。
-   *
-   * 这正是契约里设计好的语义：`SearchReplace.tsx` 现在还依赖 `sourceTextareaRef`
-   * 做 textarea overlay；A3 把它的 overlay 换成 `setSearchRanges` 的 Decoration 之后，
-   * 该 prop 的调用方消失，这一处就自然淘汰。
-   * 在此之前，CM6 路径下的源码搜索高亮由本类的 `setSearchRanges` 提供。
-   */
-  legacyTextareaRef(): { current: HTMLTextAreaElement | null } | null {
-    return null;
-  }
 
   // ── 运行时重配（避免重建 view）───────────────────────────────
 

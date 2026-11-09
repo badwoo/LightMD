@@ -41,9 +41,11 @@ describe("A2：mount 必须直接接管 <textarea> 宿主，不得嵌套第二�
     expect(ta.querySelectorAll("textarea")).toHaveLength(0);
     expect(document.querySelectorAll("textarea.source-editor")).toHaveLength(1);
 
-    // surface 必须作用于宿主本身
+    // surface 必须作用于宿主本身（A3 收尾后不再暴露 legacy ref，
+    // 改用"读写确实落在宿主元素上"这个行为判据 —— 比查 ref 更强）
     expect(surface.getText()).toBe("hello world");
-    expect(surface.legacyTextareaRef()?.current).toBe(ta);
+    surface.setSelection(3, 3);
+    expect(ta.selectionStart).toBe(3);
 
     surface.destroy();
   });

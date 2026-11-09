@@ -452,19 +452,6 @@ export class TextareaSourceSurface implements SourceSurface {
     return !!ta && ta.ownerDocument.activeElement === ta;
   }
 
-  // ── 过渡能力 ───────────────────────────────────────────────
-
-  /**
-   * ⚠️ 过渡能力，A3 后删除。返回底层 textarea ref（`SearchReplace` 的既有 prop 需要它）。
-   * CM6 实现返回 null。
-   */
-  legacyTextareaRef(): { current: HTMLTextAreaElement | null } | null {
-    if (!this.ta) return null;
-    // 注意：这里返回的是**只读视图**对象，不是 React ref。调用方只读 `.current`。
-    const ta = this.ta;
-    return { current: ta };
-  }
-
   // ── 内部 ───────────────────────────────────────────────────
 
   /** 上报一次变更（经 DOM input / composition 事件触发） */
