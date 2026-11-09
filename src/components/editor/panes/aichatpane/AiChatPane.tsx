@@ -835,6 +835,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     window.addEventListener("keyup", flush, true);
     // 源码通道兜底：部分 WebView2 版本里 textarea 的选区变化不一定派发 document
     // 级 selectionchange（保留兜底，不重复 flush）。
+    // TODO(v0.18): CM6 能力缺口 — AI 对话面板的选区同步事件（绑 `select`）。当前 CM6 表现：选区变化时对话面板的上下文提示不完全同步（发送时仍按实时选区取，功能正确） | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
     ta?.addEventListener("select", schedule);
     return () => {
@@ -894,6 +895,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     const targets: HTMLElement[] = [];
     const container = editorRef.current;
     if (container) targets.push(container);
+    // TODO(v0.18): CM6 能力缺口 — 对话面板外部点击的命中区域需包含源码宿主元素。当前 CM6 表现：点源码区关闭对话面板的行为可能不生效（点面板外其它区域仍可关） | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
     if (textarea) targets.push(textarea);
     if (targets.length === 0) return;
@@ -914,6 +916,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
          * 连带后面 PM 分支也不会走（因为这里 return 了）。
          * 改为：有元素时算真实锚点；无元素时退回选区起点的**比例锚点**（降级而非消失）。
          */
+        // TODO(v0.18): CM6 能力缺口 — 对话锚点需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：气泡锚点降级到视口左上，可用但位置不贴选区 | 用户可感知度：低 | 建议优先级：P2
         const ta = sourceTextareaRef.current;
         if (ta) {
           useAiAssistStore.getState().setAnchor(getTextareaSelectionAnchor(ta));
@@ -1342,6 +1345,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       key: activeKeyRef.current,
     });
     requestAnimationFrame(() => {
+      // TODO(v0.18): CM6 能力缺口 — 选区文字快照需实时元素坐标。当前 CM6 表现：该处快照退化为纯文本比较，判断仍正确 | 用户可感知度：低 | 建议优先级：P2
       const el = sourceTextareaRef.current;
       el?.focus();
       el?.setSelectionRange(rewrite.cursor, rewrite.cursor);

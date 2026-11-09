@@ -3703,6 +3703,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
   useEffect(() => {
     if (!isSourceMode) return;
+    // TODO(v0.18): CM6 能力缺口 — 光标行列的事件绑定（CM6 已用 `onDidChange` + `selectionchange` 覆盖主路径）。当前 CM6 表现：本处元素事件不生效，但主路径已覆盖，状态栏正常 | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
     /**
      * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：源码模式光标行列 / 选中字符数。
@@ -4054,6 +4055,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         modeSwitchAnchorRef.current = null;
 
         requestAnimationFrame(() => {
+          // TODO(v0.18): CM6 能力缺口 — 模式切换的选区恢复需真实元素。当前 CM6 表现：切换后的光标位置退化为按锚点行估算（不精确，不丢内容） | 用户可感知度：中 | 建议优先级：P1
           const textarea = sourceTextareaRef.current;
           if (textarea) {
             const lines = mdMasked.split("\n");
@@ -4245,6 +4247,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         // 清理 iframe 待恢复标记，避免残留值影响后续切换
         pendingIframeScrollRef.current = null;
       } else {
+        // TODO(v0.18): CM6 能力缺口 — 模式切换的滚动重试链需真实元素（`restoreScrollWithRetry`）。当前 CM6 表现：滚动恢复退化为一次性写入，长文切换后位置可能不精确 | 用户可感知度：中 | 建议优先级：P1
         const textarea = sourceTextareaRef.current;
         if (textarea) {
           // ① 光标位置：按内容映射恢复（行 + 行内列偏移，clamp 到源码行长度），
@@ -7477,6 +7480,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     window.addEventListener("keyup", flush, true);
     // 源码通道兜底：部分 WebView2 版本里 textarea 的选区变化不一定派发 document
     // 级 selectionchange（保留兜底，不重复 flush）。
+    // TODO(v0.18): CM6 能力缺口 — AI 对话面板的选区同步事件（绑 `select`）。当前 CM6 表现：选区变化时对话面板的上下文提示不完全同步（发送时仍按实时选区取，功能正确） | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
     ta?.addEventListener("select", schedule);
     return () => {
@@ -7536,6 +7540,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     const targets: HTMLElement[] = [];
     const container = editorRef.current;
     if (container) targets.push(container);
+    // TODO(v0.18): CM6 能力缺口 — 对话面板外部点击的命中区域需包含源码宿主元素。当前 CM6 表现：点源码区关闭对话面板的行为可能不生效（点面板外其它区域仍可关） | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
     if (textarea) targets.push(textarea);
     if (targets.length === 0) return;
@@ -7556,6 +7561,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
          * 连带后面 PM 分支也不会走（因为这里 return 了）。
          * 改为：有元素时算真实锚点；无元素时退回选区起点的**比例锚点**（降级而非消失）。
          */
+        // TODO(v0.18): CM6 能力缺口 — 对话锚点需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：气泡锚点降级到视口左上，可用但位置不贴选区 | 用户可感知度：低 | 建议优先级：P2
         const ta = sourceTextareaRef.current;
         if (ta) {
           useAiAssistStore.getState().setAnchor(getTextareaSelectionAnchor(ta));
@@ -7984,6 +7990,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       key: activeKeyRef.current,
     });
     requestAnimationFrame(() => {
+      // TODO(v0.18): CM6 能力缺口 — 选区文字快照需实时元素坐标。当前 CM6 表现：该处快照退化为纯文本比较，判断仍正确 | 用户可感知度：低 | 建议优先级：P2
       const el = sourceTextareaRef.current;
       el?.focus();
       el?.setSelectionRange(rewrite.cursor, rewrite.cursor);
@@ -9068,6 +9075,7 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       updateOverlayRef.current = null;
       return;
     }
+    // TODO(v0.18): CM6 能力缺口 — 专注遮罩的事件绑定（`keyup/click/input/scroll/select` 需具体元素）。当前 CM6 表现：**遮罩仍会随内容变化重绘，但光标移动时不一定即时跟随** | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
 
     /** 计算聚焦行区间（v0.12.0：光标行 ±1 行）的 [startY, endY) 视口 Y 坐标，并更新 overlay 遮罩 */
@@ -11156,6 +11164,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     if (!iframe) return;
     const previewWin = iframe.contentWindow;
     if (!previewWin) return;
+    // TODO(v0.18): CM6 能力缺口 — 分屏右→左联动需读取源码滚动几何。当前 CM6 表现：右屏滚动仍能驱动左屏（经 surface 指标），但落点精度下降 | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
 
     const lock = createScrollDirectionLock();

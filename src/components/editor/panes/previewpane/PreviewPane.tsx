@@ -1905,6 +1905,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     if (!iframe) return;
     const previewWin = iframe.contentWindow;
     if (!previewWin) return;
+    // TODO(v0.18): CM6 能力缺口 — 分屏右→左联动需读取源码滚动几何。当前 CM6 表现：右屏滚动仍能驱动左屏（经 surface 指标），但落点精度下降 | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
 
     const lock = createScrollDirectionLock();

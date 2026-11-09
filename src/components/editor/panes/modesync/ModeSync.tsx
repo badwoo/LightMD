@@ -558,6 +558,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
   useEffect(() => {
     if (!isSourceMode) return;
+    // TODO(v0.18): CM6 能力缺口 — 光标行列的事件绑定（CM6 已用 `onDidChange` + `selectionchange` 覆盖主路径）。当前 CM6 表现：本处元素事件不生效，但主路径已覆盖，状态栏正常 | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
     /**
      * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：源码模式光标行列 / 选中字符数。
@@ -909,6 +910,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         modeSwitchAnchorRef.current = null;
 
         requestAnimationFrame(() => {
+          // TODO(v0.18): CM6 能力缺口 — 模式切换的选区恢复需真实元素。当前 CM6 表现：切换后的光标位置退化为按锚点行估算（不精确，不丢内容） | 用户可感知度：中 | 建议优先级：P1
           const textarea = sourceTextareaRef.current;
           if (textarea) {
             const lines = mdMasked.split("\n");
@@ -1100,6 +1102,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         // 清理 iframe 待恢复标记，避免残留值影响后续切换
         pendingIframeScrollRef.current = null;
       } else {
+        // TODO(v0.18): CM6 能力缺口 — 模式切换的滚动重试链需真实元素（`restoreScrollWithRetry`）。当前 CM6 表现：滚动恢复退化为一次性写入，长文切换后位置可能不精确 | 用户可感知度：中 | 建议优先级：P1
         const textarea = sourceTextareaRef.current;
         if (textarea) {
           // ① 光标位置：按内容映射恢复（行 + 行内列偏移，clamp 到源码行长度），

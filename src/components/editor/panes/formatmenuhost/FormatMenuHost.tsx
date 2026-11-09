@@ -776,6 +776,7 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       updateOverlayRef.current = null;
       return;
     }
+    // TODO(v0.18): CM6 能力缺口 — 专注遮罩的事件绑定（`keyup/click/input/scroll/select` 需具体元素）。当前 CM6 表现：**遮罩仍会随内容变化重绘，但光标移动时不一定即时跟随** | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
 
     /** 计算聚焦行区间（v0.12.0：光标行 ±1 行）的 [startY, endY) 视口 Y 坐标，并更新 overlay 遮罩 */
