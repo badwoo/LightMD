@@ -137,13 +137,32 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
         base64TokensRef.current,
       );
       const afterReal = unmaskBase64Images(newContent, base64TokensRef.current);
+      /**
+       * v0.17.0 A2（修复 C14 第一处）：**输入意图由事件源头判定**，不再靠文本形状猜。
+       *
+       * 旧实现把 `composing/justPaired/justPasted` 三个一次性标记喂给
+       * `inferSourceEditKind`，但这三个标记在原文件里**从未被置 true**（P0 实测确认：
+       * 3 处声明、3 处读取、2 处清零，零处置位），所以真正生效的只有它末尾那条
+       * "长度变短 → delete，否则 typing" 的猜测 —— 于是 IME/配对/粘贴三类
+       * "一步归并"从未生效，一次拼音会拆成多步、一次补全会和后续打字合并。
+       *
+       * 现在：
+       * - IME 直接取原生事件 `isComposing`（composition 期间的 input 事件必为 true），
+       *   这是**源头事实**，比任何事后推断都可靠；
+       * - 配对/粘贴取落地路径与 DOM 事件处置位（见上方 justPaired/justPasted 的赋值）；
+       * - 只有三者都不是时才退回 `inferSourceEditKind`（此时它只剩 delete/typing 判定，
+       *   那两条本来就是合法规则，不是猜测）。
+       */
+      // `nativeEvent` 的静态类型是 Event，但 React 的合成事件在这里一定是 InputEvent
+      // （textarea 的 onChange 对应原生 input 事件），InputEvent 有 isComposing。
+      const nativeComposing = !!(e.nativeEvent as InputEvent | undefined)?.isComposing;
       const plan = sourceAdapterRef.current.plan({
         before: beforeReal,
         text: afterReal,
         kind: inferSourceEditKind({
           before: beforeReal,
           after: afterReal,
-          composing: sourceComposingRef.current,
+          composing: nativeComposing || sourceComposingRef.current,
           justPaired: sourceJustPairedRef.current,
           justPasted: sourceJustPastedRef.current,
         }),
@@ -1019,6 +1038,12 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
   // 粘贴单个 http(s) URL 时转为 Markdown 链接：无选区 → [url](url)；
   // 有选区 → [选中文字](url)。代码块内不处理。
   const handleSourcePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    // ⚠️ v0.17.0 A2（修复 C14 第三处）：**在事件源头**标记"这次变更来自粘贴"。
+    // 旧实现三个一次性标记（sourceComposingRef/sourceJustPairedRef/sourceJustPastedRef）
+    // 全文件**没有任何置 true 的路径**（实测确认），所以 IME/配对/粘贴三类"一步归并"
+    // 从未生效，全部落回 inferSourceEditKind 的**文本形态猜测** —— 猜测必然误判。
+    // 这里在粘贴真正发生前把标记置上，紧随其后的 onChange 消费后复位。
+    sourceJustPastedRef.current = true;
     const ta = sourceTextareaRef.current;
     const text = e.clipboardData.getData("text/plain").trim();
     if (!ta || !isHttpUrl(text)) return;
@@ -1092,6 +1117,9 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
         if (plan.kind === "edit") {
           e.preventDefault();
           e.stopPropagation();
+          // ⚠️ v0.17.0 A2（修复 C14 第二处）：配对落地的**同一处**标记 justPaired，
+          // 使"一次补全 = 一步撤销"成立（而不是事后靠文本形状推）。
+          sourceJustPairedRef.current = true;
           applySourcePairPlan(ta, plan);
           return;
         }
@@ -1117,7 +1145,10 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
         const plan = e.shiftKey ? planSourceOutdent(input) : planSourceIndent(input);
         e.preventDefault();
         e.stopPropagation();
-        if (plan.kind === "edit") applySourcePairPlan(ta, plan);
+        if (plan.kind === "edit") {
+          sourceJustPairedRef.current = true;
+          applySourcePairPlan(ta, plan);
+        }
         return; // 无论 edit 还是 none 都吞键（否则焦点逃逸依旧存在）
       }
     }
@@ -1142,6 +1173,9 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
         if (plan.kind === "edit") {
           e.preventDefault();
           e.stopPropagation();
+          // ⚠️ v0.17.0 A2（修复 C14 第二处）：配对落地的**同一处**标记 justPaired，
+          // 使"一次补全 = 一步撤销"成立（而不是事后靠文本形状推）。
+          sourceJustPairedRef.current = true;
           applySourcePairPlan(ta, plan);
           return;
         }
