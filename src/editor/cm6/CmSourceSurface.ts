@@ -676,14 +676,42 @@ export class CmSourceSurface implements SourceSurface {
     const view = this.view;
     if (!view) return null;
     try {
+      /**
+       * ## 为什么用 `lineBlockAt` 而不是 `coordsAtPos`（这是 R2 的具体处置）
+       *
+       * 设计稿 R2 警告：CM6 的**虚拟视口之外**未渲染的行，`coordsAtPos` 结果不稳
+       * （可能返回 null 或退化的 0 高度）。而分屏对齐恰恰需要**整篇所有块起始行**的
+       * 顶部 —— 大文档里绝大多数块都在视口外，直接逐行 `coordsAtPos` 会大面积失败，
+       * 表现为"对齐随机不准"，而根因是测量失败（不是对齐算法坏了）。
+       *
+       * `view.lineBlockAt(pos)` 走的是 CM6 的**行高估算表**（heightMap），
+       * 它对整个文档都可用（视口内是实测高、视口外是估算高），且返回的 `top`
+       * 是相对文档顶的累计值 —— 正是分屏对齐要的"行 → 像素顶部"。
+       * 代价：视口外的行是**估算**而非实测（行高不一致时略偏），这比"测不到返回 null
+       * 退回百分比"好得多（百分比在软换行长行上会偏 4 倍，见旧注释）。
+       *
+       * 兜底顺序：lineBlockAt（全文档可用）→ 若该行块高度为 0（未测且不可估）
+       * 则该点记 NaN，由 `buildSourceLineAxis` 过滤，最终由上层决定是否降级。
+       */
+      const doc = view.state.doc;
+      const total = doc.lines;
       const tops = blockLines.map((lineNo) => {
-        const n = Math.max(1, Math.min(view.state.doc.lines, Math.floor(lineNo) + 1));
-        const line = view.state.doc.line(n);
-        const coords = view.coordsAtPos(line.from);
-        return coords ? coords.top - view.documentTop : Number.NaN;
+        const n = Math.max(1, Math.min(total, Math.floor(lineNo) + 1));
+        const line = doc.line(n);
+        const block = view.lineBlockAt(line.from);
+        if (!block || !Number.isFinite(block.top)) return Number.NaN;
+        // 视口内优先用实测（coordsAtPos）修正估算偏差；视口外保留估算。
+        try {
+          const coords = view.coordsAtPos(line.from);
+          if (coords && Number.isFinite(coords.top)) {
+            return coords.top - view.documentTop;
+          }
+        } catch {
+          /* 视口外/不可测：保留 lineBlockAt 的估算值 */
+        }
+        return block.top;
       });
-      if (tops.some((t) => !Number.isFinite(t))) return null;
-      return tops;
+      return tops.some((t) => Number.isFinite(t)) ? tops : null;
     } catch {
       return null;
     }

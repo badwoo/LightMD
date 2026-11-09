@@ -34,7 +34,7 @@ import { unmaskBase64Images, maskBase64Images } from "../../../../utils/base64Im
 import { readingFold } from "../.././readingFold";
 import { ContentAnchor, collectPmBlockGeometry, captureContentAnchor, blockGeometryFromLineAxis } from "../../../../utils/contentScrollMap";
 import { topLevelBlockStartLines } from "../../../../core/renderPipeline";
-import { measureSourceLineAxis } from "../../../../utils/blockScrollAlign";
+import { measureLineAxis, textareaMeasureSource } from "../../../../editor/surface/sourceLineAxis";
 import { documentHistory } from "../../../../services/documentHistory";
 import { withTrailingParagraph } from "../../../../core/plugins/trailing-paragraph";
 import { markdownToDoc } from "../../../../core/markdown/parser";
@@ -464,7 +464,27 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     if (!markdown) return null;
     try {
       const blockLines = topLevelBlockStartLines(markdown);
-      const measured = measureSourceLineAxis({ textarea, blockLines });
+      /**
+       * v0.17.0 A3：行轴测量改经统一入口（`measureLineAxis`）。
+       *
+       * 为什么不是直接换 `surface.measureBlockTops`：下游有 3 处独立在量，
+       * 各写一份兜底必然漂移。适配层把「测量源」与「行轴构建（纯函数不动）」拆开，
+       * 并且**降级可观测**（R2）：走 textarea 源时与 A3 之前行为完全一致；
+       * 走 surface 源时 CM6 用 `lineBlockAt` 覆盖全文档（含视口外）。
+       *
+       * 当前仍用 textarea 源 —— 因为本函数在 `previewShown` 分屏路径里，
+       * 而 CM6 的 `coordsAtPos` 需要真实布局；待 A3 第 4 项把分屏联动整体
+       * 切到 `getMetrics()` 后再换源（此处留好接口，换源只改一行）。
+       */
+      const measured = measureLineAxis(textareaMeasureSource(textarea), blockLines, (reason) => {
+        // 降级可观测：探针可据此判定"是测量失败"而非"对齐算法坏了"
+        if (typeof window !== "undefined") {
+          const w = window as unknown as { __LMD_AXIS_DEGRADE?: string[] };
+          if (Array.isArray(w.__LMD_AXIS_DEGRADE) && w.__LMD_AXIS_DEGRADE.length < 200) {
+            w.__LMD_AXIS_DEGRADE.push(reason);
+          }
+        }
+      });
       if (!measured) return null;
       const blocks = blockGeometryFromLineAxis({
         totalLines: measured.totalLines,
