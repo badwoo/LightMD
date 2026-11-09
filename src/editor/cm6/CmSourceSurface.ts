@@ -361,7 +361,11 @@ export class CmSourceSurface implements SourceSurface {
       // `addKeymap: false`：Markdown 自带的键位（如 `Mod-Enter`）不接管 ——
       // 源码面的键位由本文件的 keymap 与宿主统一时间线负责。
       markdown({ base: markdownLanguage, addKeymap: false }),
-      syntaxHighlighting(markdownHighlightStyle),
+      // 诊断开关（`scripts/v0170-diag-5mb-complex.mjs` 用于隔离"高亮 vs 卡死"的因果关系）。
+      // 生产环境该全局变量恒为 undefined → 高亮始终开启。
+      ...(typeof window !== "undefined" && (window as unknown as { __LMD_DISABLE_HIGHLIGHT__?: boolean }).__LMD_DISABLE_HIGHLIGHT__
+        ? []
+        : [syntaxHighlighting(markdownHighlightStyle)]),
       // ⚠️ 硬约束 1：**不装 history()**，撤销归统一时间线
       // 只保留基础编辑键位（去掉 history 相关的默认绑定由下面 keymap 再拦一次）
       keymap.of([...defaultKeymap]),
