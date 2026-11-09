@@ -293,6 +293,15 @@ export interface SourceSurface {
   readonly impl: "textarea" | "cm6";
 
   /**
+   * 是否已挂载到宿主元素（`mount()` 之后、`destroy()` 之前）。
+   *
+   * 宿主**必须**用它来保护"受控写入"：未挂载时 `getText()` 返回空串，
+   * 若此时执行 `setText(state)` 会把空内容当成真实文档写下去 ——
+   * 实机表现是"打开文件后源码面变成空白 / 只剩最后一个字符"。
+   */
+  isMounted(): boolean;
+
+  /**
    * 挂接**宿主级 DOM 事件处理**（A3 装配修复：CM6 路径）。
    *
    * 为什么需要：宿主原先靠 JSX 的 `onKeyDown` / `onPaste` / `onContextMenu` 绑事件，

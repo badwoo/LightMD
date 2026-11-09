@@ -41,6 +41,7 @@
 import {
   Compartment,
   EditorState,
+  Prec,
   RangeSetBuilder,
   StateEffect,
   StateField,
@@ -235,6 +236,13 @@ const markdownHighlightStyle = HighlightStyle.define([
 export class CmSourceSurface implements SourceSurface {
   readonly impl = "cm6";
 
+  /** 是否已挂载（宿主用它保护受控写入，见接口注释） */
+  isMounted(): boolean {
+    return this.view !== null;
+  }
+  private static seq = 0;
+  private readonly uid = ++CmSourceSurface.seq;
+
   private view: EditorView | null = null;
   private host: HTMLElement | null = null;
   private listeners = new Set<(ev: SourceChangeEvent) => void>();
@@ -260,6 +268,8 @@ export class CmSourceSurface implements SourceSurface {
       doc: opts.initialText ?? "",
       extensions: this.buildExtensions(opts),
     });
+    // 可重挂载：复位 disposed（destroy 后 React 可能再次挂载同一个实例）
+    this.disposed = false;
     this.view = new EditorView({ state, parent: host });
     this.lastProgrammaticText = state.doc.toString();
     this.attachCompositionHandlers();
@@ -288,6 +298,29 @@ export class CmSourceSurface implements SourceSurface {
     }
   }
 
+  /**
+   * 卸载（**可重挂载**）。
+   *
+   * ## ⚠️ 这里有两个必须保留订阅与可恢复性的理由（实机缺陷定位）
+   *
+   * 实机探针拿到的完整证据链：
+   * ```
+   * mount(instance=1, disposed=false)          ← 首次挂载
+   * subscribe effect → onDidChange(instance=1) ← 宿主 effect 建立订阅
+   * destroy(instance=1)                        ← React 卸载/重挂（StrictMode 双调用、
+   *                                              或 callback ref 因元素变化重跑）
+   * mount(instance=1, disposed=true)           ← 又挂回来了，但 disposed 仍是 true
+   * emit listeners=0                           ← 订阅在 destroy 里被清空，且 effect 不会重跑
+   * ```
+   * 结果：**CM6 的所有编辑都不再上报** → `applySourceInput` 不执行 → 统一时间线为空
+   * → **Ctrl+Z 完全无效**（G6 撤销契约违反）。
+   *
+   * 因此：
+   * 1. **不清空 `listeners`** —— 订阅是"宿主 ↔ 实例"的关系，不随 view 生命周期结束；
+   *    清空后宿主没有可观测的重订阅时机（effect 依赖 `sourceSurface` 本身不变）。
+   * 2. **`disposed` 必须可恢复** —— `mount()` 里复位为 false，否则 `report()` 首行的
+   *    `if (this.disposed) return` 会静默吞掉所有变更上报（又一个"功能静默消失"）。
+   */
   destroy(): void {
     this.disposed = true;
     this.cleanupDom.forEach((fn) => fn());
@@ -298,7 +331,7 @@ export class CmSourceSurface implements SourceSurface {
     this.view?.destroy();
     this.view = null;
     this.host = null;
-    this.listeners.clear();
+    // ⚠️ 刻意**不**清空 this.listeners（见上方注释）
   }
 
   // ── 扩展装配 ────────────────────────────────────────────────
@@ -333,15 +366,34 @@ export class CmSourceSurface implements SourceSurface {
       // 只保留基础编辑键位（去掉 history 相关的默认绑定由下面 keymap 再拦一次）
       keymap.of([...defaultKeymap]),
       // ⚠️ 硬约束 1 的第二道保险：把撤销/恢复键显式拦下并返回 false
+      /**
+       * ⚠️ `Prec.highest` 是必须的（实机探针 `v0170-probe-cm6` 判定项 3 实证）：
+       *
+       * 普通 `keymap.of()` 的 Tab 绑定**会输给** CM6 内建的 contenteditable Tab 处理
+       * ——实测按 Tab 后文本确实插入了两个空格，但本类的 `handleTab` **一次都没被调用**
+       * （探针在该方法入口打日志，零命中），即缩进来自浏览器默认行为而非
+       * `planSourceIndent`。
+       *
+       * 后果：缩进行为与设置里的「缩进单位」（Tab / 2 / 4 空格）完全脱钩 ——
+       * 用户设成 Tab 或 4 空格时源码面**仍然是 2 空格**，且 `sourceJustPairedRef`
+       * 不置位 → 撤销粒度也不对。
+       *
+       * `Prec.highest` 把本 keymap 提到所有扩展之前，保证 Tab 一定进 `handleTab`。
+       */
+      // ⚠️ Tab/Shift-Tab 必须在 Prec.highest（见下方注释）；撤销/搜索键位保持普通优先级
+      Prec.highest(keymap.of([
+        { key: "Tab", run: () => v.handleTab(false) },
+        { key: "Shift-Tab", run: () => v.handleTab(true) },
+      ])),
+      /**
+       * 撤销/恢复/搜索键位：返回 false = 不处理 = 让事件冒泡到宿主 window 监听
+       * → EditorContainer.handleUndo → 统一时间线。
+       */
       keymap.of([
         { key: "Mod-z", run: () => false },
         { key: "Mod-Shift-z", run: () => false },
         { key: "Mod-y", run: () => false },
-        // CM6 默认的 search 键位（Mod-f）也不接管，交回宿主
         { key: "Mod-f", run: () => false },
-        // ⚠️ 硬约束 2：Tab 完全接管（ghost 采纳 > 配对跳出 > 缩进，见 handleTab）
-        { key: "Tab", run: () => v.handleTab(false) },
-        { key: "Shift-Tab", run: () => v.handleTab(true) },
       ]),
       // 搜索高亮 / ghost 两个 decoration 层
       searchField,

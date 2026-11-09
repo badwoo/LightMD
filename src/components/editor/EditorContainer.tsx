@@ -1119,6 +1119,17 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    */
   useEffect(() => {
     if (sourceSurface.impl !== "cm6") return;
+    /**
+     * ⚠️ **必须先判"已挂载"**（实机缺陷：打开文件后源码面变空白）。
+     *
+     * React 的 effect 在 callback ref 之前可能先跑一帧，此时 `getText()` 返回空串、
+     * `sourceContent` 已有真实内容 → 比较不等 → `setText(真实内容)` 本应正确，
+     * 但反过来当 `sourceContent` 还是空串（内容尚未从 App 传入）时，
+     * 会把 **空内容写进 CM6**，随后真实内容到来又被判为"已相等"而跳过。
+     * 加 `isMounted()` 后，挂载完成的那一刻（`mount` 已注入 `initialText`）才会进入比较，
+     * 语义与 textarea 的"首次 `value=` 渲染"一致。
+     */
+    if (!sourceSurface.isMounted()) return;
     if (sourceSurface.getText() === sourceContent) return;
     sourceSurface.setText(sourceContent);
   }, [sourceContent, sourceSurface]);

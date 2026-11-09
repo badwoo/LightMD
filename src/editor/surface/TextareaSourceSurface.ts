@@ -78,6 +78,11 @@ interface SearchRange {
 export class TextareaSourceSurface implements SourceSurface {
   readonly impl = "textarea";
 
+  /** 是否已挂载（宿主用它保护受控写入，见接口注释） */
+  isMounted(): boolean {
+    return this.ta !== null;
+  }
+
   private host: HTMLElement | null = null;
   /** 受管 textarea（`mount` 后必非空） */
   private ta: HTMLTextAreaElement | null = null;
