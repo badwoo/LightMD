@@ -268,12 +268,57 @@ if (!window.__pbLongTaskHooked && typeof PerformanceObserver !== "undefined") {
   } catch (e) {}
 }
 
+/**
+ * v0.17.0 V 阶段：源码面的**双实现**访问器（textarea / CodeMirror 6）。
+ *
+ * 背景：本脚本原为 v0.16.0 的 textarea 源码面而写，全部经
+ * querySelector 取 textarea 句柄。v0.17.0 换成 CM6 后源码面是
+ * div.source-editor-cm6 里的 .cm-editor，textarea 元素不存在 ->
+ * 5MB 档被误判"不可用"（量具不认识新实现，不是性能退化）。
+ * 因此统一收口到 __pbSrc / __pbSrcText / __pbSrcReady，并在产物里记录 impl。
+ */
+window.__pbSrc = function () {
+  var ta = document.querySelector("textarea.source-editor");
+  if (ta) return { impl: "textarea", el: ta };
+  var ed = document.querySelector(".cm-editor");
+  if (ed) {
+    return {
+      impl: "cm6",
+      el: ed,
+      scroller: ed.querySelector(".cm-scroller") || ed,
+      content: ed.querySelector(".cm-content"),
+    };
+  }
+  return { impl: "none", el: null };
+};
+
+/** 源码面当前文本（CM6 由渲染出的 .cm-line 聚合） */
+window.__pbSrcText = function () {
+  var s = window.__pbSrc();
+  if (s.impl === "textarea") return s.el.value;
+  if (s.impl === "cm6") {
+    var lines = Array.prototype.slice.call(s.el.querySelectorAll(".cm-line"));
+    return lines.map(function (l) { return l.textContent || ""; }).join("\n");
+  }
+  return "";
+};
+
+/** 源码面是否真的可见可测（两实现统一） */
+window.__pbSrcReady = function () {
+  var s = window.__pbSrc();
+  if (s.impl === "textarea") return s.el.clientHeight > 0;
+  if (s.impl === "cm6") return !!s.scroller && s.scroller.clientHeight > 0;
+  return false;
+};
+
 window.__pbEnv = function () {
-  const ta = document.querySelector("textarea.source-editor");
-  const sc = document.querySelector(".editor-container");
+  var ta = document.querySelector("textarea.source-editor");
+  var ed = document.querySelector(".cm-editor");
+  var sc = document.querySelector(".editor-container");
   return JSON.stringify({
-    mode: sc && sc.clientHeight > 0 ? "preview" : ta && ta.clientHeight > 0 ? "edit" : "none",
-    srcLen: ta ? ta.value.length : 0,
+    impl: ta ? "textarea" : ed ? "cm6" : "none",
+    mode: sc && sc.clientHeight > 0 ? "preview" : window.__pbSrcReady() ? "edit" : "none",
+    srcLen: window.__pbSrcText().length,
     pmBlocks: sc ? (sc.querySelectorAll(".ProseMirror > *").length || 0) : 0,
     longTasksSupported: window.__pbLongTaskHooked === true,
   });
@@ -287,12 +332,11 @@ var BLOCKY_CHARS = "#|>-:" + String.fromCharCode(96);
 var isBlocky = function (ch) { return BLOCKY_CHARS.indexOf(ch) !== -1; };
 
 window.__pbPlaceCaret = function (where) {
-  const ta = document.querySelector("textarea.source-editor");
-  if (!ta) return "no-textarea";
-  ta.focus();
-  const len = ta.value.length;
+  var s = window.__pbSrc();
+  if (s.impl === "none") return "no-source-surface";
+  const text = window.__pbSrcText();
+  const len = text.length;
   let target = where === "middle" ? Math.floor(len / 2) : len;
-  const text = ta.value;
   // 退到一个"安全"位置：行首空行/表格行/围栏行打字容易把结构弄坏，找普通文本行
   const lines = text.split("\n");
   let pos = 0, best = -1, bestPos = 0;
@@ -308,13 +352,51 @@ window.__pbPlaceCaret = function (where) {
     pos += lines[i].length + 1;
   }
   if (bestPos === 0) bestPos = Math.min(6, Math.floor(len / 2));
-  ta.setSelectionRange(bestPos, bestPos);
-  // 滚到光标处
-  const lh = parseFloat(getComputedStyle(ta).lineHeight) || 28.8;
-  const lineIdx = ta.value.slice(0, bestPos).split("\n").length - 1;
-  ta.scrollTop = Math.max(0, lineIdx * lh - ta.clientHeight / 2);
-  ta.dispatchEvent(new Event("scroll", { bubbles: false }));
-  return String(bestPos);
+  const lineIdx = text.slice(0, bestPos).split("\n").length - 1;
+
+  if (s.impl === "textarea") {
+    const ta = s.el;
+    ta.focus();
+    ta.setSelectionRange(bestPos, bestPos);
+    const lh = parseFloat(getComputedStyle(ta).lineHeight) || 28.8;
+    ta.scrollTop = Math.max(0, lineIdx * lh - ta.clientHeight / 2);
+    ta.dispatchEvent(new Event("scroll", { bubbles: false }));
+    return String(bestPos);
+  }
+
+  /**
+   * CM6：没有 setSelectionRange。用"滚到目标行 + 返回该行的点击盒子"，
+   * 由 Node 侧用 CDP 派发真实鼠标点击落位（与实机探针同一手法）。
+   */
+  const scroller = s.scroller;
+  const content = s.content;
+  if (!scroller) return "no-cm-scroller";
+  let approxLineH = 24;
+  try {
+    const probe = s.el.querySelector(".cm-line");
+    if (probe) approxLineH = probe.getBoundingClientRect().height || approxLineH;
+  } catch (e) {}
+  scroller.scrollTop = Math.max(0, lineIdx * approxLineH - scroller.clientHeight / 2);
+
+  const wanted = (lines[lineIdx] || "").slice(0, 8);
+  const rendered = Array.prototype.slice.call(s.el.querySelectorAll(".cm-line"));
+  let hit = null;
+  for (let k = 0; k < rendered.length; k++) {
+    if (wanted && (rendered[k].textContent || "").indexOf(wanted) !== -1) { hit = rendered[k]; break; }
+  }
+  if (!hit && rendered.length) hit = rendered[Math.floor(rendered.length / 2)];
+  let box;
+  if (hit) {
+    const r = hit.getBoundingClientRect();
+    box = { x: Math.round(r.left + 8), y: Math.round(r.top + r.height / 2) };
+  } else if (content) {
+    const cr = content.getBoundingClientRect();
+    box = { x: Math.round(cr.left + 8), y: Math.round(cr.top + cr.height / 2) };
+  } else {
+    return "no-cm-target";
+  }
+  window.__pbCaretBox = box;
+  return JSON.stringify({ impl: "cm6", pos: bestPos, box: box });
 };
 
 /** 模式切换计时：记录切换前时间，rAF 轮询目标面是否已可见并完成布局 */
@@ -325,9 +407,9 @@ window.__pbWatchMode = function (targetMode, ms) {
     let firstVisible = null;
     const isVisible = function () {
       const sc = document.querySelector(".editor-container");
-      const ta = document.querySelector("textarea.source-editor");
       if (targetMode === "preview") return !!(sc && sc.clientHeight > 0);
-      return !!(ta && ta.clientHeight > 0);
+      // v0.17.0：两实现都认
+      return window.__pbSrcReady();
     };
     const check = function () {
       if (firstVisible === null && isVisible()) firstVisible = performance.now() - t0;
@@ -356,9 +438,8 @@ window.__pbWatchSrcLen = function (fromLen, ms) {
     const t0 = performance.now();
     const deadline = t0 + (ms || 4000);
     const check = function () {
-      const ta = document.querySelector("textarea.source-editor");
-      const len = ta ? ta.value.length : -1;
-      if (len !== fromLen && len !== -1) {
+      const len = window.__pbSrcText().length;
+      if (len !== fromLen && len !== 0) {
         requestAnimationFrame(function () {
           requestAnimationFrame(function () {
             resolve(JSON.stringify({ landedAt: +(performance.now() - t0).toFixed(1), newLen: len }));
@@ -428,12 +509,13 @@ async function probeUsability(cdp, ev, log, expectedBytes) {
     try {
       const r = await ev(
         `
-        const ta = document.querySelector("textarea.source-editor");
+        const s = window.__pbSrc();
         return JSON.stringify({
-          hasTa: !!ta,
-          len: ta ? ta.value.length : -1,
-          sh: ta ? ta.scrollHeight : -1,
-          ch: ta ? ta.clientHeight : -1,
+          impl: s.impl,
+          ready: window.__pbSrcReady(),
+          len: window.__pbSrcText().length,
+          sh: s.scroller ? s.scroller.scrollHeight : (s.el ? s.el.scrollHeight : -1),
+          ch: s.scroller ? s.scroller.clientHeight : (s.el ? s.el.clientHeight : -1),
           pmLen: document.querySelector(".editor-container")
             ? (document.querySelector(".editor-container").textContent || "").length
             : -1,
@@ -453,7 +535,10 @@ async function probeUsability(cdp, ev, log, expectedBytes) {
   // 判据同样要认两个面：阅读模式（PM）下 textarea 是隐藏的、len=0 属正常状态，
   // 不能因此判"未装载"。真正的问题是**两个面都没有内容**。
   const hasDoc = allOk && ((typeof last.len === "number" && last.len > 0) || last.pmLen > 0);
-  const hasTa = allOk && last.hasTa === true;
+  /**
+   * v0.17.0：源码面可能是 CM6（没有 textarea），判据改为 `ready`（两实现统一）。
+   */
+  const hasTa = allOk && (last.ready === true || last.hasTa === true);
   const usable = hasDoc && (hasTa || (allOk && last.pmLen > 0));
   const reason = usable
     ? ""
@@ -518,20 +603,19 @@ async function runTier(cdp, tier, args, log) {
     }
     await sleep(1200);
     try {
-      // 装载判据（两个面都要认）：
+      // 装载判据（两个面都要认，且源码面两实现都认）：
       //   ① 阅读面（PM）：`.editor-container` 的文本长度 ≥ 输入的 90%
-      //   ② 源码面：`textarea.source-editor` 的 value 长度 ≥ 输入的 90%
+      //   ② 源码面：`__pbSrcText()` 长度 ≥ 输入的 90%（textarea 用 value / CM6 用 .cm-line 聚合）
       //
-      // 为什么必须同时认：`lightmd:openFile` 默认落在**阅读模式**，此时 textarea
-      // 是隐藏的、value 为 0（内容只在 PM 里，实测 previewLen=717650 / srcLen=0）。
-      // 只认 textarea 会永远等不到（早期版本恰好相反：只认 scrollHeight，
+      // 为什么必须同时认：`lightmd:openFile` 默认落在**阅读模式**，此时源码面
+      // 是隐藏的、长度为 0（内容只在 PM 里，实测 previewLen=717650 / srcLen=0）。
+      // 只认源码面会永远等不到（早期版本恰好相反：只认 scrollHeight，
       // 结果空文档被误判为已装载，srcLen=32 —— 更危险）。
       loaded = await ev(
         `
-      const ta = document.querySelector("textarea.source-editor");
       const sc = document.querySelector(".editor-container");
       const expect = ${docText.length};
-      const srcLen = ta ? ta.value.length : 0;
+      const srcLen = window.__pbSrcText().length;
       const pmLen = sc ? (sc.textContent || "").length : 0;
       return srcLen >= expect * 0.9 || pmLen >= expect * 0.9;
     `,
@@ -540,11 +624,11 @@ async function runTier(cdp, tier, args, log) {
       if (!loaded) {
         const dbg = await ev(
           `
-          const ta = document.querySelector("textarea.source-editor");
+          const s = window.__pbSrc();
           const sc = document.querySelector(".editor-container");
           return JSON.stringify({
-            hasTa: !!ta,
-            len: ta ? ta.value.length : -1,
+            impl: s.impl,
+            srcLen: window.__pbSrcText().length,
             expected: ${docText.length},
             mode: sc && sc.clientHeight > 0 ? "preview" : "edit",
             previewLen: sc ? (sc.textContent || "").length : -1,
@@ -707,8 +791,36 @@ async function runTier(cdp, tier, args, log) {
   }
   if (env.mode !== "edit") throw new Error(`档位 ${tier.id}：无法进入源码编辑模式（当前 ${env.mode}）`);
 
-  const caret = await ev(`return __pbPlaceCaret("middle");`);
-  log(`  光标置于 offset=${caret}，源码长度=${env.srcLen}`);
+  const caretRaw = await ev(`return __pbPlaceCaret("middle");`);
+  /**
+   * v0.17.0：CM6 没有 setSelectionRange，__pbPlaceCaret 返回的是一个
+   * `{impl:"cm6", pos, box}` 描述，需要 Node 侧用 CDP 派发真实鼠标点击落位。
+   * textarea 路径仍返回纯数字（offset 字符串），走原逻辑。
+   */
+  let caret = caretRaw;
+  let caretImpl = "textarea";
+  try {
+    const parsed = typeof caretRaw === "string" && caretRaw.startsWith("{") ? JSON.parse(caretRaw) : null;
+    if (parsed && parsed.impl === "cm6") {
+      caretImpl = "cm6";
+      caret = String(parsed.pos);
+      if (parsed.box) {
+        for (const type of ["mousePressed", "mouseReleased"]) {
+          await cdp.send("Input.dispatchMouseEvent", {
+            type,
+            x: parsed.box.x,
+            y: parsed.box.y,
+            button: "left",
+            clickCount: 1,
+          });
+        }
+        await sleep(250);
+      }
+    }
+  } catch {
+    /* 保持原值 */
+  }
+  log(`  光标置于 offset=${caret}（实现=${caretImpl}），源码长度=${env.srcLen}`);
 
   // ── 连续输入延迟分布 ──
   //
@@ -823,6 +935,8 @@ async function runTier(cdp, tier, args, log) {
 
   const result = {
     tier: tier.id,
+    /** v0.17.0：源码面实现（textarea / cm6）。不同实现的延迟数字不可直接比较 */
+    sourceImpl: caretImpl,
     targetBytes: tier.bytes,
     actualBytes,
     lines: docText.split("\n").length,
