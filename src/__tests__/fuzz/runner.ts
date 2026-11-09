@@ -38,6 +38,8 @@ export interface FuzzDocResult {
   index: number;
   features: string[];
   byteLength: number;
+  /** 该篇原文是否含 CRLF（专项覆盖的证据；比较基准已归一化为 LF） */
+  hadCrlf: boolean;
   oracles: Record<string, OracleOutcome>;
   unknownTokens: string[];
 }
@@ -113,7 +115,16 @@ export function runFuzz(opts: RunOptions): { summary: FuzzRunSummary; results: F
 
   for (let i = 0; i < opts.docs; i++) {
     const rng = createRng(deriveSeed(seed, i));
-    const { markdown, features } = generateDocument(rng, i);
+    const generated = generateDocument(rng, i);
+    const features = generated.features;
+    // ⚠️ 比较基准统一用 **LF 归一化文本**（不是生成器原始输出）。
+    //
+    // 理由：CRLF→LF 是设计稿 §3.2 A2 的**载入侧契约**（写盘由 eolPreserve 还原），
+    // 模型层与所有出口全程只认 LF。生成器会产出约 18% 的 CRLF 文档用于专项覆盖，
+    // 若拿 CRLF 原文当基准，就会被判成"每个块都丢了 \r"——把真实缺陷淹没在换行噪音里
+    // （实测 md-blocks-md 因此虚增 13 篇 lossy，而实际失败数为 0）。
+    const markdown = generated.markdown.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const rawCrlf = generated.markdown;
     const oracles: Record<string, OracleOutcome> = {};
 
     // Tier-1：B6 快路径生效
@@ -185,6 +196,7 @@ export function runFuzz(opts: RunOptions): { summary: FuzzRunSummary; results: F
       index: i,
       features,
       byteLength: markdown.length,
+      hadCrlf: rawCrlf !== markdown,
       oracles,
       unknownTokens: unknown,
     };

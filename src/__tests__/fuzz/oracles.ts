@@ -156,7 +156,9 @@ export function classifyOutcome(args: {
   // ── 先算边界命中：Blocks 出口的能力边界也可能表现为「块被移动/替换」
   // （例：脚注定义被摊平成普通段落并挪到文末），那属于边界而不是结构破坏。
   const lostKinds = diff.kindsOnlyInInput;
-  const boundaryEntries = isBlocks ? matchBoundary(features, lostKinds) : [];
+  const boundaryEntries = isBlocks
+    ? matchBoundary(features, lostKinds, [...diff.missingAtoms, ...diff.extraAtoms])
+    : [];
   const boundary = boundaryEntries.map((b) => b.id);
 
   if (contentAdded) {
@@ -271,6 +273,13 @@ export function oracleDocRoundtripReserialized(markdown: string): string {
 
 /** md→Blocks→md（导出出口重建） */
 export function oracleBlocksRoundtrip(markdown: string): { markdown: string; unknownTokens: string[] } {
-  const r = parseMarkdownToBlocksDetailed(markdown);
+  // CRLF 归一化（与 tree oracle 同口径）：Block[] 出口产出的是 `\n` 文本，
+  // 而输入可能是 CRLF —— 若拿 CRLF 原文做比较基准，**每个块"都"会显示差异，
+  // 把真实缺陷淹没在换行噪音里（实测 doc#21/#60 全是这个原因）。
+  //
+  // 这不是"放宽判定"：CRLF→LF 是设计稿 §3.2 A2 的**载入侧契约**
+  // （写盘时由 eolPreserve 还原），模型层与导出层全程只认 LF。
+  const normalized = markdown.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const r = parseMarkdownToBlocksDetailed(normalized);
   return { markdown: blocksToMarkdown(r.blocks), unknownTokens: r.unknownTokens };
 }

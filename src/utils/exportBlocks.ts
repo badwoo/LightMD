@@ -24,28 +24,21 @@
  * v0.11.0 B2-4 返修：**结构/容器**类 token —— 它们落到 default 分支属正常，
  * 内容由专门分支或后续迭代导出，不应计入 unknownTokens（否则含脚注的文档
  * 每次导出都会弹「部分内容无法导出」误报，脚注内容其实是导出的）。
+ *
+ * v0.17.0 B3：清单**下沉**到 `core/unified/tokenRegistry.ts`（零依赖模块），
+ * 本文件改为 re-export —— 这样 `unified/parse.ts` 可以引它而不会形成
+ * `exportBlocks ↔ unified` 的循环依赖。清单本身仍是同一份（测试断言防漂移）。
  */
-/**
- * v0.17.0 B1：导出为 public —— UnifiedDoc 树构建器（`core/unified/parse.ts`）
- * 复用同一份结构 token 清单，避免两处各自维护"哪些 token 不算 unknown"。
- */
-export const STRUCTURAL_TOKENS = new Set([
-  "footnote_block_open",
-  "footnote_block_close",
-  "footnote_open",
-  "footnote_close",
-  "footnote_anchor",
-  "footnote_tail",
-  "footnote_ref",
-  "inline",
-  "text",
-  "softbreak",
-  "hardbreak",
-]);
+export { STRUCTURAL_TOKENS } from "../core/unified/tokenRegistry";
+import { STRUCTURAL_TOKENS as STRUCTURAL_TOKENS_IMPL } from "../core/unified/tokenRegistry";
+void STRUCTURAL_TOKENS_IMPL;
 
 import MarkdownIt from "markdown-it";
 // R1(v0.10.0):实例统一由 renderPipeline 创建（内部走 parser 工厂），配置单一来源
 import { getDocxLatexMarkdownIt } from "../core/renderPipeline";
+// v0.17.0 B3：Block[] 出口内部改走 UnifiedDoc 树（BE-03 dd 内块拍平随此消失）
+// 无循环依赖：共享 token 清单已下沉到零依赖的 tokenRegistry
+import { parseUnified, treeToBlocks } from "../core/unified/index";
 
 // Token 类型兼容 markdown-it（与 parser.ts 保持一致，避免引入 markdown-it/lib/token 类型声明）
 export interface Token {
@@ -98,6 +91,22 @@ export interface ListItem {
   children?: ListItem[];
   /** 任务列表勾选状态：true=已完成 / false=未完成 / undefined=非任务项 */
   checked?: boolean;
+  /**
+   * v0.17.0 B3：该 item 下挂的**子列表类型**。
+   *
+   * 缺陷背景：`children` 只是 `ListItem[]`，把"子列表是有序还是无序"的信息丢了 →
+   * 实测 `- a\n    1. b\n` 经 Block[] 往返后变成 `- a\n    - b\n`
+   * （有序列表降级成无序）。fuzz 基线里这条曾有 6 篇无法归入任何已声明边界。
+   *
+   * 可选字段：不填时下游按"沿用父列表类型"处理（与旧行为一致，零回归）。
+   * 一个 item 挂多个**不同类型**子列表时只记第一个的类型（已声明的能力限制：
+   * 那种形态在真实文档里罕见，且 Block[] 的结构本身不承载多子列表并列）。
+   */
+  nestedList?: {
+    kind: "bulletList" | "orderedList" | "taskList";
+    /** orderedList 的起始序号（其余类型忽略） */
+    start?: number;
+  };
 }
 
 /** 定义列表项（v0.11.0 B2-4 新增） */
@@ -757,7 +766,7 @@ export function parseBlockTokensDetailed(
     // 正常导出，报「未识别」是误报。此前含脚注的文档导出 DOCX 必弹
     // 「无法导出 footnote_block_open / footnote_open / footnote_anchor」，
     // 而脚注内容其实导出成功 —— 噪音抵消了本项「不静默丢内容」的核心价值。
-    if (STRUCTURAL_TOKENS.has(type)) return;
+    if (STRUCTURAL_TOKENS_IMPL.has(type)) return;
     unknown.add(type);
   };
 
@@ -937,7 +946,29 @@ export function createDefaultMarkdownIt(): MarkdownIt {
 }
 
 /**
+ * 是否走 UnifiedDoc 树出口（v0.17.0 B3 切换开关）。
+ *
+ * 设为 `false` 即退回旧的 token 遍历实现 —— 设计稿 R8「出口可单独回退」的要求
+ * （接口不变、内部双路由）。
+ */
+const USE_TREE_EXPORT = true;
+
+/**
  * 将 markdown 字符串解析为 Block[] 中间结构
+ *
+ * v0.17.0 B3：**内部改走 UnifiedDoc 树**（`md → tree → Block[]`）。
+ *
+ * 为什么切换（设计稿 §3.3 B3 + G4）：
+ * - 旧实现直接遍历 token，把 dd 内除首段外的块级内容**拍平丢弃**
+ *   （`parseDefList` 的 `collectRuns` 只收 inline）→ 实测 dd 内代码块/表格/列表
+ *   被粘成一行扁平文本（fuzz 基线根因清单 R1，Lead 批准必须修）。
+ * - 树已带完整块级 `children`，切过来后 `DefItem.blocks` 终于被真正填上，
+ *   BE-03（dd 内块拍平）**随本切换自然消失**。
+ * - 三套出口（PM / 预览 HTML / Block[]）从此共用同一份语义树（G4 的前提）。
+ *
+ * 循环依赖如何解决：共享清单已下沉到零依赖的 `core/unified/tokenRegistry.ts`，
+ * 故本文件可以**静态 import** `unified/treeToBlocks`（无循环、无惰性注入、
+ * 不存在"忘记初始化就静默退回旧路径"的隐患）。
  *
  * @param markdown markdown 源码
  * @param mdInstance 可选的 markdown-it 实例（用于测试或自定义插件配置）
@@ -947,6 +978,14 @@ export function parseMarkdownToBlocks(
   markdown: string,
   mdInstance?: MarkdownIt,
 ): Block[] {
+  if (USE_TREE_EXPORT) {
+    try {
+      const parsed = parseUnified(markdown, mdInstance ? { mdInstance } : undefined);
+      return treeToBlocks(parsed.tree).blocks;
+    } catch {
+      // 树构建异常不该让导出整体失败 → 退回旧 token 路径（兜底而非崩）
+    }
+  }
   return parseMarkdownToBlocksDetailed(markdown, mdInstance).blocks;
 }
 
@@ -960,6 +999,22 @@ export function parseMarkdownToBlocksDetailed(
   markdown: string,
   mdInstance?: MarkdownIt,
 ): ParseResult {
+  // v0.17.0 B3：与 parseMarkdownToBlocks **同一路由**（否则两个入口行为不一致 ——
+  // 实测踩过：只切了 parseMarkdownToBlocks，而 fuzz 的 oracle 调 Detailed，
+  // 于是"修好的嵌套有序列表"看起来仍未修）。
+  if (USE_TREE_EXPORT) {
+    try {
+      const parsed = parseUnified(markdown, mdInstance ? { mdInstance } : undefined);
+      const r = treeToBlocks(parsed.tree);
+      return {
+        blocks: r.blocks,
+        // unknownTokens = 树里未映射的 kind + 树本身上报的未知 token 类型
+        unknownTokens: [...new Set([...r.unknownKinds, ...parsed.unknownTokens])],
+      };
+    } catch {
+      // 兜底：树异常不拖垮导出
+    }
+  }
   const md = mdInstance || createDefaultMarkdownIt();
   const tokens = md.parse(markdown, {});
   return parseBlockTokensDetailed(tokens, 0, tokens.length);

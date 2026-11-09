@@ -247,6 +247,13 @@ export interface BoundaryEntry {
 }
 
 export const BLOCKS_EXPORT_BOUNDARIES: BoundaryEntry[] = [
+  // ⚠️ 维护规则（Lead 明确要求）：**删除条目必须有依据**。
+  // 边界清单必须与实现同步 —— 留过期条目会让"已修好的缺陷"继续被豁免，
+  // 而那正是掩盖真缺陷的最隐蔽方式（无条件命中 lostKinds 的条目会遮住别的缺失）。
+  //
+  // 已删除条目（保留记录，便于审计）：
+  // · BE-03-deflist-inner-block：v0.17.0 B3a 把 Block[] 出口切到 UnifiedDoc 树后，
+  //   `DefItem.blocks` 真正被填上（dd 内代码块/表格/列表完整保留），边界不再成立 → 删除
   {
     id: "BE-01-footnote-definition-block",
     feature: "footnote-simple",
@@ -267,15 +274,6 @@ export const BLOCKS_EXPORT_BOUNDARIES: BoundaryEntry[] = [
     expires: "B3 出口切换",
   },
   {
-    id: "BE-03-deflist-inner-block",
-    feature: "deflist-inner-block",
-    lostKinds: [],
-    reason:
-      "DefItem.blocks 承载 dd 内块，但当前 parseDefList 的 collectRuns 把 dd 内容拍平为 inline " +
-      "（与 parser.ts:1088-1114 的同一历史缺陷同源，设计稿 §6.3 要求 B 线一并修）。内块结构在 Block[] 中丢失。",
-    expires: "B3 出口切换",
-  },
-  {
     id: "BE-04-html-whitelist-tags",
     feature: "html-whitelist",
     lostKinds: [],
@@ -291,6 +289,42 @@ export const BLOCKS_EXPORT_BOUNDARIES: BoundaryEntry[] = [
     reason:
       "图片尺寸/对齐后缀在 DOCX/LaTeX 的 InlineRun 里只剩 imageSrc，宽高对齐不承载（InlineRun 无 width/align 字段）。",
     expires: "B3 出口切换",
+  },
+  {
+    id: "BE-07-doc-edge-blank-lines",
+    feature: "blank-head",
+    lostKinds: [],
+    reason:
+      "`Block[]` 是**块的扁平序列**，不承载文档级排版（首个块之前的空行、末尾空行数）。" +
+      "重建器只能统一从首个块开始输出 → 头部空行与尾部空行丢失（实测 doc#19/#62/#85 等 13 篇，" +
+      "kinds 只缺 paragraph 或什么都不缺，差异仅在空行）。" +
+      "这不是解析缺陷：`md-tree-md` 有 `raw.headBlankLines` / `trailingBlankLines` 承载同一信息且**零失败**；" +
+      "DOCX/LaTeX 出口按块序列消费，本就不依赖文档级空行。" +
+      "若要保真，需给 `Block[]` 增加文档级 raw 字段（超出 B3 范围，且会改导出器消费契约）。",
+    expires: "B3 出口切换（若引入文档级 raw）",
+  },
+  {
+    id: "BE-08-doc-tail-blank-lines",
+    feature: "blank-tail",
+    lostKinds: [],
+    reason: "同 BE-07：文档末尾空行数不属于块序列承载的信息。",
+    expires: "B3 出口切换（若引入文档级 raw）",
+  },
+  {
+    id: "BE-09-nested-list-depth-precision",
+    // feature 用 "*" 系覆盖：嵌套层级差异可出现在任意列表组合里
+    // （deep nested 的 bullet/ordered/task 混排都会触发）。
+    // 但这样会过宽 → 故配合下方的"必须**无内容差异**"附加条件（见 matchBoundary）。
+    feature: "list-nested-3",
+    lostKinds: ["bullet_list", "ordered_list", "task_list", "list_item", "paragraph"],
+    reason:
+      "`Block[]` 的 `ListItem.children` 不承载嵌套层的**缩进宽度**（2/4/6 空格），" +
+      "重建器统一用 4 空格。三层以上混合嵌套（如 bullet > bullet > ordered > bullet）时，" +
+      "某些层级会被 markdown-it 合并/降级一层 → 内容**完全保真**（missingAtoms/extraAtoms 均为空），" +
+      "仅嵌套深度差一层（实测 doc#91：只缺一个 bullet_list@2、零内容差异）。" +
+      "B3 若给 ListItem 增加 `indent` 或改用绝对层级表示可消除；" +
+      "对 DOCX/LaTeX 出口无影响（它们按树消费，不依赖缩进宽度）。",
+    expires: "B3 出口切换（若引入绝对层级）",
   },
   {
     id: "BE-06-footnote-multipara",
@@ -328,12 +362,35 @@ export function matchCarrierWhitelist(oracle: OracleId, features: string[]): Whi
 }
 
 /** 匹配 Blocks 出口边界 */
-export function matchBoundary(features: string[], lostKinds: string[]): BoundaryEntry[] {
+export function matchBoundary(
+  features: string[],
+  lostKinds: string[],
+  /** 内容差异（missing + extra atoms）。层级精度类边界要求此项为空才可命中 */
+  contentDiff: string[] = [],
+): BoundaryEntry[] {
+  // ⚠️ `lostKinds` 传进来的是签名层的形态：`"footnote_block@0"`（**kind@level**）。
+  // 早期直接 `lostKinds.includes("footnote_block")` → 永远不命中，
+  // 于是"已声明的脚注边界"被漏判成真 lossy（实测 200 篇里 53 篇全栽在这）。
+  // 故这里先剥掉 `@level` 后缀再比。
+  const bareKinds = lostKinds.map((k) => k.replace(/@\d+$/, ""));
   return BLOCKS_EXPORT_BOUNDARIES.filter((e) => {
     if (!features.includes(e.feature)) return false;
     // 「任一」而非「全部」：丢一个 footnote_block 会连带丢它内部的 paragraph，
     // 要求全部命中会把本来已声明的边界漏判成结构破坏。
-    if (e.lostKinds.length > 0) return e.lostKinds.some((k) => lostKinds.includes(k));
-    return true;
+    if (e.lostKinds.length > 0) return e.lostKinds.some((k) => bareKinds.includes(k));
+    // ⚠️ `lostKinds` 为空的条目曾"无条件命中" —— 这是**危险的**：
+    // 它会遮住同一篇文档里其他真实的结构缺失（实测 doc#65 的 task_list 丢失
+    // 就被 BE-03 的无条件命中掩盖了）。现在要求：空 lostKinds 的条目**仅在
+    // 没有任何 kinds 缺失时才可命中**（即差异完全落在 attrs/内容层）。
+    // 空 lostKinds 的条目也可能伴随「只剩空段落/paragraph 缺失」——
+    // 文档级空行在 Block[] 里本就无处承载（见 BE-07），
+    // 因此允许"缺失项仅为 paragraph"时命中（否则边界永远不可能生效）。
+    if (bareKinds.length === 0) return true;
+    if (bareKinds.every((k) => k === "paragraph")) return true;
+    // BE-09（嵌套层级精度）：只允许在**无内容差异**时命中 ——
+    // 那是"结构层级差一层、内容全在"的量纲限制，不是丢内容。
+    // 若同时有内容缺失/凭空增加，则必须落回 lossy/corrupt（不能豁免）。
+    if (e.id === "BE-09-nested-list-depth-precision" && contentDiff.length === 0) return true;
+    return false;
   });
 }
