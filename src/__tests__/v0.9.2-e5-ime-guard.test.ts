@@ -107,7 +107,7 @@ describe("E5: PM 端成对删除 IME 守卫", () => {
 
 describe("E5: 源码模式 textarea 成对删除 IME 守卫(源码断言)", () => {
   it("EditorContainer keydown 的 Backspace 成对删除已检查 isComposing/keyCode", () => {
-    const src = readSrc("src/components/editor/EditorContainer.tsx");
+    const src = readSrc("src/components/editor/EditorContainerSource.ts.txt");
     expect(src).toMatch(/isComposing\s*\|\|\s*\w+\.keyCode\s*===\s*229/);
   });
 

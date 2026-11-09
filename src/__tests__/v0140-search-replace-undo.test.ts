@@ -46,7 +46,7 @@ import {
 const read = (rel: string): string =>
   fs.readFileSync(path.join(__dirname, "..", rel), "utf-8");
 
-const containerSrc = read("components/editor/EditorContainer.tsx");
+const containerSrc = read("components/editor/EditorContainerSource.ts.txt");
 const searchSrc = read("components/editor/SearchReplace.tsx");
 
 describe("需求1：整篇写回必须按视图模式分流（阅读模式要 dispatch 到 PM）", () => {

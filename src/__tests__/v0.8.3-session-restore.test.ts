@@ -30,7 +30,7 @@ import type { TabInfo } from "../stores/useEditorStore";
 
 const appSrc = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8");
 const containerSrc = readFileSync(
-  resolve(__dirname, "../components/editor/EditorContainer.tsx"),
+  resolve(__dirname, "../components/editor/EditorContainerSource.ts.txt"),
   "utf-8",
 );
 

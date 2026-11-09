@@ -303,18 +303,18 @@ describe("v0.12.2 P7：三处硬编码中文改走 i18n", () => {
 
 describe("v0.12.2 P8：分屏一致性", () => {
   it("阅读进度上报按模式选择真实滚动容器（不再只测 display:none 的阅读容器）", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("isSourceMode ? sourceTextareaRef.current : editorRef.current");
   });
 
   it("分屏 iframe 的排版锚点已接入（右侧焦点不再丢失）", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("iframeScroller");
     expect(src).toContain('captureAnchor(s, "body > *")');
   });
 
   it("分屏 iframe 的 sharedStyles 消费三个排版变量（不再硬编码）", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("--editor-content-max-width, 860px");
     expect(src).toContain("--editor-line-height, 1.8");
     expect(src).toContain("--editor-paragraph-spacing, 1");

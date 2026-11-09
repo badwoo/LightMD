@@ -140,20 +140,20 @@ describe("v0.12.0 需求5：落点接线（源码断言）", () => {
   });
 
   it("编辑模式：textarea 字号用 calc 乘 --doc-zoom（不 zoom textarea）", () => {
-    const src = readSrc("components/editor/EditorContainer.tsx");
+    const src = readSrc("components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("calc(${fontSize}px * var(--doc-zoom, 1))");
     // --doc-zoom 注入 :root（比例值）
     expect(src).toContain('setProperty("--doc-zoom", String(docZoom / 100))');
   });
 
   it("分屏 iframe：body zoom + 增量更新刷新 :root 变量", () => {
-    const src = readSrc("components/editor/EditorContainer.tsx");
+    const src = readSrc("components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("zoom: var(--doc-zoom, 1);");
     expect(src).toContain('setProperty("--doc-zoom", cv.docZoom)');
   });
 
   it("Ctrl+滚轮：监听 .editor-main-area 并 preventDefault", () => {
-    const src = readSrc("components/editor/EditorContainer.tsx");
+    const src = readSrc("components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain('adjustDocZoom(e.deltaY < 0 ? DOC_ZOOM_STEP : -DOC_ZOOM_STEP)');
     expect(src).toContain('addEventListener("wheel", onWheel, { passive: false })');
   });
@@ -175,7 +175,7 @@ describe("v0.12.0 需求5：落点接线（源码断言）", () => {
  * 场景不可用：`doc.body.innerHTML = previewHtml` 会换掉元素引用）。
  */
 describe("v0.12.0 返修（问题3）：缩放保持阅读焦点（源码断言）", () => {
-  const src = readSrc("components/editor/EditorContainer.tsx");
+  const src = readSrc("components/editor/EditorContainerSource.ts.txt");
 
   it("缩放写入前记录滚动百分比，rAF 内按新高度还原（阅读 .editor-container）", () => {
     // 记录：写入新 zoom 之前先用 computeScrollPercent 取百分比

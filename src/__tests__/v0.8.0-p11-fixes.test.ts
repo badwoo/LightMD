@@ -157,12 +157,12 @@ describe("P11-1 移动语义与路径联动", () => {
 
 describe("P11-2 临时文件按 Markdown 处理", () => {
   it("未命名文档（filePath 为空）视为 markdown，可正常编辑", () => {
-    const src = read("../components/editor/EditorContainer.tsx");
+    const src = read("../components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("const isMdFile = filePath ? isMarkdownFile(filePath) : true;");
   });
 
   it("空状态（Logo 遮罩）只在没有任何已打开标签时显示", () => {
-    const src = read("../components/editor/EditorContainer.tsx");
+    const src = read("../components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("openTabCount === 0");
     expect(src).toContain("const openTabCount = useEditorStore((s) => s.openTabs.length);");
   });

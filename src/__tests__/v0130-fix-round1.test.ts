@@ -313,7 +313,7 @@ describe("问题4：三点菜单弹在按钮下方（不再跳到窗口左上角
   });
 
   it("EditorContainer 用 detail.anchor 定位，不再依赖 e.target.closest", () => {
-    const src = SRC("components/editor/EditorContainer.tsx");
+    const src = SRC("components/editor/EditorContainerSource.ts.txt");
     const fn = src.slice(src.indexOf("const onBlockAction = (e: Event)"));
     const body = fn.slice(0, fn.indexOf("container.addEventListener(BLOCK_ACTION_EVENT"));
     expect(body).toContain("detail.anchor");
@@ -343,7 +343,7 @@ describe("问题5：三点菜单功能（禁用态透传 / 移动 / 剪贴板兜
   });
 
   it("EditorContainer 把 disabled/danger/separator 透传给弹层（此前被整体丢弃）", () => {
-    const src = SRC("components/editor/EditorContainer.tsx");
+    const src = SRC("components/editor/EditorContainerSource.ts.txt");
     const map = src.slice(src.indexOf("}).map<MiniMenuItem>((item) => ({"));
     const body = map.slice(0, map.indexOf("}))"));
     expect(body).toContain("disabled: item.disabled");
@@ -379,7 +379,7 @@ describe("问题5：三点菜单功能（禁用态透传 / 移动 / 剪贴板兜
   });
 
   it("格式刷：先建立块 NodeSelection 再采集（否则 from===to 直接 return，点了没反应）", () => {
-    const src = SRC("components/editor/EditorContainer.tsx");
+    const src = SRC("components/editor/EditorContainerSource.ts.txt");
     const branch = src.slice(src.indexOf('case "formatPainter":'));
     const body = branch.slice(0, branch.indexOf('case "select":'));
     expect(body).toContain("selectBlockAt(view, pos)");
@@ -444,7 +444,7 @@ describe("问题6：图片管理（命令路由 + 悬浮入口）", () => {
   });
 
   it("悬浮入口仅在文档有图片时**可见**，且槽位固定为第 1 格（「译」上方）", () => {
-    const src = SRC("components/editor/EditorContainer.tsx");
+    const src = SRC("components/editor/EditorContainerSource.ts.txt");
     // v0.13.2 需求4：入口改为**常驻挂载 + visible 驱动淡出**（条件渲染无法播过渡动画），
     // 因此判据从"是否渲染"改为"visible 传的是否为 docHasImageFlag"。
     expect(src).toContain("visible={docHasImageFlag}");
@@ -466,7 +466,7 @@ describe("问题6：图片管理（命令路由 + 悬浮入口）", () => {
    * 那么就图片管理图标淡出消失，「译」图标顺滑上移补上。」
    */
   it("「译」图标槽位随图片管理是否可见动态切换（1 ↔ 2，slot 0 永远属于模式切换）", () => {
-    const src = SRC("components/editor/EditorContainer.tsx");
+    const src = SRC("components/editor/EditorContainerSource.ts.txt");
     // v0.13.2 返修：旧值 1/0 分别与图片管理(slot 1)、模式切换(slot 0)完全重合，
     // 用户实机看到「译字图标和分屏编辑图标重叠」。正确槽位：无图 1 / 有图 2。
     expect(src).toContain("slot={docHasImageFlag ? 2 : 1}");

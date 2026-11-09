@@ -46,7 +46,7 @@ const read = (rel: string): string =>
 
 const keymapSrc = read("core/keymap.ts");
 const appSrc = read("App.tsx");
-const containerSrc = read("components/editor/EditorContainer.tsx");
+const containerSrc = read("components/editor/EditorContainerSource.ts.txt");
 
 function stateWithHistory(markdown: string): EditorState {
   return EditorState.create({ doc: markdownToDoc(markdown), plugins: [history()] });

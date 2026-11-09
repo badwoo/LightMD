@@ -59,7 +59,7 @@ describe("v0.11.0 B4-3 主题明暗判定", () => {
 
   it("源码中不再有 theme === \"dark\" 二分（仅注释可出现）", () => {
     for (const p of [
-      "src/components/editor/EditorContainer.tsx",
+      "src/components/editor/EditorContainerSource.ts.txt",
       "src/components/dialogs/ExportDialog.tsx",
     ]) {
       const src = readFileSync(p, "utf-8");
@@ -75,20 +75,20 @@ describe("v0.11.0 B4-3 主题明暗判定", () => {
 
 describe("v0.11.0 B4-4 分屏图表换色", () => {
   it("增量分支在主题变化时重新 initialize mermaid", () => {
-    const src = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+    const src = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
     // 增量更新分支内须有 initialize 调用（否则切主题图表不换色）
     expect(src).toMatch(/mermaid\.initialize\(\{/);
     expect(src).toContain("init.theme !== mermaidTheme");
   });
 
   it("needFullRewrite 判据包含主题变化", () => {
-    const src = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+    const src = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
     expect(src).toContain("themeChanged");
     expect(src).toMatch(/needFullRewrite[\s\S]{0,200}themeChanged/);
   });
 
   it("iframe 初始化状态记录 theme（供下次比对）", () => {
-    const src = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+    const src = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
     expect(src).toMatch(/previewIframeInitRef[\s\S]{0,200}theme/);
     // 写入点也要带 theme
     expect(src).toContain("previewIframeInitRef.current = { mermaid: hasMermaid, math: hasMath, theme }");

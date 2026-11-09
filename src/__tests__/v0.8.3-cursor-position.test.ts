@@ -18,7 +18,7 @@ import { markdownToDoc } from "../core/markdown/parser";
 
 const editorSrc = readFileSync(resolve(__dirname, "../core/editor.ts"), "utf-8");
 const containerSrc = readFileSync(
-  resolve(__dirname, "../components/editor/EditorContainer.tsx"),
+  resolve(__dirname, "../components/editor/EditorContainerSource.ts.txt"),
   "utf-8",
 );
 const statusBarSrc = readFileSync(

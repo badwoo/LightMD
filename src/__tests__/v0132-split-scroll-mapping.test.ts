@@ -306,7 +306,7 @@ describe("需求8 · 端到端：左屏滚动 → 右屏 → 回推左屏，位�
 describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写自己的容器", () => {
   // 分屏联动发生在真实 EditorContainer effect 里，依赖 iframe 文档与实际滚动事件；
   // jsdom 的 iframe contentDocument 不参与布局，行为断言会空过。映射数学已在上方精确覆盖。
-  const src = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+  const src = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
 
   function fnBody(startMarker: string, endMarker: string): string {
     const at = src.indexOf(startMarker);

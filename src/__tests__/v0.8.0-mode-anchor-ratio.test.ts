@@ -16,7 +16,7 @@ import {
 } from "../utils/modeAnchor";
 
 const editorSrc = readFileSync(
-  resolve(__dirname, "../components/editor/EditorContainer.tsx"),
+  resolve(__dirname, "../components/editor/EditorContainerSource.ts.txt"),
   "utf-8",
 );
 

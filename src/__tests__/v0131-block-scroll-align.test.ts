@@ -266,7 +266,7 @@ describe("需求13 · computeBlockAlignedScrollTop：把锚点块对齐到视口
 // ═════════════ ⑤ 接线契约 ═════════════
 
 describe("需求13 · 分屏接线：先试块对齐、失败退回百分比", () => {
-  const src = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+  const src = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
 
   it("左→右同步里先尝试块对齐（data-src-line 锚点）", () => {
     // v0.13.2 需求8：块对齐改为「采集锚点集合 → 纯函数映射」两步，

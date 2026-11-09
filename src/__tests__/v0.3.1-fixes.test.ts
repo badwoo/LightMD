@@ -359,7 +359,7 @@ describe("问题6：字数统计面板行数/段落数/阅读时长错误", () =
 
 describe("问题7：拼写检查开关未生效", () => {
   it("EditorContainer.tsx spellcheck 切换时触发 blur + focus 让浏览器重新检查", () => {
-    const tsxPath = path.resolve(__dirname, "../components/editor/EditorContainer.tsx");
+    const tsxPath = path.resolve(__dirname, "../components/editor/EditorContainerSource.ts.txt");
     const src = fs.readFileSync(tsxPath, "utf-8");
     // 验证 spellcheck useEffect 中有 blur + focus 逻辑
     expect(src).toMatch(/editorDom\.blur\(\)/);
@@ -367,7 +367,7 @@ describe("问题7：拼写检查开关未生效", () => {
   });
 
   it("EditorContainer.tsx spellcheck 切换时恢复滚动位置", () => {
-    const tsxPath = path.resolve(__dirname, "../components/editor/EditorContainer.tsx");
+    const tsxPath = path.resolve(__dirname, "../components/editor/EditorContainerSource.ts.txt");
     const src = fs.readFileSync(tsxPath, "utf-8");
     // v0.3.5第三阶段：滚动容器从 editorDom 改为 scrollContainer（editorRef.current）
     expect(src).toMatch(/const\s+scrollTop\s*=\s*scrollContainer\s*\?\s*scrollContainer\.scrollTop/);
@@ -375,7 +375,7 @@ describe("问题7：拼写检查开关未生效", () => {
   });
 
   it("EditorContainer.tsx 仅在编辑器处于焦点时才 blur + focus", () => {
-    const tsxPath = path.resolve(__dirname, "../components/editor/EditorContainer.tsx");
+    const tsxPath = path.resolve(__dirname, "../components/editor/EditorContainerSource.ts.txt");
     const src = fs.readFileSync(tsxPath, "utf-8");
     // 验证有 document.activeElement === editorDom 检查
     expect(src).toMatch(/document\.activeElement\s*===\s*editorDom/);

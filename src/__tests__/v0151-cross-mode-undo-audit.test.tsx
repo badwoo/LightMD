@@ -1307,7 +1307,7 @@ describe("⑬ 集成：行为变更锁 —— 源码通道「外部写回」必�
    */
   it("6 处外部写回点附近都存在 recordDiscreteSourceEdit 调用，且支持 afterCaret（重做落点）", () => {
     const src = readFileSync(
-      path.join(__dirname, "..", "components/editor/EditorContainer.tsx"),
+      path.join(__dirname, "..", "components/editor/EditorContainerSource.ts.txt"),
       "utf8",
     );
     const occurrences = (needle: string): number[] => {

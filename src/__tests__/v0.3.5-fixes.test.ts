@@ -315,7 +315,7 @@ describe("补充需求：中间阅读区整体可滚动", () => {
   });
 
   it("editor-container 保持 overflow: auto（在 inline style 中）", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     // 验证 editor-container 的 inline style 包含 overflow: "auto"
     expect(src).toMatch(/overflow:\s*"auto"/);
   });
@@ -392,7 +392,7 @@ describe("问题2续：搜索高亮 Decoration 方案", () => {
 
 describe("问题4：三模式滚动进度联动", () => {
   it("ProseMirror 滚动百分比追踪使用 editor-container 而非 .ProseMirror", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     const scrollSection = src.match(/持续追踪 ProseMirror 滚动百分比[\s\S]*?\}, \[content, forceUpdateKey\]\)/);
     expect(scrollSection).not.toBeNull();
     // 不应使用 querySelector(".ProseMirror") 获取滚动容器
@@ -403,7 +403,7 @@ describe("问题4：三模式滚动进度联动", () => {
   });
 
   it("滚动恢复使用 editor-container 而非 .ProseMirror", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     const restoreSection = src.match(/问题4修复：滚动容器从 \.ProseMirror 改为 \.editor-container[\s\S]*?pendingIframeScrollRef/);
     expect(restoreSection).not.toBeNull();
     expect(restoreSection![0]).toMatch(/editorRef\.current/);
@@ -416,14 +416,14 @@ describe("问题4：三模式滚动进度联动", () => {
 
 describe("第三阶段问题2：打字机模式使用 scrollContainer", () => {
   it("打字机 useEffect 块定义 scrollContainer 变量", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     const typewriterSection = src.match(/问题2修复：滚动容器从 \.ProseMirror 改为 \.editor-container[\s\S]*?const scrollContainer = editorRef\.current/);
     expect(typewriterSection).not.toBeNull();
     expect(typewriterSection![0]).toMatch(/scrollContainer = editorRef\.current/);
   });
 
   it("getCursorY 使用 scrollContainer 的 rect 和 scrollTop", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     const getCursorYSection = src.match(/const getCursorY = \(\) =>[\s\S]*?\n    \};/);
     expect(getCursorYSection).not.toBeNull();
     expect(getCursorYSection![0]).toMatch(/scrollContainer\.getBoundingClientRect/);
@@ -434,7 +434,7 @@ describe("第三阶段问题2：打字机模式使用 scrollContainer", () => {
   });
 
   it("scrollToCenter 使用 scrollContainer 的滚动属性", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     const scrollToCenterSection = src.match(/const scrollToCenter = \(\) =>[\s\S]*?\n    \};/);
     expect(scrollToCenterSection).not.toBeNull();
     expect(scrollToCenterSection![0]).toMatch(/scrollContainer\.clientHeight/);
@@ -444,7 +444,7 @@ describe("第三阶段问题2：打字机模式使用 scrollContainer", () => {
   });
 
   it("handleKeyDown 使用 scrollContainer 的 scrollTop 和 rect", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     const handleKeyDownSection = src.match(/const handleKeyDown = \(\) =>[\s\S]*?\n    \};/);
     expect(handleKeyDownSection).not.toBeNull();
     expect(handleKeyDownSection![0]).toMatch(/scrollContainer\.scrollTop/);
@@ -453,7 +453,7 @@ describe("第三阶段问题2：打字机模式使用 scrollContainer", () => {
   });
 
   it("handleKeyUp 使用 scrollContainer 的滚动属性", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     const handleKeyUpSection = src.match(/const handleKeyUp = \(e: KeyboardEvent\) =>[\s\S]*?\n    \};/);
     expect(handleKeyUpSection).not.toBeNull();
     expect(handleKeyUpSection![0]).toMatch(/scrollContainer\.scrollTop/);

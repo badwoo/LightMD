@@ -25,7 +25,7 @@ const readSrc = (rel: string) => readFileSync(join(root, rel), "utf-8");
 const fileTreeSrc = readSrc("src/components/sidebar/FileTree.tsx");
 const fileTreeCss = readSrc("src/components/sidebar/FileTree.css");
 const editorCss = readSrc("src/styles/editor.css");
-const containerSrc = readSrc("src/components/editor/EditorContainer.tsx");
+const containerSrc = readSrc("src/components/editor/EditorContainerSource.ts.txt");
 
 // ─── 需求2：文件夹动画再放慢 50% ───────────────────────────
 

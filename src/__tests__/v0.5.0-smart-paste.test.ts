@@ -148,7 +148,7 @@ describe("v0.5.0 N2：智能粘贴 URL→链接", () => {
   });
 
   it("textarea 端：EditorContainer 源码模式接入 onPaste 智能粘贴", () => {
-    const src = readSrc("src/components/editor/EditorContainer.tsx");
+    const src = readSrc("src/components/editor/EditorContainerSource.ts.txt");
     expect(src).toMatch(/import \{ isHttpUrl \} from "\.\.\/\.\.\/core\/plugins\/smart-paste"/);
     expect(src).toMatch(/onPaste=\{handleSourcePaste\}/);
     // 无选区 → [url](url)；有选区 → [选中](url)

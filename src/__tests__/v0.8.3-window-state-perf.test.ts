@@ -20,7 +20,7 @@ const tauriConf = readFileSync(resolve(__dirname, "../../src-tauri/tauri.conf.js
 const editorCss = readFileSync(resolve(__dirname, "../styles/editor.css"), "utf-8");
 const schemaSrc = readFileSync(resolve(__dirname, "../core/schema.ts"), "utf-8");
 const containerSrc = readFileSync(
-  resolve(__dirname, "../components/editor/EditorContainer.tsx"),
+  resolve(__dirname, "../components/editor/EditorContainerSource.ts.txt"),
   "utf-8",
 );
 

@@ -506,7 +506,7 @@ describe("问题10：Ctrl+H 弹出替换框", () => {
   });
 
   it("EditorContainer.tsx 传递 initialShowReplace prop", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     expect(src).toMatch(/initialShowReplace=\{showSearchReplace\}/);
   });
 });

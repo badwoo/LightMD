@@ -14,7 +14,7 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { useEditorStore } from "../stores/useEditorStore";
 
 const editorCss = readFileSync("src/styles/editor.css", "utf-8");
-const containerSrc = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+const containerSrc = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
 const settingsSrc = readFileSync("src/components/dialogs/SettingsDialog.tsx", "utf-8");
 const statusSrc = readFileSync("src/components/layout/StatusBar.tsx", "utf-8");
 const storeSrc = readFileSync("src/stores/useSettingsStore.ts", "utf-8");

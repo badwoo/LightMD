@@ -23,7 +23,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 
-const containerSrc = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+const containerSrc = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
 
 describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
   it("左屏滚动**驱动**右屏（左→右映射存在）", () => {

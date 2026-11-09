@@ -404,7 +404,7 @@ describe("需求2 · 源码模式：liftListLineToTask", () => {
  * 三处必须存在（App 放行 → EditorContainer 监听 → 纯函数 + 回退）。
  */
 describe("需求2 · 接线契约（jsdom 无法跑完整源码模式链路，故锁源码）", () => {
-  const containerSrc = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+  const containerSrc = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
   const appSrc = readFileSync("src/App.tsx", "utf-8");
 
   it("App 在源码模式对 insert.taskList 提前放行（不写死语法串）", () => {

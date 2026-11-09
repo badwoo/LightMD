@@ -518,7 +518,7 @@ describe("需求4 · measureSourceLineAxis：mirror 实测行顶", () => {
 // ═════════════ ⑦ 接线契约：EditorContainer 必须接上新参数 ═════════════
 
 describe("需求4 · 接线契约（读源码断言，防止只改一半）", () => {
-  const src = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+  const src = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
 
   it("贴标基数改用 isAnchorablePreviewChild 过滤（否则 mermaid 文档 0 锚点）", () => {
     expect(src).toContain("isAnchorablePreviewChild");

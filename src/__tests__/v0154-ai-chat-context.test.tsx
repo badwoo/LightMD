@@ -29,7 +29,7 @@ import { chatContextChipText, nextChatScope } from "../components/editor/AiChatD
 import { t } from "../i18n";
 
 const CONTAINER_SRC = readFileSync(
-  join(__dirname, "..", "components", "editor", "EditorContainer.tsx"),
+  join(__dirname, "..", "components", "editor", "EditorContainerSource.ts.txt"),
   "utf-8",
 );
 

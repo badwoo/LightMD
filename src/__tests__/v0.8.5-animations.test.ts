@@ -620,7 +620,7 @@ describe("v0.8.5 需求7+反馈：出现/收回动画 CSS 源文本", () => {
 
 describe("v0.8.5 需求7：EditorContainer 呼出链路接线（防回退）", () => {
   it("EditorContainer 用 GenieSearchDialog 包裹搜索面板并以 showSearch 驱动 active", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("GenieSearchDialog");
     expect(src).toContain("active={showSearch || showSearchReplace}");
     // 原 props 透传保持不变

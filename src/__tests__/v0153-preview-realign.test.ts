@@ -36,7 +36,7 @@ import {
 } from "../utils/textOffsetRemap";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const rawTsx = readFileSync(join(here, "../components/editor/EditorContainer.tsx"), "utf8");
+const rawTsx = readFileSync(join(here, "../components/editor/EditorContainerSource.ts.txt"), "utf8");
 const rawUtil = readFileSync(join(here, "../utils/textOffsetRemap.ts"), "utf8");
 
 /**

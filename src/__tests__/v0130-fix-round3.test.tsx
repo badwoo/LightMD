@@ -173,7 +173,7 @@ describe("问题2：菜单禁用态判定不得触发系统剪贴板弹窗", () 
   });
 
   it("EditorContainer 打开菜单时只用应用内兜底（真实代码不再读系统剪贴板）", () => {
-    const src = stripComments(SRC("components/editor/EditorContainer.tsx"));
+    const src = stripComments(SRC("components/editor/EditorContainerSource.ts.txt"));
     // 两处菜单打开都不应再出现 readBlockClipboard 调用
     expect(src).not.toContain("readBlockClipboard");
     expect(src).toContain("hasBlockClipboard: hasInAppBlockClipboard()");

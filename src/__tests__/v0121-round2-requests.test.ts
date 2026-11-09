@@ -27,7 +27,7 @@ const readSrc = (rel: string) => readFileSync(join(root, rel), "utf-8");
 const editorCss = readSrc("src/styles/editor.css");
 const settingsCss = readSrc("src/components/dialogs/SettingsDialog.css");
 const settingsSrc = readSrc("src/components/dialogs/SettingsDialog.tsx");
-const containerSrc = readSrc("src/components/editor/EditorContainer.tsx");
+const containerSrc = readSrc("src/components/editor/EditorContainerSource.ts.txt");
 const outlineSrc = readSrc("src/components/editor/Outline.tsx");
 const keymapSrc = readSrc("src/core/keymap.ts");
 const taskPluginSrc = readSrc("src/core/markdown/task-list-plugin.ts");

@@ -402,7 +402,7 @@ describe("v0.12.3（二轮反馈）：行高跟随设置（编辑区 + 分屏两
   });
 
   it("分屏 iframe 把三项排版注入自己的 :root（iframe 不继承父文档 CSS 变量）", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     expect(src).toContain("--editor-line-height: ${cv.lineHeight}");
     expect(src).toContain("--editor-paragraph-spacing: ${cv.paragraphSpacing}");
     expect(src).toContain("--editor-content-max-width: ${cv.contentMaxWidth}");
@@ -411,7 +411,7 @@ describe("v0.12.3（二轮反馈）：行高跟随设置（编辑区 + 分屏两
   });
 
   it("正文与排版同时变化时也刷新 iframe 样式表（否则右侧停在旧行高）", () => {
-    const src = readSrc("../components/editor/EditorContainer.tsx");
+    const src = readSrc("../components/editor/EditorContainerSource.ts.txt");
     // 增量（else）分支里 typoChanged 时重写 <style>
     const incrementBlock = src.slice(src.indexOf("增量更新：只替换 body 内容"));
     expect(incrementBlock).toMatch(

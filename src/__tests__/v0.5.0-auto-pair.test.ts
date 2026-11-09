@@ -281,7 +281,7 @@ describe("v0.5.0 N1：自动配对补全", () => {
   });
 
   it("textarea 端：EditorContainer 的补全入口走 beforeinput + 规划器（v0.12.1 接线）", () => {
-    const src = readSrc("src/components/editor/EditorContainer.tsx");
+    const src = readSrc("src/components/editor/EditorContainerSource.ts.txt");
     // 导入规划器与运行时配置
     expect(src).toMatch(/from "\.\.\/\.\.\/utils\/sourceAutoPair"/);
     expect(src).toMatch(/planSourceChar/);
@@ -293,7 +293,7 @@ describe("v0.5.0 N1：自动配对补全", () => {
   });
 
   it("textarea 端：EditorContainer 接入退格成对删除与 Tab 跳出", () => {
-    const src = readSrc("src/components/editor/EditorContainer.tsx");
+    const src = readSrc("src/components/editor/EditorContainerSource.ts.txt");
     expect(src).toMatch(/planSourceBackspace/);
     expect(src).toMatch(/planSourceTab/);
     expect(src).toMatch(/applySourcePairPlan/);

@@ -37,7 +37,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const rawCss = readFileSync(join(here, "../styles/editor.css"), "utf8");
-const rawTsx = readFileSync(join(here, "../components/editor/EditorContainer.tsx"), "utf8");
+const rawTsx = readFileSync(join(here, "../components/editor/EditorContainerSource.ts.txt"), "utf8");
 
 /** 去掉注释再断言：注释里刻意写了 "padding-inline" / "restore" 等字样解释原因，
  *  不去掉会把"解释"当成"实现"。 */

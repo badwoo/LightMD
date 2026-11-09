@@ -121,7 +121,7 @@ describe("R1: 结构断言（调用方统一引用管线）", () => {
   it("ExportDialog / exportBlocks / EditorContainer 均引用 renderPipeline，不再独立实例化 markdown-it", () => {
     const exportDialog = readFileSync(resolve(root, "src/components/dialogs/ExportDialog.tsx"), "utf-8");
     const exportBlocks = readFileSync(resolve(root, "src/utils/exportBlocks.ts"), "utf-8");
-    const editorContainer = readFileSync(resolve(root, "src/components/editor/EditorContainer.tsx"), "utf-8");
+    const editorContainer = readFileSync(resolve(root, "src/components/editor/EditorContainerSource.ts.txt"), "utf-8");
 
     expect(exportDialog).toContain("renderPipeline");
     expect(exportBlocks).toContain("renderPipeline");

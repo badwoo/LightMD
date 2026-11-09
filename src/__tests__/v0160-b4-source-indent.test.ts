@@ -209,7 +209,7 @@ describe("v0.16.0 B4：planSourceOutdent 反缩进规划", () => {
 // ─── 3. EditorContainer 接线（源码静态断言） ───────────────────────────
 
 describe("v0.16.0 B4：EditorContainer handleSourceKeyDown 接线", () => {
-  const src = readSrc("src/components/editor/EditorContainer.tsx");
+  const src = readSrc("src/components/editor/EditorContainerSource.ts.txt");
 
   it("handleSourceKeyDown 内调用两个缩进规划器", () => {
     const start = src.indexOf("const handleSourceKeyDown = useCallback");

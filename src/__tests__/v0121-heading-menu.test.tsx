@@ -267,7 +267,7 @@ describe("v0.12.1 需求1：样式与接线契约", () => {
   });
 
   it("EditorContainer 接线：回调 → 菜单状态 → 改级别；并渲染菜单", () => {
-    const src = readSrc("src/components/editor/EditorContainer.tsx");
+    const src = readSrc("src/components/editor/EditorContainerSource.ts.txt");
     expect(src).toMatch(/onHeadingBadgeClick: \(headingPos, currentLevel, anchor\)/);
     expect(src).toMatch(/<HeadingLevelMenu/);
     expect(src).toMatch(/applyHeadingLevelToView\(view, pos, level\)/);

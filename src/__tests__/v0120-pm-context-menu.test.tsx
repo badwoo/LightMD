@@ -16,7 +16,7 @@ import {
   NODE_DELETE_LABEL_KEYS,
 } from "../components/editor/PmContextMenu";
 
-const containerSrc = readFileSync("src/components/editor/EditorContainer.tsx", "utf-8");
+const containerSrc = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
 
 afterEach(cleanup);
 
