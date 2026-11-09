@@ -80,7 +80,7 @@ import { FORMAT_BUTTONS as formatButtons, MERMAID_TEMPLATES, formatButtonTitle }
 import { Node as PMNode } from "prosemirror-model";
 import { EditorState, Transaction } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useHistoryHost } from "./panes/historyhost/HistoryHost";
 import { useModeSync } from "./panes/modesync/ModeSync";
 import { useSourcePane } from "./panes/sourcepane/SourcePane";
@@ -89,6 +89,9 @@ import { useSearchHost } from "./panes/searchhost/SearchHost";
 import { useAiChatPane } from "./panes/aichatpane/AiChatPane";
 import { useFormatMenuHost } from "./panes/formatmenuhost/FormatMenuHost";
 import { usePreviewPane } from "./panes/previewpane/PreviewPane";
+import { createSourceSurface } from "../../editor/createSourceSurface";
+import { createSurfaceTextareaBridge } from "../../editor/surface/SurfaceTextareaBridge";
+import type { SourceSurface } from "../../editor/types";
 
 export function shouldOpenImageEditor(img: { getAttribute(name: string): string | null }, isReadonly: boolean): boolean {
   if (img.getAttribute("data-editable") !== "true") return false;
@@ -531,7 +534,55 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   // 源码内容
   const [sourceContent, setSourceContent] = useState(content);
-  const sourceTextareaRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * v0.17.0 A2：源码面经 SourceSurface 访问（唯一选型入口）。
+   *
+   * - 工厂在 jsdom 下回退 textarea 实现 → `surface` 行为与拆分前**完全一致**
+   *   （因此 6600+ 条既有测试不受影响，这是我们刻意保住的绿基线）；
+   * - 真实浏览器下可能启用 CM6 → 此时 `legacyTextareaRef()` 返回 null，
+   *   `sourceTextareaRef.current` 为 null，**走 surface.* 通道的调用点才生效**。
+   *
+   * ⚠️ `sourceTextareaRef` 现在是 `createSurfaceTextareaBridge(surface)` 的产物，
+   * 不再是 React ref —— 79 处既有 `if (ta) { … }` 守卫语义不变（null 走 else 分支），
+   * 这样 A2 可以**分批**收敛到 `surface.*`，每批都能验证，不必一次改掉 79 处。
+   */
+  const sourceSurfaceRef = useRef<SourceSurface | null>(null);
+  if (!sourceSurfaceRef.current) {
+    sourceSurfaceRef.current = createSourceSurface();
+  }
+  const sourceSurface = sourceSurfaceRef.current;
+  /**
+   * 源码面宿主的 callback ref。
+   *
+   * 原来这里是 `useRef<HTMLTextAreaElement>(null)` + JSX `ref={...}`。
+   * A2 起改由 `SourceSurface.mount()` 接管：
+   * - textarea 实现 → 它直接接管这个 `<textarea>` 元素（读写/选区/滚动全走 surface）；
+   * - CM6 实现 → 它把这个元素当作 host（CM6 会替换/包裹其内容）。
+   *
+   * ⚠️ 保持 **null 安全的桥**：79 处既有 `if (ta) {…}` 调用点在 A2 收敛完成前
+   * 仍通过 `sourceTextareaRef.current` 读真实元素（jsdom/回退路径下行为不变）。
+   * 收敛完成、`legacyTextareaRef()` 删除后，这层桥一并移除。
+   */
+  const sourceTextareaRef = useMemo(
+    () => createSurfaceTextareaBridge(sourceSurface),
+    [sourceSurface],
+  );
+  /**
+   * 把 React 渲染出来的宿主元素交给 `SourceSurface`（A2 的唯一挂载入口）。
+   *
+   * - textarea 实现：`mount()` 直接接管该元素（读写/选区/滚动全走 surface）；
+   * - CM6 实现：该元素作为 CM6 的 host，CM6 在其内部建 EditorView。
+   *
+   * 卸载时 `detach()` → `destroy()`：CM6 必须显式销毁才会释放 DOM 监听，
+   * 否则多次挂载会泄漏（textarea 实现同样受益于显式解绑 input 监听）。
+   */
+  const sourceHostRef = useCallback(
+    (el: HTMLTextAreaElement | null) => {
+      if (el) sourceTextareaRef.attach(el);
+      else sourceTextareaRef.detach();
+    },
+    [sourceTextareaRef],
+  );
   const sourceContentRef = useRef(content);
   sourceContentRef.current = sourceContent;
   const lastTextareaCursorRef = useRef(0);
@@ -1561,7 +1612,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
           }}
         >
           <textarea
-            ref={sourceTextareaRef}
+            ref={sourceHostRef}
             className={`source-editor ${previewShown ? "split-editor" : ""}`}
             value={sourceContent}
             onChange={handleSourceChange.current}

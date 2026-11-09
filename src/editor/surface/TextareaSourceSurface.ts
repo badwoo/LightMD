@@ -111,9 +111,27 @@ export class TextareaSourceSurface implements SourceSurface {
 
   mount(host: HTMLElement, opts: SourceSurfaceOptions): void {
     this.host = host;
+    /**
+     * ⚠️ **关键：若 host 本身就是 `<textarea>`，必须直接接管它，不能再往里建一个。**
+     *
+     * 这个坑真实踩过（A2 引入 callback ref 挂载时，3 条跨模式撤销回归就是这么来的）：
+     * 宿主 JSX 渲染的 `<textarea ref={hostRef}>` 被作为 `host` 传进来，
+     * 旧实现走 `externalTa === null` 分支 → 在 textarea **内部**又 appendChild 了一个
+     * 嵌套 textarea。于是 DOM 里有两个 `.source-editor`、两份 value：
+     * - 测试的 `document.querySelector("textarea.source-editor")` 拿到外层那个（React 受控、内容正确）；
+     * - 而 surface 的所有读写都作用在内层那个；
+     * - 撤销时的 `setSelectionRange` 恢复作用在内层 → 外层 `selectionStart` 停在文末，
+     *   断言「撤销后光标回到编辑前位置」实测偏 8/12。
+     *
+     * 正确处理：host 是 textarea 时它就是受管元素（React 已经渲染好 value/受控属性），
+     * 本实现只加监听、不新建、也不 appends 子节点。
+     */
     let ta = this.externalTa;
+    if (!ta && host instanceof HTMLTextAreaElement) {
+      ta = host; // 直接接管 React 渲染出来的那个受控 textarea
+    }
     if (!ta) {
-      // 没有外部受控 textarea 时自己建一个（CM6 之外的场景 / 单测用）
+      // 没有外部受控 textarea、host 也不是 textarea 时自己建一个（CM6 之外的场景 / 单测用）
       ta = document.createElement("textarea");
       ta.className = "source-editor";
       host.appendChild(ta);
