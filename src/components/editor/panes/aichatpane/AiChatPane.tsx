@@ -182,7 +182,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     // v0.7.5 优化3：占位提示（续写中…）不是正文，不可采纳——消费掉本次 Tab
     // 但不插入、也不清除 ghost（等待真实增量到达）
     if (sourceGhostPlaceholderRef.current) return true;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ghost = sourceGhostTextRef.current;
     sourceGhostActiveRef.current = false;
     aiAssistService.cancel().catch(() => undefined);
@@ -460,7 +459,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
          * 选区两端走 surface（纯值）；但 `getTextareaSelectionAnchor` 需要真实 textarea
          * 的**视口几何**（判据 1）→ 该函数仍收 ref 元素，A3 换 `coordsAtPos`。
          */
-        // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
+        // TODO(v0.18): CM6 能力缺口 — 文本锚点需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：AI 气泡锚点降级到视口左上，气泡可用但位置不贴选区 | 用户可感知度：低 | 建议优先级：P2
         const taEl = sourceTextareaRef.current;
         if (taEl) {
           runAiBubble("polish", text, "source", getTextareaSelectionAnchor(taEl), asel.start, asel.end);
@@ -474,7 +473,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
         : sourceContentRef.current;
       if (!text.trim()) return;
       // 锚点仍需真实几何（判据 1）→ 保留 ref 取值；光标位置是纯值 → 走 surface
-      // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
+      // TODO(v0.18): CM6 能力缺口 — 文本锚点需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：AI 气泡锚点降级到视口左上，气泡可用但位置不贴选区 | 用户可感知度：低 | 建议优先级：P2
       const taEl = sourceTextareaRef.current;
       runAiBubble(
         "summary",
@@ -836,7 +835,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     window.addEventListener("keyup", flush, true);
     // 源码通道兜底：部分 WebView2 版本里 textarea 的选区变化不一定派发 document
     // 级 selectionchange（保留兜底，不重复 flush）。
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ta = sourceTextareaRef.current;
     ta?.addEventListener("select", schedule);
     return () => {
@@ -896,7 +894,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     const targets: HTMLElement[] = [];
     const container = editorRef.current;
     if (container) targets.push(container);
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
     if (textarea) targets.push(textarea);
     if (targets.length === 0) return;
@@ -912,7 +909,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       const ctx = aiCtxRef.current;
       if (!ctx || ctx.insertPos === undefined) return;
       if (ctx.sourceMode === "source") {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         /**
          * v0.17.0 A3 收尾：原先 `if (!ta) return;` 会在 CM6 下**直接放弃设置锚点**，
          * 连带后面 PM 分支也不会走（因为这里 return 了）。
@@ -1244,8 +1240,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
       const cursor = pos + text.length;
       requestAnimationFrame(() => {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-        // A3 收敛：焦点与光标恢复是纯值 → 经 surface
         sourceSurface.focus();
         sourceSurface.setSelection(cursor, cursor);
       });
@@ -1348,7 +1342,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       key: activeKeyRef.current,
     });
     requestAnimationFrame(() => {
-      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const el = sourceTextareaRef.current;
       el?.focus();
       el?.setSelectionRange(rewrite.cursor, rewrite.cursor);

@@ -311,7 +311,7 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
      * 但"点击处光标位置"是纯值，改成经 `surface.getSelection()` 读 ——
      * 这样 CM6 下取值逻辑不用再写一份，事件绑定等 A3 统一换 `domEventHandlers`。
      */
-    // TODO(v0.18): CM6 能力缺口 — DOM 事件绑定（CM6 domEventHandlers，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 格式刷的点击落点绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：格式刷仍可从菜单/快捷键进入并使用，仅缺"点击正文直接应用"这一手势 | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
     const onClick = () => {
       if (useFormatPainterStore.getState().mode === "idle") return;
@@ -776,7 +776,6 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       updateOverlayRef.current = null;
       return;
     }
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
 
     /** 计算聚焦行区间（v0.12.0：光标行 ±1 行）的 [startY, endY) 视口 Y 坐标，并更新 overlay 遮罩 */

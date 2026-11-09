@@ -281,35 +281,6 @@ export const TRANSLATE_SNAPSHOT_THROTTLE_MS = 10 * 60 * 1000;
 
 export let lastTranslateSnapshot = { path: "", at: 0 };
 
-/**
- * 把一次配对/缩进计划落到 textarea 上。
- *
- * ## v0.17.0 A2：这已**不再是唯一落地方式**，且新代码不该再用它
- *
- * A 线要求「配对落地走 `SourceSurface.applyEdit`（单事务单步）」，
- * `execCommand("insertText")` 那条路径要退役（任务卡 G7）。
- * 但本函数仍被既有调用方与单测引用（`slash-command-integration` 等），
- * 因此保留为**兼容壳**：调用方逐步改走 `surface.applyEdit` 后，本函数即删除。
- *
- * 语义与 `TextareaSourceSurface.applyEdit` **完全一致**（后者历史上就是从这里搬去的）：
- * - 纯光标移动（`from === to && text === ""`，用于"跳过输入 / Tab 跳出"）→ 只设选区；
- * - 其余 → `execCommand("insertText")` 产生一次原生 input 事件（一次补全 = 一次撤销）。
- *
- * @deprecated v0.17.0 A2 起请改用 `SourceSurface.applyEdit(plan)`。
- */
-export function applySourcePairPlan(ta: HTMLTextAreaElement, plan: SourcePairPlan): void {
-  if (plan.kind !== "edit") return;
-  const { from, to, text, caret, caretEnd } = plan.edit;
-  // 纯光标移动（跳过输入 / Tab 跳出）：不需要 execCommand
-  if (from === to && text === "") {
-    ta.setSelectionRange(caret, caretEnd ?? caret);
-    return;
-  }
-  ta.setSelectionRange(from, to);
-  document.execCommand("insertText", false, text);
-  ta.setSelectionRange(caret, caretEnd ?? caret);
-}
-
 export function buildSourcePairInput(
   ta: HTMLTextAreaElement,
   start: number,
@@ -2458,7 +2429,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     blocks: import("../../../../utils/contentScrollMap").BlockGeometry[];
     markdown: string;
   } | null => {
-    // TODO(v0.18): CM6 能力缺口 — 分屏对齐块几何测量 — CM6 下退回**百分比映射**；软换行长行上可偏约 4 倍（设计稿实测口径），非崩溃
+    // TODO(v0.18): CM6 能力缺口 — 分屏对齐的块几何测量（`measureSourceLineAxis` 需真实 textarea）。当前 CM6 表现：退回**百分比映射**，软换行长行上可偏**约 4 倍** | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     if (!textarea) return null;
     // 不可见时高度/宽度为 0 → 量不出可信行轴
@@ -2509,7 +2480,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * 量不到（隐藏 / 空文档 / 只读）就保持旧缓存不动，绝不写 null 把缓存打坏。
    */
   const cacheSourceGeometry = useCallback(() => {
-    // TODO(v0.18): CM6 能力缺口 — 同 measureSourceBlocks 的缓存包装 — 同上，退回百分比映射
+    // TODO(v0.18): CM6 能力缺口 — 同 `measureSourceBlocks` 的缓存包装（无 textarea 即不缓存）。当前 CM6 表现：缓存为空 → 分屏对齐退回百分比映射，**软换行长行上可偏约 4 倍** | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     const measured = measureSourceBlocks();
@@ -2538,7 +2509,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * @returns null = 无可用几何（调用方退回百分比——与旧行为一致，不会更差）
    */
   const captureSourceContentAnchor = useCallback((): ContentAnchor | null => {
-    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 块几何需 `coordsAtPos`/`getMetrics` 语义。当前 CM6 表现：该处几何不参与计算 → 分屏对齐精度下降（退回百分比，偏约 4 倍量级） | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     const canMeasureLive = !!(textarea && textarea.clientHeight > 0 && textarea.clientWidth > 0);
     if (canMeasureLive) {
@@ -2692,7 +2663,6 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
       pendingSourceSelectionRef.current = null;
       return;
     }
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     /**
      * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：
      * 原 `if (!ta) return;` 在 CM6 下会让**撤销/恢复后的光标恢复整段不执行**
@@ -3663,7 +3633,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
   // ─── 持续追踪 textarea 滚动百分比 + **缓存源码面块几何** ──────────────
   useEffect(() => {
-    // TODO(v0.18): CM6 能力缺口 — 源码块几何的滚动期采样 — CM6 下不采样，分屏对齐退回百分比（同 4 倍量级偏差）
+    // TODO(v0.18): CM6 能力缺口 — 源码块几何的滚动期采样。当前 CM6 表现：不采样 → 分屏对齐退回百分比（同 4 倍量级偏差） | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     let raf = 0;
@@ -4025,8 +3995,6 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
       let anchorLine: number | null = null;
       let anchorColumn: number | null = null;
       if (fromSource) {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-        // A3 收敛：光标位置是纯值 → 经 surface
         {
           const cursorPos = sourceSurface.getSelection().start ?? lastTextareaCursorRef.current;
           lastTextareaCursorRef.current = cursorPos;
@@ -4086,7 +4054,6 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         modeSwitchAnchorRef.current = null;
 
         requestAnimationFrame(() => {
-          // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
           const textarea = sourceTextareaRef.current;
           if (textarea) {
             const lines = mdMasked.split("\n");
@@ -4135,8 +4102,6 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
           const newDoc = contentChanged ? markdownToDoc(unmaskedSource) : view.state.doc;
 
           // 映射光标位置
-          // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-          // A3 收敛：光标位置是纯值 → 经 surface
           let targetPos = 1;
           const srcSel = sourceSurface.getSelection();
           const cursorPos = srcSel.start ?? lastTextareaCursorRef.current;
@@ -4280,7 +4245,6 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         // 清理 iframe 待恢复标记，避免残留值影响后续切换
         pendingIframeScrollRef.current = null;
       } else {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         const textarea = sourceTextareaRef.current;
         if (textarea) {
           // ① 光标位置：按内容映射恢复（行 + 行内列偏移，clamp 到源码行长度），
@@ -4329,7 +4293,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
             traceScroll("res-source-after", { after: textarea.scrollTop, want: anchorTop });
             // 布局稳定后校正一次（内容可能刚写入，scrollHeight 还在变）
             requestAnimationFrame(() => {
-              // TODO(v0.18): CM6 能力缺口 — 内容锚点→scrollTop 的二次校正 — CM6 下跳过该校正，滚动恢复退化为首次写入值（不精确，不崩）
+              // TODO(v0.18): CM6 能力缺口 — 内容锚点 → `scrollTop` 的二次校正。当前 CM6 表现：跳过该校正，滚动恢复取首次写入值，位置略偏 | 用户可感知度：低 | 建议优先级：P2
               const t2 = sourceTextareaRef.current;
               if (!t2) return;
               const again = textareaTopFromContentAnchor(t2, contentAnchor);
@@ -4341,7 +4305,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
           // focus/setSelectionRange 可能触发浏览器把光标滚入视口 → 下一帧校正
           if (computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight) !== null) {
             requestAnimationFrame(() => {
-              // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+              // TODO(v0.18): CM6 能力缺口 — 块几何需 `coordsAtPos`/`getMetrics` 语义。当前 CM6 表现：模式切换时的源码块几何不可得 → 该方向退回百分比映射（偏约 4 倍量级） | 用户可感知度：中 | 建议优先级：P1
               const t2 = sourceTextareaRef.current;
               if (!t2) return;
               // 有锚点时以锚点为准，不要让百分比校正把它覆盖回错误位置
@@ -4781,7 +4745,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     //    （字符偏移与排版、字号、软换行、文本长度全都无关）；
     // 3. 写入后用同一套 rAF / 60ms / 160ms 校正把那一行拉回原视口 Y。
     // 像素只在「文本长度不变」时作快路径；**永不写 0**（写 0 = 丢进度，v0.14.0 P1 老 bug）。
-    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 撤销滚动的文本框几何。当前 CM6 表现：撤销后滚动位置不精确（退化为像素/不恢复），内容正确 | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
     const sel = restore as { start: number; end: number; scrollTop?: number } | undefined;
     /**
@@ -4851,7 +4815,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
      * 单帧恢复会在重排后被推走。三段全部用**同一锚点**（幂等）。
      */
     const applyScrollRestore = () => {
-      // TODO(v0.18): CM6 能力缺口 — 撤销后的内容锚点滚动恢复 — CM6 下退化为像素/不恢复，位置不精确（不崩）
+      // TODO(v0.18): CM6 能力缺口 — 撤销后的内容锚点滚动恢复。当前 CM6 表现：退化为像素/不恢复 → 撤销后滚动位置不精确（**内容正确**） | 用户可感知度：低 | 建议优先级：P2
       const ta = sourceTextareaRef.current;
       if (!ta || ta.clientHeight <= 0) return;
       if (scrollPlan.kind === "anchor") {
@@ -4904,13 +4868,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       const restoreToken = ++sourceSelectionRestoreTokenRef.current;
       const applySelection = () => {
         if (sourceSelectionRestoreTokenRef.current !== restoreToken) return;
-        // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
-      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
-      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
-      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
-      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
-      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
-      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
+        // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
         /**
          * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：撤销后光标恢复。
          *
@@ -5469,14 +5427,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     // 从未生效，全部落回 inferSourceEditKind 的**文本形态猜测** —— 猜测必然误判。
     // 这里在粘贴真正发生前把标记置上，紧随其后的 onChange 消费后复位。
     sourceJustPastedRef.current = true;
-    // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
-      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
-      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
-      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
-      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
-      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
-      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
-    // A3 收敛：`ta` 原仅用于 `isInCodeBlock(ta.value, ...)` → 纯值，经 surface
+    // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
     const text = e.clipboardData.getData("text/plain").trim();
     if (!isHttpUrl(text)) return;
     const psel = sourceSurface.getSelection();
@@ -5558,13 +5509,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       e.key === "Tab" &&
       !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
     ) {
-      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
-      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
-      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
-      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
-      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
-      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
-      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
+      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
       if (ta) {
         const plan = planSourceTab(buildSourcePairInput(ta, ta.selectionStart ?? 0, ta.selectionEnd ?? 0));
@@ -5588,13 +5533,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !sourceGhostActiveRef.current) {
       // IME 组合态守卫（与同函数内 Backspace 分支同款）
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
-      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
-      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
-      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
-      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
-      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
-      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
+      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
       if (ta) {
         const input = {
@@ -5622,13 +5561,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     //   · compositionend（组合提交后相位）→ 补一次闭符号；
     //   · keydown → 退格成对删除、Tab 跳出（这两个必须抢在默认行为之前）。
     if (autoPairEnabled && e.key === "Backspace") {
-      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
-      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
-      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
-      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
-      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
-      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
-      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
+      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
       if (ta) {
         // E5(v0.9.2):IME 组合态守卫——组合期按 Backspace 删拼音，不做成对删除
@@ -5812,7 +5745,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
   // IME 恰好派发单字符 keydown，属偶然可用；现在两条路径都由 sourceAutoPair 规划器裁决。
   useEffect(() => {
     if (!isSourceMode || !isMdFile) return;
-    // TODO(v0.18): CM6 能力缺口 — beforeinput 配对落地事件绑定 — CM6 下该绑定不生效（配对已改走 applyEdit 的核心路径仍在）
+    // TODO(v0.18): CM6 能力缺口 — `beforeinput` 配对落地绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：括号/引号自动补全手势不触发（**缩进与其它编辑仍正常**） | 用户可感知度：中 | 建议优先级：P1
     const ta = sourceTextareaRef.current;
     if (!ta) return;
 
@@ -6091,7 +6024,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
        */
       const tsel = sourceSurface.getSelection();
       if (tsel.start !== tsel.end) {
-        // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
+        // TODO(v0.18): CM6 能力缺口 — 文本锚点需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：翻译气泡锚点降级到视口左上，气泡仍可用但位置不贴选区 | 用户可感知度：低 | 建议优先级：P2
         const textarea = sourceTextareaRef.current;
         const text = sourceContentRef.current.slice(tsel.start, tsel.end);
         if (text.trim() && textarea) {
@@ -6497,7 +6430,6 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
    */
   const removeFormatGhostSyntax = useCallback(() => {
     const ghost = formatGhostRef.current;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     if (!ghost) return false;
     // A3 收敛：选区比较是纯值 → 经 surface（CM6 下同样成立）
     const ghostSel = sourceSurface.getSelection();
@@ -6892,7 +6824,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     // v0.7.5 优化3：占位提示（续写中…）不是正文，不可采纳——消费掉本次 Tab
     // 但不插入、也不清除 ghost（等待真实增量到达）
     if (sourceGhostPlaceholderRef.current) return true;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ghost = sourceGhostTextRef.current;
     sourceGhostActiveRef.current = false;
     aiAssistService.cancel().catch(() => undefined);
@@ -7170,7 +7101,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
          * 选区两端走 surface（纯值）；但 `getTextareaSelectionAnchor` 需要真实 textarea
          * 的**视口几何**（判据 1）→ 该函数仍收 ref 元素，A3 换 `coordsAtPos`。
          */
-        // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
+        // TODO(v0.18): CM6 能力缺口 — 文本锚点需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：AI 气泡锚点降级到视口左上，气泡可用但位置不贴选区 | 用户可感知度：低 | 建议优先级：P2
         const taEl = sourceTextareaRef.current;
         if (taEl) {
           runAiBubble("polish", text, "source", getTextareaSelectionAnchor(taEl), asel.start, asel.end);
@@ -7184,7 +7115,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
         : sourceContentRef.current;
       if (!text.trim()) return;
       // 锚点仍需真实几何（判据 1）→ 保留 ref 取值；光标位置是纯值 → 走 surface
-      // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
+      // TODO(v0.18): CM6 能力缺口 — 文本锚点需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：AI 气泡锚点降级到视口左上，气泡可用但位置不贴选区 | 用户可感知度：低 | 建议优先级：P2
       const taEl = sourceTextareaRef.current;
       runAiBubble(
         "summary",
@@ -7546,7 +7477,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     window.addEventListener("keyup", flush, true);
     // 源码通道兜底：部分 WebView2 版本里 textarea 的选区变化不一定派发 document
     // 级 selectionchange（保留兜底，不重复 flush）。
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ta = sourceTextareaRef.current;
     ta?.addEventListener("select", schedule);
     return () => {
@@ -7606,7 +7536,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     const targets: HTMLElement[] = [];
     const container = editorRef.current;
     if (container) targets.push(container);
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
     if (textarea) targets.push(textarea);
     if (targets.length === 0) return;
@@ -7622,7 +7551,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       const ctx = aiCtxRef.current;
       if (!ctx || ctx.insertPos === undefined) return;
       if (ctx.sourceMode === "source") {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         /**
          * v0.17.0 A3 收尾：原先 `if (!ta) return;` 会在 CM6 下**直接放弃设置锚点**，
          * 连带后面 PM 分支也不会走（因为这里 return 了）。
@@ -7954,8 +7882,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
       const cursor = pos + text.length;
       requestAnimationFrame(() => {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-        // A3 收敛：焦点与光标恢复是纯值 → 经 surface
         sourceSurface.focus();
         sourceSurface.setSelection(cursor, cursor);
       });
@@ -8058,7 +7984,6 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       key: activeKeyRef.current,
     });
     requestAnimationFrame(() => {
-      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const el = sourceTextareaRef.current;
       el?.focus();
       el?.setSelectionRange(rewrite.cursor, rewrite.cursor);
@@ -8678,7 +8603,7 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
      * 但"点击处光标位置"是纯值，改成经 `surface.getSelection()` 读 ——
      * 这样 CM6 下取值逻辑不用再写一份，事件绑定等 A3 统一换 `domEventHandlers`。
      */
-    // TODO(v0.18): CM6 能力缺口 — DOM 事件绑定（CM6 domEventHandlers，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 格式刷的点击落点绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：格式刷仍可从菜单/快捷键进入并使用，仅缺"点击正文直接应用"这一手势 | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
     const onClick = () => {
       if (useFormatPainterStore.getState().mode === "idle") return;
@@ -9143,7 +9068,6 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       updateOverlayRef.current = null;
       return;
     }
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
 
     /** 计算聚焦行区间（v0.12.0：光标行 ±1 行）的 [startY, endY) 视口 Y 坐标，并更新 overlay 遮罩 */
@@ -9683,7 +9607,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // - resize 抑制：窗口缩放时浏览器会把光标滚入视口，其 scroll 事件不得刷新锚点。
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — 字号/宽度变化时的文本锚点采集（ResizeObserver） — CM6 下不做锚点补偿，缩放后视口可能偏移
+    // TODO(v0.18): CM6 能力缺口 — 缩放/宽度变化的锚点采集（`ResizeObserver` 需真实元素）。当前 CM6 表现：不做锚点补偿，改字号后视口可能偏移一段 | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
     if (!ta || typeof ResizeObserver === "undefined") return;
     textAnchorRef.current = captureTextAnchor(ta);
@@ -9745,7 +9669,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 用"视口顶部内容偏移"还原，视觉上视口顶部内容保持不动。
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
+    // TODO(v0.18): CM6 能力缺口 — 缩放后的锚点恢复需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：该补偿不执行，视口位置不精确 | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
     if (!ta) return;
     const raf = requestAnimationFrame(() => {
@@ -10078,7 +10002,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // textarea 打字机滚动（编辑/分屏模式）
   useEffect(() => {
     if (!typewriterMode || viewMode === "preview") return;
-    // TODO(v0.18): CM6 能力缺口 — 源码面打字机的 DOM 事件绑定 — CM6 下打字机事件暂不生效（居中不触发），**非静默失败：CM6 自身保持光标可见**
+    // TODO(v0.18): CM6 能力缺口 — 源码面打字机的键位事件绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：**开启了打字机但源码面无居中效果**（CM6 自身保持光标可见，所以不是白屏级故障） | 用户可感知度：高 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     // 不设置 scrollBehavior = "smooth"，与 ProseMirror 模式保持一致：
@@ -10397,7 +10321,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     freezePrevShownRef.current = previewShown;
     if (modeChanged || !shownChanged) return;
     if (viewMode !== "edit") return;
-    // TODO(v0.18): CM6 能力缺口 — 预览开合时的滚动冻结（记录开合前像素/锚点） — CM6 下不冻结，开合时可能有一次位置跳动
+    // TODO(v0.18): CM6 能力缺口 — 预览开合时的滚动冻结（记录开合前像素/锚点）。当前 CM6 表现：不冻结 → 开合瞬间可能有一次位置跳动 | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     // 记录开合前的滚动像素与**视口中央内容锚点**。
@@ -10467,7 +10391,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
      */
     const restore = () => {
       if (cancelled || abortedByUser) return;
-      // TODO(v0.18): CM6 能力缺口 — 滚动冻结窗口内的恢复 — CM6 下跳过，同上一项
+      // TODO(v0.18): CM6 能力缺口 — 冻结窗口内的位置恢复。当前 CM6 表现：跳过恢复，开合后位置不精确 | 用户可感知度：低 | 建议优先级：P2
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       // 确认窗口确实还属于本次（复开关时会被新值覆盖 → 交给最新那次）
@@ -10560,7 +10484,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       tries = 4,
     ) => {
       if (cancelled || abortedByUser) return;
-      // TODO(v0.18): CM6 能力缺口 — 冻结解除后的位置还原 — CM6 下跳过，表现为开合后位置不精确
+      // TODO(v0.18): CM6 能力缺口 — 冻结解除后的位置还原。当前 CM6 表现：跳过 → 开合后滚动位置不精确 | 用户可感知度：低 | 建议优先级：P2
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       isFrozenRestoreRef.current = true;
@@ -10628,7 +10552,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
     restores.push(teardown);
     {
-      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+      // TODO(v0.18): CM6 能力缺口 — 分屏右→左映射的源码几何需 `coordsAtPos`/`getMetrics`。当前 CM6 表现：右屏驱动左屏仍可用，但落点精度下降（走百分比兜底） | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
       lastScrollHeight = ta ? ta.scrollHeight : -1;
       if (ta && typeof ResizeObserver !== "undefined") {

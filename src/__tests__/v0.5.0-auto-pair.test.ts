@@ -292,13 +292,24 @@ describe("v0.5.0 N1：自动配对补全", () => {
     expect(src).toMatch(/ie\.isComposing/);
   });
 
-  it("textarea 端：EditorContainer 接入退格成对删除与 Tab 跳出", () => {
+  it("源码端：接入退格成对删除与 Tab 跳出，落地经 SourceSurface.applyEdit", () => {
     const src = readSrc("src/components/editor/EditorContainerSource.ts.txt");
+    // 规划器：纯函数原样保留（A3 未改它们）
     expect(src).toMatch(/planSourceBackspace/);
     expect(src).toMatch(/planSourceTab/);
-    expect(src).toMatch(/applySourcePairPlan/);
-    // 落地走一条 execCommand → 一次撤销
-    expect(src).toMatch(/document\.execCommand\("insertText", false, text\)/);
+    /**
+     * v0.17.0 A3（G7）：落地方式已从 `applySourcePairPlan`（兼容壳，直接 execCommand）
+     * 收敛到 `SourceSurface.applyEdit` —— **单事务单步**。
+     *
+     * 断言升级（不是放宽）：
+     * - 仍要求"落地是单次离散编辑"（一次补全 = 一步撤销）；
+     * - 但改成断言契约调用，而不是断言某个内部函数名或 execCommand 文本
+     *   （后者是实现细节，随 CM6 迁移必然失效）。
+     */
+    expect(src, "落地必须经 SourceSurface.applyEdit（单事务单步）").toMatch(
+      /sourceSurface\.applyEdit\(/,
+    );
+    expect(src, "不得回退到已删除的兼容壳").not.toMatch(/applySourcePairPlan\(/);
   });
 
   it("SettingsDialog 提供开关项 + i18n 文案（zh/en）", () => {

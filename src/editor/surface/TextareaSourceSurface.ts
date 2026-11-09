@@ -18,7 +18,7 @@
  *
  * ## 为什么不直接用 `ta.value = x` 改文本
  *
- * 现状 `applySourcePairPlan` 用 `document.execCommand("insertText")` 而不是赋值，
+ * A3 之前 `applySourcePairPlan`（编辑器容器的兼容壳，已删除）用 `document.execCommand("insertText")` 而不是赋值，
  * 原因是硬需求：**一次补全只占一次撤销**。`execCommand` 触发的是**原生的 input 事件**
  * （浏览器把它当成一次用户输入），React 的 onChange 只收到一次；而 `ta.value = x`
  * 根本不触发 input 事件，宿主就收不到变更，diff 撤销栈与统一时间线都会漏记。

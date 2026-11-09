@@ -456,7 +456,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     blocks: import("../../../../utils/contentScrollMap").BlockGeometry[];
     markdown: string;
   } | null => {
-    // TODO(v0.18): CM6 能力缺口 — 分屏对齐块几何测量 — CM6 下退回**百分比映射**；软换行长行上可偏约 4 倍（设计稿实测口径），非崩溃
+    // TODO(v0.18): CM6 能力缺口 — 分屏对齐的块几何测量（`measureSourceLineAxis` 需真实 textarea）。当前 CM6 表现：退回**百分比映射**，软换行长行上可偏**约 4 倍** | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     if (!textarea) return null;
     // 不可见时高度/宽度为 0 → 量不出可信行轴
@@ -507,7 +507,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * 量不到（隐藏 / 空文档 / 只读）就保持旧缓存不动，绝不写 null 把缓存打坏。
    */
   const cacheSourceGeometry = useCallback(() => {
-    // TODO(v0.18): CM6 能力缺口 — 同 measureSourceBlocks 的缓存包装 — 同上，退回百分比映射
+    // TODO(v0.18): CM6 能力缺口 — 同 `measureSourceBlocks` 的缓存包装（无 textarea 即不缓存）。当前 CM6 表现：缓存为空 → 分屏对齐退回百分比映射，**软换行长行上可偏约 4 倍** | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     const measured = measureSourceBlocks();
@@ -536,7 +536,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * @returns null = 无可用几何（调用方退回百分比——与旧行为一致，不会更差）
    */
   const captureSourceContentAnchor = useCallback((): ContentAnchor | null => {
-    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 块几何需 `coordsAtPos`/`getMetrics` 语义。当前 CM6 表现：该处几何不参与计算 → 分屏对齐精度下降（退回百分比，偏约 4 倍量级） | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     const canMeasureLive = !!(textarea && textarea.clientHeight > 0 && textarea.clientWidth > 0);
     if (canMeasureLive) {
@@ -690,7 +690,6 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
       pendingSourceSelectionRef.current = null;
       return;
     }
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     /**
      * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：
      * 原 `if (!ta) return;` 在 CM6 下会让**撤销/恢复后的光标恢复整段不执行**

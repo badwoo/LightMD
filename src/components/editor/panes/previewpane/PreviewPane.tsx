@@ -356,7 +356,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // - resize 抑制：窗口缩放时浏览器会把光标滚入视口，其 scroll 事件不得刷新锚点。
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — 字号/宽度变化时的文本锚点采集（ResizeObserver） — CM6 下不做锚点补偿，缩放后视口可能偏移
+    // TODO(v0.18): CM6 能力缺口 — 缩放/宽度变化的锚点采集（`ResizeObserver` 需真实元素）。当前 CM6 表现：不做锚点补偿，改字号后视口可能偏移一段 | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
     if (!ta || typeof ResizeObserver === "undefined") return;
     textAnchorRef.current = captureTextAnchor(ta);
@@ -418,7 +418,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 用"视口顶部内容偏移"还原，视觉上视口顶部内容保持不动。
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
+    // TODO(v0.18): CM6 能力缺口 — 缩放后的锚点恢复需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：该补偿不执行，视口位置不精确 | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
     if (!ta) return;
     const raf = requestAnimationFrame(() => {
@@ -751,7 +751,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // textarea 打字机滚动（编辑/分屏模式）
   useEffect(() => {
     if (!typewriterMode || viewMode === "preview") return;
-    // TODO(v0.18): CM6 能力缺口 — 源码面打字机的 DOM 事件绑定 — CM6 下打字机事件暂不生效（居中不触发），**非静默失败：CM6 自身保持光标可见**
+    // TODO(v0.18): CM6 能力缺口 — 源码面打字机的键位事件绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：**开启了打字机但源码面无居中效果**（CM6 自身保持光标可见，所以不是白屏级故障） | 用户可感知度：高 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     // 不设置 scrollBehavior = "smooth"，与 ProseMirror 模式保持一致：
@@ -1070,7 +1070,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     freezePrevShownRef.current = previewShown;
     if (modeChanged || !shownChanged) return;
     if (viewMode !== "edit") return;
-    // TODO(v0.18): CM6 能力缺口 — 预览开合时的滚动冻结（记录开合前像素/锚点） — CM6 下不冻结，开合时可能有一次位置跳动
+    // TODO(v0.18): CM6 能力缺口 — 预览开合时的滚动冻结（记录开合前像素/锚点）。当前 CM6 表现：不冻结 → 开合瞬间可能有一次位置跳动 | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     // 记录开合前的滚动像素与**视口中央内容锚点**。
@@ -1140,7 +1140,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
      */
     const restore = () => {
       if (cancelled || abortedByUser) return;
-      // TODO(v0.18): CM6 能力缺口 — 滚动冻结窗口内的恢复 — CM6 下跳过，同上一项
+      // TODO(v0.18): CM6 能力缺口 — 冻结窗口内的位置恢复。当前 CM6 表现：跳过恢复，开合后位置不精确 | 用户可感知度：低 | 建议优先级：P2
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       // 确认窗口确实还属于本次（复开关时会被新值覆盖 → 交给最新那次）
@@ -1233,7 +1233,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       tries = 4,
     ) => {
       if (cancelled || abortedByUser) return;
-      // TODO(v0.18): CM6 能力缺口 — 冻结解除后的位置还原 — CM6 下跳过，表现为开合后位置不精确
+      // TODO(v0.18): CM6 能力缺口 — 冻结解除后的位置还原。当前 CM6 表现：跳过 → 开合后滚动位置不精确 | 用户可感知度：低 | 建议优先级：P2
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       isFrozenRestoreRef.current = true;
@@ -1301,7 +1301,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
     restores.push(teardown);
     {
-      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+      // TODO(v0.18): CM6 能力缺口 — 分屏右→左映射的源码几何需 `coordsAtPos`/`getMetrics`。当前 CM6 表现：右屏驱动左屏仍可用，但落点精度下降（走百分比兜底） | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
       lastScrollHeight = ta ? ta.scrollHeight : -1;
       if (ta && typeof ResizeObserver !== "undefined") {

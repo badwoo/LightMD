@@ -259,35 +259,6 @@ export const TRANSLATE_SNAPSHOT_THROTTLE_MS = 10 * 60 * 1000;
 
 export let lastTranslateSnapshot = { path: "", at: 0 };
 
-/**
- * 把一次配对/缩进计划落到 textarea 上。
- *
- * ## v0.17.0 A2：这已**不再是唯一落地方式**，且新代码不该再用它
- *
- * A 线要求「配对落地走 `SourceSurface.applyEdit`（单事务单步）」，
- * `execCommand("insertText")` 那条路径要退役（任务卡 G7）。
- * 但本函数仍被既有调用方与单测引用（`slash-command-integration` 等），
- * 因此保留为**兼容壳**：调用方逐步改走 `surface.applyEdit` 后，本函数即删除。
- *
- * 语义与 `TextareaSourceSurface.applyEdit` **完全一致**（后者历史上就是从这里搬去的）：
- * - 纯光标移动（`from === to && text === ""`，用于"跳过输入 / Tab 跳出"）→ 只设选区；
- * - 其余 → `execCommand("insertText")` 产生一次原生 input 事件（一次补全 = 一次撤销）。
- *
- * @deprecated v0.17.0 A2 起请改用 `SourceSurface.applyEdit(plan)`。
- */
-export function applySourcePairPlan(ta: HTMLTextAreaElement, plan: SourcePairPlan): void {
-  if (plan.kind !== "edit") return;
-  const { from, to, text, caret, caretEnd } = plan.edit;
-  // 纯光标移动（跳过输入 / Tab 跳出）：不需要 execCommand
-  if (from === to && text === "") {
-    ta.setSelectionRange(caret, caretEnd ?? caret);
-    return;
-  }
-  ta.setSelectionRange(from, to);
-  document.execCommand("insertText", false, text);
-  ta.setSelectionRange(caret, caretEnd ?? caret);
-}
-
 export function buildSourcePairInput(
   ta: HTMLTextAreaElement,
   start: number,

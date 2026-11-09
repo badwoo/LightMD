@@ -26,7 +26,7 @@ import {
 } from "../utils/sourceIndent";
 import type { SourcePairPlan } from "../utils/sourceAutoPair";
 // 落地函数与编辑器同源（同一份 execCommand 路径）
-import { applySourcePairPlan } from "../components/editor/EditorContainer";
+import { TextareaSourceSurface } from "../editor/surface/TextareaSourceSurface";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -283,13 +283,23 @@ describe("v0.16.0 B4：EditorContainer handleSourceKeyDown 接线", () => {
   });
 });
 
-// ─── 4. 落地行为：applySourcePairPlan 落到真实 textarea（jsdom） ──────────
+// ═══ 4. 落地行为：plan → SourceSurface.applyEdit 真实 textarea（jsdom） ═══════
 //
 // 上一节是源码静态断言；这里用真实 `<textarea>` 验证「规划 → 落地」的可观测结果：
 // value 真的变了、光标真的落在预期位置、一次编辑只触发**一次** input 事件
-// （= 撤销栈一条记录，与 PM 侧一致）。jsdom 没有 execCommand 实现，按既有测试做法打桩。
+//（= 撤销栈一条记录，与 PM 侧一致）。jsdom 没有 execCommand 实现，按既有测试做法打桩。
+//
+// ## v0.17.0 A3 收尾：从 `applySourcePairPlan` 迁到 `SourceSurface.applyEdit`
+//
+// 原 `applySourcePairPlan`（EditorContainer 里的兼容壳）已删除 —— 它直接
+// `execCommand("insertText")`，是 G7 要退役的路径。
+// 现在落地统一经 `TextareaSourceSurface.applyEdit`（内部仍是同一次 execCommand，
+// 但收敛在实现层一处，调用方不再依赖）。
+//
+// **断言本身一字未改**：value 变没变、光标在哪、触发几次 input —— 都是行为契约，
+// 与"用哪个函数落地"无关。这让这组测试在 A3 之后继续有效，而不是随实现漂移。
 
-describe("v0.16.0 B4：plan → applySourcePairPlan 真实 textarea 落地", () => {
+describe("v0.16.0 B4：plan → SourceSurface.applyEdit 真实 textarea 落地", () => {
   let originalExec: typeof document.execCommand;
 
   beforeEach(() => {
@@ -324,33 +334,42 @@ describe("v0.16.0 B4：plan → applySourcePairPlan 真实 textarea 落地", () 
 
   it("Tab：源码模式 Tab 真的改变 value（D2 核心症状：此前 value 不变）", () => {
     const { ta, inputCount, cleanup } = mount("alpha\nbeta", 0, 10);
+    const surface = new TextareaSourceSurface();
+    surface.mount(ta, { initialText: ta.value });
     const plan = planSourceIndent({ value: ta.value, start: 0, end: 10, unit: "  " });
-    applySourcePairPlan(ta, plan);
+    surface.applyEdit(plan);
     expect(ta.value).toBe("  alpha\n  beta");
     expect(inputCount()).toBe(1); // 一次 execCommand = 一条撤销记录
     // 起点本就在行首 → 起点不动（新插入缩进进入选区），终点右移两行缩进量
     expect(ta.selectionStart).toBe(0);
     expect(ta.selectionEnd).toBe(14);
+    surface.destroy();
     cleanup();
   });
 
   it("Shift+Tab：4 空格行首删一个单位（value 变为 2 空格）", () => {
     const { ta, inputCount, cleanup } = mount("    a", 4);
+    const surface = new TextareaSourceSurface();
+    surface.mount(ta, { initialText: ta.value });
     const plan = planSourceOutdent({ value: ta.value, start: 4, end: 4, unit: "  " });
-    applySourcePairPlan(ta, plan);
+    surface.applyEdit(plan);
     expect(ta.value).toBe("  a");
     expect(inputCount()).toBe(1);
     expect(ta.selectionStart).toBe(2);
+    surface.destroy();
     cleanup();
   });
 
   it("plan 为 none 时 applySourcePairPlan 不改 value（吞键责任在 keydown 分支）", () => {
     const { ta, inputCount, cleanup } = mount("a b", 2);
+    const surface = new TextareaSourceSurface();
+    surface.mount(ta, { initialText: ta.value });
     const plan = planSourceOutdent({ value: ta.value, start: 2, end: 2, unit: "  " });
     expect(plan.kind).toBe("none");
-    applySourcePairPlan(ta, plan);
+    surface.applyEdit(plan);
     expect(ta.value).toBe("a b");
     expect(inputCount()).toBe(0);
+    surface.destroy();
     cleanup();
   });
 });

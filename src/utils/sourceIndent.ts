@@ -3,7 +3,7 @@
  *
  * 与 `utils/sourceAutoPair.ts` 同一套模式：「纯函数规划 → DOM 落地分离」。
  * 本模块只把 textarea 的文本坐标翻译成「一次文本替换计划」，**不做任何 DOM 操作**；
- * 落地（execCommand + 光标）由 EditorContainer 的 `applySourcePairPlan` 统一完成，
+ * 落地（execCommand + 光标）由 `SourceSurface.applyEdit` 统一完成（A3 前是 EditorContainer 的 `applySourcePairPlan`，已删除），
  * 因此一次缩进 = 一次 `document.execCommand("insertText")` = 一个 input 事件
  * = 撤销栈里的**一条**记录（多行整体缩进也是一次撤销）。
  *

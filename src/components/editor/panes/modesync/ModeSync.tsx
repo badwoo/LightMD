@@ -488,7 +488,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
   // ─── 持续追踪 textarea 滚动百分比 + **缓存源码面块几何** ──────────────
   useEffect(() => {
-    // TODO(v0.18): CM6 能力缺口 — 源码块几何的滚动期采样 — CM6 下不采样，分屏对齐退回百分比（同 4 倍量级偏差）
+    // TODO(v0.18): CM6 能力缺口 — 源码块几何的滚动期采样。当前 CM6 表现：不采样 → 分屏对齐退回百分比（同 4 倍量级偏差） | 用户可感知度：中 | 建议优先级：P1
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     let raf = 0;
@@ -850,8 +850,6 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
       let anchorLine: number | null = null;
       let anchorColumn: number | null = null;
       if (fromSource) {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-        // A3 收敛：光标位置是纯值 → 经 surface
         {
           const cursorPos = sourceSurface.getSelection().start ?? lastTextareaCursorRef.current;
           lastTextareaCursorRef.current = cursorPos;
@@ -911,7 +909,6 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         modeSwitchAnchorRef.current = null;
 
         requestAnimationFrame(() => {
-          // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
           const textarea = sourceTextareaRef.current;
           if (textarea) {
             const lines = mdMasked.split("\n");
@@ -960,8 +957,6 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
           const newDoc = contentChanged ? markdownToDoc(unmaskedSource) : view.state.doc;
 
           // 映射光标位置
-          // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-          // A3 收敛：光标位置是纯值 → 经 surface
           let targetPos = 1;
           const srcSel = sourceSurface.getSelection();
           const cursorPos = srcSel.start ?? lastTextareaCursorRef.current;
@@ -1105,7 +1100,6 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         // 清理 iframe 待恢复标记，避免残留值影响后续切换
         pendingIframeScrollRef.current = null;
       } else {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         const textarea = sourceTextareaRef.current;
         if (textarea) {
           // ① 光标位置：按内容映射恢复（行 + 行内列偏移，clamp 到源码行长度），
@@ -1154,7 +1148,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
             traceScroll("res-source-after", { after: textarea.scrollTop, want: anchorTop });
             // 布局稳定后校正一次（内容可能刚写入，scrollHeight 还在变）
             requestAnimationFrame(() => {
-              // TODO(v0.18): CM6 能力缺口 — 内容锚点→scrollTop 的二次校正 — CM6 下跳过该校正，滚动恢复退化为首次写入值（不精确，不崩）
+              // TODO(v0.18): CM6 能力缺口 — 内容锚点 → `scrollTop` 的二次校正。当前 CM6 表现：跳过该校正，滚动恢复取首次写入值，位置略偏 | 用户可感知度：低 | 建议优先级：P2
               const t2 = sourceTextareaRef.current;
               if (!t2) return;
               const again = textareaTopFromContentAnchor(t2, contentAnchor);
@@ -1166,7 +1160,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
           // focus/setSelectionRange 可能触发浏览器把光标滚入视口 → 下一帧校正
           if (computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight) !== null) {
             requestAnimationFrame(() => {
-              // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+              // TODO(v0.18): CM6 能力缺口 — 块几何需 `coordsAtPos`/`getMetrics` 语义。当前 CM6 表现：模式切换时的源码块几何不可得 → 该方向退回百分比映射（偏约 4 倍量级） | 用户可感知度：中 | 建议优先级：P1
               const t2 = sourceTextareaRef.current;
               if (!t2) return;
               // 有锚点时以锚点为准，不要让百分比校正把它覆盖回错误位置

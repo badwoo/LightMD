@@ -96,7 +96,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
   // IME 恰好派发单字符 keydown，属偶然可用；现在两条路径都由 sourceAutoPair 规划器裁决。
   useEffect(() => {
     if (!isSourceMode || !isMdFile) return;
-    // TODO(v0.18): CM6 能力缺口 — beforeinput 配对落地事件绑定 — CM6 下该绑定不生效（配对已改走 applyEdit 的核心路径仍在）
+    // TODO(v0.18): CM6 能力缺口 — `beforeinput` 配对落地绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：括号/引号自动补全手势不触发（**缩进与其它编辑仍正常**） | 用户可感知度：中 | 建议优先级：P1
     const ta = sourceTextareaRef.current;
     if (!ta) return;
 
@@ -375,7 +375,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
        */
       const tsel = sourceSurface.getSelection();
       if (tsel.start !== tsel.end) {
-        // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
+        // TODO(v0.18): CM6 能力缺口 — 文本锚点需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：翻译气泡锚点降级到视口左上，气泡仍可用但位置不贴选区 | 用户可感知度：低 | 建议优先级：P2
         const textarea = sourceTextareaRef.current;
         const text = sourceContentRef.current.slice(tsel.start, tsel.end);
         if (text.trim() && textarea) {
@@ -781,7 +781,6 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
    */
   const removeFormatGhostSyntax = useCallback(() => {
     const ghost = formatGhostRef.current;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     if (!ghost) return false;
     // A3 收敛：选区比较是纯值 → 经 surface（CM6 下同样成立）
     const ghostSel = sourceSurface.getSelection();
