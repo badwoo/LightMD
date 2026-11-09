@@ -160,7 +160,13 @@ interface MarkStack {
   href?: string;
 }
 
-function inlineFromTokens(children: Tk[], lineStarts: number[], source: string): InlineNode[] {
+function inlineFromTokens(
+  children: Tk[],
+  lineStarts: number[],
+  source: string,
+  /** 段内换行语义：gfm(true)=裸换行即 hardbreak；commonmark(false)=空格 */
+  breaks: boolean,
+): InlineNode[] {
   const out: InlineNode[] = [];
   const stack: MarkStack = {};
 
@@ -227,7 +233,19 @@ function inlineFromTokens(children: Tk[], lineStarts: number[], source: string):
         break;
       }
       case "softbreak":
-        out.push({ text: "\n", kind: "softbreak" });
+        // v0.17.0 B1：**必须在模型层分派**（与 parser.ts 的 activeBreaks 同口径）。
+        //
+        // 关键实测：markdown-it 的 `breaks` 选项只在**渲染期**
+        // （`renderer.rules.softbreak`）生效，**解析期 token 类型相同**（恒为 softbreak）。
+        // 本项目的语义分派发生在 PM 解析层（parser.ts 读 settings 决定映射成
+        // hard_break 还是空格文本）。UnifiedDoc 作为四出口的共同事实源，
+        // 必须在这里做出同样的分派 —— 否则 gfm/commonmark 两种模式下 tree 完全相同，
+        // 「缓存键含 paragraphBreaks」就失去意义，且预览出口会拿到错误语义。
+        if (breaks) {
+          out.push({ text: "\n", kind: "softbreak" });
+        } else {
+          out.push({ text: " ", kind: "text" });
+        }
         break;
       case "hardbreak":
         out.push({ text: "\n", kind: "hardbreak" });
@@ -308,6 +326,8 @@ interface Ctx {
   tokens: Tk[];
   unknown: Set<string>;
   headings: TocHeading[];
+  /** 段内换行语义（gfm=true）—— 决定 softbreak 映射成 break 还是空格 */
+  breaks: boolean;
 }
 
 /** 找配对 close token 的索引（`startIdx` 是 open token） */
@@ -423,7 +443,7 @@ function parseList(ctx: Ctx, startIdx: number): { node: MdNode; next: number } {
       const child = ctx.tokens[j]!;
       if (child.type === "inline") {
         // 紧列表项的裸 inline（无 paragraph_open 包裹时会走到这里）
-        const inline = inlineFromTokens(child.children || [], ctx.lineStarts, ctx.source);
+        const inline = inlineFromTokens(child.children || [], ctx.lineStarts, ctx.source, ctx.breaks);
         if (inline.length > 0) {
           const ln = linesOfToken(child.map, ctx.lineCount) ?? { start: lines?.start ?? 0, end: lines?.end ?? 0 };
           childBlocks.push(makeNode(ctx, "paragraph", ln, {}, { inline }));
@@ -436,7 +456,7 @@ function parseList(ctx: Ctx, startIdx: number): { node: MdNode; next: number } {
         const ln = deriveLines(ctx, j, pEnd) ?? { start: lines?.start ?? 0, end: lines?.end ?? 0 };
         childBlocks.push(
           makeNode(ctx, "paragraph", ln, {}, {
-            inline: inlineFromTokens(firstInlineChildren(ctx.tokens, j, pEnd) || [], ctx.lineStarts, ctx.source),
+            inline: inlineFromTokens(firstInlineChildren(ctx.tokens, j, pEnd) || [], ctx.lineStarts, ctx.source, ctx.breaks),
           }),
         );
         j = pEnd + 1;
@@ -547,7 +567,7 @@ function parseTable(ctx: Ctx, startIdx: number): { node: MdNode; next: number } 
       const align = m ? m[1]!.toLowerCase() : "left";
       const col = curRow.length;
       if (alignCol.length <= col) alignCol[col] = align;
-      const inline = inlineFromTokens(firstInlineChildren(ctx.tokens, i, Math.min(i + 3, closeIdx)) || [], ctx.lineStarts, ctx.source);
+      const inline = inlineFromTokens(firstInlineChildren(ctx.tokens, i, Math.min(i + 3, closeIdx)) || [], ctx.lineStarts, ctx.source, ctx.breaks);
       pending = { inline, header: isHeader, align, colspan: 1, rowspan: 1 };
       continue;
     }
@@ -576,7 +596,7 @@ function parseDefList(ctx: Ctx, startIdx: number): { node: MdNode; next: number 
     const t = ctx.tokens[i]!;
     if (t.type === "dt_open") {
       const dtEnd = findClose(ctx.tokens, i, "dt_open", "dt_close");
-      const termInline = inlineFromTokens(firstInlineChildren(ctx.tokens, i, dtEnd) || [], ctx.lineStarts, ctx.source);
+      const termInline = inlineFromTokens(firstInlineChildren(ctx.tokens, i, dtEnd) || [], ctx.lineStarts, ctx.source, ctx.breaks);
       // 该 dt 之后连续的 dd 归属此术语
       const dds: MdNode[] = [];
       let j = dtEnd + 1;
@@ -707,7 +727,7 @@ function parseTokenRange(ctx: Ctx, from: number, to: number, topLevel: boolean):
       const level = parseInt((t.tag || "h1").slice(1), 10) || 1;
       // Setext：markup 是 `=` 或 `-`（ATX 是 `#`）
       const setext = t.markup === "=" || t.markup === "-";
-      const inline = inlineFromTokens(firstInlineChildren(ctx.tokens, i, hEnd) || [], ctx.lineStarts, ctx.source);
+      const inline = inlineFromTokens(firstInlineChildren(ctx.tokens, i, hEnd) || [], ctx.lineStarts, ctx.source, ctx.breaks);
       const trailing = lines && lines.end > lines.start ? 1 : 0;
       nodes.push(
         makeNode(ctx, "heading", lines, { level }, {
@@ -728,7 +748,7 @@ function parseTokenRange(ctx: Ctx, from: number, to: number, topLevel: boolean):
       const lines = deriveLines(ctx, i, pEnd);
       nodes.push(
         makeNode(ctx, "paragraph", lines, {}, {
-          inline: inlineFromTokens(firstInlineChildren(ctx.tokens, i, pEnd) || [], ctx.lineStarts, ctx.source),
+          inline: inlineFromTokens(firstInlineChildren(ctx.tokens, i, pEnd) || [], ctx.lineStarts, ctx.source, ctx.breaks),
         }),
       );
       i = pEnd + 1;
@@ -868,7 +888,8 @@ export function parseUnified(source: string, opts?: UnifiedParseOptions): Unifie
   const lineCount = lineStarts.length;
 
   const unknown = new Set<string>();
-  const ctx: Ctx = { source, lineStarts, lineCount, tokens: rawTokens, unknown, headings };
+  const breaks = opts?.breaks ?? true;
+  const ctx: Ctx = { source, lineStarts, lineCount, tokens: rawTokens, unknown, headings, breaks };
   const tree = parseTokenRange(ctx, 0, rawTokens.length, true);
 
   // 文档级尾部空行数（保真用：末尾 N 个空行要写回 N 个）
