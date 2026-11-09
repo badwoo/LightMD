@@ -316,9 +316,18 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
     return src.slice(at, end);
   }
 
+  /**
+   * v0.17.0 A3：左屏滚动来源从「`onSourceScroll = () => syncToPreview()` + 直绑 textarea」
+   * 改为「`sourceSurface.onDidScroll(() => syncToPreview())`」——CM6 下滚动容器是
+   * `view.scrollDOM`，宿主无从得知该绑哪个节点，必须由实现层提供订阅能力。
+   *
+   * 因此这里的**切片标记**（`fnBody` 的 endMarker）同步更新；
+   * 断言内容（两方向共用 collectAnchors、方向锁先检查再登记）**一字未改** ——
+   * 这正说明本次改动只换了"事件从哪来"，没有动防拉扯机制。
+   */
   it("syncToPreview 与 syncToSource 都从同一份 collectAnchors 取锚点", () => {
     const previewFn = fnBody("const syncToPreview = (force = false) =>", "const syncToSource = () =>");
-    const sourceFn = fnBody("const syncToSource = () =>", "const onSourceScroll = () => syncToPreview();");
+    const sourceFn = fnBody("const syncToSource = () =>", "const offSourceScroll = sourceSurface.onDidScroll(");
     expect(previewFn).toContain("collectAnchors()");
     expect(sourceFn).toContain("collectAnchors()");
     // 采集函数把视口坐标换算回内容坐标（scrollTop 也在内容坐标系）。
@@ -329,8 +338,9 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
 
   it("方向锁在两侧都先检查再登记（异步 scroll 回声不会把另一侧反推回去）", () => {
     const previewFn = fnBody("const syncToPreview = (force = false) =>", "const syncToSource = () =>");
-    const sourceFn = fnBody("const syncToSource = () =>", "const onSourceScroll = () => syncToPreview();");
+    const sourceFn = fnBody("const syncToSource = () =>", "const offSourceScroll = sourceSurface.onDidScroll(");
     // 两道防线：方向锁（跨帧回声）+ isSyncingScrollRef（同调用栈重入）
+    // ⚠️ 这两道防线**必须原样保留**（v0.13.2 返修核心）——本次只换滚动事件来源，不动它们。
     expect(previewFn).toContain('shouldAcceptScroll(lock, "source"');
     expect(previewFn).toContain('markScrollSource(lock, "source"');
     expect(sourceFn).toContain('shouldAcceptScroll(lock, "preview"');
@@ -345,7 +355,8 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
     }
     // 两个方向写的是各自的容器，不共用滚动条
     expect(previewFn).toContain("preview.scrollTop = next;");
-    expect(sourceFn).toContain("textarea.scrollTop = top;");
+    // A3：左屏写入改经 surface（等价语义，仍写自己的容器）
+    expect(sourceFn).toMatch(/sourceSurface\.setScrollTop\(/);
   });
 
   it("每次同步都现取预览滚动容器（完整重写会换掉 documentElement）", () => {

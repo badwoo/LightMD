@@ -28,8 +28,26 @@ const containerSrc = readFileSync("src/components/editor/EditorContainerSource.t
 describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
   it("左屏滚动**驱动**右屏（左→右映射存在）", () => {
     expect(containerSrc).toContain("mapSourceLineToPreviewScroll(");
-    // 事件监听必须包一层：syncToPreview 现在有 force 参数，直接当监听器会收到 Event（truthy）
-    expect(containerSrc).toContain('textarea.addEventListener("scroll", onSourceScroll');
+    /**
+     * v0.17.0 A3：左屏滚动来源已从「直绑 textarea 的 scroll」改为
+     * 「经 `sourceSurface.onDidScroll`」—— 因为 CM6 路径下没有 textarea 元素，
+     * 而且滚动容器是 CM6 的 `view.scrollDOM`（宿主无从得知该绑哪个节点）。
+     *
+     * 断言升级（**不是放宽**）：仍锁"左屏滚动会驱动同步"，但改为锁**契约调用**；
+     * 并额外反向断言"不得回退到直绑 textarea"（防有人改回旧实现）。
+     */
+    expect(containerSrc, "左屏滚动必须订阅 surface（CM6 下才能拿到 view.scrollDOM）").toMatch(
+      /sourceSurface\.onDidScroll\(/,
+    );
+    // 反向断言：**分屏联动 effect 内**不得回退到直绑 textarea
+    // （其它 pane 仍有合法的 textarea scroll 绑定，如专注遮罩/几何缓存，不能一概否定）
+    const splitEffect = containerSrc.slice(
+      containerSrc.indexOf("const syncToPreview = (force = false) =>") - 4000,
+      containerSrc.indexOf("const syncToSource = () =>") + 4000,
+    );
+    expect(splitEffect, "分屏联动内不得直绑 textarea 的 scroll（CM6 下收不到）").not.toMatch(
+      /textarea\.addEventListener\("scroll"/,
+    );
   });
 
   it("右屏滚动**回推**左屏（右→左映射存在）", () => {
@@ -42,7 +60,10 @@ describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
   it("左右两侧**不共用滚动条**：各自写自己的 scrollTop，不互相赋值同一个值", () => {
     // 左→右只写 preview.scrollTop；右→左只写 textarea.scrollTop
     expect(containerSrc).toContain("preview.scrollTop = next;");
-    expect(containerSrc).toContain("textarea.scrollTop = top;");
+    // A3：左屏写入改经 surface（等价语义），不再直写 textarea.scrollTop
+    expect(containerSrc, "左屏写入必须经 surface 且仍写自己的容器").toMatch(
+      /sourceSurface\.setScrollTop\(/,
+    );
     // 不得出现"把两侧设成同一个值"的旧式共用写法
     expect(containerSrc).not.toMatch(/textarea\.scrollTop\s*=\s*preview\.scrollTop/);
     expect(containerSrc).not.toMatch(/preview\.scrollTop\s*=\s*textarea\.scrollTop/);
@@ -78,7 +99,10 @@ describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
   });
 
   it("清理干净：effect 卸载时移除两个方向的监听、复位方向锁与同步标记（不泄漏）", () => {
-    expect(containerSrc).toContain('textarea.removeEventListener("scroll", onSourceScroll)');
+    // A3：左屏滚动订阅的清理改经 surface 返回的取消函数
+    expect(containerSrc, "必须调用 onDidScroll 返回的取消函数（防监听泄漏）").toMatch(
+      /offSourceScroll\(\)/,
+    );
     expect(containerSrc).toContain('previewWin.removeEventListener("scroll", syncToSource)');
     expect(containerSrc).toContain("previewDocNow?.removeEventListener(\"scroll\", syncToSource");
     expect(containerSrc).toContain("resetScrollDirectionLock(lock);");

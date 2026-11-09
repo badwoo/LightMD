@@ -375,7 +375,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
        */
       const tsel = sourceSurface.getSelection();
       if (tsel.start !== tsel.end) {
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+        // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
         const textarea = sourceTextareaRef.current;
         const text = sourceContentRef.current.slice(tsel.start, tsel.end);
         if (text.trim() && textarea) {

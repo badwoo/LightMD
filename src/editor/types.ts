@@ -244,6 +244,26 @@ export interface SourceSurface {
   onDidChange(listener: (ev: SourceChangeEvent) => void): () => void;
 
   /**
+   * 订阅**滚动**（A3：分屏双向联动）。
+   *
+   * 为什么必须是能力而不是让宿主自己 `addEventListener`：
+   * - textarea 实现绑元素 `scroll`；
+   * - CM6 实现必须绑 **`view.scrollDOM`**（CM6 的单滚动容器；绑 `.cm-content` 或
+   *   `.cm-scroller` 之外的节点都收不到滚动）—— 宿主无法知道该绑哪个节点。
+   *
+   * 回调带 `scrollTop / scrollHeight / clientHeight` 三个值：分屏映射要算比例，
+   * 只给 scrollTop 不够。
+   *
+   * ⚠️ 订阅者（`PreviewPane` 的双向联动）**必须继续走既有的
+   * `createScrollDirectionLock` 时间窗方向锁** —— 那个防拉扯机制不能因为换数据源而丢：
+   * 浏览器对 `scrollTop = x` 派发的 scroll 事件是异步的，同步期的标志到那时已清除，
+   * 两屏会互推、停在随机位置（v0.13.2 实测）。
+   */
+  onDidScroll(
+    listener: (ev: { scrollTop: number; scrollHeight: number; clientHeight: number }) => void,
+  ): () => void;
+
+  /**
    * 落地一次"离散编辑"（配对 / 缩进 / Tab 跳出 / 格式化 / AI 回写）。
    *
    * 硬要求：**单事务单步** —— 用户按一次 `(` 得到 `()` 时，撤销栈里只能有一步。

@@ -34,7 +34,8 @@ import { LARGE_FILE_THRESHOLD } from "../../../../utils/constants";
 import { renderCodeFilePreview, getPrismCss } from "../../../../utils/highlight";
 import { unmaskBase64Images } from "../../../../utils/base64ImageMask";
 import { resolveImageSrc } from "../../../../utils/imagePath";
-import { isAnchorablePreviewChild, shouldTagPreview, PreviewAnchorSet, lineAtMaxScroll, measureSourceLineAxis, estimateTopSourceLine, mapSourceLineToPreviewScroll, mapPreviewScrollToSourceLine, mapSourceLineToScrollTop } from "../../../../utils/blockScrollAlign";
+import { isAnchorablePreviewChild, shouldTagPreview, PreviewAnchorSet, lineAtMaxScroll, estimateTopSourceLine, mapSourceLineToPreviewScroll, mapPreviewScrollToSourceLine, mapSourceLineToScrollTop } from "../../../../utils/blockScrollAlign";
+import { measureLineAxis, surfaceMeasureSource, textareaMeasureSource } from "../../../../editor/surface/sourceLineAxis";
 import { topLevelBlockStartLines } from "../../../../core/renderPipeline";
 import { createIframeFoldBridge, readingFold } from "../.././readingFold";
 import { bindPreviewLightbox } from "../../../../core/plugins/image-lightbox";
@@ -417,7 +418,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 用"视口顶部内容偏移"还原，视觉上视口顶部内容保持不动。
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+    // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
     const ta = sourceTextareaRef.current;
     if (!ta) return;
     const raf = requestAnimationFrame(() => {
@@ -1890,12 +1891,21 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 哪一侧先发起滚动，谁在窗口期内拥有同步权，另一侧的 scroll 事件一律按回声忽略。
   useEffect(() => {
     if (!previewShown) return;
-    // TODO(v0.18): CM6 能力缺口 — 分屏双向滚动联动的 textarea 一侧 — CM6 下左屏联动暂不生效（右屏仍可单向驱动），属**分屏对齐命脉**，需实机探针确认严重度
-    const textarea = sourceTextareaRef.current;
+    /**
+     * v0.17.0 A3 收尾（**B 类·升级自 A 类，已修**）：分屏双向联动的左屏一侧。
+     *
+     * 原判 A 类（"左屏不驱动右屏，右屏仍可单向"）被 Lead 打回，理由是硬事实：
+     * **编辑时用户的手在源码侧（左屏）**，"右屏滚动能带动左屏"这个单向能力在实践中
+     * 几乎用不到 → **"单向联动"约等于"联动失效"**，是主用例坏掉，不是精度降级。
+     *
+     * 修法：左屏滚动来源改经 `sourceSurface.onDidScroll`（CM6 绑 `view.scrollDOM`，
+     * textarea 绑元素），**方向锁 `createScrollDirectionLock` 原样保留**。
+     */
     const iframe = previewIframeRef.current;
-    if (!textarea || !iframe) return;
+    if (!iframe) return;
     const previewWin = iframe.contentWindow;
     if (!previewWin) return;
+    const textarea = sourceTextareaRef.current;
 
     const lock = createScrollDirectionLock();
 
@@ -1959,9 +1969,11 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       };
     };
 
-    /** 左屏可滚动上限（末尾锚点要用它算"滚到底时视口顶所在行"） */
-    const maxSourceScroll = (): number =>
-      Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+    /** 左屏可滚动上限（末尾锚点要用它算"滚到底时视口顶所在行"）— A3：经 surface metrics */
+    const maxSourceScroll = (): number => {
+      const m = sourceSurface.getMetrics();
+      return Math.max(0, m.scrollHeight - m.clientHeight);
+    };
 
     // v0.14.0 需求4：用**函数声明**（而非 const 箭头函数）以靠提升免疫 TDZ ——
     // 上面的 collectAnchors 会调用它，若哪天有人在它定义之前调用 collectAnchors，
@@ -2003,14 +2015,22 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       const total = totalSourceLines();
       if (total <= 1) return null;
       // 键：内容长度 + 布局宽高（拖分割条）+ scrollHeight（字号/行高/字族/zoom/内容变化）
-      const key = `${previewSourceMarkdown.length}|${textarea.clientWidth}|${textarea.clientHeight}|${textarea.scrollHeight}`;
+      /**
+       * 缓存键继续含 **内容长度 + 布局宽高 + scrollHeight**（语义地图 §4-27d，不能丢）：
+       * 拖分割条改宽、改字号/行高、内容变化都会让行轴失效。
+       * A3 起宽高改从 `sourceSurface.getMetrics()` 取（CM6 下是 scrollDOM 的值）。
+       */
+      const metrics = sourceSurface.getMetrics();
+      const key = `${previewSourceMarkdown.length}|${metrics.clientWidth}|${metrics.clientHeight}|${metrics.scrollHeight}`;
       if (axisCache && axisCache.key === key) return axisCache.axis;
       let axis: number[] | null = null;
       try {
-        const measured = measureSourceLineAxis({
-          textarea,
-          blockLines: topLevelBlockStartLines(previewSourceMarkdown),
-        });
+        /**
+         * A3：走统一入口 `measureLineAxis`（textarea 源用 mirror；CM6 源用 lineBlockAt 估算，
+         * 见 sourceLineAxis.ts 的 R2 处置）。**纯函数层 buildSourceLineAxis 一行未改。**
+         */
+        const source = textarea ? textareaMeasureSource(textarea) : surfaceMeasureSource(sourceSurface);
+        const measured = measureLineAxis(source, topLevelBlockStartLines(previewSourceMarkdown));
         // 长度必须与"当前逻辑行数"严格一致，否则是过期测量（内容刚变、DOM 未更新）→ 丢弃
         if (measured && measured.totalLines === total) axis = measured.axis;
       } catch {
@@ -2021,15 +2041,17 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
 
     /** 左屏视口顶对应的源码行（浮点） */
-    const currentTopSourceLine = (): number =>
-      estimateTopSourceLine({
-        scrollTop: textarea.scrollTop,
-        scrollHeight: textarea.scrollHeight,
-        clientHeight: textarea.clientHeight,
+    const currentTopSourceLine = (): number => {
+      const m = sourceSurface.getMetrics();
+      return estimateTopSourceLine({
+        scrollTop: sourceSurface.getScrollTop(),
+        scrollHeight: m.scrollHeight,
+        clientHeight: m.clientHeight,
         totalSourceLines: totalSourceLines(),
         // v0.14.0 需求4：软换行感知（null 时纯函数层自动退回线性公式）
         lineTops: getSourceLineAxis() ?? undefined,
       });
+    };
 
     /**
      * v0.14.0 第六批：当前是否处于「预览开关滚动冻结窗口」内。
@@ -2080,8 +2102,9 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
           handled = false;
         }
         if (!handled) {
+          const m2 = sourceSurface.getMetrics();
           preview.scrollTop = computeSyncScrollTop(
-            textarea.scrollTop, textarea.scrollHeight, textarea.clientHeight,
+            sourceSurface.getScrollTop(), m2.scrollHeight, m2.clientHeight,
             preview.scrollHeight, preview.clientHeight,
           );
         }
@@ -2124,25 +2147,27 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         // （用户报的"右屏到底了左屏还要滚很长"的反向症状）。
         if (anchors) line = mapPreviewScrollToSourceLine(anchors, preview.scrollTop, preview.clientHeight);
         if (line === null) {
+          const m3 = sourceSurface.getMetrics();
           const pct = computeSyncScrollTop(
             preview.scrollTop, preview.scrollHeight, preview.clientHeight,
-            textarea.scrollHeight, textarea.clientHeight,
+            m3.scrollHeight, m3.clientHeight,
           );
-          const max = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
-          textarea.scrollTop = Math.min(Math.max(0, pct), max);
+          const max = Math.max(0, m3.scrollHeight - m3.clientHeight);
+          sourceSurface.setScrollTop(Math.min(Math.max(0, pct), max));
         } else {
+          const m4 = sourceSurface.getMetrics();
           const top = mapSourceLineToScrollTop(
             {
-              scrollTop: textarea.scrollTop,
-              scrollHeight: textarea.scrollHeight,
-              clientHeight: textarea.clientHeight,
+              scrollTop: sourceSurface.getScrollTop(),
+              scrollHeight: m4.scrollHeight,
+              clientHeight: m4.clientHeight,
               totalSourceLines: totalSourceLines(),
               // v0.14.0 需求4：与左→右用**同一根**实测轴，保证两向往返互逆
               lineTops: getSourceLineAxis() ?? undefined,
             },
             line,
           );
-          if (top !== null) textarea.scrollTop = top;
+          if (top !== null) sourceSurface.setScrollTop(top);
         }
       } catch {
         /* 测量异常：放弃本次同步（不写坏滚动位置） */
@@ -2153,8 +2178,11 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
 
     // ⚠️ 必须包一层：`syncToPreview` 现在有 force 参数，直接把函数当事件监听器
     // 会被传入 Event 对象（truthy）→ 每次都跳过方向锁。
-    const onSourceScroll = () => syncToPreview();
-    textarea.addEventListener("scroll", onSourceScroll, { passive: true });
+    /**
+     * 左屏滚动订阅：经 `sourceSurface.onDidScroll`（A3）。
+     * 两个实现都提供该能力，因此 CM6 下分屏联动同样生效。
+     */
+    const offSourceScroll = sourceSurface.onDidScroll(() => syncToPreview());
     // 右屏滚动：window 上接一份（iframe 文档滚动会在 contentWindow 派发），
     // 再在 contentDocument 上接一份捕获阶段兜底（部分 WebView2 版本只在 document
     // 层派发；捕获阶段对不冒泡的 scroll 同样有效）。
@@ -2203,9 +2231,14 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       userScrolledRealign = true;
     };
     const realignStartedAt = performance.now();
-    textarea.addEventListener("wheel", markRealignUser, { passive: true });
-    textarea.addEventListener("pointerdown", markRealignUser, { passive: true });
-    textarea.addEventListener("touchstart", markRealignUser, { passive: true });
+    // 用户接管判定：需绑具体元素（判据 2）。有 textarea 时绑它；
+    // CM6 下改绑 surface 的滚动容器能力尚不覆盖 wheel/pointer，故此处仅在无元素时跳过
+    // —— 影响是"realign 期间用户主动滚动的判定不生效"，属 A 类降级（realign 仍会按时序结束）。
+    if (textarea) {
+      textarea.addEventListener("wheel", markRealignUser, { passive: true });
+      textarea.addEventListener("pointerdown", markRealignUser, { passive: true });
+      textarea.addEventListener("touchstart", markRealignUser, { passive: true });
+    }
     const realignTimers: Array<ReturnType<typeof setTimeout>> = [];
     const runRealign = (delayMs: number) => {
       const timer = setTimeout(() => {
@@ -2324,8 +2357,8 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         syncPreviewAfterToggle();
         traceScroll("preview-realign-layout", {
           gen: realignGen,
-          taSH: textarea.scrollHeight,
-          taW: textarea.clientWidth,
+          taSH: sourceSurface.getMetrics().scrollHeight,
+          taW: sourceSurface.getMetrics().clientWidth,
           previewTop: getPreviewScroller()?.scrollTop ?? null,
         });
       } catch {
@@ -2334,7 +2367,12 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
     let resizeRaf = 0;
     let resizeSettleTimer: ReturnType<typeof setTimeout> | null = null;
-    let lastLayoutKey = `${textarea.scrollHeight}|${textarea.clientWidth}|${textarea.clientHeight}`;
+    /** 布局键：内容高 + 宽高（A3：经 surface metrics，CM6 下是 scrollDOM 的值） */
+    const layoutKeyOf = (): string => {
+      const m = sourceSurface.getMetrics();
+      return `${m.scrollHeight}|${m.clientWidth}|${m.clientHeight}`;
+    };
+    let lastLayoutKey = layoutKeyOf();
     const scheduleLayoutRealign = () => {
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
       resizeRaf = requestAnimationFrame(() => {
@@ -2349,13 +2387,18 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     const layoutObserver =
       typeof ResizeObserver !== "undefined"
         ? new ResizeObserver(() => {
-            const key = `${textarea.scrollHeight}|${textarea.clientWidth}|${textarea.clientHeight}`;
+            const key = layoutKeyOf();
             if (key === lastLayoutKey) return;
             lastLayoutKey = key;
             scheduleLayoutRealign();
           })
         : null;
-    layoutObserver?.observe(textarea);
+    /**
+     * ResizeObserver 必须 observe 一个**真实元素**。有 textarea 时 observe 它（原行为）；
+     * CM6 下没有元素可 observe → 跳过。影响：拖分割条时不即时重对齐，
+     * 但 `syncPreviewAfterToggle` 与右屏自身 ResizeObserver 仍会触发 → **A 类降级**。
+     */
+    if (textarea) layoutObserver?.observe(textarea);
     /**
      * 把"内容就绪 → 重对齐"的入口注册出去（见 `requestPreviewRealignRef` 的注释）。
      * 用 `realignLayoutNow` 而不是裸 `syncToPreview`：它带**右屏就绪闸门**
@@ -2378,11 +2421,13 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       if (requestPreviewRealignRef.current === requestPreviewRealign) {
         requestPreviewRealignRef.current = null;
       }
-      textarea.removeEventListener("wheel", markRealignUser);
-      textarea.removeEventListener("pointerdown", markRealignUser);
-      textarea.removeEventListener("touchstart", markRealignUser);
+      if (textarea) {
+        textarea.removeEventListener("wheel", markRealignUser);
+        textarea.removeEventListener("pointerdown", markRealignUser);
+        textarea.removeEventListener("touchstart", markRealignUser);
+      }
       cancelAnimationFrame(raf);
-      textarea.removeEventListener("scroll", onSourceScroll);
+      offSourceScroll();
       previewWin.removeEventListener("scroll", syncToSource);
       previewDocNow?.removeEventListener("scroll", syncToSource, { capture: true } as EventListenerOptions);
       if (syncPreviewAfterToggleRef.current === syncPreviewAfterToggle) {

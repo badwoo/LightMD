@@ -458,7 +458,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
          * 选区两端走 surface（纯值）；但 `getTextareaSelectionAnchor` 需要真实 textarea
          * 的**视口几何**（判据 1）→ 该函数仍收 ref 元素，A3 换 `coordsAtPos`。
          */
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+        // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
         const taEl = sourceTextareaRef.current;
         if (taEl) {
           runAiBubble("polish", text, "source", getTextareaSelectionAnchor(taEl), asel.start, asel.end);
@@ -472,7 +472,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
         : sourceContentRef.current;
       if (!text.trim()) return;
       // 锚点仍需真实几何（判据 1）→ 保留 ref 取值；光标位置是纯值 → 走 surface
-      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+      // TODO(v0.18): CM6 能力缺口 — 几何（文本锚点需要真实视口坐标，CM6 需 coordsAtPos 语义）— 当前表现：锚点降级/不精确，非静默失效
       const taEl = sourceTextareaRef.current;
       runAiBubble(
         "summary",

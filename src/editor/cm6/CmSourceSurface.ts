@@ -288,6 +288,9 @@ export class CmSourceSurface implements SourceSurface {
     this.disposed = true;
     this.cleanupDom.forEach((fn) => fn());
     this.cleanupDom = [];
+    // A3：滚动订阅必须在 view 销毁前解绑（scrollDOM 会随 view 一起被丢弃）
+    this.scrollCleanups.forEach((fn) => fn());
+    this.scrollCleanups = [];
     this.view?.destroy();
     this.view = null;
     this.host = null;
@@ -637,6 +640,36 @@ export class CmSourceSurface implements SourceSurface {
   }
 
   // ── 编辑事件 ───────────────────────────────────────────────
+
+  /**
+   * 订阅滚动（A3：分屏双向联动的左屏一侧）。
+   *
+   * ⚠️ **必须绑 `view.scrollDOM`** —— CM6 的唯一滚动容器。
+   * 绑 `.cm-content`（那是不滚动的编辑区）或 `host`（外层）都收不到滚动事件，
+   * 表现为"左屏滚动右屏完全不动"，且没有任何报错。
+   */
+  onDidScroll(
+    listener: (ev: { scrollTop: number; scrollHeight: number; clientHeight: number }) => void,
+  ): () => void {
+    const view = this.view;
+    if (!view) return () => {};
+    const scroller = view.scrollDOM;
+    const handler = () => {
+      listener({
+        scrollTop: scroller.scrollTop,
+        scrollHeight: scroller.scrollHeight,
+        clientHeight: scroller.clientHeight,
+      });
+    };
+    scroller.addEventListener("scroll", handler, { passive: true });
+    this.scrollCleanups.push(() => scroller.removeEventListener("scroll", handler));
+    return () => {
+      scroller.removeEventListener("scroll", handler);
+    };
+  }
+
+  /** 滚动订阅清理（destroy 时统一解绑，防 view 销毁后残留引用泄漏） */
+  private scrollCleanups: Array<() => void> = [];
 
   onDidChange(listener: (ev: SourceChangeEvent) => void): () => void {
     this.listeners.add(listener);

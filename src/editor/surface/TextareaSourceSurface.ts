@@ -155,6 +155,8 @@ export class TextareaSourceSurface implements SourceSurface {
 
   destroy(): void {
     this.disposed = true;
+    this.scrollCleanups.forEach((fn) => fn());
+    this.scrollCleanups = [];
     const ta = this.ta;
     if (ta) {
       ta.removeEventListener("input", this.onInput);
@@ -317,6 +319,29 @@ export class TextareaSourceSurface implements SourceSurface {
   }
 
   // ── 编辑事件 ───────────────────────────────────────────────
+
+  /**
+   * 订阅滚动（A3：分屏双向联动的左屏一侧）。textarea 实现绑元素 `scroll`，
+   * 与 A3 之前的行为完全一致。
+   */
+  onDidScroll(
+    listener: (ev: { scrollTop: number; scrollHeight: number; clientHeight: number }) => void,
+  ): () => void {
+    const ta = this.ta;
+    if (!ta) return () => {};
+    const handler = () => {
+      listener({
+        scrollTop: ta.scrollTop,
+        scrollHeight: ta.scrollHeight,
+        clientHeight: ta.clientHeight,
+      });
+    };
+    ta.addEventListener("scroll", handler, { passive: true });
+    this.scrollCleanups.push(() => ta.removeEventListener("scroll", handler));
+    return () => ta.removeEventListener("scroll", handler);
+  }
+
+  private scrollCleanups: Array<() => void> = [];
 
   onDidChange(listener: (ev: SourceChangeEvent) => void): () => void {
     this.listeners.add(listener);
