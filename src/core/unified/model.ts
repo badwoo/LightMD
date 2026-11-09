@@ -59,6 +59,13 @@ export type NodeKind =
   | "image"
   | "footnote"
   | "frontmatter"
+  // ── 容器内部节点（B1 树需要它们承载结构与 span，不是新增语义）──
+  /** 列表项（bullet/ordered/task 共用；`attrs.checked` 区分任务项） */
+  | "listItem"
+  /** 定义列表术语（dt） */
+  | "definition_term"
+  /** 定义描述（dd）；设计稿 §6.3 方案乙要求其 children 为**完整块级树** */
+  | "definition_description"
   // ── 兜底：解析器无法归类时保留原文，绝不静默丢弃 ──────────
   | "unknown";
 

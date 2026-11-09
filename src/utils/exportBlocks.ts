@@ -25,7 +25,11 @@
  * 内容由专门分支或后续迭代导出，不应计入 unknownTokens（否则含脚注的文档
  * 每次导出都会弹「部分内容无法导出」误报，脚注内容其实是导出的）。
  */
-const STRUCTURAL_TOKENS = new Set([
+/**
+ * v0.17.0 B1：导出为 public —— UnifiedDoc 树构建器（`core/unified/parse.ts`）
+ * 复用同一份结构 token 清单，避免两处各自维护"哪些 token 不算 unknown"。
+ */
+export const STRUCTURAL_TOKENS = new Set([
   "footnote_block_open",
   "footnote_block_close",
   "footnote_open",
