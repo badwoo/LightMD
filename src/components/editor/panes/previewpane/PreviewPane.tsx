@@ -355,7 +355,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // - resize 抑制：窗口缩放时浏览器会把光标滚入视口，其 scroll 事件不得刷新锚点。
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 字号/宽度变化时的文本锚点采集（ResizeObserver） — CM6 下不做锚点补偿，缩放后视口可能偏移
     const ta = sourceTextareaRef.current;
     if (!ta || typeof ResizeObserver === "undefined") return;
     textAnchorRef.current = captureTextAnchor(ta);
@@ -750,7 +750,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // textarea 打字机滚动（编辑/分屏模式）
   useEffect(() => {
     if (!typewriterMode || viewMode === "preview") return;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+    // TODO(v0.18): CM6 能力缺口 — 源码面打字机的 DOM 事件绑定 — CM6 下打字机事件暂不生效（居中不触发），**非静默失败：CM6 自身保持光标可见**
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     // 不设置 scrollBehavior = "smooth"，与 ProseMirror 模式保持一致：
@@ -1069,7 +1069,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     freezePrevShownRef.current = previewShown;
     if (modeChanged || !shownChanged) return;
     if (viewMode !== "edit") return;
-    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 预览开合时的滚动冻结（记录开合前像素/锚点） — CM6 下不冻结，开合时可能有一次位置跳动
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     // 记录开合前的滚动像素与**视口中央内容锚点**。
@@ -1139,7 +1139,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
      */
     const restore = () => {
       if (cancelled || abortedByUser) return;
-      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+      // TODO(v0.18): CM6 能力缺口 — 滚动冻结窗口内的恢复 — CM6 下跳过，同上一项
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       // 确认窗口确实还属于本次（复开关时会被新值覆盖 → 交给最新那次）
@@ -1232,7 +1232,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       tries = 4,
     ) => {
       if (cancelled || abortedByUser) return;
-      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+      // TODO(v0.18): CM6 能力缺口 — 冻结解除后的位置还原 — CM6 下跳过，表现为开合后位置不精确
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       isFrozenRestoreRef.current = true;
@@ -1890,7 +1890,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 哪一侧先发起滚动，谁在窗口期内拥有同步权，另一侧的 scroll 事件一律按回声忽略。
   useEffect(() => {
     if (!previewShown) return;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+    // TODO(v0.18): CM6 能力缺口 — 分屏双向滚动联动的 textarea 一侧 — CM6 下左屏联动暂不生效（右屏仍可单向驱动），属**分屏对齐命脉**，需实机探针确认严重度
     const textarea = sourceTextareaRef.current;
     const iframe = previewIframeRef.current;
     if (!textarea || !iframe) return;

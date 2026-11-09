@@ -866,6 +866,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
 
   // ─── v0.17.0 P0-1：七个 pane hook（调用顺序 = 原文件语句出现顺序；body 逐字节原样）───
   const historyHost = useHistoryHost({
+    sourceSurface,
     viewMode,
     isMdFile,
     viewRef,

@@ -63,6 +63,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     filePath,
     forceUpdateKey,
     editorRef,
+    sourceSurface,
     sourceTextareaRef,
     sourceContent,
     pendingSourceSelectionRef,
@@ -455,7 +456,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     blocks: import("../../../../utils/contentScrollMap").BlockGeometry[];
     markdown: string;
   } | null => {
-    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 分屏对齐块几何测量 — CM6 下退回**百分比映射**；软换行长行上可偏约 4 倍（设计稿实测口径），非崩溃
     const textarea = sourceTextareaRef.current;
     if (!textarea) return null;
     // 不可见时高度/宽度为 0 → 量不出可信行轴
@@ -506,7 +507,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * 量不到（隐藏 / 空文档 / 只读）就保持旧缓存不动，绝不写 null 把缓存打坏。
    */
   const cacheSourceGeometry = useCallback(() => {
-    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 同 measureSourceBlocks 的缓存包装 — 同上，退回百分比映射
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     const measured = measureSourceBlocks();
@@ -690,17 +691,21 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
       return;
     }
     // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-    const ta = sourceTextareaRef.current;
-    if (!ta) return;
-    const len = ta.value.length;
+    /**
+     * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：
+     * 原 `if (!ta) return;` 在 CM6 下会让**撤销/恢复后的光标恢复整段不执行**
+     *（无 fallback、无提示）—— 用户看到的是"撤销后光标不知道跑哪去了"。
+     * 这里全部是纯值语义（长度 + 选区 + 滚动），改经 surface 后两种实现都成立。
+     */
+    const len = sourceSurface.getText().length;
     const start = Math.min(pending.start, len);
     const end = Math.min(pending.end, len);
     try {
-      ta.setSelectionRange(start, end);
-      if (pending.scrollTop !== null) ta.scrollTop = pending.scrollTop;
+      sourceSurface.setSelection(start, end);
+      if (pending.scrollTop !== null) sourceSurface.setScrollTop(pending.scrollTop);
       lastTextareaCursorRef.current = start;
     } catch {
-      /* textarea 已卸载 / 只读：忽略 */
+      /* 实现已卸载：忽略 */
     }
   }, [sourceContent]);
 

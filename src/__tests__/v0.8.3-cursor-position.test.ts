@@ -251,9 +251,22 @@ describe("v0.8.3 需求3：阅读模式（ProseMirror）接线", () => {
     expect(containerSrc).toContain("setCursorColumnRef.current(column)");
     expect(containerSrc).toContain("setSelectedCharsRef.current(selectedChars)");
     expect(containerSrc).toContain("calculateWordCount(getText())");
-    // 源码模式（textarea）走纯函数计算
-    expect(containerSrc).toContain("computeTextareaCursorPosition(ta.value, ta.selectionStart, ta.selectionEnd)");
-    expect(containerSrc).toContain('textarea.addEventListener("select", update)');
+    /**
+     * v0.17.0 A3 收尾：源码模式的光标行列计算已从"直读 textarea"改为
+     * "经 `SourceSurface` 取值 + 同一个纯函数计算"。
+     *
+     * 断言随之升级（**不是放宽**）：
+     * - 仍然锁"用 `computeTextareaCursorPosition` 这个纯函数"（口径单一，不能各算各的）；
+     * - 但取值来源改为 surface（这才是不依赖具体实现的形态）；
+     * - 事件绑定从"只绑 textarea"升级为"textarea 或 surface 订阅均可"，
+     *   因为 CM6 路径没有 textarea 元素 —— 原断言在 CM6 下必然红。
+     */
+    expect(containerSrc, "必须复用同一个纯函数口径").toContain("computeTextareaCursorPosition(");
+    expect(containerSrc, "取值必须经 SourceSurface（不再直读 textarea）").toMatch(
+      /computeTextareaCursorPosition\(sourceSurface\.getText\(\), curSel\.start, curSel\.end\)/,
+    );
+    // 事件来源：有 textarea 绑元素事件，无则用 surface 订阅 + selectionchange
+    expect(containerSrc).toMatch(/surface\.onDidChange\(update\)|textarea\.addEventListener\("select", update\)/);
   });
 });
 

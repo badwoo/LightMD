@@ -96,7 +96,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
   // IME 恰好派发单字符 keydown，属偶然可用；现在两条路径都由 sourceAutoPair 规划器裁决。
   useEffect(() => {
     if (!isSourceMode || !isMdFile) return;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+    // TODO(v0.18): CM6 能力缺口 — beforeinput 配对落地事件绑定 — CM6 下该绑定不生效（配对已改走 applyEdit 的核心路径仍在）
     const ta = sourceTextareaRef.current;
     if (!ta) return;
 

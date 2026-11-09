@@ -8,6 +8,7 @@
  * 都要在入参/出参里有显式落点。
  */
 
+import type { SourceSurface } from "../../../../editor/types";
 import type { RefObject, MutableRefObject, Dispatch, SetStateAction } from "react";
 import type { HistoryCoordinator } from "../../../../editorHistory/coordinator";
 import type { PmAdapter } from "../../../../editorHistory/pmAdapter";
@@ -20,6 +21,8 @@ import type { HistoryEntry } from "../../EditorContainer";
 
 /** 容器传给 HistoryHost 的全部入参（解构到本地名后 hook 体与拆分前逐字节一致） */
  export interface HistoryHostParams {
+  /** 源码面契约实现（A3 收尾）。撤销/恢复后的光标与滚动恢复经它落地。 */
+  sourceSurface: SourceSurface;
   viewMode: ViewMode;
   isMdFile: boolean;
   viewRef: MutableRefObject<EditorView | null>;

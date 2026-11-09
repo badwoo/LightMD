@@ -488,7 +488,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
   // ─── 持续追踪 textarea 滚动百分比 + **缓存源码面块几何** ──────────────
   useEffect(() => {
-    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+    // TODO(v0.18): CM6 能力缺口 — 源码块几何的滚动期采样 — CM6 下不采样，分屏对齐退回百分比（同 4 倍量级偏差）
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     let raf = 0;
@@ -558,9 +558,18 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — DOM 事件绑定（CM6 domEventHandlers，A3 后能力）
     const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
+    /**
+     * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：源码模式光标行列 / 选中字符数。
+     *
+     * 原 `if (!textarea) return;` 在 CM6 下让整段 effect 不执行 →
+     * **光标行列、列号、选中字符数全部停止更新**（状态栏一直停在旧值，零 fallback）。
+     *
+     * 修法：取值早已改经 surface，问题只在"事件从哪来"。因此：
+     * - 有 textarea → 绑元素事件（原行为不变，最精确）；
+     * - 无 textarea（CM6）→ 用 `surface.onDidChange` 订阅（A3 已具备的能力）
+     *   + `document` 的 selectionchange（覆盖纯光标移动，不产生 change 事件的情形）。
+     */
     const update = () => {
       if (sourceCursorRafRef.current !== null) return;
       sourceCursorRafRef.current = requestAnimationFrame(() => {
@@ -573,19 +582,34 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         setSelectedCharsRef.current(pos.selectedChars);
       });
     };
-    textarea.addEventListener("keyup", update);
-    textarea.addEventListener("click", update);
-    textarea.addEventListener("input", update);
-    textarea.addEventListener("select", update);
-    textarea.addEventListener("focus", update);
+    /** 卸载清理集合（两种绑定路径共用） */
+    const cleanups: Array<() => void> = [];
+    if (textarea) {
+      textarea.addEventListener("keyup", update);
+      textarea.addEventListener("click", update);
+      textarea.addEventListener("input", update);
+      textarea.addEventListener("select", update);
+      textarea.addEventListener("focus", update);
+      cleanups.push(() => {
+        textarea.removeEventListener("keyup", update);
+        textarea.removeEventListener("click", update);
+        textarea.removeEventListener("input", update);
+        textarea.removeEventListener("select", update);
+        textarea.removeEventListener("focus", update);
+      });
+    } else {
+      // CM6 路径：surface 变更订阅 + 全局 selectionchange（覆盖纯光标移动）
+      const off = sourceSurface.onDidChange(update);
+      cleanups.push(off);
+    }
+    // selectionchange 对所有实现都成立（覆盖方向键/Home/End 等不触发 change 的光标移动）
+    document.addEventListener("selectionchange", update);
+    cleanups.push(() => document.removeEventListener("selectionchange", update));
+
     // 进入源码模式时先同步一次当前光标位置（不等用户操作）
     update();
     return () => {
-      textarea.removeEventListener("keyup", update);
-      textarea.removeEventListener("click", update);
-      textarea.removeEventListener("input", update);
-      textarea.removeEventListener("select", update);
-      textarea.removeEventListener("focus", update);
+      cleanups.forEach((fn) => fn());
       if (sourceCursorRafRef.current !== null) {
         cancelAnimationFrame(sourceCursorRafRef.current);
         sourceCursorRafRef.current = null;
@@ -1129,7 +1153,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
             traceScroll("res-source-after", { after: textarea.scrollTop, want: anchorTop });
             // 布局稳定后校正一次（内容可能刚写入，scrollHeight 还在变）
             requestAnimationFrame(() => {
-              // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+              // TODO(v0.18): CM6 能力缺口 — 内容锚点→scrollTop 的二次校正 — CM6 下跳过该校正，滚动恢复退化为首次写入值（不精确，不崩）
               const t2 = sourceTextareaRef.current;
               if (!t2) return;
               const again = textareaTopFromContentAnchor(t2, contentAnchor);

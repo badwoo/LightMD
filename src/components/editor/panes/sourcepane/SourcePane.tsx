@@ -436,7 +436,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
      * 单帧恢复会在重排后被推走。三段全部用**同一锚点**（幂等）。
      */
     const applyScrollRestore = () => {
-      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
+      // TODO(v0.18): CM6 能力缺口 — 撤销后的内容锚点滚动恢复 — CM6 下退化为像素/不恢复，位置不精确（不崩）
       const ta = sourceTextareaRef.current;
       if (!ta || ta.clientHeight <= 0) return;
       if (scrollPlan.kind === "anchor") {
@@ -490,11 +490,16 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       const applySelection = () => {
         if (sourceSelectionRestoreTokenRef.current !== restoreToken) return;
         // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-        const ta = sourceTextareaRef.current;
-        if (!ta) return;
-        const len = ta.value.length;
-        ta.focus();
-        ta.setSelectionRange(Math.min(pos, len), Math.min(end, len));
+        /**
+         * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：撤销后光标恢复。
+         *
+         * 原 `if (!ta) return;` 在 CM6 下让**撤销/恢复后的光标恢复整段不执行** ——
+         * 无 fallback，用户看到的是"撤销后光标乱跑"。全部是纯值语义（长度+选区），
+         * 改经 surface 后两种实现都成立。
+         */
+        const len = sourceSurface.getText().length;
+        sourceSurface.focus();
+        sourceSurface.setSelection(Math.min(pos, len), Math.min(end, len));
         lastTextareaCursorRef.current = Math.min(pos, len);
       };
       applySelection();
