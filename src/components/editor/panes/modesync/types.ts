@@ -8,6 +8,7 @@
  * 都要在入参/出参里有显式落点。
  */
 
+import type { SourceSurface } from "../../../../editor/types";
 import type { RefObject, MutableRefObject, Dispatch, SetStateAction } from "react";
 import type { EmojiState } from "../../../../core/plugins/emoji-complete";
 import type { SlashState } from "../../../../core/plugins/slash-command";
@@ -24,6 +25,11 @@ import type { HistoryEntry, ScrollRestoreTarget } from "../../EditorContainer";
 
 /** 容器传给 ModeSync 的全部入参（解构到本地名后 hook 体与拆分前逐字节一致） */
  export interface ModeSyncParams {
+  /**
+   * 源码面契约实现（A2）。模式切换的内容同步与**光标/滚动恢复**经它落地，
+   * 使同一段代码在 textarea 与 CM6 两种实现下都成立。
+   */
+  sourceSurface: SourceSurface;
   isSourceMode: boolean;
   setSourceInsertHandler: (handler: ((syntax: string, cursorOffset?: number | undefined, opts?: { label?: string | undefined; ghost?: string | undefined; } | undefined) => void) | null) => void;
   pushUndoEntry: (entry: HistoryEntry) => void;

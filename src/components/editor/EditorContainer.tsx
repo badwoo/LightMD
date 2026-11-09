@@ -923,6 +923,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     handleRedo,
   } = historyHost;
   const modeSync = useModeSync({
+    sourceSurface,
     isSourceMode,
     setSourceInsertHandler,
     pushUndoEntry,

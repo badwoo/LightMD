@@ -945,6 +945,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     handleRedo,
   } = historyHost;
   const modeSync = useModeSync({
+    sourceSurface,
     isSourceMode,
     setSourceInsertHandler,
     pushUndoEntry,
@@ -3199,6 +3200,7 @@ import type { ModeSyncParams, ModeSyncResult } from "./types";
 export function useModeSync(p: ModeSyncParams): ModeSyncResult {
   // 解构到本地同名绑定：函数体因此可以逐字节原样
   const {
+    sourceSurface,
     isSourceMode,
     setSourceInsertHandler,
     pushUndoEntry,
@@ -3325,14 +3327,16 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
           sourceGhostHandlersRef.current.invalidate();
           requestAnimationFrame(() => formatGhostHandlersRef.current.render());
         }
+        /**
+         * v0.17.0 A2 收敛：恢复光标/滚动是**纯值语义**（光标位置 + 滚动像素），
+         * 不依赖 textarea 的布局几何，因此改经 `SourceSurface` —— 这样 CM6 实现下
+         * 同一段代码同样生效，不必再写一份。
+         */
         const restore = () => {
-          const ta = sourceTextareaRef.current;
-          if (ta) {
-            ta.focus();
-            ta.setSelectionRange(cursorPos, cursorPos);
-            ta.scrollTop = scrollTop;
-            lastTextareaCursorRef.current = cursorPos;
-          }
+          sourceSurface.focus();
+          sourceSurface.setSelection(cursorPos, cursorPos);
+          sourceSurface.setScrollTop(scrollTop);
+          lastTextareaCursorRef.current = cursorPos;
         };
         requestAnimationFrame(restore);
         setTimeout(restore, 50);
@@ -4027,8 +4031,9 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
             // v0.12.0 返修（问题6）：加行内列偏移（clamp 到源码行长度，防语法字符差异越界）
             const lineLen = lines.length > lineIndex ? lines[lineIndex].length : 0;
             pos += Math.min(anchorColumn, lineLen);
-            textarea.focus();
-            textarea.setSelectionRange(pos, pos);
+            // A2 收敛：纯值语义（选区恢复）→ 经 surface，CM6 下同样成立
+            sourceSurface.focus();
+            sourceSurface.setSelection(pos, pos);
           }
         });
       } catch {
@@ -4219,8 +4224,9 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
               const lineLen = (nl === -1 ? text.length : nl) - pos;
               pos += Math.min(anchorColumn, lineLen);
             }
-            textarea.focus();
-            textarea.setSelectionRange(pos, pos);
+            // A2 收敛：纯值语义（选区恢复）→ 经 surface，CM6 下同样成立
+            sourceSurface.focus();
+            sourceSurface.setSelection(pos, pos);
             lastTextareaCursorRef.current = pos;
           }
           // ② 滚动位置恢复。
