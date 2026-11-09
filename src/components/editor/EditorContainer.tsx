@@ -1200,6 +1200,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     fullTranslateRunning,
   } = aiChatPane;
   const formatMenuHost = useFormatMenuHost({
+    sourceSurface,
     isSourceMode,
     isMdFile,
     sourceTextareaRef,

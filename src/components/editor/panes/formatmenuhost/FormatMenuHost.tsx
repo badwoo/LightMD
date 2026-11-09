@@ -50,6 +50,7 @@ import type { FormatMenuHostParams, FormatMenuHostResult } from "./types";
 export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult {
   // 解构到本地同名绑定：函数体因此可以逐字节原样
   const {
+    sourceSurface,
     isSourceMode,
     isMdFile,
     sourceTextareaRef,
@@ -99,8 +100,9 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
   const handleTextareaContextMenu = useCallback((e: React.MouseEvent<HTMLTextAreaElement>) => {
     if (!isSourceMode || !isMdFile) return;
     e.preventDefault();
-    const textarea = sourceTextareaRef.current;
-    const hasSelection = !!textarea && textarea.selectionStart !== textarea.selectionEnd;
+    // v0.17.0 A2 收敛：只判断"有无选区"，纯值语义 → 经 surface
+    const csel = sourceSurface.getSelection();
+    const hasSelection = csel.start !== csel.end;
     setContextMenu({ open: true, x: e.clientX, y: e.clientY, hasSelection });
   }, [isSourceMode, isMdFile]);
 
@@ -183,15 +185,15 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       else store.armOnce(snapshot);
       return;
     }
-    // 编辑/分屏：textarea 选区采集
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
-    const { selectionStart: start, selectionEnd: end } = textarea;
+    // 编辑/分屏：选区采集（v0.17.0 A2 收敛：纯值语义 → 经 surface）
+    const fsel = sourceSurface.getSelection();
+    const start = fsel.start;
+    const end = fsel.end;
     if (start === end) return;
     const snapshot = collectSourceSnapshot(sourceContentRef.current, start, end);
     if (persistent) store.armPersistent(snapshot);
     else store.armOnce(snapshot);
-  }, [viewMode]);
+  }, [viewMode, sourceSurface]);
 
 
   // 经 ref 转发（handleContextMenuAction / 格式栏按钮的闭包可能早于本定义创建，避免闭包过期）
@@ -230,10 +232,10 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
   /** 应用格式刷到源码点击处所在行（块级前缀替换 + 行内容包裹，覆盖式） */
   const applyFormatPainterToSource = useCallback((cursorPos: number) => {
     const snapshot = useFormatPainterStore.getState().snapshot;
-    const textarea = sourceTextareaRef.current;
-    if (!snapshot || !textarea) return false;
+    if (!snapshot) return false;
     const text = sourceContentRef.current;
-    const scrollTop = textarea.scrollTop;
+    // A2 收敛：滚动像素是纯值 → 经 surface
+    const scrollTop = sourceSurface.getScrollTop();
     const { start: lineStart, end: lineEnd } = getLineRange(text, cursorPos);
 
     // 1) 块级：替换行首前缀
@@ -275,15 +277,13 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     lastContentRef.current = unmaskBase64Images(next, base64TokensRef.current);
     const caret = nextLineEnd;
     requestAnimationFrame(() => {
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(caret, caret);
-        ta.scrollTop = scrollTop;
-      }
+      // A2 收敛：纯值语义 → 经 surface（CM6 下同样成立）
+      sourceSurface.focus();
+      sourceSurface.setSelection(caret, caret);
+      sourceSurface.setScrollTop(scrollTop);
     });
     return true;
-  }, [recordDiscreteSourceEdit]);
+  }, [recordDiscreteSourceEdit, sourceSurface]);
 
 
   // armed 时单击应用：PM（阅读模式；点击处所在段落为应用目标）
@@ -305,11 +305,17 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
   // armed 时单击应用：源码（编辑/分屏；点击处所在行为应用目标）
   useEffect(() => {
     if (!isSourceMode) return;
+    /**
+     * ⚠️ 这里是 Lead 判据 2 的**边界**：本 effect 必须绑 DOM 事件
+     * （`click` 要落在 textarea 上），所以 `ta` 仍然要取；
+     * 但"点击处光标位置"是纯值，改成经 `surface.getSelection()` 读 ——
+     * 这样 CM6 下取值逻辑不用再写一份，事件绑定等 A3 统一换 `domEventHandlers`。
+     */
     const ta = sourceTextareaRef.current;
     if (!ta) return;
     const onClick = () => {
       if (useFormatPainterStore.getState().mode === "idle") return;
-      const pos = ta.selectionStart ?? 0;
+      const pos = sourceSurface.getSelection().start;
       if (applyFormatPainterToSource(pos)) {
         useFormatPainterStore.getState().consume();
       }
@@ -655,21 +661,16 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
   // 触发 React 重新渲染，textarea 的 value 被重设，浏览器把 selectionStart 重置到文档末尾。
   // 修复：关闭前保存光标位置和滚动位置，在 rAF（重新渲染后）恢复。
   const handleSlashClose = useCallback(() => {
-    const textarea = sourceTextareaRef.current;
-    const savedCursor = textarea?.selectionStart ?? 0;
-    const savedScroll = textarea?.scrollTop ?? 0;
+    // v0.17.0 A2 收敛：保存/恢复光标与滚动都是纯值语义 → 经 surface
+    const savedCursor = sourceSurface.getSelection().start;
+    const savedScroll = sourceSurface.getScrollTop();
     setSlashCommandOpen(false);
-    if (textarea) {
-      requestAnimationFrame(() => {
-        const ta = sourceTextareaRef.current;
-        if (ta) {
-          ta.focus();
-          ta.setSelectionRange(savedCursor, savedCursor);
-          ta.scrollTop = savedScroll;
-        }
-      });
-    }
-  }, []);
+    requestAnimationFrame(() => {
+      sourceSurface.focus();
+      sourceSurface.setSelection(savedCursor, savedCursor);
+      sourceSurface.setScrollTop(savedScroll);
+    });
+  }, [sourceSurface]);
 
 
   // ─── 切换文件/模式时关闭 SlashCommand 菜单（防止残留）─────────

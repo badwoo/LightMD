@@ -367,11 +367,17 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
 
     // 2. 源码模式（edit/split）：textarea 选区优先
     if (isSourceMode) {
-      const textarea = sourceTextareaRef.current;
-      if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
-        const text = sourceContentRef.current.slice(textarea.selectionStart, textarea.selectionEnd);
-        if (text.trim()) {
-          runTranslate(text, "source", getTextareaSelectionAnchor(textarea), textarea.selectionStart, textarea.selectionEnd);
+      /**
+       * v0.17.0 A2 收敛：选区两端是纯值 → 经 surface；
+       * 但 `getTextareaSelectionAnchor(textarea)` **需要真实 textarea 度量**（判据 1），
+       * 因此该调用仍传 ref 元素（CM6 下由 A3 换成 coordsAtPos）。
+       */
+      const tsel = sourceSurface.getSelection();
+      if (tsel.start !== tsel.end) {
+        const textarea = sourceTextareaRef.current;
+        const text = sourceContentRef.current.slice(tsel.start, tsel.end);
+        if (text.trim() && textarea) {
+          runTranslate(text, "source", getTextareaSelectionAnchor(textarea), tsel.start, tsel.end);
           return;
         }
       }
@@ -498,14 +504,11 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
       lastContentRef.current = unmaskBase64Images(rewrite.content, base64TokensRef.current);
       useTranslateStore.getState().close();
       translateCtxRef.current = null;
-      // 光标移到译文末尾并聚焦
-      const textarea = sourceTextareaRef.current;
-      if (textarea) {
-        requestAnimationFrame(() => {
-          textarea.focus();
-          textarea.setSelectionRange(rewrite.cursor, rewrite.cursor);
-        });
-      }
+      // 光标移到译文末尾并聚焦（v0.17.0 A2 收敛：纯值语义 → 经 surface）
+      requestAnimationFrame(() => {
+        sourceSurface.focus();
+        sourceSurface.setSelection(rewrite.cursor, rewrite.cursor);
+      });
     }
   }, []);
 
@@ -789,13 +792,11 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
       if (overlay) overlay.innerHTML = "";
     }
     const caret = ghost.start;
+    // v0.17.0 A2 收敛：纯值语义（光标 + 滚动）→ 经 surface
     const restore = () => {
-      const ta = sourceTextareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(caret, caret);
-        ta.scrollTop = scrollTop;
-      }
+      sourceSurface.focus();
+      sourceSurface.setSelection(caret, caret);
+      sourceSurface.setScrollTop(scrollTop);
     };
     requestAnimationFrame(restore);
     return true;

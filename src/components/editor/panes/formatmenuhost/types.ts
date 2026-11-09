@@ -8,6 +8,7 @@
  * 都要在入参/出参里有显式落点。
  */
 
+import type { SourceSurface } from "../../../../editor/types";
 import type { RefObject, MutableRefObject, Dispatch, SetStateAction } from "react";
 import type * as React from "react";
 import type { SlashState } from "../../../../core/plugins/slash-command";
@@ -20,6 +21,8 @@ import type { EditorView } from "prosemirror-view";
 
 /** 容器传给 FormatMenuHost 的全部入参（解构到本地名后 hook 体与拆分前逐字节一致） */
  export interface FormatMenuHostParams {
+  /** 源码面契约实现（A2）。光标/选区/滚动的恢复经它落地。 */
+  sourceSurface: SourceSurface;
   isSourceMode: boolean;
   isMdFile: boolean;
   sourceTextareaRef: RefObject<HTMLTextAreaElement>;
