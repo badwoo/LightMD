@@ -413,6 +413,62 @@ const TIERS = [
   { id: "20mb", bytes: 20 * 1024 * 1024, typeSeconds: 20 },
 ];
 
+/**
+ * 可用性探测：装载后应用是否还能在主线程空闲时间内回应 evaluate。
+ *
+ * 判据（全部要过）：
+ *   1. 连续 3 次轻量 evaluate 都能在 5s 内返回（主线程没被长期占满）
+ *   2. 源码面 textarea 存在且长度与输入一致（文档真的进去了）
+ *   3. 能读到 textarea 的 scrollHeight（布局已完成）
+ */
+async function probeUsability(cdp, ev, log, expectedBytes) {
+  const results = [];
+  for (let i = 0; i < 3; i++) {
+    const t = Date.now();
+    try {
+      const r = await ev(
+        `
+        const ta = document.querySelector("textarea.source-editor");
+        return JSON.stringify({
+          hasTa: !!ta,
+          len: ta ? ta.value.length : -1,
+          sh: ta ? ta.scrollHeight : -1,
+          ch: ta ? ta.clientHeight : -1,
+          pmLen: document.querySelector(".editor-container")
+            ? (document.querySelector(".editor-container").textContent || "").length
+            : -1,
+        });
+      `,
+        5000,
+      );
+      const parsed = JSON.parse(r || "{}");
+      results.push({ round: i, ms: Date.now() - t, ok: true, ...parsed });
+    } catch (e) {
+      results.push({ round: i, ms: Date.now() - t, ok: false, error: String(e && e.message ? e.message : e) });
+    }
+    await sleep(400);
+  }
+  const allOk = results.every((r) => r.ok);
+  const last = results[results.length - 1] || {};
+  // 判据同样要认两个面：阅读模式（PM）下 textarea 是隐藏的、len=0 属正常状态，
+  // 不能因此判"未装载"。真正的问题是**两个面都没有内容**。
+  const hasDoc = allOk && ((typeof last.len === "number" && last.len > 0) || last.pmLen > 0);
+  const hasTa = allOk && last.hasTa === true;
+  const usable = hasDoc && (hasTa || (allOk && last.pmLen > 0));
+  const reason = usable
+    ? ""
+    : !allOk
+      ? `主线程持续阻塞：${results.filter((r) => !r.ok).length}/3 次轻量 evaluate 超时(5s)`
+      : !hasDoc
+        ? `两个面都没有内容（textarea len=${last.len} / PM len=${last.pmLen}），文档未装入`
+        : "控件缺失（textarea 与 .editor-container 都不存在）";
+  log(
+    `   可用性探测：${usable ? "可用" : "不可用"}（3 次 evaluate 耗时 ${results.map((r) => r.ms).join("/")}ms）` +
+      (usable ? "" : ` → ${reason}`),
+  );
+  return { usable, reason, rounds: results, expectedBytes };
+}
+
 async function runTier(cdp, tier, args, log) {
   const root = PROJECT_ROOT;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `lightmd-perf-${tier.id}-`));
@@ -462,15 +518,42 @@ async function runTier(cdp, tier, args, log) {
     }
     await sleep(1200);
     try {
+      // 装载判据（两个面都要认）：
+      //   ① 阅读面（PM）：`.editor-container` 的文本长度 ≥ 输入的 90%
+      //   ② 源码面：`textarea.source-editor` 的 value 长度 ≥ 输入的 90%
+      //
+      // 为什么必须同时认：`lightmd:openFile` 默认落在**阅读模式**，此时 textarea
+      // 是隐藏的、value 为 0（内容只在 PM 里，实测 previewLen=717650 / srcLen=0）。
+      // 只认 textarea 会永远等不到（早期版本恰好相反：只认 scrollHeight，
+      // 结果空文档被误判为已装载，srcLen=32 —— 更危险）。
       loaded = await ev(
         `
       const ta = document.querySelector("textarea.source-editor");
       const sc = document.querySelector(".editor-container");
-      const len = (ta && ta.value.length) || 0;
-      return len > ${Math.floor(docText.length * 0.9)} || (sc && (sc.scrollHeight || 0) > 1000);
+      const expect = ${docText.length};
+      const srcLen = ta ? ta.value.length : 0;
+      const pmLen = sc ? (sc.textContent || "").length : 0;
+      return srcLen >= expect * 0.9 || pmLen >= expect * 0.9;
     `,
         evalTimeout,
       );
+      if (!loaded) {
+        const dbg = await ev(
+          `
+          const ta = document.querySelector("textarea.source-editor");
+          const sc = document.querySelector(".editor-container");
+          return JSON.stringify({
+            hasTa: !!ta,
+            len: ta ? ta.value.length : -1,
+            expected: ${docText.length},
+            mode: sc && sc.clientHeight > 0 ? "preview" : "edit",
+            previewLen: sc ? (sc.textContent || "").length : -1,
+          });
+        `,
+          5000,
+        ).catch(() => "{}");
+        log(`   [装载] 第 ${a} 次探测：${dbg}`);
+      }
     } catch (e) {
       loadTimeoutEvidence.push({ attempt: `probe-${a}`, at: Date.now() - tLoad0, error: String(e && e.message ? e.message : e) });
     }
@@ -479,6 +562,36 @@ async function runTier(cdp, tier, args, log) {
   if (!loaded) throw new Error(`档位 ${tier.id}：文档未装入（20 次尝试，装载期 evaluate 超时 ${loadTimeoutEvidence.length} 次）`);
   log(`  装载完成：${(loadMs / 1000).toFixed(1)}s`);
   await sleep(900);
+
+  // ── 可用性探测（20MB 档的关键一步） ──
+  //
+  // 实测：20MB（约 61 万行）文档**装载本身就耗时 510s**，且装载期间单次
+  // `Runtime.evaluate` 阻塞 >180s；装载完成后主线程仍长期被占满（后续 evaluate
+  // 60s 超时）。这不是探针坏了，而是「当前 textarea 面在 20MB 规模下不可用」
+  // 的**直接证据** —— 也是 P0-4 要留下的基线结论之一。
+  //
+  // 故 20MB 档改为「可用性探测模式」：能测就测，测不了就把阻塞证据如实落盘，
+  // 不伪装成"性能数字"（假数字比没有数字更危险）。
+  const usability = await probeUsability(cdp, ev, log, actualBytes);
+  if (!usability.usable) {
+    log(`   [不可用] ${usability.reason}`);
+    return {
+      tier: tier.id,
+      targetBytes: tier.bytes,
+      actualBytes,
+      lines: docText.split("\n").length,
+      loadMs,
+      loadBlockedEvals: loadTimeoutEvidence,
+      usability,
+      modeSwitch: [],
+      typing: null,
+      undo: null,
+      note:
+        "20MB 档在本机 textarea 面**不可用**：装载阻塞与主线程占满超时是实测结论，" +
+        "故不做输入延迟/切换/撤销计时（缺数字比假数字诚实）。" +
+        "该档的价值是记录「当前实现的上限」，供 A 线 CM6 对照。",
+    };
+  }
 
   const env0 = JSON.parse(await ev(`return __pbEnv();`));
   log(`  环境：mode=${env0.mode} srcLen=${env0.srcLen} longtask=${env0.longTasksSupported}`);
