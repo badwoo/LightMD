@@ -472,6 +472,8 @@ export function generateDocument(rng: Rng, index: number): { markdown: string; f
   const blocks: GenBlock[] = [];
   const features = new Set<FeatureId>();
   const targetBlocks = rng.between(4, 12);
+  /** 脚注 label 文档内唯一计数器（重复 label 会让第二个定义被 markdown-it 吞掉） */
+  let footnotesUsed = 0;
 
   // 保证 §7.2 覆盖表的核心项在**组合上**都有机会出现：前若干块按需插入
   // （不是硬编码模板，而是"若本次抽样没选中就补一个"，避免 200 篇里某项 0 覆盖）
@@ -517,7 +519,12 @@ export function generateDocument(rng: Rng, index: number): { markdown: string; f
         // 实测（markdown-it-footnote）：未被任何 `[^label]` 引用的定义会被整体丢弃
         //（连 token 都不产生）—— 那是「输入本身不合法」，会制造大量与实现无关的
         // 假 lossy，淹没真实缺陷。故此处共享一个 label。
-        const label = rng.pick(FOOTNOTE_LABELS);
+        //
+        // 另一个同类约束（B2 阶段实测补）：**同一篇文档里 label 必须唯一**。
+        // 重复 label 时 markdown-it 只保留第一个定义、第二个被吞掉，
+        // 且引用位置可能落到错误定义上 → 制造假的结构差异（实测 doc#35）。
+        // 故用文档内自增序号做 label，保证全局唯一。
+        const label = `fn${footnotesUsed++}`;
         if (rng.chance(0.5)) {
           push(footnoteUseBlock(rng, label));
           push(footnoteBlock(rng, label));

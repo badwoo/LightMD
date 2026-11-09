@@ -874,7 +874,11 @@ function buildSpm(source: string, tokens: Tk[], lineStarts: number[], lineCount:
  * 不再各自解析（现状是 `markdownToDoc` / `renderMarkdownHtml` / `exportBlocks` /
  * `docToMarkdown` 各解析一遍，这是四出口漂移的根源）。
  */
-export function parseUnified(source: string, opts?: UnifiedParseOptions): UnifiedParseResult {
+export function parseUnified(sourceRaw: string, opts?: UnifiedParseOptions): UnifiedParseResult {
+  // CRLF 契约（设计稿 §3.2 A2）：载入侧统一归一化为 \n，写盘时由 eolPreserve 还原。
+  // 四个出口都在内存层用 \n，故模型层必须先归一化 —— 否则 span 偏移与
+  // markdown-it 的 token.map（按 \n 计行）会错位，且往返会漏 \r。
+  const source = sourceRaw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const md =
     opts?.mdInstance ??
     createMarkdownIt({ breaks: opts?.breaks ?? true, html: true, htmlBlockDisabled: true });
@@ -891,6 +895,35 @@ export function parseUnified(source: string, opts?: UnifiedParseOptions): Unifie
   const breaks = opts?.breaks ?? true;
   const ctx: Ctx = { source, lineStarts, lineCount, tokens: rawTokens, unknown, headings, breaks };
   const tree = parseTokenRange(ctx, 0, rawTokens.length, true);
+
+  // ── 脚注节点按源码行序插回正确位置（关键修正）──
+  //
+  // markdown-it-footnote 把 `footnote_block` 统一放到 token 流**末尾**
+  // （无论定义写在源码哪里）。若照 token 顺序建树，脚注定义会被挪到文末 ——
+  // 那是**内容位置失真**（fuzz 实测 doc#3 的 `[^x]: ...` 从第 3 行被搬到最后）。
+  //
+  // 修正：取出所有 footnote 节点，按 `lines.start` 归位到 tree 的正确索引。
+  const footnotes = tree.filter((n) => n.kind === "footnote");
+  if (footnotes.length > 0) {
+    const others = tree.filter((n) => n.kind !== "footnote");
+    for (const fn of footnotes) {
+      // 找到第一个起始行 > 该脚注起始行的块，插在它前面
+      let at = others.findIndex((n) => n.lines.start > fn.lines.start);
+      if (at < 0) at = others.length;
+      others.splice(at, 0, fn);
+    }
+    tree.length = 0;
+    tree.push(...others);
+  }
+
+  // 文档级头部空行数（首个块之前的空行）—— 与 trailingBlankLines 对称的保真项
+  let headBlankLines = 0;
+  for (const line of source.split("\n")) {
+    if ((line || "").trim()) break;
+    headBlankLines++;
+  }
+  // "整篇皆空"时上面会把所有行都算成头部空行，此时头尾不该重复计
+  const onlyBlank = source.split("\n").every((l) => !(l || "").trim());
 
   // 文档级尾部空行数（保真用：末尾 N 个空行要写回 N 个）
   const srcLines = source.split("\n");
@@ -909,7 +942,10 @@ export function parseUnified(source: string, opts?: UnifiedParseOptions): Unifie
     spm: buildSpm(source, rawTokens, lineStarts, lineCount),
     unknownTokens: [...unknown],
     headings,
-    raw: { trailingBlankLines },
+    raw: {
+      trailingBlankLines: onlyBlank ? 0 : trailingBlankLines,
+      headBlankLines: onlyBlank ? 0 : headBlankLines,
+    },
   };
 }
 

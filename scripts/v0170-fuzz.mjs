@@ -81,6 +81,16 @@ const server = await createServer({
 
 let exitCode = 0;
 try {
+  // v0.17.0 B2：接上 tree oracle 真实实现（P0-B 阶段是 available=false 的诚实桩）。
+  // 幂等注入；未注入时 oracle 会明确标记 adapter_unavailable 且不参与计数。
+  try {
+    const b2 = await server.ssrLoadModule("/src/__tests__/fuzz/tree-oracle-b2.ts");
+    b2.installTreeOracle();
+    if (!args.quiet) console.log("[fuzz] tree oracle：已接入 B2 实现（md→tree→md 开始参与计数）");
+  } catch (e) {
+    console.warn(`[fuzz] tree oracle 接入失败（将保持桩状态）：${e && e.message ? e.message : e}`);
+  }
+
   const runner = await server.ssrLoadModule("/src/__tests__/fuzz/runner.ts");
 
   const bootMs = Date.now() - t0;

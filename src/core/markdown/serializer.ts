@@ -289,7 +289,7 @@ function blockquoteToMarkdown(node: Node): string {
 // ─── 代码块 ──────────────────────────────────────────────
 
 /** v0.9.0 D8：仅剥「整体占位」的零宽空格（parser 对空代码内容的占位），不碰真实内容 */
-function stripZwsp(text: string): string {
+export function stripZwsp(text: string): string {
   return text === "\u200B" ? "" : text;
 }
 
@@ -298,7 +298,7 @@ function stripZwsp(text: string): string {
  * 围栏长 = max(3, 最长反引号连续段+1, 行首反引号连续段+1)，
  * 保证内容中的反引号串不会被误认为围栏开/闭标记。
  */
-function fenceBlock(content: string, info: string): string {
+export function fenceBlock(content: string, info: string): string {
   let maxRun = 0;
   let run = 0;
   for (const ch of content) {
@@ -727,7 +727,7 @@ function serializeGridRow(gridRow: TableGrid[number], isHead: boolean): string[]
  * code span 内是字面文本（不能含其他强调），因此 code 恒为最内层；link
  * 承载 URL 语义放最外层。按此优先级排序后再包裹，嵌套关系不再颠倒。
  */
-const MARK_OUTER_ORDER: Record<string, number> = {
+export const MARK_OUTER_ORDER: Record<string, number> = {
   link: 0,
   strong: 1,
   em: 2,
@@ -873,7 +873,7 @@ function inlineToMarkdown(node: Node, context?: "table" | "top"): string {
  * 对每个续行（第一个 `\n` 之后的行）：先剥离行首空白，若首个非空白字符会触发块级
  * 解释，则在其前插入 `\`。已以 `\` 开头的行跳过（`escapeText` 已转义过，避免叠加）。
  */
-function escapeContinuationLines(inline: string): string {
+export function escapeContinuationLines(inline: string): string {
   // 无换行 → 绝大多数段落在此短路，零开销
   if (!inline.includes("\n")) return inline;
 
@@ -985,7 +985,7 @@ function applyMark(text: string, mark: Mark, inTableCell = false): string {
  * - v0.9.0 D5：表格上下文中内容里的 "|" 写成 "\|"
  *   （GFM 允许 \| 穿透 code span，markdown-it 遵循）
  */
-function inlineCodeWrap(content: string, inTableCell: boolean): string {
+export function inlineCodeWrap(content: string, inTableCell: boolean): string {
   let inner = inTableCell ? content.replace(/\|/g, "\\|") : content;
   let max = 0;
   let run = 0;
@@ -1013,14 +1013,14 @@ function inlineCodeWrap(content: string, inTableCell: boolean): string {
  * 含空白、括号或尖括号的地址用 <...> 包裹（CommonMark pointy 形式），
  * 内部的 < > \ 用反斜杠转义；markdown-it 原生支持该形式，往返闭合。
  */
-function escapeDest(dest: string): string {
+export function escapeDest(dest: string): string {
   if (!dest) return dest;
   if (!/[\s()<>]/.test(dest)) return dest;
   return "<" + dest.replace(/([<>\\])/g, "\\$1") + ">";
 }
 
 /** v0.9.0 C3：link/image title 中的引号转义 */
-function escapeTitle(title: string): string {
+export function escapeTitle(title: string): string {
   return title.replace(/"/g, '\\"');
 }
 
@@ -1064,7 +1064,7 @@ const PAIRABLE_SUP = /\^([^\s^]|\\.)+\^/;
 const PAIRABLE_MATH = new RegExp("\\$(?!\\$)[\\s\\S]*?\\$");
 const PAIRABLE_MARK = /==([^\s=]|\\.)+==/;
 
-function escapeText(text: string, inTableCell = false, pairContext?: string): string {
+export function escapeText(text: string, inTableCell = false, pairContext?: string): string {
   if (!text) return text;
   let out = text.replace(/\\/g, "\\\\");
 

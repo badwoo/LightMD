@@ -128,6 +128,14 @@ export interface MdRaw {
   trailingBlankLines?: number;
   /** 表格对齐写法原文（`|:--|--:|` 的原始形态，避免被规范化成默认形态） */
   alignSyntax?: string;
+  /**
+   * 文档**首个块之前**的空行数（v0.17.0 B2 补）。
+   *
+   * 为什么文档级也要保真：用户文件以空行开头是常见形态（分区排版），
+   * 丢掉它会造成整篇内容上移、git diff 噪音。这是 `trailingBlankLines` 的对称项，
+   * 之前只有尾部（由 parser 的空段落机制承载），头部在 tree 层没有承载点。
+   */
+  headBlankLines?: number;
 }
 
 /**
