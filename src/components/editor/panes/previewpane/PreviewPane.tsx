@@ -766,7 +766,18 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
          */
         const cursorPos = sourceSurface.getSelection().start;
         const cursorY = sourceSurface.offsetToContentY(cursorPos);
-        if (cursorY === null) return; // 布局不可用：跳过居中，不写 0（与既有降级口径一致）
+        /**
+         * ⚠️ **布局不可用时必须 return，绝不能退化成 `cursorY = 0`。**
+         *
+         * 这是一个"看起来无害的默认值实际上是大坑"的典型：
+         * `cursorY = 0` 意味着"光标在文档最顶部" → 打字机每次输入都会尝试把视口滚回顶部
+         *（`computeTypewriterScrollTop` 会算出 target=0）→ 用户看到的是**文档自己往上跑**。
+         * 这比"不居中"（本次跳过、位置不动）严重得多，而且很难归因到"某个测量函数返回了 0"。
+         *
+         * 同理，下面 handleKeyUp 的普通字符分支也显式处理 null（退回 instant 恢复基线），
+         * 而不是让 0 流进计算。
+         */
+        if (cursorY === null) return;
         // 使用纯函数计算目标滚动位置（内置视口溢出检查和阈值抖动过滤）
         const target = computeTypewriterScrollTop(
           cursorY,

@@ -220,6 +220,21 @@ export interface SourceSurface {
    */
   offsetToContentY(offset?: number): number | null;
 
+  /**
+   * 一段字符区间在**内容坐标系**里的起止 Y（A3-④：专注模式遮罩）。
+   *
+   * 语义与 `utils/focus-paragraph.measureTextareaRangeY(ta, start, end)` 一致：
+   * 返回 `{ startY, endY }`（相对**文档内容顶部**，不含 scrollTop）。
+   *
+   * 为什么单点能力（`offsetToContentY`）不够：专注模式要画的是一条**连续行区间的
+   * 遮罩带**（光标行 ±1 行，`findFocusRowRange` 给的是 `[start, end)` 字符区间），
+   * 用两个单点拼是错的 —— 软换行时区间中间可能跨行，两端点的 Y 之差 != 区间高度。
+   *
+   * @returns 布局不可用/区间无效时返回 null（调用方走"屏幕中央 3 行窗"兜底，
+   *          这是既有行为，不能改成"不画遮罩"）
+   */
+  measureRangeContentY(start: number, end: number): { startY: number; endY: number } | null;
+
   /** 滚动到某字符偏移附近（搜索跳转 / 撤销恢复） */
   scrollToOffset(offset: number, opts?: { center?: boolean }): void;
 

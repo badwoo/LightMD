@@ -43,7 +43,7 @@ import {
   measureSourceLineAxis,
 } from "../../utils/blockScrollAlign";
 import { topLevelBlockStartLines } from "../../core/renderPipeline";
-import { measureTextareaCursorY } from "../../utils/focus-paragraph";
+import { measureTextareaCursorY, measureTextareaRangeY } from "../../utils/focus-paragraph";
 import type {
   SourceAnchor,
   SourceChangeEvent,
@@ -259,6 +259,30 @@ export class TextareaSourceSurface implements SourceSurface {
       const pos = offset === undefined ? ta.selectionStart : offset;
       if (!Number.isFinite(pos)) return null;
       return measureTextareaCursorY(ta, Math.max(0, Math.min(ta.value.length, pos)));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 一段字符区间在**内容坐标系**的起止 Y（A3-④：专注模式遮罩）。
+   *
+   * textarea 实现直接复用既有 `measureTextareaRangeY` —— **原函数一行未改**
+   *（它与打字机的 `measureTextareaCursorY` 是同一套 mirror 机制，已由软换行实测验证）。
+   * A3 只是把它收进接口，让宿主不必再直接拿 textarea 算、也不必为 CM6 写第二份。
+   */
+  measureRangeContentY(start: number, end: number): { startY: number; endY: number } | null {
+    const ta = this.ta;
+    if (!ta) return null;
+    const len = ta.value.length;
+    const s = Math.max(0, Math.min(len, start));
+    const e = Math.max(0, Math.min(len, end));
+    if (!(e > s)) return null;
+    try {
+      const r = measureTextareaRangeY(ta, s, e);
+      if (!r) return null;
+      if (!Number.isFinite(r.startY) || !Number.isFinite(r.endY)) return null;
+      return { startY: r.startY, endY: r.endY };
     } catch {
       return null;
     }

@@ -565,6 +565,42 @@ export class CmSourceSurface implements SourceSurface {
     }
   }
 
+  /**
+   * 一段字符区间在**内容坐标系**的起止 Y（A3-④：专注模式遮罩）。
+   *
+   * CM6 用 `coordsAtPos(start)` / `coordsAtPos(end)` 各减 `documentTop`，
+   * **不需要 mirror div**（textarea 版必须复刻排版才能测，那是漂移温床）。
+   *
+   * 两个细节（都容易踩）：
+   * 1. **end 要取"区间最后一个字符之后"的位置**：字符区间是闭开的 `[start, end)`，
+   *    若直接对 `end` 求坐标，在多行区间里会拿到**下一行行首**的 top，
+   *    导致遮罩带比实际行窗高一整行。这里用 `end - 1` 求"最后一字符"的 top，
+   *    再取它的 bottom 作为区间底 —— 这样软换行跨行时高度才正确。
+   * 2. `coordsAtPos` 越界会抛 → clamp 到文档范围。
+   */
+  measureRangeContentY(start: number, end: number): { startY: number; endY: number } | null {
+    if (!this.layoutAvailable) return null;
+    const view = this.view;
+    if (!view) return null;
+    const docLen = view.state.doc.length;
+    const s = Math.max(0, Math.min(docLen, start));
+    const e = Math.max(0, Math.min(docLen, end));
+    if (!(e > s)) return null;
+    try {
+      const startCoords = view.coordsAtPos(s);
+      // 区间最后一个字符的位置（闭开区间 → end-1）
+      const lastCharCoords = view.coordsAtPos(Math.max(s, e - 1));
+      if (!startCoords || !lastCharCoords) return null;
+      if (!Number.isFinite(startCoords.top) || !Number.isFinite(lastCharCoords.bottom)) return null;
+      return {
+        startY: startCoords.top - view.documentTop,
+        endY: lastCharCoords.bottom - view.documentTop,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   /** 恢复锚点（`captureViewportAnchor` 的逆操作） */
   restoreViewportAnchor(anchor: SourceAnchor | null | undefined): void {
     if (!anchor || !this.layoutAvailable) return;

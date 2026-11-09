@@ -8990,34 +8990,62 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
   const updateOverlayRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    const textarea = sourceTextareaRef.current;
     const overlay = focusOverlayRef.current;
-    // 仅在 focusMode 开启 + 源码模式 + 元素就绪时启用
-    if (!focusMode || !isSourceMode || !textarea || !overlay) {
+    /**
+     * ⚠️ v0.17.0 A3-④：**不能再要求 `sourceTextareaRef.current` 存在**。
+     *
+     * 旧判据 `if (!focusMode || !isSourceMode || !textarea || !overlay) return;` 在 CM6
+     * 路径下会直接短路（`sourceTextareaRef.current` 为 null）→ 专注遮罩**静默完全不工作**。
+     * 现在改成"overlay 就绪即可"，数据源全部走 `SourceSurface`。
+     *
+     * 事件绑定仍绑在源码宿主元素上（判据 2：DOM 事件属 A3 后能力），
+     * 但**没有宿主元素时不再放弃整个遮罩**——只是不绑事件，遮罩仍随内容变化重绘。
+     */
+    if (!focusMode || !isSourceMode || !overlay) {
       updateOverlayRef.current = null;
       return;
     }
+    const textarea = sourceTextareaRef.current;
 
     /** 计算聚焦行区间（v0.12.0：光标行 ±1 行）的 [startY, endY) 视口 Y 坐标，并更新 overlay 遮罩 */
     const updateOverlay = () => {
-      const ta = sourceTextareaRef.current;
       const ov = focusOverlayRef.current;
-      if (!ta || !ov) return;
+      if (!ov) return;
 
-      const text = ta.value;
-      const cursorPos = ta.selectionStart;
+      /**
+       * v0.17.0 A3-④：专注遮罩的数据源改经 `SourceSurface`。
+       *
+       * 原实现直接用 `sourceTextareaRef.current` + `measureTextareaRangeY`。在 CM6 路径下
+       * `sourceTextareaRef.current` 是 **null** → `if (!ta) return` → **专注遮罩静默完全不工作**
+       *（无报错、无提示，用户只觉得"专注模式点了没反应"）。这类静默失效是最难发现的缺陷。
+       *
+       * 现在：
+       * - 文本与光标位置走 surface 纯值接口；
+       * - 区间起止 Y 走 `measureRangeContentY`（textarea 内部复用原 mirror 函数，CM6 用 coordsAtPos）；
+       * - **不可测时显式走既有的"屏幕中央 3 行窗"兜底**，绝不退化成 `[0,0]`。
+       */
+      const text = sourceSurface.getText();
+      const cursorPos = sourceSurface.getSelection().start;
 
       // 调用纯函数查找聚焦行字符区间（v0.12.0 需求9：光标行 ±1 行 = 3 行全亮窗）
+      // 纯函数不动：它只吃 (text, pos)
       const range = findFocusRowRange(text, cursorPos, 1);
 
-      // 使用 mirror div 测量段落起止位置的实际 Y 坐标（准确处理软换行）
-      const { startY: rawStartY, endY: rawEndY } = measureTextareaRangeY(ta, range.start, range.end);
+      const measuredRange = sourceSurface.measureRangeContentY(range.start, range.end);
+      const metrics = sourceSurface.getMetrics();
+      const height = metrics.clientHeight;
 
-      const height = ta.clientHeight;
-
-      // 限制到可视区域内，避免遮罩溢出
+      /**
+       * ⚠️ 测量不可用（CM6 视口外 / 布局未就绪）时**必须走兜底**，
+       * 绝不能把它当成 `{ startY: 0, endY: 0 }` —— 那会在顶部画一小条遮罩，
+       * 用户会以为"专注模式坏了但还在工作"，比明确不画更糟。
+       */
+      // 限制到可视区域内，避免遮罩溢出；不可测时用 (0,0) 只是为了让下面的
+      // "startY >= height" 兜底判据成立 —— 真正的兜底在下一个分支，不会画空条。
+      const rawStartY = measuredRange ? measuredRange.startY : 0;
+      const rawEndY = measuredRange ? measuredRange.endY : 0;
       const startY = Math.max(0, rawStartY);
-      const endY = Math.min(height, rawEndY);
+      const endY = measuredRange ? Math.min(height, rawEndY) : 0;
 
       // 修复：暗色主题下遮罩颜色适配，避免 rgba(0,0,0,0.45) 在深色背景上过暗
       const dimColor = isDarkTheme(theme) ? "rgba(0,0,0,0.28)" : "rgba(0,0,0,0.45)";
@@ -9026,8 +9054,27 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       // 修复：原代码整个视口遮罩，用户看不到高亮内容；改为高亮屏幕中央
       // v0.12.0 需求9：单行窗 → 3 行窗（中心行 ±1.5 行高）
       if (endY <= 0 || startY >= height) {
-        const cs = getComputedStyle(ta);
-        const lineHeight = resolveLineHeight(cs);
+        /**
+         * 兜底：聚焦行不在可视区（或测量不可用）→ 高亮屏幕中央 3 行窗（既有行为）。
+         *
+         * 行高来源：优先用 surface 的几何接口**推导**（不依赖 textarea 元素）——
+         * 这正是原来 `getComputedStyle(ta)` 在 CM6 下会失效的地方。
+         * 取"相邻两个内容 Y 的差"作为行高；不可得时退回 CSS 变量口径的默认行高。
+         */
+        const lineHeight = (() => {
+          const y0 = sourceSurface.offsetToContentY(0);
+          // 用第 1 个换行符之后的偏移推一行高
+          const text0 = sourceSurface.getText();
+          const nl = text0.indexOf("\n");
+          const y1 = nl >= 0 ? sourceSurface.offsetToContentY(nl + 1) : null;
+          if (y0 !== null && y1 !== null && y1 > y0) return y1 - y0;
+          // 退路：读 CSS 变量（CM6 与 textarea 共用同一套排版变量）
+          const root = getComputedStyle(document.documentElement);
+          const lh = parseFloat(root.getPropertyValue("--editor-line-height"));
+          const fs = parseFloat(root.getPropertyValue("--editor-font-size"));
+          if (Number.isFinite(lh) && Number.isFinite(fs) && lh > 0 && fs > 0) return lh * fs;
+          return 24; // 最后兜底：与既有默认行高一致
+        })();
         const centerY = height / 2;
         const centerStartY = Math.max(0, centerY - lineHeight * 1.5);
         const centerEndY = Math.min(height, centerY + lineHeight * 1.5);
@@ -9072,13 +9119,22 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       });
     };
 
-    // 监听光标位置变化和滚动
-    textarea.addEventListener("keyup", scheduleUpdate);
-    textarea.addEventListener("click", scheduleUpdate);
-    textarea.addEventListener("input", scheduleUpdate);
-    textarea.addEventListener("scroll", scheduleUpdate);
-    // select 事件覆盖键盘方向键移动选区的情况
-    textarea.addEventListener("select", scheduleUpdate);
+    /**
+     * 监听光标位置变化和滚动。
+     *
+     * ⚠️ 宿主元素可能为 null（CM6 路径下 `sourceTextareaRef` 不提供元素）。
+     * 这种情况下**不放弃遮罩** —— 下面的 `document.addEventListener("selectionchange")`
+     * 仍能覆盖光标移动，`sourceContent` 变化的 effect 也会触发重绘。
+     * 这正是"不能因为拿不到 textarea 就让整个功能静默失效"的处置。
+     */
+    if (textarea) {
+      textarea.addEventListener("keyup", scheduleUpdate);
+      textarea.addEventListener("click", scheduleUpdate);
+      textarea.addEventListener("input", scheduleUpdate);
+      textarea.addEventListener("scroll", scheduleUpdate);
+      // select 事件覆盖键盘方向键移动选区的情况
+      textarea.addEventListener("select", scheduleUpdate);
+    }
     // v0.12.0 返修（需求9）：document selectionchange 覆盖所有光标移动路径
     // （方向键/Home/End/PgUp/PgDn 等不触发 select 事件，keyup 也可能被吞），
     // 保证 3 行高亮窗始终跟随光标
@@ -9088,19 +9144,21 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     updateOverlay();
 
     return () => {
+      if (textarea) {
       textarea.removeEventListener("keyup", scheduleUpdate);
       textarea.removeEventListener("click", scheduleUpdate);
       textarea.removeEventListener("input", scheduleUpdate);
       textarea.removeEventListener("scroll", scheduleUpdate);
       textarea.removeEventListener("select", scheduleUpdate);
+      }
       document.removeEventListener("selectionchange", scheduleUpdate);
       if (followUpRaf) cancelAnimationFrame(followUpRaf);
       updateOverlayRef.current = null;
       // 清空遮罩，避免残留
       const ov = focusOverlayRef.current;
       if (ov) ov.style.backgroundImage = "";
-      // 销毁 mirror div，避免内存泄漏
-      destroyMirror(textarea);
+      // 销毁 mirror div，避免内存泄漏（无宿主元素时无需销毁）
+      if (textarea) destroyMirror(textarea);
     };
   }, [focusMode, isSourceMode, viewMode, forceUpdateKey, theme]);
 
@@ -9896,7 +9954,18 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
          */
         const cursorPos = sourceSurface.getSelection().start;
         const cursorY = sourceSurface.offsetToContentY(cursorPos);
-        if (cursorY === null) return; // 布局不可用：跳过居中，不写 0（与既有降级口径一致）
+        /**
+         * ⚠️ **布局不可用时必须 return，绝不能退化成 `cursorY = 0`。**
+         *
+         * 这是一个"看起来无害的默认值实际上是大坑"的典型：
+         * `cursorY = 0` 意味着"光标在文档最顶部" → 打字机每次输入都会尝试把视口滚回顶部
+         *（`computeTypewriterScrollTop` 会算出 target=0）→ 用户看到的是**文档自己往上跑**。
+         * 这比"不居中"（本次跳过、位置不动）严重得多，而且很难归因到"某个测量函数返回了 0"。
+         *
+         * 同理，下面 handleKeyUp 的普通字符分支也显式处理 null（退回 instant 恢复基线），
+         * 而不是让 0 流进计算。
+         */
+        if (cursorY === null) return;
         // 使用纯函数计算目标滚动位置（内置视口溢出检查和阈值抖动过滤）
         const target = computeTypewriterScrollTop(
           cursorY,
