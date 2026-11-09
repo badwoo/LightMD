@@ -489,7 +489,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       const restoreToken = ++sourceSelectionRestoreTokenRef.current;
       const applySelection = () => {
         if (sourceSelectionRestoreTokenRef.current !== restoreToken) return;
-        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+        // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
+      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
+      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
+      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
+      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
+      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
+      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
         /**
          * v0.17.0 A3 收尾（**B 类·静默失效 → 已修**）：撤销后光标恢复。
          *
@@ -1048,7 +1054,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     // 从未生效，全部落回 inferSourceEditKind 的**文本形态猜测** —— 猜测必然误判。
     // 这里在粘贴真正发生前把标记置上，紧随其后的 onChange 消费后复位。
     sourceJustPastedRef.current = true;
-    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+    // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
+      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
+      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
+      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
+      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
+      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
+      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
     // A3 收敛：`ta` 原仅用于 `isInCodeBlock(ta.value, ...)` → 纯值，经 surface
     const text = e.clipboardData.getData("text/plain").trim();
     if (!isHttpUrl(text)) return;
@@ -1131,7 +1143,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       e.key === "Tab" &&
       !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
     ) {
-      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
+      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
+      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
+      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
+      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
+      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
+      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
       if (ta) {
         const plan = planSourceTab(buildSourcePairInput(ta, ta.selectionStart ?? 0, ta.selectionEnd ?? 0));
@@ -1155,7 +1173,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !sourceGhostActiveRef.current) {
       // IME 组合态守卫（与同函数内 Backspace 分支同款）
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
+      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
+      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
+      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
+      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
+      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
+      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
       if (ta) {
         const input = {
@@ -1183,7 +1207,13 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     //   · compositionend（组合提交后相位）→ 补一次闭符号；
     //   · keydown → 退格成对删除、Tab 跳出（这两个必须抢在默认行为之前）。
     if (autoPairEnabled && e.key === "Backspace") {
-      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+      // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 的**签名收 textarea**
+      //（内部实际只用 `ta.value`，但改签名要动 `utils/sourceAutoPair.ts` + 其既有单测）
+      // 当前 CM6 表现：**这两处 keydown 分支（Tab 跳出配对 / Backspace 成对删除）不生效**——
+      // 但**缩进本身仍工作**：CM6 的 `CmSourceSurface.handleTab` 直接调
+      // `planSourceIndent/planSourceOutdent`，不经过 buildSourcePairInput。
+      // 所以实际损失是"配对增强手势"失效（括号/引号自动补全、成对删除、Tab 跳出），
+      // 不是"Tab 完全不能用"。 | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
       if (ta) {
         // E5(v0.9.2):IME 组合态守卫——组合期按 Backspace 删拼音，不做成对删除

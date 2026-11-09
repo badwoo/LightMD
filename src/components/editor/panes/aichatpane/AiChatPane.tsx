@@ -1245,9 +1245,9 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       const cursor = pos + text.length;
       requestAnimationFrame(() => {
         // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-        const el = sourceTextareaRef.current;
-        el?.focus();
-        el?.setSelectionRange(cursor, cursor);
+        // A3 收敛：焦点与光标恢复是纯值 → 经 surface
+        sourceSurface.focus();
+        sourceSurface.setSelection(cursor, cursor);
       });
       return;
     }
