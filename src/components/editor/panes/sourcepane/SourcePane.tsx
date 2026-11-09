@@ -366,6 +366,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     //    （字符偏移与排版、字号、软换行、文本长度全都无关）；
     // 3. 写入后用同一套 rAF / 60ms / 160ms 校正把那一行拉回原视口 Y。
     // 像素只在「文本长度不变」时作快路径；**永不写 0**（写 0 = 丢进度，v0.14.0 P1 老 bug）。
+    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
     const textarea = sourceTextareaRef.current;
     const sel = restore as { start: number; end: number; scrollTop?: number } | undefined;
     /**
@@ -435,6 +436,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
      * 单帧恢复会在重排后被推走。三段全部用**同一锚点**（幂等）。
      */
     const applyScrollRestore = () => {
+      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
       const ta = sourceTextareaRef.current;
       if (!ta || ta.clientHeight <= 0) return;
       if (scrollPlan.kind === "anchor") {
@@ -487,6 +489,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       const restoreToken = ++sourceSelectionRestoreTokenRef.current;
       const applySelection = () => {
         if (sourceSelectionRestoreTokenRef.current !== restoreToken) return;
+        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         const ta = sourceTextareaRef.current;
         if (!ta) return;
         const len = ta.value.length;
@@ -1040,6 +1043,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     // 从未生效，全部落回 inferSourceEditKind 的**文本形态猜测** —— 猜测必然误判。
     // 这里在粘贴真正发生前把标记置上，紧随其后的 onChange 消费后复位。
     sourceJustPastedRef.current = true;
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ta = sourceTextareaRef.current;
     const text = e.clipboardData.getData("text/plain").trim();
     if (!ta || !isHttpUrl(text)) return;
@@ -1121,6 +1125,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       e.key === "Tab" &&
       !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
     ) {
+      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const ta = sourceTextareaRef.current;
       if (ta) {
         const plan = planSourceTab(buildSourcePairInput(ta, ta.selectionStart ?? 0, ta.selectionEnd ?? 0));
@@ -1144,6 +1149,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !sourceGhostActiveRef.current) {
       // IME 组合态守卫（与同函数内 Backspace 分支同款）
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const ta = sourceTextareaRef.current;
       if (ta) {
         const input = {
@@ -1171,6 +1177,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     //   · compositionend（组合提交后相位）→ 补一次闭符号；
     //   · keydown → 退格成对删除、Tab 跳出（这两个必须抢在默认行为之前）。
     if (autoPairEnabled && e.key === "Backspace") {
+      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const ta = sourceTextareaRef.current;
       if (ta) {
         // E5(v0.9.2):IME 组合态守卫——组合期按 Backspace 删拼音，不做成对删除

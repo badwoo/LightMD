@@ -569,11 +569,23 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   /** 源码面宿主元素（仅用于 mount/几何读取；不再对外当 textarea 能力用） */
   const sourceHostElRef = useRef<HTMLTextAreaElement | null>(null);
   /**
-   * 兼容别名：少数 pane 仍按 `ref` 形状读宿主元素（几何/事件）。
+   * 兼容别名：少数 pane 仍按 `ref` 形状读宿主元素。
    *
-   * 它们是 A3 明确记录的能力缺口，用对象形状保持既有 `if (el) {…}` 守卫语义，
-   * 避免在收尾阶段大改 59 处调用点引入新风险。**新代码禁止使用**。
-   * @deprecated 仅为 CM6 几何缺口过渡；A3 后逐个替换为 surface 几何接口。
+   * ## 它是"过渡"而不是"正式契约"，理由与边界必须写清（避免后人误用）
+   *
+   * 剩余 60 处直读分三类：
+   * - **30 处纯值**（选区/滚动/文本）→ 可换 `surface.*`，正在逐批替换；
+   * - **13 处几何**（`clientHeight/scrollHeight/getBoundingClientRect`）→
+   *   CM6 下需新的几何能力（部分已在 A3 提供：`getMetrics` / `measureBlockTops` /
+   *   `measureRangeContentY` / `offsetToContentY`），尚未全部接完；
+   * - **2 处 DOM 事件绑定** → 属 CM6 `domEventHandlers`，A3 后能力。
+   *
+   * ⚠️ **CM6 路径下本别名为 `null`**。所有使用点必须按"可能为 null"处理，
+   * 且**不允许**因为 null 就静默跳过本该发生的副作用 ——
+   * 那是"功能消失但测试仍绿"的最坏形态（专注遮罩已踩过一次，见 e694d0b）。
+   *
+   * @deprecated A3 收尾过渡。目标：`grep sourceTextareaRef` 归零，
+   * 或每处残留都带 `TODO(v0.18)` 且能说明"这是已知 CM6 能力缺口"。
    */
   const sourceTextareaRef = sourceHostElRef;
   /**

@@ -311,8 +311,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
      * 但"点击处光标位置"是纯值，改成经 `surface.getSelection()` 读 ——
      * 这样 CM6 下取值逻辑不用再写一份，事件绑定等 A3 统一换 `domEventHandlers`。
      */
+    // TODO(v0.18): CM6 能力缺口 — DOM 事件绑定（CM6 domEventHandlers，A3 后能力）
     const ta = sourceTextareaRef.current;
-    if (!ta) return;
     const onClick = () => {
       if (useFormatPainterStore.getState().mode === "idle") return;
       const pos = sourceSurface.getSelection().start;
@@ -320,8 +320,12 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
         useFormatPainterStore.getState().consume();
       }
     };
-    ta.addEventListener("click", onClick);
-    return () => ta.removeEventListener("click", onClick);
+    // v0.17.0 A3 收尾：**不因宿主元素缺失而放弃整个功能**。
+    // 取值已全走 surface；这里只缺"点击落点事件"——CM6 下由 domEventHandlers 提供（A3 后能力）。
+    // 没有元素时功能不绑点击，但格式刷本身仍可通过其它入口（菜单/快捷键）使用，
+    // 不会静默消失。
+    if (ta) ta.addEventListener("click", onClick);
+    return () => { if (ta) ta.removeEventListener("click", onClick); };
   }, [isSourceMode, viewMode, applyFormatPainterToSource]);
 
 
@@ -772,6 +776,7 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       updateOverlayRef.current = null;
       return;
     }
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
 
     /** 计算聚焦行区间（v0.12.0：光标行 ±1 行）的 [startY, endY) 视口 Y 坐标，并更新 overlay 遮罩 */

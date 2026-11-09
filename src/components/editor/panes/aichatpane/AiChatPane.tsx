@@ -105,8 +105,14 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
 
   /** 执行 source 模式续写 ghost：流式更新 overlay，完成后保留 ghost 等待 Tab 采纳 / Esc 放弃 */
   const runSourceAiGhost = useCallback((head: string, pos: number) => {
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
+    /**
+     * v0.17.0 A3 收尾：**删除 `const textarea = …; if (!textarea) return;`**。
+     *
+     * 原代码取这个元素只是为了"确认源码面存在"，但函数体内**从未使用它**
+     *（ghost 渲染全部经 `renderSourceGhost → surface.showGhost`）。
+     * 于是 CM6 路径下这行判断会让 AI 续写**直接静默不启动** ——
+     * 典型的"多余的守卫变成功能开关"。
+     */
     // v0.12.0 需求1：AI ghost 优先——启动时清除格式 ghost（占位提示让位给续写预览）
     formatGhostRef.current = null;
     sourceGhostActiveRef.current = true;
@@ -176,6 +182,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     // v0.7.5 优化3：占位提示（续写中…）不是正文，不可采纳——消费掉本次 Tab
     // 但不插入、也不清除 ghost（等待真实增量到达）
     if (sourceGhostPlaceholderRef.current) return true;
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
     const ghost = sourceGhostTextRef.current;
     sourceGhostActiveRef.current = false;
@@ -451,6 +458,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
          * 选区两端走 surface（纯值）；但 `getTextareaSelectionAnchor` 需要真实 textarea
          * 的**视口几何**（判据 1）→ 该函数仍收 ref 元素，A3 换 `coordsAtPos`。
          */
+        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         const taEl = sourceTextareaRef.current;
         if (taEl) {
           runAiBubble("polish", text, "source", getTextareaSelectionAnchor(taEl), asel.start, asel.end);
@@ -464,6 +472,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
         : sourceContentRef.current;
       if (!text.trim()) return;
       // 锚点仍需真实几何（判据 1）→ 保留 ref 取值；光标位置是纯值 → 走 surface
+      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const taEl = sourceTextareaRef.current;
       runAiBubble(
         "summary",
@@ -825,6 +834,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     window.addEventListener("keyup", flush, true);
     // 源码通道兜底：部分 WebView2 版本里 textarea 的选区变化不一定派发 document
     // 级 selectionchange（保留兜底，不重复 flush）。
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ta = sourceTextareaRef.current;
     ta?.addEventListener("select", schedule);
     return () => {
@@ -884,6 +894,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     const targets: HTMLElement[] = [];
     const container = editorRef.current;
     if (container) targets.push(container);
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
     if (textarea) targets.push(textarea);
     if (targets.length === 0) return;
@@ -899,9 +910,26 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       const ctx = aiCtxRef.current;
       if (!ctx || ctx.insertPos === undefined) return;
       if (ctx.sourceMode === "source") {
+        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
+        /**
+         * v0.17.0 A3 收尾：原先 `if (!ta) return;` 会在 CM6 下**直接放弃设置锚点**，
+         * 连带后面 PM 分支也不会走（因为这里 return 了）。
+         * 改为：有元素时算真实锚点；无元素时退回选区起点的**比例锚点**（降级而非消失）。
+         */
         const ta = sourceTextareaRef.current;
-        if (!ta) return;
-        useAiAssistStore.getState().setAnchor(getTextareaSelectionAnchor(ta));
+        if (ta) {
+          useAiAssistStore.getState().setAnchor(getTextareaSelectionAnchor(ta));
+        } else {
+          /**
+           * 无宿主元素（CM6 路径）：**降级**为 (0,0) 锚点而不是直接放弃。
+           *
+           * 为什么 (0,0) 可接受：气泡位置只是视觉呈现，退到视口左上仍可操作；
+           * 而"直接 return"会让后续 PM 分支也不执行 → 功能静默消失。
+           * 精确锚点需要文字坐标几何，CM6 下由 `coordsAtPos(start)` 提供（A3 后能力），
+           * 已记录在 A3 收尾报告的分屏/锚点缺口一节。
+           */
+          useAiAssistStore.getState().setAnchor({ x: 0, y: 0 });
+        }
         return;
       }
       const view = viewRef.current;
@@ -1098,6 +1126,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
 
       // ── 发送时快照（回写定位 + 全文守卫基准）──
       const view = viewRef.current;
+      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const ta = sourceTextareaRef.current;
       const isPm = extracted.sourceMode === "pm";
       let docSnapshot: string;
@@ -1194,6 +1223,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     const ctx = chatCtxRef.current;
     if (ctx?.sourceMode === "source") {
       const content = sourceContentRef.current;
+      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const ta = sourceTextareaRef.current;
       const pos = Math.min(ctx.insertPos ?? ta?.selectionStart ?? content.length, content.length);
       const newContent = content.slice(0, pos) + text + content.slice(pos);
@@ -1206,6 +1236,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
       const cursor = pos + text.length;
       requestAnimationFrame(() => {
+        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         const el = sourceTextareaRef.current;
         el?.focus();
         el?.setSelectionRange(cursor, cursor);
@@ -1309,6 +1340,7 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       key: activeKeyRef.current,
     });
     requestAnimationFrame(() => {
+      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
       const el = sourceTextareaRef.current;
       el?.focus();
       el?.setSelectionRange(rewrite.cursor, rewrite.cursor);

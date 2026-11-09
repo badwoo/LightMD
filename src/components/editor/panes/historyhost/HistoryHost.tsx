@@ -455,6 +455,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     blocks: import("../../../../utils/contentScrollMap").BlockGeometry[];
     markdown: string;
   } | null => {
+    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
     const textarea = sourceTextareaRef.current;
     if (!textarea) return null;
     // 不可见时高度/宽度为 0 → 量不出可信行轴
@@ -505,6 +506,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * 量不到（隐藏 / 空文档 / 只读）就保持旧缓存不动，绝不写 null 把缓存打坏。
    */
   const cacheSourceGeometry = useCallback(() => {
+    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     const measured = measureSourceBlocks();
@@ -533,6 +535,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * @returns null = 无可用几何（调用方退回百分比——与旧行为一致，不会更差）
    */
   const captureSourceContentAnchor = useCallback((): ContentAnchor | null => {
+    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
     const textarea = sourceTextareaRef.current;
     const canMeasureLive = !!(textarea && textarea.clientHeight > 0 && textarea.clientWidth > 0);
     if (canMeasureLive) {
@@ -686,6 +689,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
       pendingSourceSelectionRef.current = null;
       return;
     }
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ta = sourceTextareaRef.current;
     if (!ta) return;
     const len = ta.value.length;

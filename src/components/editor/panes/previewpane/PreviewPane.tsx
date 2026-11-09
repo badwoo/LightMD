@@ -355,6 +355,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // - resize 抑制：窗口缩放时浏览器会把光标滚入视口，其 scroll 事件不得刷新锚点。
   useEffect(() => {
     if (!isSourceMode) return;
+    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
     const ta = sourceTextareaRef.current;
     if (!ta || typeof ResizeObserver === "undefined") return;
     textAnchorRef.current = captureTextAnchor(ta);
@@ -416,6 +417,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 用"视口顶部内容偏移"还原，视觉上视口顶部内容保持不动。
   useEffect(() => {
     if (!isSourceMode) return;
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ta = sourceTextareaRef.current;
     if (!ta) return;
     const raf = requestAnimationFrame(() => {
@@ -748,6 +750,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // textarea 打字机滚动（编辑/分屏模式）
   useEffect(() => {
     if (!typewriterMode || viewMode === "preview") return;
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     // 不设置 scrollBehavior = "smooth"，与 ProseMirror 模式保持一致：
@@ -1066,6 +1069,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     freezePrevShownRef.current = previewShown;
     if (modeChanged || !shownChanged) return;
     if (viewMode !== "edit") return;
+    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     // 记录开合前的滚动像素与**视口中央内容锚点**。
@@ -1135,6 +1139,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
      */
     const restore = () => {
       if (cancelled || abortedByUser) return;
+      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       // 确认窗口确实还属于本次（复开关时会被新值覆盖 → 交给最新那次）
@@ -1227,6 +1232,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       tries = 4,
     ) => {
       if (cancelled || abortedByUser) return;
+      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
       const ta = sourceTextareaRef.current;
       if (!ta) return;
       isFrozenRestoreRef.current = true;
@@ -1294,6 +1300,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
     restores.push(teardown);
     {
+      // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
       const ta = sourceTextareaRef.current;
       lastScrollHeight = ta ? ta.scrollHeight : -1;
       if (ta && typeof ResizeObserver !== "undefined") {
@@ -1883,6 +1890,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 哪一侧先发起滚动，谁在窗口期内拥有同步权，另一侧的 scroll 事件一律按回声忽略。
   useEffect(() => {
     if (!previewShown) return;
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
     const iframe = previewIframeRef.current;
     if (!textarea || !iframe) return;

@@ -144,10 +144,9 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         cursorOffset?: number,
         opts?: { label?: string; ghost?: string },
       ) => {
-        const textarea = sourceTextareaRef.current;
-        if (!textarea) return;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
+        // A3 收敛：纯值（选区）→ 经 surface
+        const start = sourceSurface.getSelection().start;
+        const end = sourceSurface.getSelection().end;
         const currentContent = sourceContentRef.current;
         const selected = currentContent.substring(start, end);
         // v0.11.0 B3-3：脚注定义使用**未占用的下一个编号**。
@@ -158,7 +157,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
           ? `[^${nextFootnoteLabelFromText(currentContent)}]: `
           : syntax;
         const newContent = currentContent.substring(0, start) + finalSyntax + currentContent.substring(end);
-        const scrollTop = textarea.scrollTop;
+        const scrollTop = sourceSurface.getScrollTop();
         // 直接推入差异（不用防抖，格式操作是离散的）
         // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
         recordDiscreteSourceEdit(currentContent, newContent, start, scrollTop);
@@ -489,6 +488,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
   // ─── 持续追踪 textarea 滚动百分比 + **缓存源码面块几何** ──────────────
   useEffect(() => {
+    // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     let raf = 0;
@@ -558,15 +558,16 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
   useEffect(() => {
     if (!isSourceMode) return;
+    // TODO(v0.18): CM6 能力缺口 — DOM 事件绑定（CM6 domEventHandlers，A3 后能力）
     const textarea = sourceTextareaRef.current;
     if (!textarea) return;
     const update = () => {
       if (sourceCursorRafRef.current !== null) return;
       sourceCursorRafRef.current = requestAnimationFrame(() => {
         sourceCursorRafRef.current = null;
-        const ta = sourceTextareaRef.current;
-        if (!ta) return;
-        const pos = computeTextareaCursorPosition(ta.value, ta.selectionStart, ta.selectionEnd);
+        // A3 收敛：纯值（文本 + 选区）→ 经 surface
+        const curSel = sourceSurface.getSelection();
+        const pos = computeTextareaCursorPosition(sourceSurface.getText(), curSel.start, curSel.end);
         setCursorLineRef.current(pos.line);
         setCursorColumnRef.current(pos.column);
         setSelectedCharsRef.current(pos.selectedChars);
@@ -825,6 +826,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
       let anchorLine: number | null = null;
       let anchorColumn: number | null = null;
       if (fromSource) {
+        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         const textarea = sourceTextareaRef.current;
         if (textarea) {
           const cursorPos = textarea.selectionStart ?? lastTextareaCursorRef.current;
@@ -885,6 +887,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         modeSwitchAnchorRef.current = null;
 
         requestAnimationFrame(() => {
+          // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
           const textarea = sourceTextareaRef.current;
           if (textarea) {
             const lines = mdMasked.split("\n");
@@ -933,6 +936,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
           const newDoc = contentChanged ? markdownToDoc(unmaskedSource) : view.state.doc;
 
           // 映射光标位置
+          // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
           const textarea = sourceTextareaRef.current;
           let targetPos = 1;
           const cursorPos = textarea?.selectionStart ?? lastTextareaCursorRef.current;
@@ -1076,6 +1080,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
         // 清理 iframe 待恢复标记，避免残留值影响后续切换
         pendingIframeScrollRef.current = null;
       } else {
+        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         const textarea = sourceTextareaRef.current;
         if (textarea) {
           // ① 光标位置：按内容映射恢复（行 + 行内列偏移，clamp 到源码行长度），
@@ -1124,6 +1129,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
             traceScroll("res-source-after", { after: textarea.scrollTop, want: anchorTop });
             // 布局稳定后校正一次（内容可能刚写入，scrollHeight 还在变）
             requestAnimationFrame(() => {
+              // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
               const t2 = sourceTextareaRef.current;
               if (!t2) return;
               const again = textareaTopFromContentAnchor(t2, contentAnchor);
@@ -1135,6 +1141,7 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
           // focus/setSelectionRange 可能触发浏览器把光标滚入视口 → 下一帧校正
           if (computeRestoreScrollTop(percent, textarea.scrollHeight, textarea.clientHeight) !== null) {
             requestAnimationFrame(() => {
+              // TODO(v0.18): CM6 能力缺口 — 几何（CM6 需 coordsAtPos/getMetrics 语义，A3 后能力）
               const t2 = sourceTextareaRef.current;
               if (!t2) return;
               // 有锚点时以锚点为准，不要让百分比校正把它覆盖回错误位置

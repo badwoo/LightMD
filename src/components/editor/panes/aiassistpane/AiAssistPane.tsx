@@ -96,6 +96,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
   // IME 恰好派发单字符 keydown，属偶然可用；现在两条路径都由 sourceAutoPair 规划器裁决。
   useEffect(() => {
     if (!isSourceMode || !isMdFile) return;
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const ta = sourceTextareaRef.current;
     if (!ta) return;
 
@@ -374,6 +375,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
        */
       const tsel = sourceSurface.getSelection();
       if (tsel.start !== tsel.end) {
+        // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
         const textarea = sourceTextareaRef.current;
         const text = sourceContentRef.current.slice(tsel.start, tsel.end);
         if (text.trim() && textarea) {
@@ -779,6 +781,7 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
    */
   const removeFormatGhostSyntax = useCallback(() => {
     const ghost = formatGhostRef.current;
+    // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
     const textarea = sourceTextareaRef.current;
     if (!ghost || !textarea) return false;
     // 光标已离开插入点 → 不再整段删除，走默认退格
