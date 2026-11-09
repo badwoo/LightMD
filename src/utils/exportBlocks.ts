@@ -130,7 +130,20 @@ export type Block =
   | { kind: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; runs: InlineRun[] }
   | { kind: "paragraph"; runs: InlineRun[] }
   | { kind: "bulletList"; items: ListItem[] }
-  | { kind: "orderedList"; items: ListItem[]; start: number }
+  | {
+      kind: "orderedList";
+      items: ListItem[];
+      start: number;
+      /**
+       * v0.17.0 B3：编号分隔符（`.` 或 `)`）。
+       *
+       * 缺陷背景：`1)` 与 `1.` 是**语义等价但写法不同**的两种有序列表，
+       * 既有 `Block` 只记 `start` 不记分隔符 → 经 Block[] 往返后
+       * `3) 示例` 变成 `3. 示例`（实测 doc#442/#828）。
+       * 保真四项 §6.4 要求 `raw.delim` 在序列化路径被消费，导出侧同理。
+       */
+      delim?: "." | ")";
+    }
   | { kind: "taskList"; items: ListItem[] }
   | { kind: "defList"; items: DefItem[] }
   | { kind: "codeBlock"; content: string; language: string }

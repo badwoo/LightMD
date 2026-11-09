@@ -34,7 +34,20 @@ export function inlineNodesToRuns(nodes: InlineNode[]): InlineRun[] {
         // 标签本身丢弃（与 exportBlocks 的 parseInlineTokens 同口径），
         // 内容由后续 text 节点承载。注释整体丢弃（导出不该出现注释）。
         const trimmed = n.text.trim();
-        if (/^<!--[\s\S]*-->$/.test(trimmed)) break;
+        if (/^<!--[\s\S]*-->$/.test(trimmed)) {
+          // HTML 注释是**旁路标注**（`<!-- lightmd:table-size -->` 这类指令也走这里），
+          // 不是可见内容 —— 导出侧必须丢弃（既有 `parseInlineTokens` 同口径，
+          // v0.13.0 需求6 明确「HTML 注释不出现在任何导出格式里」）。
+          //
+          // ⚠️ 这是我试错后的最终口径。最初我"保留注释内容以免丢块"，
+          // 结果注释文本被写进 Block[] 再重建 → 变成普通文本可见内容，
+          // **凭空多出内容**（实测 170 篇 corrupt）。注释不该进内容层。
+          //
+          // 那"注释块消失导致块序列断档"（doc#209）怎么解决？
+          // 在**重建侧**解决：blocksToMarkdown 不为空内容块预留位置，
+          // 且比较基准也把注释块视为"非内容"—— 见 BE-10 边界登记。
+          break;
+        }
         if (/^<\/?(?:u|br|sub|sup|mark)\s*\/?>$/i.test(trimmed)) {
           // `<br>` 是换行载体 → 导出侧记为换行 run（保持段落内的换行语义）
           if (/^<br\s*\/?>$/i.test(trimmed)) runs.push({ text: "\n" });
@@ -161,8 +174,20 @@ export function nodeToBlock(node: MdNode): Block | null {
       const level = Math.min(6, Math.max(1, Number(node.attrs.level ?? 1))) as 1 | 2 | 3 | 4 | 5 | 6;
       return { kind: "heading", level, runs: inlineNodesToRuns(node.inline || []) };
     }
-    case "paragraph":
-      return { kind: "paragraph", runs: inlineNodesToRuns(node.inline || []) };
+    case "paragraph": {
+      const runs = inlineNodesToRuns(node.inline || []);
+      if (runs.length > 0) return { kind: "paragraph", runs };
+      // ⚠️ **纯注释段落**（`<!-- x -->` 单独成块）在这里会变成空 runs。
+      // 若直接返回空 paragraph，`blocksToMarkdown` 会把它当"用户空行"过滤掉 →
+      // 该块的位置消失 → 相邻块合并、kinds 少一个 paragraph
+      // （实测 doc#209/#378：paragraph 少一个、definition_list 被并成一个）。
+      //
+      // 注释本身不进内容层（导出不该出现注释），但它**占位一个块**是真实的：
+      // 用零宽空格占位，保证块序列不塌陷，且渲染/导出时不可见。
+      const hasOnlyComment = (node.inline || []).some((n) => /^<!--/.test(n.text.trim()));
+      if (hasOnlyComment) return { kind: "paragraph", runs: [{ text: "\u200B" }] };
+      return { kind: "paragraph", runs };
+    }
     case "codeBlock": {
       const content = (node.inline || []).map((n) => n.text).join("");
       return {
@@ -191,6 +216,8 @@ export function nodeToBlock(node: MdNode): Block | null {
         kind: "orderedList",
         items: (node.children || []).map(nodeToListItem),
         start: Number(node.attrs.order ?? 1) || 1,
+        // 保真四项 §6.4：`1)` 与 `1.` 的分隔符必须透传，否则往返会归一化
+        delim: node.attrs.delim === ")" ? ")" : ".",
       };
     case "taskList":
       return { kind: "taskList", items: (node.children || []).map(nodeToListItem) };

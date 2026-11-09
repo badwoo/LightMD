@@ -23,6 +23,8 @@
  */
 import type MarkdownIt from "markdown-it";
 import { createMarkdownIt } from "./markdown/parser";
+// v0.17.0 B3c：顶层块起始行收敛到 UnifiedDoc 的 spm（删第 3 处重复补丁）
+import { topLevelBlockStartLinesFromSource } from "./unified/parse";
 // v0.17.0 B1：图片后缀解析单点化（与 parser 收敛为一份，见 imageSuffix.ts 头注释）
 import { parseImageSuffix } from "./unified/imageSuffix";
 import { imageAlignCss } from "./schema";
@@ -266,17 +268,17 @@ export function renderMarkdownHtml(markdown: string, opts?: RenderMarkdownHtmlOp
  */
 export function topLevelBlockStartLines(markdown: string): number[] {
   if (!markdown) return [];
-  const tokens = getRenderMarkdownIt().parse(markdown, {});
-  const lines: number[] = [];
-  for (const token of tokens) {
-    if (token.level !== 0) continue;
-    if (!token.map || token.map.length < 1) continue;
-    const isOpener = token.nesting === 1;
-    const isSelfClosingBlock = token.nesting === 0;
-    if (!isOpener && !isSelfClosingBlock) continue;
-    const start = token.map[0];
-    if (typeof start !== "number" || !Number.isFinite(start)) continue;
-    lines.push(start);
-  }
-  return lines;
+  // ── v0.17.0 B3c：收敛到 UnifiedDoc 的 `spm.blockStartLines`（删第 3 处重复）──
+  //
+  // 设计稿 §7.4 列的"可删 3 处重复补丁"之一就是本函数与 spm 的重复：
+  // 同一份"顶层块起始行"逻辑此前在本文件和 `unified/parse.ts:buildSpm` 各实现一遍。
+  //
+  // ⚠️ 等价性由测试锁死：`spm.blockStartLines` 的构建**复刻**了本函数的 token 口径
+  // （level===0 && (nesting===1 || nesting===0) && map），
+  // 且 `src/__tests__/v0170-unified/parse.test.ts` 用 12 个代表用例逐项对照断言相等。
+  // 故这里委托给模型层后，输出必须与旧实现逐项一致 —— 否则 `data-src-line`
+  // 贴标会整体偏移（比退回百分比映射严重得多的后果）。
+  //
+  // 保留本函数签名不变：调用方全在 components/editor（A 线写作用域），零改动。
+  return topLevelBlockStartLinesFromSource(markdown, { breaks: getRenderBreaks() });
 }

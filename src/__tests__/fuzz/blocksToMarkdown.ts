@@ -104,9 +104,11 @@ function renderBlock(block: Block, lines: string[]): void {
       renderListItems(block.items, () => "-", "", lines);
       break;
     case "orderedList":
+      // 分隔符来自 Block.delim（B3 新增）；缺省 `.`（与旧行为一致）
+      const delim = block.delim === ")" ? ")" : ".";
       renderListItems(
         block.items,
-        (i) => `${(block.start || 1) + i}.`,
+        (i) => `${(block.start || 1) + i}${delim}`,
         "",
         lines,
       );
