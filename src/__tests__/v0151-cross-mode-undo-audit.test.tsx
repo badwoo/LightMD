@@ -1343,7 +1343,13 @@ describe("⑬ 集成：行为变更锁 —— 源码通道「外部写回」必�
       },
       {
         name: "AI 续写 ghost 的 Tab 采纳",
-        anchor: "const newContent = textarea.value.slice(0, pos) + ghost + textarea.value.slice(pos);",
+        /**
+         * v0.17.0 A3：取值从 `textarea.value` 改为 `sourceSurface.getText()`，
+         * 锚点同步更新。**断言的实质意图一字未改** ——
+         * 仍然要求"这处外部写回必须调用 recordDiscreteSourceEdit（进统一时间线）"，
+         * 那才是这条契约要保护的行为（否则 AI 采纳撤不回、并把 knownText 推偏）。
+         */
+        anchor: "const newContent = curText.slice(0, pos) + ghost + curText.slice(pos);",
         window: 1400,
       },
     ];

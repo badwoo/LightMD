@@ -782,14 +782,15 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
   const removeFormatGhostSyntax = useCallback(() => {
     const ghost = formatGhostRef.current;
     // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-    const textarea = sourceTextareaRef.current;
-    if (!ghost || !textarea) return false;
+    if (!ghost) return false;
+    // A3 收敛：选区比较是纯值 → 经 surface（CM6 下同样成立）
+    const ghostSel = sourceSurface.getSelection();
     // 光标已离开插入点 → 不再整段删除，走默认退格
-    if (textarea.selectionStart !== textarea.selectionEnd || textarea.selectionStart !== ghost.pos) return false;
+    if (ghostSel.start !== ghostSel.end || ghostSel.start !== ghost.pos) return false;
     const current = sourceContentRef.current;
     if (current.slice(ghost.start, ghost.end) !== ghost.content.slice(ghost.start, ghost.end)) return false;
     const newContent = current.slice(0, ghost.start) + current.slice(ghost.end);
-    const scrollTop = textarea.scrollTop;
+    const scrollTop = sourceSurface.getScrollTop();
     // v0.15.1 需求1：改写**统一时间线**（旧 `pushUndoEntry` 已退休）
     recordDiscreteSourceEdit(current, newContent, ghost.start, scrollTop);
     setSourceContent(newContent);

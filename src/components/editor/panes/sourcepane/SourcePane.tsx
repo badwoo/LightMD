@@ -1049,15 +1049,16 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     // 这里在粘贴真正发生前把标记置上，紧随其后的 onChange 消费后复位。
     sourceJustPastedRef.current = true;
     // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-    const ta = sourceTextareaRef.current;
+    // A3 收敛：`ta` 原仅用于 `isInCodeBlock(ta.value, ...)` → 纯值，经 surface
     const text = e.clipboardData.getData("text/plain").trim();
-    if (!ta || !isHttpUrl(text)) return;
+    if (!isHttpUrl(text)) return;
     const psel = sourceSurface.getSelection();
     const start = psel.start;
     const end = psel.end;
-    if (isInCodeBlock(ta.value, start)) return;
+    const pasteText = sourceSurface.getText();
+    if (isInCodeBlock(pasteText, start)) return;
     e.preventDefault();
-    const selected = ta.value.slice(start, end);
+    const selected = pasteText.slice(start, end);
     /**
      * v0.17.0 A2（G7）：改经 `SourceSurface.applyEdit` 落地 —— **单事务单步**。
      *

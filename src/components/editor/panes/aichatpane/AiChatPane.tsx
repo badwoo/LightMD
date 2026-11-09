@@ -183,19 +183,20 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     // 但不插入、也不清除 ghost（等待真实增量到达）
     if (sourceGhostPlaceholderRef.current) return true;
     // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-    const textarea = sourceTextareaRef.current;
     const ghost = sourceGhostTextRef.current;
     sourceGhostActiveRef.current = false;
     aiAssistService.cancel().catch(() => undefined);
-    if (!textarea || !ghost) {
+    if (!ghost) {
       clearSourceGhost();
       return true;
     }
-    const pos = Math.min(sourceGhostPosRef.current, textarea.value.length);
-    const newContent = textarea.value.slice(0, pos) + ghost + textarea.value.slice(pos);
+    // A3 收敛：全文/位置/滚动都是纯值 → 经 surface
+    const curText = sourceSurface.getText();
+    const pos = Math.min(sourceGhostPosRef.current, curText.length);
+    const newContent = curText.slice(0, pos) + ghost + curText.slice(pos);
     // v0.15.1 需求6（再审计缺陷 2）：AI 续写 ghost 的 Tab 采纳同样是外部写回，
     // 不进时间线就撤不回、并会把 knownText 推偏（后续打字 force-rebase 清掉 redo）。
-    recordDiscreteSourceEdit(textarea.value, newContent, pos, textarea.scrollTop, pos + ghost.length);
+    recordDiscreteSourceEdit(curText, newContent, pos, sourceSurface.getScrollTop(), pos + ghost.length);
     setSourceContent(newContent);
     onContentChangeRef.current?.(newContent);
     setDirtyRef.current(true);
@@ -204,8 +205,9 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     const cursor = pos + ghost.length;
     clearSourceGhost();
     requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(cursor, cursor);
+      // A3 收敛：焦点与光标恢复是纯值 → 经 surface
+      sourceSurface.focus();
+      sourceSurface.setSelection(cursor, cursor);
     });
     return true;
   }, [clearSourceGhost]);
@@ -1126,8 +1128,14 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
 
       // ── 发送时快照（回写定位 + 全文守卫基准）──
       const view = viewRef.current;
-      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-      const ta = sourceTextareaRef.current;
+      /**
+       * A3 收尾：原先在此取 `ta = sourceTextareaRef.current`，其**唯一用途**是下面的
+       * `srcStart/srcEnd/insertPos`（源码通道选区坐标）。这些是**纯值**，
+       * 已改经 `sourceSurface.getSelection()` → 故 `ta` 不再需要。
+       *
+       * ⚠️ 与我一度以为的"AiChatPane:109 同型多余守卫"不同：这里 `ta` **原本有用**，
+       * 只是用途可被 surface 替代。两处缺陷形态相似但性质不同，不能混为一谈。
+       */
       const isPm = extracted.sourceMode === "pm";
       let docSnapshot: string;
       try {
@@ -1145,11 +1153,12 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
         selFrom: isPm && view ? view.state.selection.from : undefined,
         selTo: isPm && view ? view.state.selection.to : undefined,
         selDoc: isPm && view ? view.state.doc : undefined,
-        srcStart: !isPm && ta ? ta.selectionStart : undefined,
-        srcEnd: !isPm && ta ? ta.selectionEnd : undefined,
+        // A3 收敛：源码通道的选区两端是纯值 → 经 surface
+        srcStart: !isPm ? sourceSurface.getSelection().start : undefined,
+        srcEnd: !isPm ? sourceSurface.getSelection().end : undefined,
         // source 通道：记录发送时全文，供「替换选区」校验坐标有效性
         srcSnapshot: isPm ? undefined : sourceContentRef.current,
-        insertPos: isPm ? view?.state.selection.to : ta?.selectionEnd,
+        insertPos: isPm ? view?.state.selection.to : sourceSurface.getSelection().end,
         docSnapshot,
       };
 
@@ -1223,13 +1232,12 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     const ctx = chatCtxRef.current;
     if (ctx?.sourceMode === "source") {
       const content = sourceContentRef.current;
-      // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-      const ta = sourceTextareaRef.current;
-      const pos = Math.min(ctx.insertPos ?? ta?.selectionStart ?? content.length, content.length);
+      // A3 收敛：光标位置与滚动都是纯值 → 经 surface
+      const pos = Math.min(ctx.insertPos ?? sourceSurface.getSelection().start ?? content.length, content.length);
       const newContent = content.slice(0, pos) + text + content.slice(pos);
       // v0.15.1 需求6（再审计缺陷 2）：AI 对话「插入光标处」（源码通道）也是外部写回，
       // 不进时间线就会"撤不回 + 下次打字 force-rebase 静默清掉 redo"。
-      recordDiscreteSourceEdit(content, newContent, pos, ta?.scrollTop ?? 0, pos + text.length);
+      recordDiscreteSourceEdit(content, newContent, pos, sourceSurface.getScrollTop(), pos + text.length);
       setSourceContent(newContent);
       onContentChangeRef.current?.(newContent);
       setDirtyRef.current(true);

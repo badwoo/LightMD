@@ -851,9 +851,9 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
       let anchorColumn: number | null = null;
       if (fromSource) {
         // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-        const textarea = sourceTextareaRef.current;
-        if (textarea) {
-          const cursorPos = textarea.selectionStart ?? lastTextareaCursorRef.current;
+        // A3 收敛：光标位置是纯值 → 经 surface
+        {
+          const cursorPos = sourceSurface.getSelection().start ?? lastTextareaCursorRef.current;
           lastTextareaCursorRef.current = cursorPos;
           anchorLine = lineIndexOfOffset(sourceContentRef.current, cursorPos);
           anchorColumn = cursorPos - (sourceContentRef.current.lastIndexOf("\n", cursorPos - 1) + 1);
@@ -961,11 +961,12 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
 
           // 映射光标位置
           // TODO(v0.18): CM6 能力缺口 — 纯值，可换 surface.*，待逐处确认无复合用途
-          const textarea = sourceTextareaRef.current;
+          // A3 收敛：光标位置是纯值 → 经 surface
           let targetPos = 1;
-          const cursorPos = textarea?.selectionStart ?? lastTextareaCursorRef.current;
-          if (textarea && textarea.selectionStart > 0) {
-            lastTextareaCursorRef.current = textarea.selectionStart;
+          const srcSel = sourceSurface.getSelection();
+          const cursorPos = srcSel.start ?? lastTextareaCursorRef.current;
+          if (srcSel.start > 0) {
+            lastTextareaCursorRef.current = srcSel.start;
           }
           const lineIndex = lineIndexOfOffset(sourceContent, cursorPos);
 
