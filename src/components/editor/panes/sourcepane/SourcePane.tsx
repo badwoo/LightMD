@@ -98,7 +98,23 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
 
 
   // ─── 源码编辑内容变化 ──────────────────────────
-  const handleSourceChange = useRef((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  /**
+   * ## v0.17.0 A3 装配修复：把"输入落地"从 React 事件抽象成 surface 驱动
+   *
+   * 原实现只接受 `React.ChangeEvent<HTMLTextAreaElement>`，因此**只有受控 textarea 能触发**
+   * —— CM6 路径下这条链路根本走不到（CM6 的编辑不产生 React onChange）。
+   * 这就是"CM6 只读不回写"的另一半根因（另一半是宿主被 React 覆写）。
+   *
+   * 现在拆成两个入口，**核心逻辑共用**：
+   * - `applySourceInput`：语义入参（新内容 + 光标 + 是否组合态），由 surface 的
+   *   `onDidChange` 调用 → CM6 路径生效；
+   * - `handleSourceChange`：React 事件薄包装 → textarea 路径生效（行为不变）。
+   */
+  const applySourceInput = useRef((
+    newContentRaw: string,
+    cursorPosRaw: number,
+    opts?: { composing?: boolean },
+  ) => {
     // v0.15.1 需求1：真实用户输入 = 选区保护窗立即失效（否则撤销后的光标还原
     // 会跟用户的输入抢光标）。
     pendingSourceSelectionRef.current = null;
@@ -110,18 +126,17 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     sourceGhostHandlersRef.current.invalidate();
     // v0.12.0 需求1：任何真实输入使格式 ghost 完成使命（键入即替换占位提示）
     formatGhostHandlersRef.current.clear("input");
-    const textarea = e.target;
-    let newContent = textarea.value;
-    let cursorPos = textarea.selectionStart;
+    let newContent = newContentRaw;
+    let cursorPos = cursorPosRaw;
     // v0.6.6 问题4：粘贴/输入 base64 图片 → 实时替换为短标记并补偿光标
     if (hasRawBase64Image(newContent)) {
       const { text: masked, replacements } = maskBase64Images(newContent, base64TokensRef.current);
       if (replacements.length > 0) {
         cursorPos = adjustCursorForMask(cursorPos, replacements);
         newContent = masked;
-        // 受控组件：直接同步 DOM value 与光标（React setState 相同值不重渲染）
-        textarea.value = masked;
-        textarea.setSelectionRange(cursorPos, cursorPos);
+        // 回写"mask 后的内容 + 补偿后的光标"：经 surface 统一落地
+        // （textarea 实现会同步 DOM value 与选区；CM6 实现走 setText+setSelection）
+        sourceSurface.setText(masked, { selection: { start: cursorPos, end: cursorPos } });
       }
     }
     // v0.15.0 需求（跨模式撤销统一）：源码编辑改由 sourceAdapter 归并后提交到**统一时间线**。
@@ -155,7 +170,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
        */
       // `nativeEvent` 的静态类型是 Event，但 React 的合成事件在这里一定是 InputEvent
       // （textarea 的 onChange 对应原生 input 事件），InputEvent 有 isComposing。
-      const nativeComposing = !!(e.nativeEvent as InputEvent | undefined)?.isComposing;
+      const nativeComposing = !!opts?.composing;
       const plan = sourceAdapterRef.current.plan({
         before: beforeReal,
         text: afterReal,
@@ -166,7 +181,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
           justPaired: sourceJustPairedRef.current,
           justPasted: sourceJustPastedRef.current,
         }),
-        selection: { start: cursorPos, end: cursorPos, scrollTop: textarea.scrollTop },
+        selection: { start: cursorPos, end: cursorPos, scrollTop: sourceSurface.getScrollTop() },
         // v0.15.1 需求1：把**编辑前**的现场也带上（撤销要回到这里）。
         // 光标取"上一次已知光标 + 本次长度增量"反推（onChange 触发时 DOM 选区已在新位置）；
         // 滚动取上一帧记录的 scrollTop（同一行打字时它不变，跨行回车时它才是对的旧值）。
@@ -210,6 +225,19 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (trigger.trigger && !isInCodeBlock(newContent, cursorPos)) {
       setSlashCommandOpen(true);
     }
+  });
+
+  /**
+   * React 事件薄包装（**textarea 路径**）：把事件解成语义入参后交给 `applySourceInput`。
+   *
+   * ⚠️ 这里保留 `e.target` 读值而不是走 surface：React 的 onChange 在 value 更新**之后**
+   * 触发，`e.target.value` 就是权威值；而 textarea 实现的 surface 也读同一元素，两者等价。
+   * 保留它可以让 textarea 路径**零行为变化**（jsdom 全量测试依赖这一点）。
+   */
+  const handleSourceChange = useRef((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    applySourceInput.current(e.target.value, e.target.selectionStart ?? 0, {
+      composing: !!(e.nativeEvent as InputEvent | undefined)?.isComposing,
+    });
   });
 
 
@@ -1222,6 +1250,7 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
 
   return {
     handleSourceChange,
+    applySourceInput,
     insertTextAtCursor,
     insertMarkdownIntoPM,
     handleSlashInsert,

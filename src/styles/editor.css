@@ -1743,6 +1743,51 @@ body.format-painter-armed .source-editor {
   overflow-y: auto;
 }
 
+/* ─── v0.17.0 A3：CM6 源码面宿主（中性 div，不是受控 textarea）──────────
+   为什么必须单独一份：
+   - **不能是受控 `<textarea>`**：`value` 让 React 认为内容归它管，re-render 会重写子节点、
+     把 CM6 的 `.cm-editor` 抹掉（实机探针：mount 后 2.5s 消失，destroy 零调用）。
+   - 但排版口径必须与 textarea **逐项一致**（分屏对齐、专注遮罩、行轴测量都依赖它）：
+     padding-block / padding-inline / 行高 / tab-size / 过渡曲线全部照搬；
+   - **不同项**：`overflow-y` 交给 CM6 自己的 `scrollDOM` 管（宿主设 auto 会出双滚动条）；
+     `resize` / `white-space` / `word-break` 也由 CM6 内部处理。 */
+.source-editor-cm6 {
+  flex: 1;
+  width: 100%;
+  /* 与 .source-editor 完全相同的居中口径（含推导说明见上方该类注释） */
+  padding-block: 40px;
+  padding-inline: max(
+    60px,
+    calc((100% - var(--editor-content-max-width, 960px)) / 2 + 60px)
+  );
+  transition: padding-inline 0.42s cubic-bezier(0.33, 0, 0.67, 1);
+  border: none;
+  outline: none;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: var(--editor-line-height, 1.8);
+  tab-size: var(--lm-tab-size, 2);
+  /* ⚠️ 不设 overflow-y：滚动由 CM6 的 .cm-scroller（= view.scrollDOM）负责。
+     宿主也设 auto 会出现双滚动条，且 onDidScroll 绑在 scrollDOM 上收不到宿主滚动。 */
+  overflow: hidden;
+  position: relative;
+  /* 让 CM6 的编辑器铺满宿主 */
+  display: flex;
+  flex-direction: column;
+}
+
+/* CM6 内部容器继承宿主的排版，避免出现第二套字体/行高 */
+.source-editor-cm6 .cm-editor {
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-primary);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.source-editor-cm6:focus-within { outline: none; }
+
 .source-editor::placeholder { color: var(--text-tertiary); }
 .source-editor:focus { outline: none; }
 

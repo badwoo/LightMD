@@ -46,6 +46,7 @@ import { topLevelBlockStartLines } from "../../core/renderPipeline";
 import { measureTextareaCursorY, measureTextareaRangeY } from "../../utils/focus-paragraph";
 import type {
   SourceAnchor,
+  SourceDomEventHandlers,
   SourceChangeEvent,
   SourceChangeKind,
   SourceEditPlan,
@@ -75,6 +76,8 @@ interface SearchRange {
  * P0 的目标是"不改行为"，A 线换了 CM6 之后 React 不再需要受控。
  */
 export class TextareaSourceSurface implements SourceSurface {
+  readonly impl = "textarea";
+
   private host: HTMLElement | null = null;
   /** 受管 textarea（`mount` 后必非空） */
   private ta: HTMLTextAreaElement | null = null;
@@ -342,6 +345,19 @@ export class TextareaSourceSurface implements SourceSurface {
   }
 
   private scrollCleanups: Array<() => void> = [];
+
+  /**
+   * 宿主级事件处理（A3）。
+   *
+   * textarea 路径**本来就用 React 的 onKeyDown/onPaste/onContextMenu**（绑在 JSX 上），
+   * 这里再绑一次会造成双触发 —— 所以实现为"仅当宿主不是 React 受控元素时才绑定"。
+   * 实际上本实现永远由 React 受控渲染，因此这里保留空实现 + 明确的注释，
+   * 避免后人以为"忘了实现"。
+   */
+  setDomEventHandlers(_handlers: SourceDomEventHandlers): void {
+    // no-op：textarea 路径由 JSX 的 React 事件处理（见 EditorContainer 的 onKeyDown 等）。
+    // 若在此重复绑定会与 React 事件双触发（Tab 会缩进两次）。
+  }
 
   onDidChange(listener: (ev: SourceChangeEvent) => void): () => void {
     this.listeners.add(listener);

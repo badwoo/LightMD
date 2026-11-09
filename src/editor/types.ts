@@ -121,6 +121,42 @@ export interface SourceSurfaceOptions {
  */
 export type SourceChangeKind = "typing" | "ime" | "pair" | "paste" | "delete";
 
+/** 宿主级事件处理（键位/粘贴/右键）。字形接近 React 事件，便于复用同一处理函数。 */
+export interface SourceDomEventHandlers {
+  onKeyDown?(e: SourceKeyEventLike): boolean | void;
+  onPaste?(e: SourceClipboardEventLike): boolean | void;
+  onContextMenu?(e: SourceMouseEventLike): boolean | void;
+}
+
+/** 键位事件的最小契约（textarea 与 CM6 都能提供） */
+export interface SourceKeyEventLike {
+  key: string;
+  shiftKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  /** IME 组合态（部分输入法组合期 isComposing=false 但 keyCode=229） */
+  isComposing: boolean;
+  keyCode: number;
+  nativeEvent: Event;
+  preventDefault(): void;
+  stopPropagation(): void;
+}
+
+export interface SourceClipboardEventLike {
+  clipboardData: { getData(type: string): string } | null;
+  preventDefault(): void;
+  stopPropagation(): void;
+}
+
+export interface SourceMouseEventLike {
+  clientX: number;
+  clientY: number;
+  target: EventTarget | null;
+  preventDefault(): void;
+  stopPropagation(): void;
+}
+
 export interface SourceChangeEvent {
   /** 编辑后展示文本（masked，= `getText()` 同一坐标系） */
   text: string;
@@ -239,6 +275,38 @@ export interface SourceSurface {
   scrollToOffset(offset: number, opts?: { center?: boolean }): void;
 
   // ── 编辑事件 ───────────────────────────────────────────────
+
+  /**
+   * 实现标识（A3 装配修复）。
+   *
+   * **宿主必须据此决定渲染什么元素**：
+   * - `"textarea"` → 渲染**受控 `<textarea>`**（React 管内容，值经 `value` 同步）；
+   * - `"cm6"` → 渲染**中性 `<div>`**，绝不能渲染受控 textarea ——
+   *   受控 `<textarea>` 的 `value` 让 React 认为"这个节点的内容由我管"，
+   *   后续任何 re-render 都会重写它的子节点，**把 CM6 注入的 `.cm-editor` 清掉**。
+   *
+   * 实机探针实测：CM6 mount 成功后约 2.5s（首次 state 变化）被抹掉，
+   * 且 `destroy()` 从未被调用（是 React 覆写，不是我们销毁）。
+   * 这是 v0.17.0 的头号缺陷，也是 jsdom 全量测试**永久掩盖**的盲区
+   * （jsdom 下工厂一律回退 textarea，CM6 装配路径从未被执行）。
+   */
+  readonly impl: "textarea" | "cm6";
+
+  /**
+   * 挂接**宿主级 DOM 事件处理**（A3 装配修复：CM6 路径）。
+   *
+   * 为什么需要：宿主原先靠 JSX 的 `onKeyDown` / `onPaste` / `onContextMenu` 绑事件，
+   * 这些**只对真实 textarea 生效**。CM6 渲染的是内部 `.cm-content`（contenteditable），
+   * React 事件绑不到它 → **CM6 下 Tab 缩进、粘贴、右键菜单全部失效**。
+   *
+   * 实现约束：
+   * - CM6 → 通过 `EditorView.domEventHandlers` 注册到 view（重挂载时需保留）；
+   * - textarea → 绑定元素事件（与 JSX 行为等价）。
+   *
+   * 回调签名刻意接近 React 事件（`target.value` / `key` / `preventDefault`），
+   * 便于宿主复用同一份处理函数，避免"CM6 一套、textarea 一套"分叉。
+   */
+  setDomEventHandlers(handlers: SourceDomEventHandlers): void;
 
   /** 订阅变更。返回取消订阅函数（宿主在 effect cleanup 里调用） */
   onDidChange(listener: (ev: SourceChangeEvent) => void): () => void;

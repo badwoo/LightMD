@@ -80,7 +80,7 @@ import { FORMAT_BUTTONS as formatButtons, MERMAID_TEMPLATES, formatButtonTitle }
 import { Node as PMNode } from "prosemirror-model";
 import { EditorState, Transaction } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHistoryHost } from "./panes/historyhost/HistoryHost";
 import { useModeSync } from "./panes/modesync/ModeSync";
 import { useSourcePane } from "./panes/sourcepane/SourcePane";
@@ -279,6 +279,17 @@ export interface EditorContainerProps {
   forceUpdateKey?: number;
   onEditorReady?: (view: EditorView) => void;
   onContentChange?: (markdown: string) => void;
+  /**
+   * 强制源码面实现（**仅测试/探针用**）。
+   *
+   * 为什么需要：jsdom 下工厂 `isJsdomLike()` 恒为真 → 一律回退 textarea
+   * → **CM6 装配路径在自动化测试里从未被执行过**。这正是"实机 CM6 被 React 抹掉"
+   * 这个缺陷能逃过 6600+ 条测试的根本原因（契约测了、装配没测）。
+   *
+   * 传 "cm6" 后可断言：在真实 React 装配下 mount 后，经过多次 re-render，
+   * `.cm-editor` 仍然存在（见 `v0170-cm6/assembly-host-contract`）。
+   */
+  forceSurfaceImpl?: "textarea" | "cm6";
 }
 
 export const PM_MARK_BY_ACTION: Record<string, string> = {
@@ -349,7 +360,7 @@ export function computeSlashInsert(
   return { newContent, newCursorPos: cursorPos + markdown.length };
 }
 
-export function EditorContainer({ content = "", filePath, forceUpdateKey, onEditorReady, onContentChange }: EditorContainerProps) {
+export function EditorContainer({ content = "", filePath, forceUpdateKey, onEditorReady, onContentChange, forceSurfaceImpl }: EditorContainerProps) {
   const t = useT();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -534,7 +545,9 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    */
   const sourceSurfaceRef = useRef<SourceSurface | null>(null);
   if (!sourceSurfaceRef.current) {
-    sourceSurfaceRef.current = createSourceSurface();
+    sourceSurfaceRef.current = createSourceSurface(
+      forceSurfaceImpl ? { impl: forceSurfaceImpl } : {},
+    );
   }
   const sourceSurface = sourceSurfaceRef.current;
   /** 源码面宿主元素（仅用于 mount/几何读取；不再对外当 textarea 能力用） */
@@ -1056,7 +1069,66 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     handleFormatAction,
     handleSourcePaste,
     handleSourceKeyDown,
+    applySourceInput,
   } = sourcePane;
+
+  /**
+   * ## v0.17.0 A3 装配修复②：CM6 路径的内容同步链路
+   *
+   * 缺陷：`handleSourceChange` 只接受 React 事件，而 **CM6 的编辑不产生 React onChange**
+   * → CM6 里打字，`sourceContent` 永远不更新（表现为"打进去的字存不下来/不预览"）。
+   *
+   * 修法：订阅 `sourceSurface.onDidChange`，把它转成 `applySourceInput` 的语义入参。
+   * 两条路径**共用同一份核心逻辑**（`applySourceInput`），所以撤销归并/IME 分组/
+   * base64 mask/字数统计等全部一致，不存在两套写入路径。
+   *
+   * 为什么要注意"回声"：程序化写入（`setText`）在 CM6 里**不会**触发 onDidChange
+   *（我们的 CmSourceSurface 只在真实用户编辑时报告），因此不会与 setText 形成循环。
+   */
+  /**
+   * ## v0.17.0 A3 装配修复③：CM6 路径的**受控写入**
+   *
+   * textarea 路径靠 JSX 的 `value={sourceContent}` 由 React 同步；CM6 渲染的是中性 div，
+   * 没有 `value` 可言 → 必须在这里把 `sourceContent` 的**外部变化**推进 CM6
+   * （模式切换、撤销/恢复落地、AI 回写、搜索替换、切文件等全部走这条）。
+   *
+   * 关键设计：
+   * - **比较后再写**：`getText() === sourceContent` 时什么都不做 ——
+   *   否则每次用户输入触发的 state 更新都会把整篇重写一遍（丢光标、性能崩）。
+   * - **只在 impl === "cm6" 时执行**：textarea 路径的 `value=` 已经做了，重复写会打架。
+   * - 不传 selection：外部写入不该抢用户光标（textarea 的 `value=` 同样不保留光标位置，
+   *   两者行为一致）。
+   */
+  useEffect(() => {
+    if (sourceSurface.impl !== "cm6") return;
+    if (sourceSurface.getText() === sourceContent) return;
+    sourceSurface.setText(sourceContent);
+  }, [sourceContent, sourceSurface]);
+
+
+  useEffect(() => {
+    /**
+     * ⚠️ **只对 CM6 生效** —— 这是本 effect 最关键的约束。
+     *
+     * textarea 实现的 `report()` 也绑在同一个原生 `input` 事件上，而 React 的
+     * `onChange`（`handleSourceChange`）**同样由该事件触发**。
+     * 若两条都跑，同一次按键会被处理两遍：时间线记两条、光标补偿两次、
+     * 边界提示逻辑被打乱 —— 实测表现为"撤到底不提示边界"（3 条 undo 套件红）。
+     *
+     * 因此：textarea 路径**只走 React onChange**（原行为，零变化）；
+     * CM6 路径**只走 onDidChange**（CM6 不产生 React onChange）。
+     * 分工严格互斥，不存在双写。
+     */
+    if (sourceSurface.impl !== "cm6") return;
+    const off = sourceSurface.onDidChange((ev) => {
+      // 组合输入期间不落时间线（与 textarea 路径的 nativeComposing 口径一致）：
+      // 由 surface 的 compositionGroupId 表达"这是同一次组合"，核心逻辑里照常归并。
+      applySourceInput.current(ev.text, ev.selection.start, {
+        composing: ev.kind === "ime" || !!ev.compositionGroupId,
+      });
+    });
+    return off;
+  }, [sourceSurface, applySourceInput]);
   const aiAssistPane = useAiAssistPane({
     sourceSurface,
     isSourceMode,
@@ -1224,6 +1296,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   });
   const {
     handleTextareaContextMenu,
+
     handleContextMenuAction,
     armFormatPainterRef,
     applyHeadingLevel,
@@ -1233,6 +1306,27 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     handleTaskStyleSelect,
     handleSlashClose,
   } = formatMenuHost;
+
+  /**
+   * ## v0.17.0 A3 装配修复④：CM6 路径的宿主级事件
+   *
+   * textarea 路径靠 JSX 的 `onKeyDown` / `onPaste` / `onContextMenu` 绑事件；
+   * CM6 编辑区是内部 contenteditable（`.cm-content`），**React 事件绑不到它**
+   * → CM6 下 Tab 缩进、粘贴、右键菜单、配对补全全部失效。
+   *
+   * 这里把同一批处理函数交给 surface（CM6 会经 `EditorView.domEventHandlers` 注册）。
+   * **复用同一份 handler**，不分叉成两套逻辑。
+   */
+  useEffect(() => {
+    if (sourceSurface.impl !== "cm6") return;
+    sourceSurface.setDomEventHandlers({
+      // React 事件类型与 surface 的最小契约形状兼容（都提供 key/shiftKey/…/preventDefault）
+      onKeyDown: (e) => handleSourceKeyDown(e as unknown as React.KeyboardEvent<HTMLTextAreaElement>),
+      onPaste: (e) => handleSourcePaste(e as unknown as React.ClipboardEvent<HTMLTextAreaElement>),
+      onContextMenu: (e) =>
+        handleTextareaContextMenu(e as unknown as React.MouseEvent<HTMLTextAreaElement>),
+    });
+  }, [sourceSurface, handleSourceKeyDown, handleSourcePaste, handleTextareaContextMenu]);
   const previewPane = usePreviewPane({
     sourceSurface,
     viewMode,
@@ -1610,6 +1704,38 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
             // 分屏模式不参与（宽度由分割比例决定，滚动条本就贴分栏右缘）。
           }}
         >
+          {/**
+            * ## v0.17.0 A3 装配修复①（头号缺陷）：宿主元素按实现分流
+            *
+            * 缺陷：此前**无条件**渲染受控 `<textarea value={sourceContent}>` 当宿主，
+            * 而 `mount()` 把 CM6 挂到它**内部**。受控 textarea 的 `value` 让 React
+            * 认为"这个节点的内容由我管" → 后续任何 re-render 都会重写其子节点，
+            * **把 CM6 注入的 `.cm-editor` 整体清掉**。
+            *
+            * 实机探针证据链：mount 后 `.cm-editor: true` → 约 2.5s 后 `false`，
+            * 而 `destroy()` 零调用（是 React 覆写，不是我们销毁）。
+            *
+            * 修法（设计稿 §2.2 的原始意图）：CM6 需要的是**干净容器**，
+            * 不是"React 认为自己在管内容"的受控控件 → 渲染中性 `<div>`。
+            * textarea 路径**保持原样**（受控 value 是它的核心同步机制，不能动）。
+            */
+          }
+          {sourceSurface.impl === "cm6" ? (
+            <div
+              ref={sourceHostRef as unknown as React.RefCallback<HTMLDivElement>}
+              className={`source-editor source-editor-cm6 ${previewShown ? "split-editor" : ""}`}
+              style={{
+                flex: isSourceMode ? 1 : 0,
+                display: isSourceMode ? "block" : "none",
+                // 排版口径必须与 textarea 一致（否则分屏对齐/专注遮罩测量全部偏移）：
+                // 字号缩放、字族、行高都走同一套 CSS 变量。
+                fontSize: `calc(${fontSize}px * var(--doc-zoom, 1))`,
+                fontFamily: `${fontFamily}, "Cascadia Code", "Consolas", monospace`,
+                borderRight: "none",
+              }}
+              aria-readonly={activeIsReadonly || undefined}
+            />
+          ) : (
           <textarea
             ref={sourceHostRef}
             className={`source-editor ${previewShown ? "split-editor" : ""}`}
@@ -1634,6 +1760,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
               borderRight: "none",
             }}
           />
+          )}
           {/* 专冔模式遮罩：仅在编辑模式 + focusMode 开启时显示 */}
           {focusMode && isSourceMode && (
             <div ref={focusOverlayRef} className="source-focus-overlay" />

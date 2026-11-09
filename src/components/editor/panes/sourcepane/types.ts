@@ -72,6 +72,16 @@ import type { HistoryEntry } from "../../EditorContainer";
 /** SourcePane 交回容器的全部产物（容器与其它 pane 只通过这些名字使用它） */
 export interface SourcePaneResult {
   handleSourceChange: MutableRefObject<(e: React.ChangeEvent<HTMLTextAreaElement>) => void>;
+  /**
+   * v0.17.0 A3 装配修复：**surface 驱动**的输入落地入口。
+   *
+   * `handleSourceChange` 只接受 React 事件 → 只有受控 textarea 能触发；
+   * CM6 路径下编辑不产生 React onChange，必须由 surface 的 `onDidChange` 驱动这个。
+   * 两者共用同一份核心逻辑（`applySourceInput`），不存在两套写入路径。
+   */
+  applySourceInput: MutableRefObject<
+    (newContent: string, cursorPos: number, opts?: { composing?: boolean }) => void
+  >;
   insertTextAtCursor: (text: string, cursorOffset?: number | undefined) => void;
   insertMarkdownIntoPM: (md: string) => void;
   handleSlashInsert: (markdown: string, mode: InsertMode) => void;

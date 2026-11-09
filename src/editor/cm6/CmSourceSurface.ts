@@ -73,6 +73,8 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import type {
   SourceAnchor,
   SourceChangeEvent,
+  SourceDomEventHandlers,
+  SourceKeyEventLike,
   SourceChangeKind,
   SourceEditPlan,
   SourceMetrics,
@@ -231,6 +233,8 @@ const markdownHighlightStyle = HighlightStyle.define([
  * 本实现通过 `setText` 接收程序化替换、通过 `onDidChange` 报告用户编辑。
  */
 export class CmSourceSurface implements SourceSurface {
+  readonly impl = "cm6";
+
   private view: EditorView | null = null;
   private host: HTMLElement | null = null;
   private listeners = new Set<(ev: SourceChangeEvent) => void>();
@@ -357,6 +361,8 @@ export class CmSourceSurface implements SourceSurface {
         EditorView.editable.of(!opts.readOnly),
       ]),
       this.attrsCompartment.of(EditorView.contentAttributes.of({ spellcheck: "true" })),
+      // A3：宿主级事件（Tab/粘贴/右键）——CM6 下 React 事件绑不到 .cm-content
+      this.domHandlersCompartment.of(this.buildDomHandlerExt()),
       this.themeCompartment.of(
         EditorView.theme({
           "&": { height: "100%" },
@@ -670,6 +676,84 @@ export class CmSourceSurface implements SourceSurface {
 
   /** 滚动订阅清理（destroy 时统一解绑，防 view 销毁后残留引用泄漏） */
   private scrollCleanups: Array<() => void> = [];
+
+  /** 宿主级事件处理（A3：CM6 下 Tab/粘贴/右键必须接到 .cm-content 上） */
+  private domHandlers: SourceDomEventHandlers = {};
+  private readonly domHandlersCompartment = new Compartment();
+
+  /**
+   * 挂接宿主级事件（A3 装配修复）。
+   *
+   * CM6 编辑区是内部 contenteditable（`.cm-content`），React 的 `onKeyDown` 等
+   * **绑不到它** —— 这就是"CM6 下 Tab 不缩进、粘贴无效、右键菜单不出"的根因。
+   *
+   * 实现走 `EditorView.domEventHandlers`，是 CM6 官方提供的事件接入点
+   * （比在 `.cm-content` 上手动 addEventListener 更稳：CM6 重绘/替换 contentDOM 时
+   * 会自动保留这些 handler）。
+   *
+   * ⚠️ handlers 必须存成字段并在 `buildExtensions()` 里引用同一个对象 ——
+   * `setDomEventHandlers` 可能在 mount 之后才被调用（React effect 顺序），
+   * 闭包捕获 `this.domHandlers` 才能读到最新值。
+   */
+  setDomEventHandlers(handlers: SourceDomEventHandlers): void {
+    this.domHandlers = handlers;
+    // 已挂载时需重建扩展才生效
+    if (this.view) {
+      try {
+        this.view.dispatch({ effects: this.domHandlersCompartment.reconfigure(this.buildDomHandlerExt()) });
+      } catch {
+        /* view 可能已销毁 */
+      }
+    }
+  }
+
+  /** 把 SourceDomEventHandlers 包装成 CM6 的 domEventHandlers 扩展 */
+  private buildDomHandlerExt() {
+    const toKeyLike = (e: KeyboardEvent): SourceKeyEventLike => ({
+      key: e.key,
+      shiftKey: e.shiftKey,
+      ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey,
+      altKey: e.altKey,
+      isComposing: e.isComposing,
+      keyCode: e.keyCode,
+      nativeEvent: e,
+      preventDefault: () => e.preventDefault(),
+      stopPropagation: () => e.stopPropagation(),
+    });
+    return EditorView.domEventHandlers({
+      keydown: (e) => {
+        const h = this.domHandlers.onKeyDown;
+        if (!h) return false;
+        // 返回 true 表示"已处理，CM6 不要再处理"
+        return h(toKeyLike(e)) === true;
+      },
+      paste: (e) => {
+        const h = this.domHandlers.onPaste;
+        if (!h) return false;
+        return (
+          h({
+            clipboardData: e.clipboardData,
+            preventDefault: () => e.preventDefault(),
+            stopPropagation: () => e.stopPropagation(),
+          }) === true
+        );
+      },
+      contextmenu: (e) => {
+        const h = this.domHandlers.onContextMenu;
+        if (!h) return false;
+        return (
+          h({
+            clientX: e.clientX,
+            clientY: e.clientY,
+            target: e.target,
+            preventDefault: () => e.preventDefault(),
+            stopPropagation: () => e.stopPropagation(),
+          }) === true
+        );
+      },
+    });
+  }
 
   onDidChange(listener: (ev: SourceChangeEvent) => void): () => void {
     this.listeners.add(listener);
