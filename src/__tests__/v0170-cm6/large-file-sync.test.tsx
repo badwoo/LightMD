@@ -35,6 +35,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { createElement, useState, useCallback, useRef } from "react";
 import { render, act, cleanup } from "@testing-library/react";
 import React from "react";
+import { readFileSync } from "node:fs";
 import { createSourceSurface } from "../../editor/createSourceSurface";
 import type { SourceSurface } from "../../editor/types";
 
@@ -106,6 +107,74 @@ function SyncHarness({
     }),
   );
 }
+
+describe("A3 大文件：超过 HUGE_FILE_THRESHOLD 不创建 ProseMirror", () => {
+  /**
+   * ## 为什么必须有这组
+   *
+   * `utils/constants.ts` 的 `HUGE_FILE_THRESHOLD` 注释原文是
+   * 「超过此值的文件将禁用 Markdown 渲染和 **ProseMirror**」；
+   * `App.tsx` 的大文件分支也注释「避免 ProseMirror 创建巨大 DOM 导致页面卡顿或崩溃」。
+   *
+   * **但那条策略过去只切了模式，没真正阻止 PM 创建** ——
+   * `ModeSync` 无条件 `createEditor({ initialContent: content })`。
+   *
+   * 实机 CPU profile 证据（54.7s 采样）：
+   * `updateStateInner → updateChildren → forChild` 链占 **45.7%**，
+   * 5MB 复杂文档装载 31.8s 全耗在 PM 建树上。
+   */
+  it("阈值判据：严格大于 HUGE_FILE_THRESHOLD 才算超大（等于不跳过，保持既有行为）", async () => {
+    const { HUGE_FILE_THRESHOLD } = await import("../../utils/constants");
+    expect(HUGE_FILE_THRESHOLD).toBe(5 * 1024 * 1024);
+    expect("a".repeat(HUGE_FILE_THRESHOLD).length > HUGE_FILE_THRESHOLD).toBe(false);
+    expect("a".repeat(HUGE_FILE_THRESHOLD + 1).length > HUGE_FILE_THRESHOLD).toBe(true);
+  });
+
+  it("★ 源码结构契约：ModeSync 必须同时具备「建前跳过」与「建后销毁」两层", () => {
+    /**
+     * 为什么**两层都要**（这不是冗余）：
+     * - **建前跳过**覆盖"内容已就位再进编辑"的路径；
+     * - **建后销毁**覆盖真实的大文件时序 ——
+     *   「先以欢迎页/空内容挂载（content 很短 → 建前判据不成立 → PM 被建）
+     *    → openFile 把 content 换成 5MB」。
+     *
+     * 实机验证过：**只加建前判据，耗时无任何变化**（31.99s → 32.28s），
+     * 因为真实路径上 content 在挂载那一刻还是空的。
+     */
+    const src = readFileSync("src/components/editor/panes/modesync/ModeSync.tsx", "utf-8");
+    expect(src, "必须导入 HUGE_FILE_THRESHOLD（执行既有阈值策略）").toMatch(
+      /import \{ HUGE_FILE_THRESHOLD \}/,
+    );
+    const createAt = src.indexOf("const view = createEditor({");
+    expect(createAt, "createEditor 调用点必须存在").toBeGreaterThan(-1);
+    const before = src.slice(Math.max(0, createAt - 3000), createAt);
+    expect(
+      before,
+      "createEditor 之前必须有 isHugeDoc(content) 的 return（建前跳过）",
+    ).toMatch(/if \(isHugeDoc\(content\)\) \{\s*return;/);
+    /**
+     * ⚠️ **判据必须按 UTF-8 字节，不能用 `content.length`**
+     *
+     * `App.tsx` 用 `fileService.getFileSize()`（**字节**）与阈值比较；
+     * 而中文 1 字符 = 3 字节 → 5MB 中文文档只有约 175 万**字符**。
+     * 实测教训：我第一版用 `content.length > HUGE_FILE_THRESHOLD` 判，
+     * 5.2MB 复杂文档的 `textLen` 仅 304 万字符，**永远不达 5242880 的字符阈值**
+     * → PM 照样被创建 → 仍卡 32s（修复"看起来加了但完全没生效"）。
+     * 改成 `TextEncoder` 按字节后，complex 32.79s → **3.05s**。
+     */
+    expect(src, "必须用 TextEncoder 按 UTF-8 字节判定（与 App 的 fileSize 口径一致）").toMatch(
+      /new TextEncoder\(\)\.encode\(/,
+    );
+    const isHugeBody = src.slice(src.indexOf("const isHugeDoc ="), src.indexOf("const isHugeDoc =") + 900);
+    expect(
+      isHugeBody,
+      "isHugeDoc 不得只按字符数判定（content.length 对中文会严重低估字节数）",
+    ).not.toMatch(/return text\.length\s*>\s*HUGE_FILE_THRESHOLD/);
+    expect(src, "必须有「内容变大 → view.destroy()」的建后销毁路径").toMatch(
+      /view\.destroy\(\)[\s\S]{0,300}viewRef\.current = null/,
+    );
+  });
+});
 
 describe("A3 大文件路径：CM6 空文档回归", () => {
   it("【缺陷复现】compare 写法：挂载时内容为空 → 后续内容到来时判'相等'跳过同步", () => {

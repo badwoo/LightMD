@@ -3365,6 +3365,7 @@ import {
   useRef,
 } from "react";
 import { t as translate } from "../../../../i18n";
+import { HUGE_FILE_THRESHOLD } from "../../../../utils/constants";
 import { nextFootnoteLabelFromText } from "../../../../core/pmCommands";
 import { unmaskBase64Images, maskBase64Images } from "../../../../utils/base64ImageMask";
 import { computeGhostTail } from "../.././sourceFormat";
@@ -3571,10 +3572,58 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
   const scrollToCenterRef = useRef<() => void>(() => {});
 
 
+  /**
+   * 内容是否达到"超大文件"档位。
+   *
+   * ⚠️ **必须按 UTF-8 字节数判定，不能用 `content.length`（字符数）**。
+   * `App.tsx` 用的是 `fileService.getFileSize()`（**字节**）与 `HUGE_FILE_THRESHOLD` 比较；
+   * 而中文 1 字符 = 3 字节 → 一份 5MB 的中文文档只有约 175 万**字符**，
+   * 用 `content.length` 判会**永远不触发**（实测：5.2MB 复杂文档 textLen 仅 304 万字符，
+   * 未达 5242880 的字符阈值 → PM 照样被创建 → 仍卡 32s）。
+   *
+   * 用 `TextEncoder` 是最准确的等价换算（浏览器原生、无额外依赖）；
+   * 它在 jsdom/WebView2 均可用。
+   */
+  const isHugeDoc = (text: string | undefined): boolean => {
+    if (!text) return false;
+    // 快速排除：字符数都不到阈值的 1/3 时，字节数不可能达标（UTF-8 每字符最多 4 字节）
+    if (text.length * 3 < HUGE_FILE_THRESHOLD) return false;
+    try {
+      return new TextEncoder().encode(text).length > HUGE_FILE_THRESHOLD;
+    } catch {
+      // 极端环境无 TextEncoder：退回按字符数估算（每字符 3 字节，偏保守）
+      return text.length * 3 > HUGE_FILE_THRESHOLD;
+    }
+  };
+
   // ─── 初始化编辑器（只执行一次）──────────────────
   useEffect(() => {
     const parent = editorRef.current;
     if (!parent) return;
+    /**
+     * ## v0.17.0：大文件**不创建 ProseMirror**（执行既有策略，非新增设计）
+     *
+     * `utils/constants.ts` 的 `HUGE_FILE_THRESHOLD` 注释原文就是
+     * 「超过此值的文件将禁用 Markdown 渲染和 ProseMirror」，
+     * `App.tsx` 的大文件分支也注释「避免 ProseMirror 创建巨大 DOM 导致页面卡顿或崩溃」
+     * 并强制切 `edit` + 关预览 + 提示用户。
+     *
+     * **但那条策略只切了模式，没有真正阻止 PM 创建** —— 本 effect 无条件
+     * `createEditor({ initialContent: content })`，5MB 文档照样被全量解析成节点树。
+     *
+     * 实机 CPU profile（54.7s 采样）证据：PM 的
+     * `updateStateInner → updateChildren → forChild` 链占 **45.7%**，
+     * 5MB 复杂文档装载 31.8s 全部耗在这里；而 CM6 那侧内容早已正确载入。
+     *
+     * 因此这里补上"策略的最后一环"：超大文档不建 PM。
+     * 这是**执行既有策略**，不是新增降级语义 —— 用户本来就会收到
+     * 「已切换到编辑模式以保证流畅度」的提示。
+     *
+     * @see 第二层：`content` 后续变大时销毁已建 PM（见下方"文件切换"effect）
+     */
+    if (isHugeDoc(content)) {
+      return;
+    }
     // v0.12.1 需求3：首次解析也要先把全局文档路径设成本份内容的路径。
     // 本 effect（子组件）先于 App 的 setCurrentDocPath effect 执行，若不在这里同步，
     // 首屏渲染图片时 currentDocPath 还是空的 → 相对路径解析成裸相对路径 → 图片不可见。
@@ -3968,6 +4017,28 @@ export function useModeSync(p: ModeSyncParams): ModeSyncResult {
     if (!isMdFile) return;
     const view = viewRef.current;
     const forceUpdate = forceUpdateKey !== lastForceUpdateKeyRef.current;
+    /**
+     * ## v0.17.0：内容后来变成超大文档 → **销毁已建的 PM**
+     *
+     * 第二层保护。大文件的真实时序是：
+     * 「先以欢迎页/空内容挂载（此时 `content` 很短 → 建前判据不成立 → PM 被创建）
+     *  → `openFile` 把 `content` 换成 5MB → 上一步的"建前跳过"已经赶不上了」。
+     *
+     * 所以必须在**内容变化时**再判一次：超阈值就销毁 view 并置 null，
+     * 让后续所有 `viewRef.current` 读取走它们已有的 `if (!view) return` 守卫。
+     *
+     * ⚠️ 销毁后不可恢复：本档位下 App 已强制 `viewMode === "edit"` 且关闭预览，
+     * 用户没有入口回到阅读模式（切换按钮已按大文件策略禁用），因此不需要"重建"路径。
+     */
+    if (view && isHugeDoc(content)) {
+      try {
+        view.destroy();
+      } catch {
+        /* view 可能已销毁 */
+      }
+      viewRef.current = null;
+      return;
+    }
     if (!view || content === undefined) return;
     if (!forceUpdate && content === lastContentRef.current) return;
     // ⚠️ v0.13.2 返修（用户复测：新文档切走再切回 Ctrl+Z 失效）：

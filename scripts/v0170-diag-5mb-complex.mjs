@@ -218,6 +218,7 @@ async function runOnce(label, DOC, opts = {}) {
         lines: ed ? ed.querySelectorAll(".cm-line").length : 0,
         textLen: content ? (content.textContent || "").length : 0,
         scrollerH: scroller ? scroller.scrollHeight : 0,
+        pm: !!document.querySelector(".ProseMirror"),
       };
     })()
   `, 8000);
@@ -237,7 +238,7 @@ async function runOnce(label, DOC, opts = {}) {
       console.log(`  t=${(ms / 1000).toFixed(1)}s  CDP TIMEOUT（主线程阻塞）`);
       continue;
     }
-    console.log(`  t=${(ms / 1000).toFixed(1)}s  lines=${st.lines} textLen=${st.textLen} scrollerH=${st.scrollerH}`);
+    console.log(`  t=${(ms / 1000).toFixed(1)}s  lines=${st.lines} textLen=${st.textLen} pm=${st.pm}`);
     if (st.lines > 10 && st.textLen > 1000) { firstOk = ms; break; }
   }
   console.log(firstOk ? `→ 可用耗时 ${(firstOk / 1000).toFixed(2)}s` : "→ 10 轮内未可用（判定卡死）");
