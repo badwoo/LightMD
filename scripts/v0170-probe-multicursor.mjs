@@ -18,6 +18,12 @@
  * - 只出现 1 处 → FAIL（多光标未生效）
  *
  * 用法：node scripts/v0170-probe-multicursor.mjs
+ *
+ * ⚠️ **做破坏性验证时注意产物污染**：本脚本把结果写到
+ * `_verify-out/v0170-probe-multicursor.json`。若你复制本脚本改成"不发 Ctrl+Alt+↓"
+ * 的破坏性变体并运行，**它会覆盖正式产物**，让基线看起来是 FAIL。
+ * 实测踩过一次：破坏性变体跑完后正式 JSON 变成 FAIL=1，需要重跑正式脚本才能恢复。
+ * 建议：破坏性变体把输出路径改成别的文件名（例如 `...-destructive.json`）。
  * 前置：npx tauri build --no-bundle
  */
 import { spawn, execFileSync } from "node:child_process";
