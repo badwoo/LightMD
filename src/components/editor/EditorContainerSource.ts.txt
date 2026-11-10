@@ -5181,9 +5181,20 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
       sel: sel ? { s: sel.start, st: typeof sel.scrollTop === "number" ? sel.scrollTop : null } : null,
       plan: scrollPlan.kind,
       planOffset: scrollPlan.kind === "anchor" ? scrollPlan.anchor.offset : null,
-      taTop: textarea ? Math.round(textarea.scrollTop * 100) / 100 : null,
-      taMax: textarea ? Math.max(0, textarea.scrollHeight - textarea.clientHeight) : null,
-      taCh: textarea ? textarea.clientHeight : null,
+      /**
+       * 诊断字段也改用 `isRealTextarea` 判定 —— div 上 `scrollTop/scrollHeight/clientHeight`
+       * 都是 `undefined`，`Math.round(undefined * 100)` 会得到 **NaN**，
+       * 让 trace 里出现 `taTop: null, taMax: NaN` 这类垃圾数据（不崩但会误导排查）。
+       */
+      taTop: isRealTextarea ? Math.round((textarea as unknown as HTMLTextAreaElement).scrollTop * 100) / 100 : null,
+      taMax: isRealTextarea
+        ? Math.max(
+            0,
+            (textarea as unknown as HTMLTextAreaElement).scrollHeight -
+              (textarea as unknown as HTMLTextAreaElement).clientHeight,
+          )
+        : null,
+      taCh: isRealTextarea ? (textarea as unknown as HTMLTextAreaElement).clientHeight : null,
     });
     /**
      * 落地滚动恢复。
@@ -5195,13 +5206,26 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     const applyScrollRestore = () => {
       // TODO(v0.18): CM6 能力缺口 — 撤销后的内容锚点滚动恢复。当前 CM6 表现：退化为像素/不恢复 → 撤销后滚动位置不精确（**内容正确**） | 用户可感知度：低 | 建议优先级：P2
       const ta = sourceTextareaRef.current;
-      if (!ta || ta.clientHeight <= 0) return;
+      /**
+       * ⚠️ v0.17.0：这里必须判"是不是真 textarea"，不能只判 `!ta`。
+       *
+       * CM6 下 `ta` 是 div（非 null），`div.clientHeight` **有值**（不像 value 是 undefined），
+       * 所以 `if (!ta || ta.clientHeight <= 0) return` **挡不住**。
+       * 继续往下走会调 `restoreTextAnchor(div, …)` —— 那里读 `textarea.value`
+       * 得到 undefined，恰好被 `if (!text) return` 兜住（**目前**不崩）。
+       * 但这属于"靠 falsy 偶然兜底"，一旦下游改成 `text.length` 就会崩。
+       * 故在此显式判定，把语义写清楚：非 textarea 直接不做滚动恢复。
+       */
+      const isRealTextarea = !!ta && typeof (ta as unknown as { value?: unknown }).value === "string";
+      if (!isRealTextarea) return;
+      const realTa = ta as unknown as HTMLTextAreaElement;
+      if (realTa.clientHeight <= 0) return;
       if (scrollPlan.kind === "anchor") {
-        restoreTextAnchor(ta, scrollPlan.anchor);
+        restoreTextAnchor(realTa, scrollPlan.anchor);
       } else if (scrollPlan.kind === "pixel") {
-        const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+        const max = Math.max(0, realTa.scrollHeight - realTa.clientHeight);
         const want = Math.min(Math.max(0, scrollPlan.scrollTop), max);
-        if (Math.abs(ta.scrollTop - want) > 0.5) ta.scrollTop = want;
+        if (Math.abs(realTa.scrollTop - want) > 0.5) realTa.scrollTop = want;
       }
       // kind === "none"：**什么都不做**（绝不写 0，见决策函数注释）
     };

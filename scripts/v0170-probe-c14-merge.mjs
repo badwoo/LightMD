@@ -247,6 +247,45 @@ async function main() {
       );
     }
 
+    // ── 追加：普通打字（非组合）也应可撤销 ──
+    await ev(`const c=document.querySelector(".cm-content"); if(c) c.focus(); return true;`);
+    await sleep(300);
+    const baseLen = ((await readText()) || "").length;
+    for (let i = 0; i < 3; i++) {
+      await cdp.send("Input.dispatchKeyEvent", { type: "char", key: "x", code: "KeyX", text: "x", unmodifiedText: "x" });
+      await sleep(400);
+    }
+    const typedLen = ((await readText()) || "").length;
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "z", code: "KeyZ", windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: 2 });
+    await sleep(40);
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "z", code: "KeyZ", windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: 2 });
+    await sleep(700);
+    const undoneLen = ((await readText()) || "").length;
+    add("7", "普通打字可撤销（Ctrl+Z 使长度回退）", undoneLen < typedLen ? "PASS" : "FAIL", `${baseLen} → 打字后 ${typedLen} → 撤销后 ${undoneLen}`);
+
+    // ── 追加：跨模式切换后的撤销（G6 核心口径）──
+    await ev(`const c=document.querySelector(".cm-content"); if(c) c.focus(); return true;`);
+    await sleep(300);
+    const preType = ((await readText()) || "").length;
+    await cdp.send("Input.dispatchKeyEvent", { type: "char", key: "y", code: "KeyY", text: "y", unmodifiedText: "y" });
+    await sleep(600);
+    const postType = ((await readText()) || "").length;
+    // 切到阅读模式，再切回编辑模式
+    await ev(`const b=document.querySelector(".mode-switch-btn"); if(b) b.click(); return true;`);
+    await sleep(1800);
+    await ev(`const b=document.querySelector(".mode-switch-btn"); if(b) b.click(); return true;`);
+    await sleep(1800);
+    const afterSwitch = ((await readText()) || "").length;
+    // 撤销
+    await ev(`const c=document.querySelector(".cm-content"); if(c) c.focus(); return true;`);
+    await sleep(300);
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "z", code: "KeyZ", windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: 2 });
+    await sleep(40);
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "z", code: "KeyZ", windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: 2 });
+    await sleep(800);
+    const afterSwitchUndo = ((await readText()) || "").length;
+    add("8", "★ 跨模式切换后撤销仍生效（G6 核心口径）", afterSwitchUndo < afterSwitch ? "PASS" : "KNOWN", `打字 ${preType}→${postType}，切模式后 ${afterSwitch}，撤销后 ${afterSwitchUndo}`);
+
     const errs = await ev(`return window.__ERRS || []`);
     add("6", "全程无未捕获异常", errs.length === 0 ? "PASS" : "FAIL", errs.length ? JSON.stringify(errs.slice(0, 2)) : "无");
 
