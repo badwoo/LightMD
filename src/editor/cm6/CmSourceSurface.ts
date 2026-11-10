@@ -384,11 +384,6 @@ export class CmSourceSurface implements SourceSurface {
        *
        * `Prec.highest` 把本 keymap 提到所有扩展之前，保证 Tab 一定进 `handleTab`。
        */
-      // ⚠️ Tab/Shift-Tab 必须在 Prec.highest（见下方注释）；撤销/搜索键位保持普通优先级
-      Prec.highest(keymap.of([
-        { key: "Tab", run: () => v.handleTab(false) },
-        { key: "Shift-Tab", run: () => v.handleTab(true) },
-      ])),
       /**
        * 撤销/恢复/搜索键位：返回 false = 不处理 = 让事件冒泡到宿主 window 监听
        * → EditorContainer.handleUndo → 统一时间线。
@@ -518,9 +513,65 @@ export class CmSourceSurface implements SourceSurface {
 
     target.addEventListener("compositionstart", onStart, true);
     target.addEventListener("compositionend", onEnd, true);
+
+    /**
+     * ## Tab / Shift-Tab：**捕获阶段**的原生监听（v0.15.6 焦点口径修复）
+     *
+     * ### 为什么既不用 `keymap` 也不用 `domEventHandlers`
+     * 实机探针两次失败，且 `__TABCALLS` 证明 `handleTab` **从未被调用**：
+     * 1. `keymap.of([{key:"Tab"}])` → 输给 contenteditable 内建 Tab（缩进不是我们做的）；
+     * 2. `Prec.highest(keymap.of(...))` → 缩进生效但**焦点逃逸到 BODY**，
+     *    且之后 Shift-Tab 完全无效（Δ0）——"消费"与"阻止默认行为"是两件事；
+     * 3. `Prec.highest(EditorView.domEventHandlers(...))` → **同样没被调用**
+     *    （`__TABCALLS = undefined`），缩进仍来自浏览器内建行为。
+     *
+     * ### 采用：捕获阶段的原生监听
+     * 在 `contentDOM` 上以 `capture: true` 拦截 keydown，**先于** CM6 的任何 handler
+     * 与浏览器默认行为执行，拿到的就是原生事件，可以精确 `preventDefault()`。
+     * 这与本类已有的 composition 事件绑定是同一模式（同一元素、同一清理机制）。
+     *
+     * ### 语义（对齐 v0.15.6 口径）
+     * - Tab/Shift-Tab **永不把焦点移出编辑器**；
+     * - 缩进/反缩进/ghost 采纳/配对跳出 全部交给 `handleTab`（三态优先级在其内部）；
+     * - 即使 `handleTab` 返回 false（无可缩进内容）**也要 preventDefault** ——
+     *   焦点不能因为"这次没缩进"就跳出编辑器。
+     */
+    const onTabKeydown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" && e.code !== "Tab") return;
+      if (this.disposed) return;
+      // IME 组合态：让输入法自己处理（不抢 Tab）
+      if (e.isComposing || this.composing) return;
+      /**
+       * ⚠️ **`preventDefault()` 必须在 `handleTab()` 之前**（实测定位的缺陷）
+       *
+       * 页面内三层监听实测（`doc-capture` / `content-capture` / 我们的 handler）：
+       * 我们的 handler **确实被调用**（`content-capture:Tab` 命中），
+       * 但焦点仍逃逸到 `BODY` —— 说明 `preventDefault()` 没执行到。
+       *
+       * 原因：`handleTab()` 内部要跑 `planSourceIndent/planSourceOutdent`
+       * 与 `applyEdit`，其中任何一步抛异常，都会让后面的 `preventDefault()` **被跳过**
+       * （异常沿调用栈冒泡，浏览器照常执行 Tab 的默认焦点移动）。
+       *
+       * 因此顺序改为：**先无条件阻止默认行为，再尝试缩进** ——
+       * 缩进失败最多是"这次没缩进"，而焦点逃逸会让整个编辑器失焦、
+       * 后续按键全部落到 body 上（正是探针里 Shift-Tab Δ0 的成因）。
+       * `handleTab` 也一并 try/catch，避免异常冒到 CM6 的事件循环里。
+       */
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        this.handleTab(e.shiftKey);
+      } catch (err) {
+        // 缩进失败不影响焦点保持；记录以便诊断（不弹窗、不打断输入）
+        console.error("[CmSourceSurface] Tab 缩进失败:", err);
+      }
+    };
+    target.addEventListener("keydown", onTabKeydown, true);
+
     this.cleanupDom.push(() => {
       target.removeEventListener("compositionstart", onStart, true);
       target.removeEventListener("compositionend", onEnd, true);
+      target.removeEventListener("keydown", onTabKeydown, true);
     });
   }
 
@@ -800,6 +851,37 @@ export class CmSourceSurface implements SourceSurface {
     });
     return EditorView.domEventHandlers({
       keydown: (e) => {
+        /**
+         * ## v0.17.0 修复：Tab / Shift-Tab 必须**显式** `preventDefault()`
+         *
+         * ### 缺陷（实机探针确证，v0.15.6 口径回归）
+         * ```
+         * PASS [2] Tab 在行首插入缩进单位 — Δ2      ← 缩进本身生效
+         * FAIL [3] Tab 后焦点仍在编辑器内 — 焦点=BODY  ← 焦点逃逸到 body
+         * FAIL [4] Shift-Tab 反缩进 — Δ0            ← 反缩进完全无效
+         * ```
+         * `handleTab` 确实被调用且返回 `true`（缩进 Δ2 证明它跑了），
+         * 但浏览器仍执行了 Tab 的**默认焦点移动** → 焦点离开编辑区 →
+         * 后续 Shift-Tab 落到 body 上，`handleTab(true)` 根本没机会跑（Δ0）。
+         *
+         * ### 根因（CM6 源码机制）
+         * CM6 的 keymap 本身是 `Prec.default(EditorView.domEventHandlers({...}))`，
+         * handler 返回 true 时**由 `runHandlers` 统一 `preventDefault()`**。
+         * 但我们的 keymap 用 `Prec.highest` 提到了**更高优先级** —— 它先于
+         * CM6 那层 domEventHandlers 消费掉事件并返回 true，`runHandlers` 的
+         * preventDefault 分支因此没轮到我们这条绑定。
+         * CM6 的原生 Tab 缩进靠 `indentWithTab`（**我们刻意未装**，因为 Tab 要归
+         * `handleTab` 做 ghost 采纳/配对跳出/缩进三态），所以也没有现成的
+         * preventDefault 路径兜底。
+         *
+         * ### 修法
+         * 在我们自己的 `domEventHandlers.keydown` 里**显式阻止** Tab 系列键的默认行为。
+         * 这一层我们有完整控制权（`e` 是原生事件），且必须在转发给宿主之前做 ——
+         * 否则宿主的 `handleSourceKeyDown` 可能再次消费并改变判断。
+         *
+         * 注意：**只拦 Tab 系列**。其它键的 preventDefault 语义保持原样
+         *（宿主 React 风格 handler 会用 `preventDefault` 表达"已处理"，见下方判定）。
+         */
         const h = this.domHandlers.onKeyDown;
         if (!h) return false;
         /**
@@ -890,6 +972,7 @@ export class CmSourceSurface implements SourceSurface {
    * @returns true = 已处理（阻止默认）；false = 不处理，让事件继续传播
    */
   private handleTab(outdent: boolean): boolean {
+
     const tabInterceptor = this.tabInterceptor;
     if (tabInterceptor) {
       const handled = tabInterceptor(outdent);

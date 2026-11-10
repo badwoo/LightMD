@@ -28,15 +28,25 @@ import { readFileSync } from "node:fs";
 const SRC = readFileSync("src/editor/cm6/CmSourceSurface.ts", "utf-8");
 
 describe("A3 keymap 优先级拆分（Tab 最高 / 撤销键位普通）", () => {
-  it("Tab / Shift-Tab 必须在 Prec.highest 内", () => {
-    // 取出 Prec.highest(...) 括起来的片段
-    const at = SRC.indexOf("Prec.highest(keymap.of([");
-    expect(at, "必须存在 Prec.highest(keymap.of([...])) 结构").toBeGreaterThan(-1);
-    const block = SRC.slice(at, SRC.indexOf("]))", at));
-    expect(block, "Tab 必须在最高优先级里（否则被 contenteditable 内建行为抢先）").toMatch(
-      /key:\s*"Tab"/,
+  /**
+   * ⚠️ **本组断言已随实现变更更新**（重要历史，勿删）
+   *
+   * 本节最初锁的是「`Tab` 必须在 `Prec.highest(keymap.of([...]))` 内」。
+   * 后续实机验证发现**该方案本身是失败的**：
+   * - `keymap` 方案：输给 contenteditable 内建 Tab（缩进不是 `planSourceIndent` 做的）；
+   * - `Prec.highest(keymap)` 方案：缩进生效，但**焦点逃逸到 BODY**，
+   *   且之后 Shift-Tab 完全无效（v0.15.6 焦点口径回归）。
+   *
+   * 最终采用 `contentDOM` 上的**捕获阶段原生监听**（见 `tab-focus-contract.test.ts`）。
+   * 因此这里改为断言"Tab 不再走 keymap 方案"，避免旧断言把失败的实现固化下来。
+   */
+  it("Tab / Shift-Tab 不得再走 keymap 方案（已实测失败，改走原生捕获监听）", () => {
+    expect(SRC, "不得在 keymap 里绑 Tab").not.toMatch(
+      /key:\s*"Tab",\s*run:\s*\(\)\s*=>\s*v\.handleTab\(false\)/,
     );
-    expect(block, "Shift-Tab 同理").toMatch(/key:\s*"Shift-Tab"/);
+    expect(SRC, "Tab 必须走 contentDOM 捕获监听").toMatch(
+      /target\.addEventListener\("keydown",\s*onTabKeydown,\s*true\)/,
+    );
   });
 
   it("★ 撤销/搜索键位的 run:false **不得**放进 Prec.highest", () => {
@@ -64,8 +74,13 @@ describe("A3 keymap 优先级拆分（Tab 最高 / 撤销键位普通）", () =>
   });
 
   it("Tab 处理必须经 handleTab（而非放任 contenteditable 默认行为）", () => {
-    expect(SRC).toMatch(/key:\s*"Tab",\s*run:\s*\(\)\s*=>\s*v\.handleTab\(false\)/);
-    expect(SRC).toMatch(/key:\s*"Shift-Tab",\s*run:\s*\(\)\s*=>\s*v\.handleTab\(true\)/);
+    // 实现方式变了（原生捕获监听），但"必须经 handleTab"这个实质要求不变
+    const at = SRC.indexOf("const onTabKeydown =");
+    expect(at, "onTabKeydown 必须存在").toBeGreaterThan(-1);
+    const body = SRC.slice(at, SRC.indexOf('target.addEventListener("keydown", onTabKeydown', at));
+    expect(body, "必须调用 handleTab 且传入 shiftKey 决定方向").toMatch(
+      /this\.handleTab\(e\.shiftKey\)/,
+    );
   });
 
   it("handleTab 必须真的用 planSourceIndent / planSourceOutdent（缩进单位跟随设置）", () => {
