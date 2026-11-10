@@ -217,6 +217,7 @@ async function main() {
     const press = async (keyName, code, vk, modifiers = 0) => {
       const base = { key: keyName, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers };
       await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...base });
+      await sleep(25);       // 与既有探针一致：keyDown/keyUp 之间留间隔，CDP 才稳定产生事件
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
       await sleep(200);
     };

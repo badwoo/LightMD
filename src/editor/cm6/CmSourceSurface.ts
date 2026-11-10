@@ -565,6 +565,45 @@ export class CmSourceSurface implements SourceSurface {
         // 缩进失败不影响焦点保持；记录以便诊断（不弹窗、不打断输入）
         console.error("[CmSourceSurface] Tab 缩进失败:", err);
       }
+      /**
+       * ## 焦点夺回：必须在 `handleTab` **之后**异步做，且要保留光标
+       *
+       * ### 为什么需要（实机确证的缺陷）
+       * `preventDefault()` 确实被执行且 `defaultPrevented === true`（探针在调用后立刻读到），
+       * 事件也 `cancelable`，`contentDOM` 就是 `activeElement`、节点身份一致 —— 但焦点
+       * 仍然离开到 `BODY`。对照实验（普通 input、裸 contenteditable 都能被保住）证明
+       * 这不是 CDP 局限，而是 **CM6 内部在 keydown 之后另有机制移动焦点**。
+       *
+       * 因此不依赖"阻止默认行为"这一层，改为**主动夺回**。
+       *
+       * ### 为什么必须 rAF 而不是同步
+       * 同步夺回无效（实测）：焦点移动发生在本次事件分发结束之后，
+       * 同步 `focus()` 会被随后的默认行为再次覆盖。放到下一帧才稳。
+       *
+       * ### 为什么必须保存/恢复选区（**这条是第二次才发现的**）
+       * 直接 `contentDOM.focus()` 会把光标**重置到文档开头**（实测：Tab 后
+       * `plan.start=15` 正确，但下一次按键 `plan.start=0`）。
+       * 后果是 Shift-Tab 拿到 `start=0` → `planSourceOutdent` 判定
+       * 「光标前不是纯空白」→ 返回 `kind:none` → **反缩进静默失效**。
+       * 所以夺回焦点后必须把 CM6 的 selection 一并写回去。
+       */
+      const view = this.view;
+      if (view) {
+        const sel = view.state.selection.main;
+        window.requestAnimationFrame(() => {
+          const v = this.view;
+          if (!v || this.disposed) return;
+          const doc = v.contentDOM.ownerDocument;
+          if (doc.activeElement === v.contentDOM) return; // 焦点没丢，什么都不做
+          v.contentDOM.focus({ preventScroll: true });
+          // 焦点恢复后把光标放回原处（等同 "只把焦点还回来，不动编辑状态"）
+          try {
+            v.dispatch({ selection: { anchor: sel.from, head: sel.to } });
+          } catch {
+            /* view 已销毁等：忽略 */
+          }
+        });
+      }
     };
     target.addEventListener("keydown", onTabKeydown, true);
 
