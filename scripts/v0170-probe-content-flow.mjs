@@ -164,6 +164,10 @@ async function main() {
       return (d.body.textContent || "").replace(/\\s+/g, " ").trim();
     `);
 
+    const dirtyBefore = await ev(`return { els: document.querySelectorAll(".tab-dirty").length }`);
+    log("[probe] 编辑前脏标记数=" + JSON.stringify(dirtyBefore));
+    add("3b", "编辑前无脏标记（基线，防误报）", dirtyBefore && dirtyBefore.els === 0 ? "PASS" : "KNOWN", JSON.stringify(dirtyBefore));
+
     const beforePreview = await readPreviewText();
     log("[probe] 编辑前预览长度=" + (beforePreview || "").length);
     add(
@@ -258,6 +262,20 @@ async function main() {
         ? `阅读面已含 ${MARK}`
         : `阅读面长度=${(previewModeText || "").length}，不含 ${MARK}（state 未同步 → 导出也会拿到旧内容）`,
     );
+
+    // ── 追加：CM6 编辑后脏标记必须出现（防数据丢失的基础）──
+    const dirty = await ev(`
+      const tab = document.querySelector(".tab-item.active, .tab.active, [role=tab][aria-selected=true]");
+      const titleEl = document.querySelector(".titlebar-file-name, .file-title, .title-bar");
+      const bodyText = (document.body.textContent || "");
+      return {
+        tabText: tab ? (tab.textContent || "").slice(0, 40) : null,
+        tabDirtyEls: document.querySelectorAll(".tab-dirty").length,
+        hasDot: /●/.test(bodyText),
+      };
+    `);
+    log("[probe] 脏标记状态=" + JSON.stringify(dirty));
+    add("8", "★ CM6 编辑后脏标记出现（.tab-dirty 元素存在，防关窗丢数据）", dirty && dirty.tabDirtyEls > 0 ? "PASS" : "FAIL", JSON.stringify(dirty));
 
     const errs = await ev(`return window.__ERRS || []`);
     add("7", "全程无未捕获异常", errs.length === 0 ? "PASS" : "FAIL", errs.length ? JSON.stringify(errs.slice(0, 2)) : "无");
