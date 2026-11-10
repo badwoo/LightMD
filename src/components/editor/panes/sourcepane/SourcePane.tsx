@@ -1160,7 +1160,16 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     ) {
       // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
-      if (ta) {
+      /**
+       * ⚠️ 必须判"是不是真 textarea"（不是判 null）。
+       *
+       * A3 之后该 ref 在 CM6 下是**中性 div**（非 null），`if (ta)` 守卫无效；
+       * 而 `buildSourcePairInput` 内部读 `ta.value` → 传给 `isInCodeBlock`
+       * → `undefined.substring` 抛异常 → 错误边界接管整个界面。
+       * 实测：本分支目前在 CM6 下**不可达**（Tab 被 CmSourceSurface 的捕获监听先接走），
+       * 但代码路径存在，将来接线变化即可触发 —— 故按缺陷类统一加守卫。
+       */
+      if (ta && typeof (ta as unknown as { value?: unknown }).value === "string") {
         const plan = planSourceTab(buildSourcePairInput(ta, ta.selectionStart ?? 0, ta.selectionEnd ?? 0));
         if (plan.kind === "edit") {
           e.preventDefault();
@@ -1221,7 +1230,8 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     if (autoPairEnabled && e.key === "Backspace") {
       // TODO(v0.18): CM6 能力缺口 — `buildSourcePairInput(ta, …)` 签名收 textarea（内部只用 `ta.value`，改签名需动 `utils/sourceAutoPair.ts` + 其单测）。当前 CM6 表现：**Tab 跳出配对 / Backspace 成对删除不生效；缩进本身正常**（CM6 的 `handleTab` 直接调 `planSourceIndent/planSourceOutdent`，不经此函数） | 用户可感知度：中 | 建议优先级：P1
       const ta = sourceTextareaRef.current;
-      if (ta) {
+      // 同上一处：判"是不是真 textarea"而不是判 null（CM6 下它是 div，非 null）
+      if (ta && typeof (ta as unknown as { value?: unknown }).value === "string") {
         // E5(v0.9.2):IME 组合态守卫——组合期按 Backspace 删拼音，不做成对删除
         // （部分输入法组合期 isComposing=false 但 keyCode=229，与 PM 端 auto-pair 对齐）
         if (e.nativeEvent.isComposing || e.keyCode === 229) return;

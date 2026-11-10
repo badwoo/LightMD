@@ -45,6 +45,12 @@ const RISKY_FILES = [
   "src/components/editor/SearchReplace.tsx",
   "src/components/editor/panes/aiassistpane/AiAssistPane.tsx",
   "src/components/editor/panes/aichatpane/AiChatPane.tsx",
+  "src/components/editor/panes/sourcepane/SourcePane.tsx",
+  "src/components/editor/panes/formatmenuhost/FormatMenuHost.tsx",
+  "src/components/editor/panes/historyhost/HistoryHost.tsx",
+  "src/components/editor/panes/modesync/ModeSync.tsx",
+  "src/components/editor/panes/previewpane/PreviewPane.tsx",
+  "src/components/editor/EditorContainer.tsx",
   "src/services/translateBridge.ts",
 ];
 
@@ -118,8 +124,19 @@ function findBareTextareaMemberUsage(source: string): { line: number; text: stri
       let m: RegExpExecArray | null;
       while ((m = re.exec(raw)) !== null) {
         const ident = m[1];
-        // 只关心"元素变量"命名的标识符；明确是事件对象/内置对象的跳过
-        if (!/^(ta|taEl|textarea|el|elem|element|host|node|target|ref)$/i.test(ident)) continue;
+        /**
+         * 只关心"直接从 ref 取出的元素变量"。
+         *
+         * 排除两类**必然安全**的标识符：
+         * - `e.target` / `ev.target`：React 合成事件上的 target，
+         *   只有真正的 textarea 才会触发 `onChange`（CM6 不产生 React onChange），
+         *   因此不可能是 div —— 这类访问不算风险；
+         * - 明确的局部内置对象（document/body/window 等）。
+         */
+        if (!/^(ta|taEl|textarea|el|elem|element|host|node|ref)$/i.test(ident)) continue;
+        // 上一个字符是 `.` → 说明是 `xxx.target` 这类成员访问，不是元素变量本身
+        const beforeIdx = m.index - 1;
+        if (beforeIdx >= 0 && raw[beforeIdx] === ".") continue;
         // 该标识符已在文件内被类型判定过 → 视为已正确处理
         if (guardedIdents.has(ident)) continue;
         hits.push({ line: i + 1, text: raw.trim().slice(0, 140) });
