@@ -1487,22 +1487,66 @@ export function SearchReplaceDialog({
       return;
     }
 
-    if (isSourceMode && sourceTextareaRef?.current) {
-      const textarea = sourceTextareaRef.current;
-      // R4：按区间选区（正则匹配长度可变）
+    if (isSourceMode && sourceSurface) {
+      /**
+       * ## v0.17.0 修复：源码模式定位当前项**必须走 `SourceSurface`**
+       *
+       * ⚠️ 这里曾经是真实崩溃点（`TypeError: setSelectionRange is not a function`）。
+       *
+       * 原因：A3 之后 `sourceTextareaRef` 在 CM6 路径下是**中性 div 宿主**
+       * （`EditorContainer` 里已别名到 `sourceHostElRef`，并明确注释
+       * 「CM6 路径下本别名为 null，所有使用点必须按可能为 null 处理」），
+       * 但本文件仍把它当 `HTMLTextAreaElement` 用：
+       * - `textarea.focus()` 不报错（div 也有 focus）；
+       * - `textarea.setSelectionRange(...)` → **div 上没有这个方法 → 抛异常 →
+       *   整个应用被错误边界接管，用户看到"界面渲染出错"**。
+       *
+       * 实机复现（`scripts/v0170-probe-search-highlight.mjs`）：
+       * 在搜索框输入任意 1 个字符 → `cmEditor`/`searchInput` 全部从 DOM 消失。
+       *
+       * 修法：改用契约方法 `surface.focus()` + `surface.setSelection(start, end)`。
+       * 两种实现都实现了这两个方法（textarea 实现内部就是 focus + setSelectionRange），
+       * 因此不再有"把 div 当 textarea"的可能。
+       */
       const range = matchesRef.current[index];
-      const pos = range.start;
-      // Issue 6：非 md 文件在 preview 模式下 textarea 隐藏（display:none），
-      // offsetParent === null 表示不可见，此时跳过视觉高亮（仅显示匹配计数）
-      if (textarea.offsetParent === null) return;
-      textarea.focus();
-      textarea.setSelectionRange(pos, range.end);
-      // 滚动到匹配位置
-      const lines = textarea.value.substring(0, pos).split("\n");
-      const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
-      textarea.scrollTop = (lines.length - 1) * lineHeight;
+      if (!range) return;
+      // 非 md 文件在 preview 模式下源码面不可见时跳过视觉高亮（仅显示匹配计数）
+      const hostEl = sourceTextareaRef?.current as unknown as HTMLElement | null;
+      if (hostEl && hostEl.offsetParent === null) return;
+
+      sourceSurface.focus();
+      sourceSurface.setSelection(range.start, range.end);
+      // 滚动到匹配位置。
+      // ⚠️ 用 `sourceContent`（已是 App 层权威文本）而不是 `surface.getText()` ——
+      // 后者在 CM6 下是 `doc.toString()`，5MB 文档每次调用都是全量拼接；
+      // 这里只是为了数行号，没必要付这个代价。
+      // 但 `sourceContent` 在部分调用路径上可能未传（prop 可选）→ 必须兜底，
+      // 否则 `undefined.substring` 会抛异常（实机踩过）。
+      const visible = sourceContent ?? sourceSurface.getText() ?? "";
+      const lines = visible.substring(0, Math.min(range.start, visible.length)).split("\n");
+      const lineHeight = parseFloat(getComputedStyle(hostEl ?? document.body).lineHeight) || 20;
+      sourceSurface.setScrollTop(Math.max(0, (lines.length - 1) * lineHeight));
       // v0.15.1 需求5：源码模式的"当前项醒目色"在 overlay 里，随当前项一起挪。
       // 这里不重建全量（全量只在 performSearch 时建），只改"哪一处用醒目色"。
+      const kept = sourceHighlightRangesRef.current;
+      const cur = kept.findIndex((r) => r.start === range.start && r.end === range.end);
+      if (cur >= 0) paintSourceOverlay(cur);
+    } else if (isSourceMode && sourceTextareaRef?.current) {
+      /**
+       * 兜底：`sourceSurface` 缺失（理论上不会发生，`EditorContainer` 恒传）。
+       * 这里**只处理真的是 textarea 的情况**，避免重演上面的崩溃。
+       */
+      const textarea = sourceTextareaRef.current;
+      if (typeof (textarea as unknown as HTMLTextAreaElement).setSelectionRange !== "function") return;
+      const range = matchesRef.current[index];
+      const pos = range.start;
+      if (textarea.offsetParent === null) return;
+      const ta = textarea as unknown as HTMLTextAreaElement;
+      ta.focus();
+      ta.setSelectionRange(pos, range.end);
+      const lines = ta.value.substring(0, pos).split("\n");
+      const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+      ta.scrollTop = (lines.length - 1) * lineHeight;
       const kept = sourceHighlightRangesRef.current;
       const cur = kept.findIndex((r) => r.start === range.start && r.end === range.end);
       if (cur >= 0) paintSourceOverlay(cur);
@@ -1616,9 +1660,13 @@ export function SearchReplaceDialog({
     // （R4 修复：阅读模式下 sourceContent 为 undefined，不能作为匹配文本来源）
     // v0.14.0：源码模式必须先做换行归一化再切 —— range 是**归一化文本**的坐标，
     // 直接切含 CRLF 的原文会让 $1/$& 匹配到错位的字符。
-    const matched = isSourceMode && sourceContent !== undefined
-      ? sourceContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n").substring(range.start, range.end)
-      : offsetMapRef.current?.text.substring(range.start, range.end) ?? searchText;
+    // ⚠️ 末尾 `?? searchText` 不能少：`offsetMapRef.current?.text` 为 undefined 时
+    // `?.substring(...)` 整体求值为 undefined，再传给 expandReplacement 就会抛
+    // `Cannot read properties of undefined (reading 'substring')`（实机踩过）。
+    const matched =
+      isSourceMode && sourceContent !== undefined
+        ? sourceContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n").substring(range.start, range.end)
+        : offsetMapRef.current?.text?.substring(range.start, range.end) ?? searchText;
     const expanded = expandReplacement(matched, regex, replaceText, useRegex);
 
     if (isSourceMode && sourceTextareaRef?.current && sourceContent !== undefined && onSourceContentChange) {

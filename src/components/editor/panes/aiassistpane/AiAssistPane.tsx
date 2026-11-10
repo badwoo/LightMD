@@ -99,6 +99,22 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     // TODO(v0.18): CM6 能力缺口 — `beforeinput` 配对落地绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：括号/引号自动补全手势不触发（**缩进与其它编辑仍正常**） | 用户可感知度：中 | 建议优先级：P1
     const ta = sourceTextareaRef.current;
     if (!ta) return;
+    /**
+     * ⚠️ **必须验证它真的是 textarea**（v0.17.0 修复的崩溃点）。
+     *
+     * A3 之后 `sourceTextareaRef` 在 CM6 路径下是**中性 div 宿主**
+     * （`EditorContainer` 已把它别名到 `sourceHostElRef`，并注释要求所有使用点
+     * 按"可能不是 textarea"处理）。而这里只判了 `!ta`，div 非 null 所以守卫失效，
+     * 接着 `buildSourcePairInput(ta, ta.selectionStart ?? 0, ...)` 取 `ta.value`
+     * → `undefined` → `isInCodeBlock(undefined, ...)` → `undefined.substring` **抛异常**。
+     *
+     * 实机表现（`scripts/v0170-probe-search-highlight.mjs` 捕获）：
+     * 在搜索框输入 1 个字符即触发；错误边界接管整个界面。
+     *
+     * 用 `typeof value === "string"` 判定（div 上 `value` 为 undefined），
+     * 比 `instanceof HTMLTextAreaElement` 更能兼容 jsdom / 自定义元素。
+     */
+    if (typeof (ta as unknown as { value?: unknown }).value !== "string") return;
 
     const onBeforeInput = (e: Event) => {
       const ie = e as InputEvent;
