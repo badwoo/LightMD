@@ -1,8 +1,8 @@
 # LightMD
 
-> A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror.
+> A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror (reading surface) + CodeMirror 6 (source surface).
 
-**Current Version: v0.16.0**
+**Current Version: v0.16.0** (v0.17.0 is developed and verified on the `v0.17.0-structural-refactor` branch, pending release)
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -264,6 +264,11 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 
 - **Tauri 2** Rust backend — fast startup, low memory, tiny installer
 - **ProseMirror** editor core — smooth editing of large documents
+- **CodeMirror 6 source surface** (v0.17.0) — syntax highlighting, line numbers, code folding,
+  bracket matching, multi-cursor, search highlight, soft wrap. 5MB docs: load 19.3s → **3.3s**,
+  input latency 274.1ms → **16.4ms**
+  > Known limitations: typewriter mode and paired-enhancement gestures (auto-close brackets /
+  > Tab-jump-out) are not active on the source surface; **Tab indentation and undo work normally**.
 - **iframe-isolated preview** — preview DOM isolated from main document, significantly reducing GC pressure
 - **Incremental diff undo stack** — stores only diffs instead of full snapshots, greatly saving memory
 
