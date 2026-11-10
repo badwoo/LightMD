@@ -250,6 +250,26 @@ export function getTextareaSelectionAnchor(textarea: HTMLTextAreaElement): { x: 
   const style = window.getComputedStyle(textarea);
   const fontSize = parseFloat(style.fontSize) || 14;
   const lineHeight = parseFloat(style.lineHeight) || fontSize * 1.6;
+  /**
+   * ⚠️ v0.17.0：`textarea` 可能**不是** textarea。
+   *
+   * A3 之后 `sourceTextareaRef` 在 CM6 路径下是中性 div 宿主，
+   * 而本函数仍在多处被调用（翻译 / AI 气泡锚点）。
+   * div 上 `value` / `selectionEnd` 都是 undefined，
+   * `textarea.value.slice(...)` 会抛 `Cannot read properties of undefined`
+   * → 错误边界接管整个界面。
+   *
+   * 这些调用点的 TODO(v0.18) 已注明「CM6 应用 coordsAtPos」才是正解，
+   * 本版的要求是**不能崩**：非 textarea 时退化为「元素左上角」锚点。
+   * 气泡位置不贴选区是可接受的已知降级（P2），崩溃不是。
+   */
+  const maybeTa = textarea as unknown as { value?: unknown; selectionEnd?: unknown };
+  const isRealTextarea =
+    typeof maybeTa.value === "string" && typeof maybeTa.selectionEnd === "number";
+  if (!isRealTextarea) {
+    // 退化锚点：元素左上方（与既有「降级到视口左上」的口径一致）
+    return { x: rect.left, y: rect.top };
+  }
   return computeTextareaAnchor({
     rect: { left: rect.left, top: rect.top, width: rect.width },
     geo: {

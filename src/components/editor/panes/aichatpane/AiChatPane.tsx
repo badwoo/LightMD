@@ -1346,9 +1346,28 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
     });
     requestAnimationFrame(() => {
       // TODO(v0.18): CM6 能力缺口 — 选区文字快照需实时元素坐标。当前 CM6 表现：该处快照退化为纯文本比较，判断仍正确 | 用户可感知度：低 | 建议优先级：P2
+      /**
+       * ⚠️ v0.17.0：`sourceTextareaRef.current` 在 CM6 下是 **div 宿主**。
+       * `el?.setSelectionRange(...)` 的可选链只能防 null，**防不住"方法不存在"** ——
+       * div 上没有 `setSelectionRange`，调用即抛
+       * `TypeError: el.setSelectionRange is not a function`，
+       * 错误边界会接管整个界面（与 SearchReplace 那处同类）。
+       *
+       * 本处语义是"AI 回写后把光标放到 rewrite.cursor"。
+       * 有 surface 时走契约 `setSelection`；否则仅在真 textarea 上直接调用。
+       */
       const el = sourceTextareaRef.current;
-      el?.focus();
-      el?.setSelectionRange(rewrite.cursor, rewrite.cursor);
+      if (sourceSurface) {
+        sourceSurface.focus();
+        sourceSurface.setSelection(rewrite.cursor, rewrite.cursor);
+        return;
+      }
+      const ta = el as unknown as HTMLTextAreaElement | null;
+      if (!ta || typeof (ta as unknown as { setSelectionRange?: unknown }).setSelectionRange !== "function") {
+        return;
+      }
+      ta.focus();
+      ta.setSelectionRange(rewrite.cursor, rewrite.cursor);
     });
   }, []);
 

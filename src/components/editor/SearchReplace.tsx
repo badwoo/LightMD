@@ -868,8 +868,25 @@ export function SearchReplaceDialog({
    */
   const captureSelectionRange = useCallback((): MatchRange | null => {
     if (isSourceMode) {
-      const ta = sourceTextareaRef?.current;
-      if (!ta) return null;
+      /**
+       * v0.17.0：`sourceTextareaRef.current` 在 CM6 下是 **div**（无 selectionStart/End）。
+       * 直接读会得到 `undefined`，`end <= start` 判定为 false（undefined 比较恒 false），
+       * 于是算出 NaN 区间 —— **不崩但静默错位**。
+       * 改走 surface 契约：两种实现都实现了 `getSelection()`。
+       */
+      if (sourceSurface) {
+        const sel = sourceSurface.getSelection();
+        const start = Math.min(sel.start, sel.end);
+        const end = Math.max(sel.start, sel.end);
+        if (end <= start) return null;
+        const raw = sourceContent ?? sourceSurface.getText();
+        return { start: rawOffsetToNormalized(raw, start), end: rawOffsetToNormalized(raw, end) };
+      }
+      // 兜底：只在真的是 textarea 时才读原生选区
+      const ta = sourceTextareaRef?.current as unknown as HTMLTextAreaElement | null;
+      if (!ta || typeof (ta as unknown as { selectionStart?: unknown }).selectionStart !== "number") {
+        return null;
+      }
       const raw = sourceContent ?? ta.value;
       const start = ta.selectionStart;
       const end = ta.selectionEnd;
