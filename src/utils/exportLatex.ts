@@ -18,7 +18,7 @@
 import { isTauri } from "../services/fileService";
 import { notifyError, notifySuccess } from "../services/notificationService";
 import { t } from "../i18n";
-import { parseMarkdownToBlocks } from "./exportBlocks";
+import { parseMarkdownToBlocks, parseMarkdownToBlocksDetailed } from "./exportBlocks";
 import type { Block, InlineRun, ListItem } from "./exportBlocks";
 
 // 对外统一出口：LaTeX 导出消费方无需直接依赖 exportBlocks
@@ -317,14 +317,32 @@ function latexPreamble(title: string): string {
 /**
  * 将 markdown 转换为完整 LaTeX 文档字符串
  *
+ * ## v0.17.0 C 阶段：改为一次性返回 `unknownTokens`，消除重复解析
+ *
+ * 旧实现有**同一份文档解析两遍**的浪费：
+ * - `markdownToLatex()` 内部 `parseMarkdownToBlocks()` 一次；
+ * - `exportLatex()` 为了上报未识别 token，又 `parseMarkdownToBlocksDetailed()` 一次。
+ *
+ * 实测（12.5K 字符文档）：单次 `parseUnified` 约 **6.3ms**（热态），
+ * 即每次导出白白多付一次全量解析；5MB 文档会线性放大到秒级。
+ *
+ * 现在 `markdownToLatex` 用 detailed 版一次解析并同时返回 `unknownTokens`，
+ * 调用方直接消费，不再二次解析。
+ *
  * @param markdown markdown 源码
  * @param title 文档标题（用于 \\title）
- * @returns 完整 .tex 内容
+ * @returns `{ latex, unknownTokens }`
  */
-export function markdownToLatex(markdown: string, title: string = "Document"): string {
-  const blocks = parseMarkdownToBlocks(markdown);
+export function markdownToLatex(
+  markdown: string,
+  title: string = "Document",
+): { latex: string; unknownTokens: string[] } {
+  const { blocks, unknownTokens } = parseMarkdownToBlocksDetailed(markdown);
   const body = blocksToLatex(blocks);
-  return `${latexPreamble(title)}${body}\\end{document}\n`;
+  return {
+    latex: `${latexPreamble(title)}${body}\\end{document}\n`,
+    unknownTokens,
+  };
 }
 
 /** 浏览器模式下载 Blob */
@@ -353,15 +371,14 @@ export async function exportLatex(
   filePath?: string | null,
 ): Promise<boolean> {
   try {
-    const latex = markdownToLatex(markdown, filename.replace(/\.md$/i, ""));
+    // v0.17.0 C：一次解析同时拿到 latex 与 unknownTokens（不再二次解析）
+    const { latex, unknownTokens } = markdownToLatex(markdown, filename.replace(/\.md$/i, ""));
     const finalName = filename.replace(/\.md$/i, "") + ".tex";
 
     // v0.11.0 B5-1 返修：与 DOCX 对齐 —— 未识别 token 必须上报，不能静默丢内容。
     //（此前只有 DOCX 走 detailed 版解析并提示，LaTeX 用简化版 → 同样的内容
     //  在 LaTeX 导出里无声消失且用户毫不知情。）
     try {
-      const { parseMarkdownToBlocksDetailed } = await import("./exportBlocks");
-      const { unknownTokens } = parseMarkdownToBlocksDetailed(markdown);
       if (unknownTokens.length > 0) {
         const { notifyWarning } = await import("../services/notificationService");
         notifyWarning(
@@ -369,7 +386,7 @@ export async function exportLatex(
         );
       }
     } catch (err) {
-      console.warn("[导出LaTeX] 未识别内容检查失败（不影响导出）:", err);
+      console.warn("[导出LaTeX] 未识别内容提示失败（不影响导出）:", err);
     }
 
     if (isTauri()) {

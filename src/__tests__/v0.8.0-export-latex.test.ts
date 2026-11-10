@@ -270,7 +270,7 @@ describe("v0.8.0 LaTeX 导出", () => {
   // ─── 文档头与完整文档 ─────────────────────────────
   describe("markdownToLatex 完整文档", () => {
     it("生成 ctexart 文档头与 \\end{document}", () => {
-      const latex = markdownToLatex("# 标题\n\n正文 $100", "测试文档");
+      const { latex } = markdownToLatex("# 标题\n\n正文 $100", "测试文档");
       expect(latex).toContain("\\documentclass{ctexart}");
       expect(latex).toContain("\\usepackage{graphicx}");
       expect(latex).toContain("\\usepackage{hyperref}");
@@ -287,7 +287,7 @@ describe("v0.8.0 LaTeX 导出", () => {
     });
 
     it("标题中的特殊字符被转义", () => {
-      const latex = markdownToLatex("# 100% 完成", "文档");
+      const { latex } = markdownToLatex("# 100% 完成", "文档");
       expect(latex).toContain("\\section{100\\% 完成}");
     });
   });
