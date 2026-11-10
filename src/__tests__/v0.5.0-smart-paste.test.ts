@@ -156,7 +156,14 @@ describe("v0.5.0 N2：智能粘贴 URL→链接", () => {
     expect(src).toMatch(/onPaste=\{handleSourcePaste\}/);
     // 无选区 → [url](url)；有选区 → [选中](url)
     expect(src).toMatch(/`\[\$\{selected \|\| text\}\]\(\$\{text\}\)`/);
-    // 代码块内不处理
-    expect(src).toMatch(/isInCodeBlock\(ta\.value, start\)/);
+    // 代码块内不处理。
+    //
+    // v0.17.0：断言从「锁死 `isInCodeBlock(ta.value, start)` 字面量」改为
+    // 「`isInCodeBlock(...)` 仍被调用，且入参来自**已做类型兜底**的局部变量」——
+    // 原因：`ta` 在 CM6 路径下是 div（`ta.value` 为 undefined），
+    // 原先写法会让 `isInCodeBlock(undefined)` 抛异常，必须改成
+    // `const value = typeof raw.value === "string" ? raw.value : ""` 再传入。
+    // 原断言因此假红，但它真正要守的语义（"代码块内不处理"）没有变。
+    expect(src).toMatch(/isInCodeBlock\(value, start\)/);
   });
 });

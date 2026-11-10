@@ -396,6 +396,21 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     // 像素只在「文本长度不变」时作快路径；**永不写 0**（写 0 = 丢进度，v0.14.0 P1 老 bug）。
     // TODO(v0.18): CM6 能力缺口 — 撤销滚动的文本框几何。当前 CM6 表现：撤销后滚动位置不精确（退化为像素/不恢复），内容正确 | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
+    /**
+     * ⚠️ v0.17.0：`sourceTextareaRef.current` 在 CM6 下是**中性 div**（非 null）。
+     *
+     * 于是 `textarea ? textarea.value : ""` 这个三元**取不到 ""** ——
+     * div 的 `value` 是 `undefined`，随后 `beforeText.length` 直接抛
+     * `TypeError: Cannot read properties of undefined (reading 'length')`。
+     *
+     * 后果：**任何撤销/恢复在 CM6 下都崩在这一行**（实测：Ctrl+Z 后内容完全不变，
+     * 且抛未捕获异常）。这是 undo 时间线在 CM6 下失效的真正原因。
+     *
+     * 修法：统一判"是不是真 textarea"，并且文本来源优先用权威的 `currentRealText`
+     * 语义（`sourceContentRef.current`），div/textarea 两条路径都成立。
+     */
+    const isRealTextarea =
+      !!textarea && typeof (textarea as unknown as { value?: unknown }).value === "string";
     const sel = restore as { start: number; end: number; scrollTop?: number } | undefined;
     /**
      * 写入前采内容锚（必须在 `setSourceContent` 之前 —— 之后 textarea.value 已是新文本，
@@ -403,11 +418,16 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
      * 取**视口中央**（与阅读面 `capturePreviewScrollAnchor` 同口径：用户判断"阅读焦点"
      * 看的是视口中间）。不可见 / 内容不足一屏时 `captureTextAnchor` 返回 null，
      * 决策函数会安全地退到像素或 none 分支。
+     *
+     * CM6 下没有可度量的 textarea → 锚点为 null（走既有的像素/none 回退分支）。
      */
-    const histAnchor = textarea
-      ? captureTextAnchor(textarea, Math.max(0, textarea.clientHeight / 2))
+    const histAnchor = isRealTextarea
+      ? captureTextAnchor(textarea as unknown as HTMLTextAreaElement, Math.max(0, (textarea as unknown as HTMLTextAreaElement).clientHeight / 2))
       : null;
-    const beforeText = textarea ? textarea.value : "";
+    // 文本来源：真 textarea 用其 value（与 DOM 完全同步）；否则用权威 state 镜像。
+    const beforeText = isRealTextarea
+      ? (textarea as unknown as HTMLTextAreaElement).value
+      : sourceContentRef.current ?? "";
     const beforeTextLength = beforeText.length;
     setSourceContent(text);
     sourceContentRef.current = text;

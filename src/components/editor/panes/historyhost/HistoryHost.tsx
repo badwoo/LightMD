@@ -1036,6 +1036,26 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * - `sourceComposingRef`：IME 组合输入进行中（一次 composition = 一条历史）；
    * - `sourceJustPairedRef`：刚由自动配对补全（`()` 一次插入 = 一条历史）；
    * - `sourceJustPastedRef`：刚发生粘贴（一次粘贴 = 一条历史，不与后续打字合并）。
+   *
+   * ## ⚠️ 关于 `sourceComposingRef` 为何**没有**置 true 的路径（v0.17.0 追查结论）
+   *
+   * 设计稿 C14 指出这三个标记"从未接线"，要求 CM6 迁移时修复。修复后：
+   * - `sourceJustPairedRef` / `sourceJustPastedRef` → **已接线**（配对/粘贴落地处置 true，实测各 3/1 处）；
+   * - `sourceComposingRef` → **仍然没有置 true 的路径**，但**这不是遗漏**：
+   *
+   * 组合态的真实来源换成了更直接的通道 ——
+   * - CM6 路径：`EditorContainer` 订阅 `sourceSurface.onDidChange` 时直接传
+   *   `composing: ev.kind === "ime" || !!ev.compositionGroupId`
+   *   （`CmSourceSurface` 由原生 `compositionstart/end` 生成 groupId）；
+   * - textarea 路径：`opts.composing` 来自 React `InputEvent.isComposing`。
+   *
+   * 即 `SourcePane` 里的 `composing: nativeComposing || sourceComposingRef.current`
+   * 中，**前一项已经承载了全部语义**，本 ref 退化为历史兜底（恒 false）。
+   * 设计稿的意图（"一次 composition = 一条历史"）已由 C14 的 groupId 机制落实，
+   * 并由 `v0170-cm6/c14-intent-source.test.ts`（7 条）在契约层守护。
+   *
+   * 保留本 ref 而不删除的原因：`SourcePane` 的读取点仍在（作为兜底），
+   * 删除需动 pane 间类型契约；属低风险清理，留 v0.18 一并处理。
    */
   const sourceComposingRef = useRef(false);
 

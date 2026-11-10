@@ -259,17 +259,31 @@ export const TRANSLATE_SNAPSHOT_THROTTLE_MS = 10 * 60 * 1000;
 
 export let lastTranslateSnapshot = { path: "", at: 0 };
 
+/**
+ * 由 textarea 现场构造配对规划器入参。
+ *
+ * ⚠️ **v0.17.0：入参不保证是 textarea！**
+ *
+ * A3 之后 `sourceTextareaRef` 在 CM6 路径下是中性 div。div 的 `value` 是
+ * `undefined`（不是抛错），因此 `ta.value` 会静默变成 undefined，
+ * 再进 `isInCodeBlock(undefined, …)` → `undefined.substring` **抛异常**。
+ *
+ * 这里做一次兜底：非真 textarea 时用空串（配对规划器对空串返回 `kind:"none"`，
+ * 调用方自然不会落地编辑）。**调用方仍应优先判类型**，本函数只是最后一道防线。
+ */
 export function buildSourcePairInput(
   ta: HTMLTextAreaElement,
   start: number,
   end: number,
 ): SourcePairInput {
+  const raw = ta as unknown as { value?: unknown };
+  const value = typeof raw.value === "string" ? raw.value : "";
   return {
-    value: ta.value,
+    value,
     start,
     end,
     cfg: readAutoPairConfig(),
-    inDisabledContext: isInCodeBlock(ta.value, start) || isInInlineCodeOrMath(ta.value, start),
+    inDisabledContext: isInCodeBlock(value, start) || isInInlineCodeOrMath(value, start),
   };
 }
 

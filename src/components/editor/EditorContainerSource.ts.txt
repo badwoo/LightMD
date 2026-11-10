@@ -281,17 +281,31 @@ export const TRANSLATE_SNAPSHOT_THROTTLE_MS = 10 * 60 * 1000;
 
 export let lastTranslateSnapshot = { path: "", at: 0 };
 
+/**
+ * 由 textarea 现场构造配对规划器入参。
+ *
+ * ⚠️ **v0.17.0：入参不保证是 textarea！**
+ *
+ * A3 之后 `sourceTextareaRef` 在 CM6 路径下是中性 div。div 的 `value` 是
+ * `undefined`（不是抛错），因此 `ta.value` 会静默变成 undefined，
+ * 再进 `isInCodeBlock(undefined, …)` → `undefined.substring` **抛异常**。
+ *
+ * 这里做一次兜底：非真 textarea 时用空串（配对规划器对空串返回 `kind:"none"`，
+ * 调用方自然不会落地编辑）。**调用方仍应优先判类型**，本函数只是最后一道防线。
+ */
 export function buildSourcePairInput(
   ta: HTMLTextAreaElement,
   start: number,
   end: number,
 ): SourcePairInput {
+  const raw = ta as unknown as { value?: unknown };
+  const value = typeof raw.value === "string" ? raw.value : "";
   return {
-    value: ta.value,
+    value,
     start,
     end,
     cfg: readAutoPairConfig(),
-    inDisabledContext: isInCodeBlock(ta.value, start) || isInInlineCodeOrMath(ta.value, start),
+    inDisabledContext: isInCodeBlock(value, start) || isInInlineCodeOrMath(value, start),
   };
 }
 
@@ -3207,6 +3221,26 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * - `sourceComposingRef`：IME 组合输入进行中（一次 composition = 一条历史）；
    * - `sourceJustPairedRef`：刚由自动配对补全（`()` 一次插入 = 一条历史）；
    * - `sourceJustPastedRef`：刚发生粘贴（一次粘贴 = 一条历史，不与后续打字合并）。
+   *
+   * ## ⚠️ 关于 `sourceComposingRef` 为何**没有**置 true 的路径（v0.17.0 追查结论）
+   *
+   * 设计稿 C14 指出这三个标记"从未接线"，要求 CM6 迁移时修复。修复后：
+   * - `sourceJustPairedRef` / `sourceJustPastedRef` → **已接线**（配对/粘贴落地处置 true，实测各 3/1 处）；
+   * - `sourceComposingRef` → **仍然没有置 true 的路径**，但**这不是遗漏**：
+   *
+   * 组合态的真实来源换成了更直接的通道 ——
+   * - CM6 路径：`EditorContainer` 订阅 `sourceSurface.onDidChange` 时直接传
+   *   `composing: ev.kind === "ime" || !!ev.compositionGroupId`
+   *   （`CmSourceSurface` 由原生 `compositionstart/end` 生成 groupId）；
+   * - textarea 路径：`opts.composing` 来自 React `InputEvent.isComposing`。
+   *
+   * 即 `SourcePane` 里的 `composing: nativeComposing || sourceComposingRef.current`
+   * 中，**前一项已经承载了全部语义**，本 ref 退化为历史兜底（恒 false）。
+   * 设计稿的意图（"一次 composition = 一条历史"）已由 C14 的 groupId 机制落实，
+   * 并由 `v0170-cm6/c14-intent-source.test.ts`（7 条）在契约层守护。
+   *
+   * 保留本 ref 而不删除的原因：`SourcePane` 的读取点仍在（作为兜底），
+   * 删除需动 pane 间类型契约；属低风险清理，留 v0.18 一并处理。
    */
   const sourceComposingRef = useRef(false);
 
@@ -5071,6 +5105,21 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
     // 像素只在「文本长度不变」时作快路径；**永不写 0**（写 0 = 丢进度，v0.14.0 P1 老 bug）。
     // TODO(v0.18): CM6 能力缺口 — 撤销滚动的文本框几何。当前 CM6 表现：撤销后滚动位置不精确（退化为像素/不恢复），内容正确 | 用户可感知度：低 | 建议优先级：P2
     const textarea = sourceTextareaRef.current;
+    /**
+     * ⚠️ v0.17.0：`sourceTextareaRef.current` 在 CM6 下是**中性 div**（非 null）。
+     *
+     * 于是 `textarea ? textarea.value : ""` 这个三元**取不到 ""** ——
+     * div 的 `value` 是 `undefined`，随后 `beforeText.length` 直接抛
+     * `TypeError: Cannot read properties of undefined (reading 'length')`。
+     *
+     * 后果：**任何撤销/恢复在 CM6 下都崩在这一行**（实测：Ctrl+Z 后内容完全不变，
+     * 且抛未捕获异常）。这是 undo 时间线在 CM6 下失效的真正原因。
+     *
+     * 修法：统一判"是不是真 textarea"，并且文本来源优先用权威的 `currentRealText`
+     * 语义（`sourceContentRef.current`），div/textarea 两条路径都成立。
+     */
+    const isRealTextarea =
+      !!textarea && typeof (textarea as unknown as { value?: unknown }).value === "string";
     const sel = restore as { start: number; end: number; scrollTop?: number } | undefined;
     /**
      * 写入前采内容锚（必须在 `setSourceContent` 之前 —— 之后 textarea.value 已是新文本，
@@ -5078,11 +5127,16 @@ export function useSourcePane(p: SourcePaneParams): SourcePaneResult {
      * 取**视口中央**（与阅读面 `capturePreviewScrollAnchor` 同口径：用户判断"阅读焦点"
      * 看的是视口中间）。不可见 / 内容不足一屏时 `captureTextAnchor` 返回 null，
      * 决策函数会安全地退到像素或 none 分支。
+     *
+     * CM6 下没有可度量的 textarea → 锚点为 null（走既有的像素/none 回退分支）。
      */
-    const histAnchor = textarea
-      ? captureTextAnchor(textarea, Math.max(0, textarea.clientHeight / 2))
+    const histAnchor = isRealTextarea
+      ? captureTextAnchor(textarea as unknown as HTMLTextAreaElement, Math.max(0, (textarea as unknown as HTMLTextAreaElement).clientHeight / 2))
       : null;
-    const beforeText = textarea ? textarea.value : "";
+    // 文本来源：真 textarea 用其 value（与 DOM 完全同步）；否则用权威 state 镜像。
+    const beforeText = isRealTextarea
+      ? (textarea as unknown as HTMLTextAreaElement).value
+      : sourceContentRef.current ?? "";
     const beforeTextLength = beforeText.length;
     setSourceContent(text);
     sourceContentRef.current = text;

@@ -55,7 +55,26 @@ const RISKY_FILES = [
 ];
 
 /** textarea 专属成员（div 上不存在或为 undefined） */
-const TEXTAREA_ONLY_MEMBERS = ["setSelectionRange", "selectionStart", "selectionEnd"];
+const TEXTAREA_ONLY_MEMBERS = [
+  "setSelectionRange",
+  "selectionStart",
+  "selectionEnd",
+  /**
+   * `value` 也必须纳入（v0.17.0 补）：
+   * div 的 `value` 是 **undefined**（不是抛错），所以 `ta ? ta.value : ""`
+   * 这类三元**取不到兜底值** → 后续 `.length` / `.substring` 立刻抛
+   * `Cannot read properties of undefined`。
+   *
+   * 这个模式造成过**真实 P0**：`SourcePane` 里
+   * ```
+   * const beforeText = textarea ? textarea.value : "";   // div → undefined
+   * const beforeTextLength = beforeText.length;          // 💥
+   * ```
+   * 后果是**CM6 下任何撤销/恢复都崩在这一行**（Ctrl+Z 内容完全不变）。
+   * 而 221 条 undo 测试全绿 —— 因为 jsdom 恒走 textarea 实现，`value` 有值。
+   */
+  "value",
+];
 
 /**
  * 匹配「对某个标识符**直接**调用 textarea 专属成员」。
