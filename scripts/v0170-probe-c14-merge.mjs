@@ -286,6 +286,15 @@ async function main() {
     const afterSwitchUndo = ((await readText()) || "").length;
     add("8", "★ 跨模式切换后撤销仍生效（G6 核心口径）", afterSwitchUndo < afterSwitch ? "PASS" : "KNOWN", `打字 ${preType}→${postType}，切模式后 ${afterSwitch}，撤销后 ${afterSwitchUndo}`);
 
+    // ── 剪贴板 API 可用性（只查，不阻塞式读）──
+    const clipApi = await ev(`
+      const out = { hasApi: !!navigator.clipboard, hasRead: !!(navigator.clipboard && navigator.clipboard.readText), hasWrite: !!(navigator.clipboard && navigator.clipboard.writeText) };
+      try { if (navigator.permissions && navigator.permissions.query) { const st = await navigator.permissions.query({ name: "clipboard-write" }); out.writePerm = st.state; } } catch (e) { out.writePerm = "query-failed"; }
+      try { if (navigator.permissions && navigator.permissions.query) { const st2 = await navigator.permissions.query({ name: "clipboard-read" }); out.readPerm = st2.state; } } catch (e) { out.readPerm = "query-failed"; }
+      return out;
+    `);
+    add("9", "剪贴板 API 存在（格式化菜单 cut/copy 依赖）", clipApi && clipApi.hasApi ? "PASS" : "FAIL", JSON.stringify(clipApi));
+
     const errs = await ev(`return window.__ERRS || []`);
     add("6", "全程无未捕获异常", errs.length === 0 ? "PASS" : "FAIL", errs.length ? JSON.stringify(errs.slice(0, 2)) : "无");
 
