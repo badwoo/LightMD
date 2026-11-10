@@ -345,6 +345,24 @@ export class CmSourceSurface implements SourceSurface {
       // 折叠：按 Markdown 标题 / 围栏（A1 要求）
       foldGutter(),
       drawSelection(),
+      /**
+       * ## v0.17.0 修复：**软换行对齐 textarea 行为**
+       *
+       * 缺陷：原 textarea 源码面是 `white-space: pre-wrap`，长行会**软换行**；
+       * 而 CM6 的 `EditorView` **默认不折行** —— 必须显式加 `lineWrapping`
+       * 扩展，否则长行只占一个视觉行、超出部分靠**水平滚动**才能看全。
+       *
+       * 实机证据（`scripts/v0170-probe-caret-geometry.mjs`）：
+       * 一行 1000 个字符的中文，`.cm-line` 的 `getBoundingClientRect().height`
+       * 等于 1 个行高（29px，visualRows=1）→ **确认未折行**。
+       *
+       * 连带影响：
+       * 1. 用户看长段落要横向拖，体验明显劣于 textarea 版；
+       * 2. CSS 里 `.source-editor` 的注释专门讨论过"软换行行数突变导致
+       *    scrollHeight 跳变"——说明折行是**既有设计的一部分**，不是可选项；
+       * 3. IME 候选框跟随也依赖光标视觉位置正确（折行影响竖向位置）。
+       */
+      EditorView.lineWrapping,
       EditorState.allowMultipleSelections.of(true),
       indentOnInput(),
       bracketMatching(),
