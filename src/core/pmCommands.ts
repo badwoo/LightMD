@@ -104,22 +104,44 @@ function itemIndexInList(list: PMNode, offsetInList: number): number {
 }
 
 /**
- * v0.13.2 需求2：把光标所在的**列表项**提升为任务项，并放到该列表**之前**。
+ * 把光标所在的**列表项**原地转换为任务项，并**保留原列表的其余项**。
  *
- * ─── 缺陷背景（用户报告）───
- * 「在阅读模式下，我在有序列表使用快捷键 Ctrl+T，想给这行加任务列表，
- *  结果任务列表没有自动加到有序列表前，而是回车换行了。」
+ * ─── 口径演进（四层，务必别再走回头路）───
  *
- * 旧实现（`insert.taskList` 分支）只认「当前块是顶层段落/标题」：
- * 列表项里的光标其 `parent` 仍是 paragraph，于是走 `replaceBlock` 把**列表项内的
- * 段落**替换成 task_list —— 任务列表被塞进有序列表项内部（视觉上就是"在原来那行
- * 下面多了一行"），而不是在有序列表之前新建一个任务列表。
+ * **① v0.13.2 之前**：任务列表被塞进列表项**内部** → 视觉上就是"回车换行"。
  *
- * ─── 现在的口径（用户确认）───
- * 「把当前行『提升』为任务项」：
- * · 该行从有序列表里**摘出来**，作为任务项放进一个新任务列表；
- * · 新任务列表插在**原列表之前**（用户原话"自动加到有序列表前"）；
- * · 列表其余项原样保留（若原列表只有这一项，整表被任务列表替换）。
+ * **② v0.13.2 需求2**：「把当前行**提升**为任务项」——从列表摘出来，新任务列表插在
+ * 原列表**之前**，并把原序号作为**字面文本**写进任务项（`- [ ] 2. bb`）。
+ * 缺陷：3 项列表转第 2 项后阅读视图是 `☐ 2. bb` → `1. aa` → `2. cc`，**序号视觉 2/1/2**。
+ *
+ * **③ v0.17.0 R3（C2 就地转换）**：任务项不带序号、列表断成两段、
+ * 后段 `order` 续号 → `1. aa` / `☐ bb` / `2. cc`。
+ * 缺陷（用户 R4 反馈）：「在有序列表上加任务待办会**把有序列表弄没**」——
+ * 视觉上任务项挤在列表中间，把列表"劈开"了，用户认为列表被弄没了。
+ *
+ * **④ v0.17.0 R4（本轮，用户 2026-11-12 17:07 裁决，取代 C2）**：
+ * ```
+ * 1. aa          ← 原样保留（逐字节不变，不重编号）
+ * - [ ] 2. bb    ← 原地变待办，**带字面序号 `2.`**
+ * 3. cc          ← 原样保留（`3.` 不变，不重编号）
+ * ```
+ * 关键点：
+ * 1. **任务项带字面序号**（`2. `）—— 用户原话「正确例子如**在 2. 上加任务，
+ *    那么结果应该是 `- [ ] 2.`**」。序号写进**首段文本开头**（任务项自己没有序号 attr）。
+ * 2. **前后两段有序列表的字面序号保持原值**：前段 `order` 沿用原 `attrs.order`；
+ *    后段的 `order` 必须设成 **`startOrder + itemIndex + 1`**（即原列表里"下一项"的
+ *    字面序号），这样序列化出来才是 `3.` 而不是 `1.`/`2.`。
+ *    —— 注意这与 C2 不同：C2 是 `+ itemIndex`（续待办占位），R4 是 `+ itemIndex + 1`
+ *    （因为待办项**自己保留了序号**，后续项不能再顶替它的位置）。
+ * 3. **整项内容一起搬**（`paragraph block*` 多段 + 嵌套子列表）；v0.13.2 复审修过
+ *    "第二段与嵌套子列表静默丢失"，别回退。
+ * 4. **唯一一项**：整表被待办项替换，不留空列表（`ordered_list` 要求 `list_item+`）。
+ *
+ * ─── 为什么这个形态在 markdown 里是稳的（已实测）───
+ * `1. aa / - [ ] 2. bb / 3. cc` 解析出 **3 个独立块**
+ * （`ordered_list(order=1)` / `task_list` / `ordered_list(order=3)`），
+ * 序列化回来**逐字节一致** —— 即"列表没有消失，三行都在"，
+ * 且重新打开文件视觉不变。这是用户要的形态，不是权宜之计。
  *
  * @returns true = 已处理；false = 光标不在列表项内，交回调用方的原有分支
  */
@@ -145,24 +167,24 @@ function liftListItemToTaskList(view: EditorView): boolean {
   const itemNode = state.doc.nodeAt(itemPos);
   if (!itemNode) return false;
 
-  // v0.13.2 返修（需求2）：**有序列表的序号必须保留**。
-  //
-  // 用户复测反馈：「给有序列表加任务列表，一加有序列表就消失了；我要的效果是
-  // `- [ ] 1. xxx`。」任务列表本身只有 bullet 标记，被提升的项若丢掉 `1.`，
-  // 用户看到的就是"编号没了"。因此把原序号（含 `)` 分隔符）作为**字面文本**
-  // 写进任务项首段开头 —— 源码成为 `- [ ] 1. xxx`，阅读模式渲染为
-  // ☐ 1. xxx，序号码与原列表完全一致。
   const isOrdered = listNode.type.name === "ordered_list";
-  const orderedPrefix = isOrdered
-    ? `${(Number(listNode.attrs.order) || 1) + itemIndexInList(listNode, itemPos - listPos)}${
-        listNode.attrs.delim === ")" ? ")" : "."
-      } `
-    : "";
-  // 任务项内容模型与 list_item 相同（`paragraph block*`），因此把**整项内容**原样搬入。
-  //
-  // ⚠️ 只搬首段会**静默丢失**该项里的第二段与嵌套子列表（v0.13.2 复审发现的
-  // 数据丢失缺陷：源码 `1. bb1\n\n   bb2\n\n2. cc` 解析出「同一 list_item 里两个
-  // 段落」，光标在 bb1 上按 Ctrl+T，旧实现只剩 `- [ ] bb1`，bb2 凭空消失）。
+  const startOrder = Number(listNode.attrs.order) || 1;
+  const itemIndex = itemIndexInList(listNode, itemPos - listPos);
+  // 有序列表保留分隔符风格（`1.` / `1)`）—— v0.11.0 B3-6 的既有契约
+  const delim = listNode.attrs.delim === ")" ? ")" : ".";
+
+  /**
+   * 任务项首段的**字面序号前缀**（R4 核心）。
+   *
+   * 只有有序列表才需要：序号 = 该项在原列表里的字面序号 = `startOrder + itemIndex`。
+   * 无序列表保持不加前缀（`- x` → `- [ ] x`）。
+   *
+   * ⚠️ 注意 `2. ` 后**必须有一个空格**：用户要的形态是 `- [ ] 2. bb`（序号与正文分开），
+   * 少了空格会变成 `- [ ] 2.bb`，视觉上序号和正文粘一起。
+   */
+  const orderedPrefix = isOrdered ? `${startOrder + itemIndex}${delim} ` : "";
+
+  // ── 任务项：整项内容原样搬入；有序列表在首段开头插入字面序号 ──
   // 内容模型不兼容时（理论上不该发生）退回首段，保证命令本身不会整个失败。
   let taskItem: PMNode;
   try {
@@ -180,29 +202,79 @@ function liftListItemToTaskList(view: EditorView): boolean {
     taskItem = schema.nodes.task_item.create({ checked: false }, content);
   } catch {
     const para = firstParagraphOf(itemNode) ?? schema.nodes.paragraph.create();
-    const fallback = orderedPrefix
+    const prefixed = orderedPrefix
       ? schema.nodes.paragraph.create(
           null,
           Fragment.fromArray([schema.text(orderedPrefix), ...para.content.content]),
         )
       : para;
-    taskItem = schema.nodes.task_item.create({ checked: false }, fallback);
+    taskItem = schema.nodes.task_item.create({ checked: false }, prefixed);
   }
-  const taskList = schema.nodes.task_list.create(null, taskItem);
+  const firstLen = taskItem.firstChild ? taskItem.firstChild.textContent.length : 0;
 
   const tr = state.tr;
+  let caretPos: number;
   try {
     if (listNode.childCount <= 1) {
-      // 只有这一项：整表被任务列表替换（等价于"提升这一行"）
+      // 唯一一项：整表被任务项替换，**不留空列表**（`ordered_list` 要求 `list_item+`）
+      const taskList = schema.nodes.task_list.create(null, taskItem);
       tr.replaceWith(listPos, listPos + listNode.nodeSize, taskList);
+      caretPos = listPos + 3 + firstLen;
     } else {
-      // 摘出该项，再把任务列表插到原列表之前
-      tr.delete(itemPos, itemPos + itemNode.nodeSize);
-      tr.insert(listPos, taskList);
+      // ── 拆成「前段列表 + 任务列表 + 后段列表」 ──
+      // 只放**非空**的段：空 ordered_list 不满足 `list_item+`，会直接抛 schema 错误。
+      const beforeItems = Fragment.fromArray(
+        Array.from({ length: itemIndex }, (_, i) => listNode.child(i)),
+      );
+      const afterItems = Fragment.fromArray(
+        Array.from(
+          { length: listNode.childCount - itemIndex - 1 },
+          (_, i) => listNode.child(itemIndex + 1 + i),
+        ),
+      );
+      // 前段：序号**保持原值**（`1. aa` 逐字节不变 —— 用户明确要求不重编号）
+      const beforeList = beforeItems.size > 0 ? listNode.type.create(listNode.attrs, beforeItems) : null;
+      /**
+       * 后段列表的 `order` —— **R4 与 C2 的关键差异**（写错就跳号或复位）。
+       *
+       * R4 下**待办项自己保留了字面序号**（`- [ ] 2. bb` 里的 `2.` 是文本），
+       * 所以后段不能"顶替"待办的位置，必须**接着待办后面**继续数：
+       * 后段起始号 = 被转换项的字面序号 **+ 1** = `startOrder + itemIndex + 1`。
+       *
+       * 示例（`1. aa / 2. bb / 3. cc` 转第 2 项，`itemIndex=1, startOrder=1`）：
+       * - ✅ 正确 `+1` → order=3 → 序列化 `3. cc`（与原列表完全一致，逐字节不变）
+       * - ❌ 用 C2 的 `+0` → order=2 → `2. cc`（跳号：2 出现两次）
+       * - ❌ 不设（默认 1）→ order=1 → `1. cc`（复位，重复的 1）
+       *
+       * ⚠️ 注意 `+1` 只在"待办项真的带了序号前缀"时才对。无序列表没有序号，
+       * 后段也不需要改 order（沿用原 attrs 即可）。下面用 `orderedPrefix` 是否存在区分。
+       */
+      const afterOrder = orderedPrefix ? startOrder + itemIndex + 1 : startOrder;
+      const afterList =
+        afterItems.size > 0
+          ? listNode.type.create({ ...listNode.attrs, order: afterOrder }, afterItems)
+          : null;
+
+      const parts: PMNode[] = [];
+      if (beforeList) parts.push(beforeList);
+      parts.push(schema.nodes.task_list.create(null, taskItem));
+      if (afterList) parts.push(afterList);
+      tr.replaceWith(listPos, listPos + listNode.nodeSize, parts);
+
+      caretPos = listPos + (beforeList ? beforeList.nodeSize : 0) + 3 + firstLen;
     }
-    // 光标落进新任务项的段落里（task_list +1 → task_item +1 → paragraph +1 → 文本 +1）
-    const caret = Math.min(listPos + 3, tr.doc.content.size - 1);
-    tr.setSelection(TextSelection.near(tr.doc.resolve(Math.max(1, caret))));
+    /**
+     * 光标落点：**任务项首段文本末尾**（"转换完可以直接接着打字"）。
+     *
+     * ⚠️ⓘ 两轮踩坑记录（同一处，两次）：
+     * - v0.13.2 用 `listPos + 3`（段首），而同一版又把 `2. ` 写成字面文本塞在段首
+     *   → caret 落在序号**之前** → 用户接着敲字得到 `- [ ] X2. bb`，序号被"吃断"。
+     * - v0.17.0 R3（C2）去掉字面序号后修正为"首段末尾"。
+     * - **v0.17.0 R4 又恢复字面序号** → 所以 caret **必须**仍然落在首段**末尾**：
+     *   `firstLen` 已包含序号前缀 `2. ` 的长度，因此 `/ - [ ] 2. bbX` 而不是 `/ - [ ] X2. bb`。
+     */
+    const clamped = Math.max(1, Math.min(caretPos, tr.doc.content.size - 1));
+    tr.setSelection(TextSelection.near(tr.doc.resolve(clamped)));
   } catch {
     return false;
   }

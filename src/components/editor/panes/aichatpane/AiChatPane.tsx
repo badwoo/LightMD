@@ -27,7 +27,7 @@ import { t as translate } from "../../../../i18n";
 import { aiAssistService, AiTask } from "../../../../services/aiAssistService";
 import { TranslateServiceError, parseTranslateError, translateService } from "../../../../services/translateService";
 import { useAiAssistStore, AiAssistSourceMode } from "../../../../stores/aiAssistStore";
-import { unmaskBase64Images, maskBase64Images } from "../../../../utils/base64ImageMask";
+import { unmaskBase64Images, maskBase64Images, sameBase64Markers } from "../../../../utils/base64ImageMask";
 import { getMarkdownFromDoc } from "../../../../core/editor";
 import { applyTranslation, buildSourceRewrite, extractFromSelection, getTextareaSelectionAnchor } from "../../../../services/translateBridge";
 import { useEditorStore, isTranslateSnapshotForFile } from "../../../../stores/useEditorStore";
@@ -1470,7 +1470,40 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       fullText = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
     }
 
-    const units = splitDocumentForTranslation(fullText);
+    /**
+     * ## v0.17.0 第三轮 #9-C：**AI 翻译必须跳过图片的编码内容**
+     *
+     * ### 缺陷（用户第 9 项原话的后半句）
+     * 旧实现直接 `splitDocumentForTranslation(fullText)` —— 而 `fullText` 是
+     * **真实内容**（含完整 data URL）。实测（`_verify-out/t3-fixtures/md测试.md`，
+     * 4,182,120 字符 / 3 处 base64）：
+     * ```
+     * 未 mask 切分 → 675 段，其中 1 段含 base64，该段被 'splitLongText' 硬切成
+     *               多个 4000 字符片段，全部是 base64 载荷
+     * mask 后切分   → 1 段 / 173 字符，0 段含 base64
+     * ```
+     * 危害有两层，**第二层是数据损坏**：
+     * 1. 把 4MB base64 当"正文"送给 LLM（按字符计费，几百万 token 级浪费）；
+     * 2. `hasTranslatableText` 认为 base64 里的 `a-zA-Z` 是**可译字母** →
+     *    这些段会被翻译 → 译文覆盖原文 → `rebuildTranslatedDocument` 把
+     *    图片引用改成模型自由发挥的垃圾，**`unmask` 再也找不到 `image-N.png`**。
+     *    用户保存后，磁盘上的 base64 就**永久丢了**。
+     *
+     * ### 修法：切分/翻译/重组走 **masked 坐标**，写盘走 **真实坐标**
+     * - `translateText`：mask 后的全文（短标记 `image-1.png` 只占 13 字符）
+     * - `units`：在 masked 文本上切分 → payload 里只有短标记
+     * - `DOC_CHANGED` 比较：仍然比 `fullText`（真实内容）—— 判据不能降级
+     * - 回写：`rebuildTranslatedDocument(masked, units, ...)` 得到 masked 结果，
+     *   再 `applyFullTranslation` 内部 unmask → **图片引用逐字节还原**
+     *
+     * ⚠️ `maskBase64Images` 复用 `base64TokensRef.current`（会话级标记表）：
+     * 标记序号与源码面展示的**完全一致**，所以 unmask 一定能命中。
+     * 若这里新建一个 Map，序号会从 1 重新分配，与源码面已有的 `image-3.png`
+     * 冲突 —— 那正是"半途引入新标记表"最危险的写法。
+     */
+    const { text: translateText } = maskBase64Images(fullText, base64TokensRef.current);
+
+    const units = splitDocumentForTranslation(translateText);
     if (units.length === 0) return; // 无可译内容（纯代码/空文档）静默返回
 
     // 快照先行（有文件路径时），支持从版本历史恢复原文
@@ -1498,13 +1531,37 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
       // v0.7.3 改进9(P4-2)：全文翻译并发 3 路提速。每段用 translateConcurrent
       // 注册独立并发槽位（互不取消，避免 translate() 的内部单任务 cancel 互相打断）；
       // task_id 含起点时间戳，跨轮次不冲突（begin_concurrent_task 同 id 会取消旧槽位）
-      translateUnit: (text, index) =>
-        translateService.translateConcurrent(
+      translateUnit: async (text, index) => {
+        const result = await translateService.translateConcurrent(
           text, // v0.7.4 修复：第一个参数是待译文本（旧代码把 concurrent_id 当 text 传入，
                 // 导致后端实际翻译 "ft-xxx" 字符串，译文显示为 ft-xxx 占位行）
           `ft-${Date.now()}-${index ?? 0}`,
           () => undefined
-        ),
+        );
+        /**
+         * ## v0.17.0 第三轮 #9-C：**段级图片标记完整性闸门**（最后一道防线）
+         *
+         * 即使 payload 里只有 `image-1.png`（13 字符），LLM 仍可能把它当普通
+         * 文本处理掉 —— 译成「图片-1.png」、加空格、改写大小写、或直接省略。
+         * 一旦发生，`unmask` 在回写文本里找不到标记，图片引用就变成
+         * 一行坏链接（用户保存后 base64 永久丢失）。
+         *
+         * 铁律：**宁可这一轮白翻译这一段，也绝不写出丢了图片引用的文档**。
+         *
+         * 做法：复用 `runFullTranslateLoop` 既有的「段失败 → 保留原文」通道 ——
+         * 返回 `placeholdersIntact: false` 即可让它把该段计入 failedCount 并
+         * 保留原文（无需新增错误码、无需改循环）。配合末尾回写前的整篇校验，
+         * 形成"段级 + 全篇"双层防护。
+         */
+        const markerIntact = sameBase64Markers(text, result.translated);
+        if (!markerIntact) {
+          // 明确留痕：这是"模型改坏了图片标记"，不是网络/限流问题
+          console.warn(
+            `[fullTranslate] 段 ${index} 译文丢失/改动了图片短标记 → 保留原文`,
+          );
+        }
+        return { ...result, placeholdersIntact: result.placeholdersIntact && markerIntact };
+      },
       onProgress: () => useFullTranslateStore.getState().tick(),
       // v0.7.3 U6：每段开始时上报当前段，状态栏据此显示推进中的段落
       onSegmentStart: (unit) => useFullTranslateStore.getState().setSegment(unit.text),
@@ -1550,9 +1607,34 @@ export function useAiChatPane(p: AiChatPaneParams): AiChatPaneResult {
         s.fail("DOC_CHANGED");
         return;
       }
-      const newContent = rebuildTranslatedDocument(fullText, units, outcome.translations);
-      // v0.6.1 问题2：传入原文快照，回写后显示"取消翻译"气泡
-      applyFullTranslation(newContent, fullText);
+      /**
+       * ## v0.17.0 第三轮 #9-C：重组在 **masked 坐标系**，回写前再过一次全篇闸门
+       *
+       * `units` 是在 `translateText`（masked）上切分的，所以重组也必须拿
+       * `translateText` —— 用 `fullText` 会**偏移全错**（4MB vs 515 字符），
+       * 那是最坏的一种错：不是丢了图片，是把译文糊到文档任意位置。
+       *
+       * 两层防护：
+       * 1. 段级：`translateUnit` 里 `sameBase64Markers` 不一致 → 该段保留原文；
+       * 2. 全篇：这里再比一次"重组结果 vs masked 原文"的标记多重集。
+       *    段级已经拦住了单段丢失，全篇闸门还有两个它拦不住的情形：
+       *    · 模型把标记**挪到别的段**（段内计数变了但段级判据用的是"整段与译文"，
+       *      跨段搬运时两边都不一致 → 段级也会红，这里属于冗余保险）；
+       *    · 未来有人改了切分/重组逻辑导致标记被吃掉（回归防护）。
+       *
+       * 不一致 → 整篇拒绝回写（fail STREAM，保留原文），**绝不写坏数据**。
+       */
+      const maskedResult = rebuildTranslatedDocument(translateText, units, outcome.translations);
+      if (!sameBase64Markers(translateText, maskedResult)) {
+        console.warn(
+          "[fullTranslate] 重组结果丢失/改动了图片短标记 → 整篇拒绝回写（原文保留）",
+        );
+        s.fail("STREAM");
+        return;
+      }
+      // 回写走 applyFullTranslation：内部对 masked 结果 unmask → 真实内容逐字节还原
+      // v0.6.1 问题2：第二参传原文快照（真实内容），供"取消翻译"气泡恢复
+      applyFullTranslation(maskedResult, fullText);
       s.finish(outcome.failedCount);
       // v0.6.4 问题1c：失败段在内容首处以气泡提示（底部栏不再显示失败）
       if (outcome.failedCount > 0) {

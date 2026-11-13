@@ -68,7 +68,11 @@ export function buildPmMenuItems(ctx: PmMenuContext): PmMenuItemConfig[] {
       { type: "item", action: "blockCopy", label: t("blockMenu.copy") },
       { type: "item", action: "blockPaste", label: t("blockMenu.paste"), disabled: !ctx.hasBlockClipboard },
       { type: "separator" },
+      // v0.17.0 R4（用户第 7 项后续裁决）：格式刷两档拆成两个独立菜单项。
+      // 见 `menu.formatPainterContinuous` 的注释 —— 阅读模式没有工具栏，
+      // 右键条目也没有双击语义，持续模式此前**无可达入口**。
       { type: "item", action: "formatPainter", label: t("menu.formatPainter") },
+      { type: "item", action: "formatPainterContinuous", label: t("menu.formatPainterContinuous") },
       { type: "separator" },
       { type: "item", action: "deleteNode", label: t(key) },
     ];
@@ -103,6 +107,8 @@ export function buildPmMenuItems(ctx: PmMenuContext): PmMenuItemConfig[] {
       { type: "item", action: "underline", label: t("menu.underline") },
       { type: "separator" },
       { type: "item", action: "formatPainter", label: t("menu.formatPainter") },
+      // v0.17.0 R4（用户第 7 项后续裁决）：连续刷入口，理由同上。
+      { type: "item", action: "formatPainterContinuous", label: t("menu.formatPainterContinuous") },
     );
     if (ctx.isMdFile && ctx.translateEnabled) {
       items.push({ type: "item", action: "translate", label: t("menu.translate") });

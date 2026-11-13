@@ -81,3 +81,103 @@ describe("A3 ghost：契约层语义", () => {
     expect(s.getText()).toBe("changed");
   });
 });
+
+/**
+ * ## v0.17.0 P1-6：**destroy → mount 之后 ghost 必须仍在**
+ *
+ * ### 为什么这是一条必须有的护栏
+ *
+ * `showGhost` 把规格存在**实例字段** `this.ghost` 里，同时把它画进当前 view
+ * （CM6：`ghostField` 的 Decoration；textarea：overlay 的 innerHTML）。
+ * 而 `mount()` 建的是**全新**的 state / overlay：
+ * - CM6 侧 `ghostField.create()` 恒等于 `Decoration.none`；
+ * - textarea 侧 `destroy()` 已经把 `ghostEl` 移除并置空。
+ *
+ * 于是"实例记得、DOM 忘了" —— ghost 静默消失，且**零报错**。
+ * 两个类都声明自己是**可重挂载**的（`destroy()` 上方注释），所以这是契约违反。
+ *
+ * ### 破坏性验证（本测试真能红）
+ *
+ * 把 `CmSourceSurface.mount()` / `TextareaSourceSurface.mount()` 末尾的
+ * `if (this.ghost) this.showGhost(this.ghost);` 注释掉，本组 4 条会全部失败
+ *（前两条 CM6、后两条 textarea）。已实测（见 `_plan/v0170-fix-p1-6.md` §5）。
+ *
+ * ### 为什么同时测两个实现
+ *
+ * 缺陷报告最初写「textarea 有恢复、CM6 没有」——**那是错的**：两个都不恢复。
+ * 只是 textarea 路径从不因内容变化重挂载，所以从未暴露。
+ * 两边各测一遍，才能防止"只修了一个"再发生。
+ */
+describe("v0.17.0 P1-6：重挂载（destroy → mount）后 ghost 必须仍在", () => {
+  /** 取出当前渲染出的 ghost 文本（两种实现的选择器不同） */
+  const readGhost = (impl: "cm6" | "textarea"): string[] => {
+    if (impl === "cm6") {
+      return Array.from(document.querySelectorAll(".cm-source-ghost")).map(
+        (e) => e.textContent ?? "",
+      );
+    }
+    // textarea 实现把 ghost 写进 .source-ghost-overlay 的 innerHTML
+    const ov =
+      document.querySelector(".source-ghost-overlay") ??
+      document.querySelector(".source-search-overlay");
+    if (!ov) return [];
+    const disp = (ov as HTMLElement).style.display;
+    if (disp === "none") return [];
+    return [ov.textContent ?? ""];
+  };
+
+  const makePair = (impl: "cm6" | "textarea") => {
+    const s = createSourceSurface({ impl });
+    const h = document.createElement("div");
+    document.body.appendChild(h);
+    return { s, h };
+  };
+
+  for (const impl of ["cm6", "textarea"] as const) {
+    it(`[${impl}] showGhost → destroy → mount → ghost 仍在（不得静默丢失）`, () => {
+      const { s, h } = makePair(impl);
+      s.mount(h, { initialText: "****" });
+      s.showGhost({ text: "粗体文本", pos: 2 });
+
+      const before = readGhost(impl);
+      expect(before.length, `${impl}：showGhost 后应立即渲染出 ghost`).toBeGreaterThan(0);
+      expect(before.join("")).toContain("粗体文本");
+
+      // 重挂载：destroy 会把 view / overlay 销毁，但实例字段 this.ghost 应被保留
+      s.destroy();
+      s.mount(h, { initialText: "****" });
+
+      const after = readGhost(impl);
+      expect(
+        after.length,
+        `${impl}：destroy→mount 后 ghost 消失了 —— mount() 没有重放 this.ghost`,
+      ).toBeGreaterThan(0);
+      expect(after.join("")).toContain("粗体文本");
+
+      s.destroy();
+      h.remove();
+    });
+
+    it(`[${impl}] destroy → mount 重放时位置不变，且 clearGhost 之后确实不再恢复`, () => {
+      const { s, h } = makePair(impl);
+      s.mount(h, { initialText: "****" });
+      s.showGhost({ text: "标题一", pos: 2, tail: "", maskTail: false });
+      s.destroy();
+      s.mount(h, { initialText: "****" });
+      expect(readGhost(impl).join("")).toContain("标题一");
+
+      // 清掉之后再重挂载 → 不该再冒出来（防止"清不掉"的反向缺陷）
+      s.clearGhost();
+      expect(readGhost(impl).join("")).not.toContain("标题一");
+      s.destroy();
+      s.mount(h, { initialText: "****" });
+      expect(
+        readGhost(impl).join(""),
+        `${impl}：clearGhost 之后重挂载不得让 ghost 复活（否则 ghost 永远清不掉）`,
+      ).not.toContain("标题一");
+
+      s.destroy();
+      h.remove();
+    });
+  }
+});

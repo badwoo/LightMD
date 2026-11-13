@@ -541,7 +541,18 @@ describe("需求4 · 接线契约（读源码断言，防止只改一半）", ()
     expect(src).toContain('shouldAcceptScroll(lock, "source"');
     expect(src).toContain('shouldAcceptScroll(lock, "preview"');
     expect(src).toContain("if (isSyncingScrollRef.current) return;");
-    expect(src).toContain("if (!handled) {");
-    expect(src).toContain("preview.scrollTop = computeSyncScrollTop(");
+    /**
+     * v0.17.0 R4（用户第 1 项，T2）：分屏联动的两个方向都改经 SourceSurface 收敛 + 块锚点优先，
+     * 于是旧实现形态的两条断言不再成立，但**契约本身没变**，断言换成等价新形态：
+     *
+     * - 旧：`if (!handled) { preview.scrollTop = computeSyncScrollTop(...) }`（块对齐失败退百分比）
+     * - 新：`if (line === null) { ... computeSyncScrollTop(...) ... sourceSurface.setScrollTop(...) }`
+     *   —— `line === null` 就是块锚点映射不可用的等价判据；百分比回退仍然存在。
+     * - 旧：直接写 `preview.scrollTop`；新：右→左方向经 `sourceSurface.setScrollTop`（A2 收敛）。
+     *   左→右方向仍直写 `preview.scrollTop`（iframe 没有 surface 抽象）。
+     */
+    expect(src).toContain("if (line === null) {");
+    expect(src).toContain("computeSyncScrollTop(");
+    expect(src).toContain("sourceSurface.setScrollTop(");
   });
 });

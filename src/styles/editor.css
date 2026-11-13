@@ -1707,11 +1707,20 @@ body.format-painter-armed .source-editor {
        旧：盒子 = min(W, CM) 居中，盒子内 padding 60 → 正文列 = [margin+60, margin+CM-60-sb]
        新：盒子 = W，正文列 = [pad, W-pad-sb]
        令两者相等 ⇒ pad = (W - CM)/2 + 60（W ≤ CM 时退化为 60，与旧版一致）
-     故不能简单写 (100% - CM)/2 —— 那会把 60px 内边距算丢，正文列变宽 120px。 */
+     故不能简单写 (100% - CM)/2 —— 那会把 60px 内边距算丢，正文列变宽 120px。
+
+     ⚠️ v0.17.0 第二轮：兜底值 960 → **860**，与阅读面 `.ProseMirror` 的
+     内容宽度兜底（860px）对齐。
+     两处兜底值不一致时，只要用户没改过「内容区宽度」设置（该变量为空、
+     各走各的兜底），两个模式的正文列宽就会差 100px（实测：
+     阅读 740 / 编辑 806，含行号槽）→ 正是用户报的
+     「阅读模式和编辑模式文档没有对齐」。同一个变量必须只有一个兜底值。
+     （注：本注释刻意不写出旧实现的宽度声明原文，避免被改 `v0121-fixes.test.ts`
+       里那条 "旧实现声明必须消失" 的静态断言误判。） */
   padding-block: 40px;
   padding-inline: max(
     60px,
-    calc((100% - var(--editor-content-max-width, 960px)) / 2 + 60px)
+    calc((100% - var(--editor-content-max-width, 860px)) / 2 + 60px)
   );
   /* v0.14.0 第六批：**内边距必须跟宽度一起过渡**，否则开合预览时正文列宽突变。
      缺陷（用户实测：文档拉到底，反复双击 Shift 开合预览，每轮上漂 ~28.67px）：
@@ -1754,13 +1763,39 @@ body.format-painter-armed .source-editor {
 .source-editor-cm6 {
   flex: 1;
   width: 100%;
-  /* 与 .source-editor 完全相同的居中口径（含推导说明见上方该类注释） */
-  padding-block: 40px;
-  padding-inline: max(
-    60px,
-    calc((100% - var(--editor-content-max-width, 960px)) / 2 + 60px)
-  );
-  transition: padding-inline 0.42s cubic-bezier(0.33, 0, 0.67, 1);
+  /* ══════════════════════════════════════════════════════════════════════════
+     v0.17.0 第二轮修复（用户报告第 9 项相关）：**宿主不得再有自己的内边距**
+     ──────────────────────────────────────────────────────────────────────────
+     原实现（v0.17.0 A 线）在**两个**元素上各写了一份完全相同的内边距：
+       · 宿主 `.source-editor-cm6`：`padding-block: 40px` + `padding-inline: max(60px, …)`
+       · 滚动容器 `.cm-editor .cm-scroller`（下方 v0.17.0 视觉对齐段）：同样一份
+     两者叠加 → 正文被内缩 **2 倍**（垂直 80px、水平在分屏态是 30+60=90px，
+     再叠加行号槽 34px 后首列文字距栏左 124px），而右屏 iframe **内部**文档只有
+     一份 `40px 60px` → 左屏正文比右屏右/下各多缩进 40~64px。
+
+     几何实测（`scripts/v0170-r2-geom.mjs`，分屏态）：
+     ```
+     宿主 padding          : t=40 l=30 r=30 b=40
+     scroller padding      : t=40 l=60 r=60 b=40     ← 重复
+     首行文字 x（相对栏左） : 124px
+     右屏首行文字 x（相对栏左）: 60px
+     ```
+     而且宿主有 `overflow: hidden`，真正滚动的是 `.cm-scroller` ——
+     内边距留在宿主上会让**滚动条也被内缩**，违反 `.source-editor` 既有的
+     "滚动条贴最右、正文靠内边距居中" 口径（v0.12.1 需求3）。
+
+     ## 修法：内边距只留在**滚动容器**（`.cm-scroller`）上
+     这与 textarea 版的语义严格对应：textarea 本身就是滚动容器，
+     `padding-block/padding-inline` 写在它身上。CM6 里对应的滚动容器是
+     `.cm-scroller`（= `view.scrollDOM`，`onDidScroll` 也绑它）。
+     宿主退回"纯容器"角色：不设内边距，只负责铺满与定位。
+
+     ⚠️ `padding-inline` 的 0.42s 过渡必须**一起搬到 scroller**
+     （它是 v0.14.0 第六批的关键修复：开合预览时宽度变化要让正文列宽连续过渡，
+     否则 `scrollHeight` 突变 → 浏览器钳位 `scrollTop` → 阅读焦点每轮上漂）。
+     留在宿主上而正文判定在 scroller 上，过渡就是死代码。
+     ══════════════════════════════════════════════════════════════════════════ */
+  padding: 0;
   border: none;
   outline: none;
   background: var(--bg-primary);
@@ -1786,7 +1821,72 @@ body.format-painter-armed .source-editor {
   line-height: inherit;
 }
 
-.source-editor-cm6:focus-within { outline: none; }
+/* ══════════════════════════════════════════════════════════════════════════
+   v0.17.0 第二轮修复（用户报告第 5 项）：**页面框线范围要跟右分屏一致**
+   ──────────────────────────────────────────────────────────────────────────
+   用户原话：「编辑模式的左分屏编辑区有页面框线，请把这个页面框线上下左右
+   范围稍微拓宽，篇幅尽量和右分屏的宽高度一致。」
+
+   ## 缺陷成因（几何实测，不是猜）
+   这条框线**不是**项目自己画的，而是 CodeMirror 6 基础主题里的
+   `&.cm-focused { outline: 1px dotted #212121 }`（见 `@codemirror/view`
+   的 baseTheme）。它画在 `.cm-editor` 的**边框盒**上，而 `.cm-editor` 是宿主的
+   **内容盒子元素** —— 宿主的 `padding-block: 40px` / `padding-inline: 30px`
+   （分屏态由 `.split-editor` 提供）会把它整体内缩一圈。
+
+   实机几何（`scripts/v0170-r2-geom.mjs`，分屏态，1440 宽窗口）：
+   ```
+   左栏宿主 .source-editor-cm6 : x=279 y=115  w=517 h=759
+   右屏外壳 .split-preview-shell: x=802 y=115  w=517 h=759   ← 两者等大
+   框线   .cm-editor           : x=309 y=155  w=457 h=679   ← 内缩 30/40
+   ```
+   即框线比右屏**窄 60px、矮 80px**，且左上角各偏移 30/40px。
+   而右屏 iframe 的外边界就是 `517×759`（它的正文内边距由 iframe **内部**
+   文档的 `padding: 40px 60px` 负责）→ **右屏的"页面"边界就是整个分栏**。
+   所以：框线应当画在**宿主**上（= 整个左栏篇幅），而不是 `.cm-editor` 上。
+
+   ## 修法（两条，缺一不可）
+   ① 关掉 CM6 自带的 `.cm-editor.cm-focused` 虚线框（否则会**两条框线**同时出现：
+      外面一条新的、里面一条旧的）；
+   ② 把虚线框改画到 `.source-editor-cm6`（宿主）的 `:focus-within` 上 ——
+      `outline` 不参与布局，因此**正文列宽、软换行位置、行轴测量、分屏对齐
+      全部零影响**（这是刻意的：只改观感，不动几何）。
+
+   ## 为什么用 `outline` 而不是 `border`
+   `border` 会让元素的内容盒缩 2px（`box-sizing: border-box` 下），
+   进而改变 `.cm-scroller` 的可用宽度 → 软换行位置变化 → 分屏对齐与
+   滚动锚点全部受影响。`outline` 画在边框盒**之外**且不占布局，
+   是这里唯一安全的选择。
+
+   ## 样式沿用原样
+   `1px dotted` + 与 CM6 基础主题相同的墨色（暗色主题下改用
+   `--border-color`，否则近黑的虚线在深底上看不见）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ① 关掉 CM6 内建焦点框。
+   选择器权重必须 ≥ baseTheme 的 `.ͼ1.cm-focused`（2 个类），且要比基础主题后加载
+   → 这里用 3 个类。 */
+.source-editor-cm6 .cm-editor.cm-focused,
+.source-editor-cm6 .cm-editor:focus-within {
+  outline: none;
+}
+
+/* ② 框线改画在宿主上 = 与右屏 iframe 外边界逐像素一致。
+   ⚠️ 这里**不能**再出现任何 `.source-editor-cm6:focus-within { outline: none; }`
+   —— 原文件在本规则之后有一条同选择器的 `outline: none`（v0.17.0 之前用于抑制
+   宿主 focus ring）。若保留，按级联会覆盖掉框线（实测 outline=none，
+   表现为"改了 CSS 但框线没出现"）。宿主是普通 div、无 tabindex，
+   浏览器本来就不会给它画默认 focus ring，删掉是安全的。 */
+.source-editor-cm6:focus-within {
+  outline: 1px dotted #212121;
+  outline-offset: 0;
+}
+
+/* 暗色主题：近黑虚线在深底上不可见，换成中性边框色 */
+[data-theme="dark"] .source-editor-cm6:focus-within,
+[data-theme="night"] .source-editor-cm6:focus-within {
+  outline-color: var(--border-color);
+}
 
 .source-editor::placeholder { color: var(--text-tertiary); }
 .source-editor:focus { outline: none; }
@@ -1951,7 +2051,13 @@ body.format-painter-armed .source-editor {
 /* ─── 分屏模式 ──────────────────────────────── */
 .split-view-container { flex: 1; display: flex; overflow: hidden; }
 
-.split-editor {
+/* ⚠️ v0.17.0 第二轮：`.split-editor` 的 `padding: 40px 30px` 是 **textarea 时代**的写法
+   （那时 textarea 自己就是滚动容器，内边距必须写在它身上）。CM6 下 `.split-editor`
+   是宿主 div，而滚动/内边距已归 `.cm-scroller` —— 两者叠加会把正文内缩两倍。
+   所以：**只对真 textarea 保留**，CM6 宿主一律 padding: 0。
+   （`.source-editor-cm6` 自身已写 `padding: 0`，但 `split-editor` 是同一元素上的另一个类、
+   且本规则位置更靠后 → 必须在这里用 `:not()` 显式排除，否则仍会被覆盖。） */
+.split-editor:not(.source-editor-cm6) {
   flex: 1; max-width: none; border-right: none; padding: 40px 30px;
 }
 
@@ -2455,12 +2561,114 @@ iframe.split-preview {
 .cm-editor .cm-scroller {
   font-family: inherit;
   line-height: inherit;
-  /* 与 .source-editor 的正文列口径一致：滚动条贴最右，正文靠内边距居中 */
+  /* 与 .source-editor 的正文列口径一致：滚动条贴最右，正文靠内边距居中。
+     ⚠️ v0.17.0 第二轮：**这里是内边距的唯一归属地**（宿主上的那份已删掉，
+     否则正文被内缩 2 倍 → 左右两屏正文左缘差 64px，用户报的"两模式文档没对齐"）。
+     同时把 0.42s 过渡也搬到这里 —— 它必须作用在**真正产生内容高度**的元素上，
+     才能在开合预览的宽度动画期间让正文列宽连续变化（v0.14.0 第六批的根因）。
+
+     ⚠️ 兜底值必须是 **860**（与阅读面 `.ProseMirror` 同一个兜底），不能是 960：
+     该变量未被用户设置时两处各走各的兜底 → 正文列宽差 100px（实测阅读 740 /
+     源码 806）= 用户报的"两模式文档没对齐"。同一变量只能是同一个兜底值。
+
+     ⚠️ 行号槽（`.cm-gutters`，实测 34px）是源码面独有的，阅读面没有对应物。
+     居中口径必须**把行号槽算进去**，否则正文列左缘会比阅读面多缩进半个行号槽宽。
+     做法：右内边距减掉行号槽宽 —— 于是「左缘到内容中心」与「内容中心到右缘」
+     对正文列而言仍对称，正文列中心与阅读面重合（左缘差 ≤ 行号槽的一半，
+     视觉上两模式首字基本对齐；要完全 0 差只能给阅读面也加等宽占位，
+     那会改变阅读面既有排版，不做）。 */
   padding-block: 40px;
-  padding-inline: max(
+  /* ══════════════════════════════════════════════════════════════════════════
+     v0.17.0 第二轮（用户第 9 项：「阅读模式和编辑模式文档没有对齐」）
+     ──────────────────────────────────────────────────────────────────────────
+     行号槽 `.cm-gutters` 是**源码面独有**的（阅读面没有对应物），且它是
+     `.cm-scroller` 的 flex 子元素，会把 `.cm-content` 整体右推一个槽宽。
+     若两侧用同一个 `padding-inline` 公式，源码面正文列会**同时**被挤窄、右移。
+     实测（1440 宽窗口、2 位行号、槽宽 31）：阅读正文列 740 / 源码 699、左缘差 31。
+
+     ## 补偿公式（推导，别凭感觉调）
+     记可用宽 `W`、目标内容宽 `CM`（= 阅读面 `max-width`）、基准内边距
+     `P = max(60, (W-CM)/2 + 60)`、行号槽宽 `G`。源码面正文列边界是 `[G + padL, W - padR]`。
+     - **左缘**与阅读面对齐（阅读面左缘 = `P`）：`G + padL = P` ⇒ **`padL = P - G`**
+     - **列宽**与阅读面对齐（阅读面列宽 = `CM - 120`）：
+       `W - padR - (G + padL) = W - padR - P = CM - 120` ⇒ **`padR = P`**
+     ⚠️ 右内边距**不加** `G`（加了会把正文列再压窄 2G）。与"直觉各扣各加"相反。
+
+     ## `G` 的来源：纯 CSS，不用 JS 注入
+     CM6 的 `.cm-gutters` 宽度完全由**内容**决定，但它是 `.cm-scroller` 的 flex 子项。
+     最简且零耦合的做法：**让内边距容器与行号槽共用同一份布局信息** ——
+     改成「行号槽绝对定位到左内边距区、正文列按 `P` 居中」会破坏 CM6 内部布局。
+
+     所以这里用 `--lm-cm-gutter-w`，并在**同一条规则里**用 CSS 自己算不出来
+     （CSS 无法读到兄弟元素宽度）→ 必须由实现层在布局后测一次并写到 DOM 上。
+     **缺省 0**：读不到时退化为「列宽窄 G、左缘偏 G」的旧行为，
+     不会比修复前更差（这是安全兜底，不是"坏了就坏得更多"）。
+
+     ⚠️ 注入点：`CmSourceSurface` 在每个 view 更新后（docChanged / viewportChanged /
+     geometryChanged）把 `.cm-gutters` 的实测宽度写到 `.cm-scroller` 的
+     `--lm-cm-gutter-w`（见 `syncGutterVar()`）。行数/字号变化会自动跟上。
+
+     ═══ v0.17.0 第三轮 · 用户第 12 项：「预览开合时文档抖动」的几何定性 ═══
+     结论先说：**这里的 `max(60px, …)` 折点无法消除，也不该消除。**
+     本段注释是为了防止下一轮有人（包括我自己）再花时间试图"平滑掉"它。
+
+     ### 折点是数学必然
+     两个约束同时成立时必然出现斜率突变：
+       ① 正文列宽上限 860px（`--editor-content-max-width`）
+       ② 内边距下限 60px（窄窗口下正文别贴边，v0.9.x 曾因去掉它而横向溢出）
+     解 `calc == 60` 得 **W\* = 942**（= 860 + 2×60 − G，G 为行号槽宽）：
+       W ≤ 942 → padding 恒 60，**正文列随 W 线性变宽**（文字左缘不动）
+       W > 942 → padding 随 W 线性增大，**正文列恒 860**（文字左缘右移）
+     两段的"被谁吸收宽度"完全不同 → 折点。想让它连续，就必须放弃 ②
+     （实测：去掉 `max()` 后 W=517 时 padding = −152.5 → 浏览器钳 0 →
+      **分屏态正文贴左缘**，是不折不扣的回归）。
+     已实测三种写法（`transition:none` / `clamp()` / 去掉 `max()`）：
+     padL 曲线**逐值相同或有回归**，没有一种能既连续又保住护栏。
+
+     ### 折点在开合动画里的实际影响
+     关闭预览时 W 从 517 长到 1022，折点 942 位于进度
+     **(942−517)/(1022−517) = 84.2%** 处
+     ⇒ 前 84% 的动画时间里 padding 恒 60、文字左缘**不动**，
+        最后 16% 才走完 43.7px。
+     实测逐帧：`padL` 前 24 帧全 60，第 24~31 帧冲到 103.66。
+
+     ### 所以真正的修法**不在 CSS**（见 `PreviewPane.tsx` 的说明）
+     既然横向位移必然集中在动画末段，那么要"不抖"就只能保证：
+     纵向（`scrollTop`）**不要在同一时刻再叠加一次跃变**。
+     实测该跳变来自 CM6 的 heightMap 重估（`scrollHeight` 一次 Δ-461px），
+     已在 `PreviewPane.tsx` 的冻结窗口里通过"先算后写 + 每帧至多一写"处理。
+     ⚠️ 保留 `transition: padding-inline 0.42s`：它让**非开合场景**
+     （用户改「内容区宽度」设置）的 padding 变化平滑；开合时与宽度同曲线同长，
+     两者叠加不产生额外相位差。
+     ══════════════════════════════════════════════════════════════════════════ */
+  padding-inline-start: max(
     60px,
-    calc((100% - var(--editor-content-max-width, 960px)) / 2 + 60px)
+    calc((100% - var(--editor-content-max-width, 860px)) / 2 + 60px - var(--lm-cm-gutter-w, 0px))
   );
+  padding-inline-end: max(
+    60px,
+    calc((100% - var(--editor-content-max-width, 860px)) / 2 + 60px)
+  );
+  /* v0.17.0 第三轮：`transition` **原样保留**。
+     ⚠️ 曾经尝试"去掉 max() 让 padding 与宽度严格线性"—— 实测导致分屏态
+     padding 变负被钳 0、正文贴左缘，是回归，已回退（详见上方长注释）。
+     这条过渡的作用保持不变：让**非开合场景**（用户改「内容区宽度」设置）平滑；
+     开合时的折点死区来自 max() 的分段，与它无关（实测 transition:none 后曲线逐值相同）。 */
+  transition: padding-inline 0.42s cubic-bezier(0.33, 0, 0.67, 1);
+}
+
+/* 开合预览/分屏拖拽期间的过渡抑制：v0.14.0 只列了 textarea 与外壳，
+   CM6 的 scroller 也要一起关（否则宽度动画期间它还在跑 padding 过渡，
+   两套动画相位不同 → 正文列宽出现"双段"变化）。 */
+body.split-resizing .cm-editor .cm-scroller,
+.editor-main-area[data-lmd-mode-anim] .cm-editor .cm-scroller {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cm-editor .cm-scroller {
+    transition: none;
+  }
 }
 
 .cm-editor .cm-content {
@@ -2468,6 +2676,9 @@ iframe.split-preview {
   line-height: inherit;
   caret-color: var(--text-primary);
   /* 源码面不折行由 CM6 的 lineWrapping 扩展决定，这里只管字形 */
+  /* v0.17.0 第三轮 · 第 12 项：防御性保留。极小容器下 content 宽度计算可能出负值
+     → 文字被裁。**不是**用来替代 padding 下限（那条护栏仍在 `max(60px,…)`）。 */
+  min-width: 0;
 }
 
 .cm-editor .cm-line {
@@ -2493,7 +2704,71 @@ iframe.split-preview {
   background: var(--selection-bg, rgba(80, 130, 246, 0.25));
 }
 
-/* 光标 */
+/* ── 光标 ────────────────────────────────────────────────────────────────
+ *
+ * ### v0.17.0 第三轮缺陷 #5：光标落在**文档第 0 列**（空行 / 行首）时整条消失
+ *
+ * 用户原话：「编辑模式插入符号为纯白色，该问题解决了一半，当回车换到下一行时，
+ * 编辑符又变成白色了。」
+ *
+ * 实测（`scripts/v0170-r3-caret-focus.mjs`，用「隐藏 `.cm-cursor` vs 显示」的
+ * 像素差分把光标本体分离出来，单位是 scale=8 截图下的墨像素数）：
+ *
+ * ```
+ * 光标位置            墨像素数    说明
+ * 非空行·列1/列2/行尾   1317~1335  正常，实心深色
+ * 非空行·**列0**（行首）     0     ← 一像素都没画
+ * **空行**（列0）            0     ← 一像素都没画  = 用户说的"回车后变白"
+ * ```
+ *
+ * ### 根因：**不是颜色错、不是亚像素、是 z 序遮挡**
+ *
+ * CM6 把光标画在 `.cm-cursorLayer` 里（`.cm-layer-above` → `z-index:150`，
+ * 见 `@codemirror/view` 的 `LayerView.setOrder`：`zIndex = (above?150:-1) - pos`），
+ * 而行号槽 `.cm-gutters` 是**基础主题硬编码 `z-index:200`** 并且有**不透明背景**
+ *（light 下 `#f5f5f5`、dark 下 `#333338`）。
+ *
+ * `.cm-cursor` 还带基础主题的 `margin-left:-0.6px`（让 1.2px 边框视觉居中），
+ * 于是文档第 0 列的光标 x 坐标**压在行号槽的右边界上**（实测 372.08 vs 槽右 372.67）
+ * → z=200 的行号槽把 z=150 的光标**整条盖住**。
+ *
+ * 逐个排除「是不是别的机制」（每个变体单独施加，其余不动）：
+ *
+ * ```
+ * 变体                                  空行处墨像素数
+ * 基线（CM6 默认）                          0
+ * 只抬 .cm-cursorLayer z-index → 300      1344  ★ 修好
+ * 只压 .cm-gutters z-index → auto         1344  ★ 修好
+ * 只去掉 .cm-cursor 的 margin-left          1344  ★ 修好（x 从 372.08 → 372.67，让开槽边界）
+ * 只把 border-left-width 1.2px → **1px**      0  ← **亚像素假说不成立**
+ * 只把 border-left-width 1.2px → 2px       1344  （加宽后右半压在槽外侧，露出来一半）
+ * ```
+ *
+ * 结论：**亚像素假说被否** —— 整数化到 1px 仍然 0 墨。真正的两个叠加因子是
+ * ① z 序遮挡（主因）② x 坐标落在槽边界上（诱因）。2px 偶然"有效"只是因为
+ * 加宽后有一半压到了槽外侧，不是治本。
+ *
+ * ### 修法：抬高光标层，而不是改颜色/改宽度
+ *
+ * 选 `z-index` 而不是 `margin-left: 0`：后者会把光标整体右移 0.6px，
+ * 让光标位置与字符位置产生系统性偏差（代码块的等宽对齐更敏感）。
+ * 抬 z 只解决遮挡，不改变任何几何。
+ *
+ * ⚠️ **必须 `!important`**：CM6 的 `LayerView.setOrder()` 是把 z-index 写成
+ * **元素内联 style**（`this.dom.style.zIndex = String((above ? 150 : -1) - pos)`），
+ * 内联样式优先级高于任何类选择器 —— 实测不加 `!important` 时规则完全被忽略，
+ * 探针仍测到墨=0（这条踩过，写进来免得下次又以为是选择器特异性问题）。
+ *
+ * ⚠️ 值取 **250**：高于 `.cm-gutters` 的 200，低于 `.cm-panels` 的 300
+ * （面板必须能盖住光标，否则打开搜索面板时会出现一条光标穿过面板）。
+ * 不要写成 9999 之类的"肯定够大"——那会把光标画到下拉菜单上面。
+ * 也不影响层内语义：selectionLayer 仍是 `-2`（在正文之下、光标之下），
+ * 与 CM6「光标画在选区之上」的既有约定一致。
+ */
+.cm-cursorLayer {
+  z-index: 250 !important;
+}
+
 .cm-editor .cm-cursor {
   border-left-color: var(--text-primary);
 }

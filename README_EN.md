@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror (reading surface) + CodeMirror 6 (source surface).
 
-**Current Version: v0.16.0** (v0.17.0 is developed and verified on the `v0.17.0-structural-refactor` branch, pending release)
+**Current Version: v0.17.0** (CodeMirror 6 source surface + unified document model foundation)
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -267,8 +267,9 @@ LightMD is a **lightweight Markdown editor** purpose-built for Windows, combinin
 - **CodeMirror 6 source surface** (v0.17.0) — syntax highlighting, line numbers, code folding,
   bracket matching, multi-cursor, search highlight, soft wrap. 5MB docs: load 19.3s → **3.3s**,
   input latency 274.1ms → **16.4ms**
-  > Known limitations: typewriter mode and paired-enhancement gestures (auto-close brackets /
-  > Tab-jump-out) are not active on the source surface; **Tab indentation and undo work normally**.
+  > Known limitations: **paired-enhancement gestures** (auto-close brackets / Tab-jump-out /
+  > paired deletion) are not active on the source surface; **Tab indentation, undo, typewriter
+  > and focus mode all work normally**.
 - **iframe-isolated preview** — preview DOM isolated from main document, significantly reducing GC pressure
 - **Incremental diff undo stack** — stores only diffs instead of full snapshots, greatly saving memory
 
@@ -353,10 +354,10 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.16.0 installers:
+Visit the [Releases](../../releases) page to download the 0.17.0 installers:
 
-- **`LightMD_0.16.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.16.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.17.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.17.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -407,6 +408,108 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.17.0 (2026-11-11) — CodeMirror 6 source surface + unified document model (foundation)
+
+> The scope of this release was **formally reduced** after review (see
+> `_plan/lightmd-0.17.0-current-state-assessment.md` §4): what ships for the unified
+> document model (UnifiedDoc) is the **model foundation plus one export exit (Block[]) as a pilot**.
+> "Edit / read / preview / export all sharing a single AST" is **not yet complete** and has been
+> formally deferred. What this release genuinely completes and verifies is the
+> **CodeMirror 6 source-surface replacement**.
+
+**In one line**: the editor source surface moves from `<textarea>` to CodeMirror 6; in
+addition the parse tree, source-position map (SPM), serializer and fuzz infrastructure of the
+unified document model land, and the **Word / LaTeX / ePub export exit** is switched onto it.
+
+**Accurate statement about the "unified model" (important, to avoid misunderstanding)**:
+
+| Exit | Status in this release |
+|---|---|
+| Word / LaTeX / ePub export (Block[]) | ✅ switched to the UnifiedDoc tree (`parseUnified → treeToBlocks`) |
+| Top-level block line tagging (split-scroll alignment) | ✅ consolidated onto the model's SPM |
+| Image size / alignment suffix parsing | ✅ single-sourced (shared by PM and renderer) |
+| Reading surface (ProseMirror) parsing | ⬜ still uses the existing markdown-it path |
+| Preview / HTML export | ⬜ still uses the markdown-it render path |
+| Reading → source serialization | ⬜ still uses the existing PM block serializer (not yet on the model tree) |
+
+In other words: this release delivers **"model + one exit wired + two shared logic paths
+consolidated"**, **not "all four exits unified"**. Full unification requires writing a model-based
+exit for preview and for reading, and first establishing an HTML byte/visual equivalence baseline
+(see `_plan/lightmd-0.17.0-unified-completion-feasibility.md`).
+
+#### User-visible changes
+
+- **CodeMirror 6 source surface**: syntax highlighting, line numbers, code folding, bracket
+  matching, active-line highlight, rectangular selection, multi-cursor (`Ctrl+Alt+↑/↓`),
+  real search-highlight ranges (no longer pixel-aligned), and soft wrap for long lines.
+- **Large-file throughput**: 5MB document load **19.3s → 3.3s**, input latency
+  **274.1ms → 16.4ms** (**16.7×** improvement), long tasks **301 → 1**.
+  > Note: the originally specified gate `p95 < 16ms` was **not strictly met** (measured 16.4ms).
+  > A controlled experiment showed the floor of this metric is dominated by the 60 Hz refresh
+  > phase (an empty-callback floor measured 16.5–18.2ms); the product sits at that floor, and the
+  > real JS processing cost is ~0.4ms. It is recommended to change the gate to
+  > "processing cost p95 < 4ms + dropped-frame rate < 5%" in a later release.
+  > See `_plan/lightmd-0.17.0-final-acceptance.md` §4.1.
+- **Files above 5MB are edit-mode only** (source surface) — previously the mode was switched
+  but ProseMirror was still created, freezing the UI.
+- **Two crash-level defects fixed** (both introduced by the migration; invisible to jsdom):
+  typing a single character in the search box crashed the whole UI (`setSelectionRange` used on
+  a non-textarea), and **`Ctrl+Z` did nothing** (`textarea.value` was `undefined`).
+
+#### Defects found and fixed in the second verification round
+
+| # | Defect (user-visible) | Before | After |
+|---|---|---|---|
+| P0 | **The editor was fully rebuilt on every keystroke** → focus lost; typing 10 chars landed only 1 | 1/10 landed, focus fell to `<body>` | **10/10** landed, **0** rebuilds |
+| P1 | **Format ghost placeholder was completely invisible** (no grey "bold text" hint after pressing Bold) | visible 0/211 frames | visible **210/211** frames, alive 3.5s |
+| P1 | **Split view showed different content on the two panes** | 31-line offset (72 lines on long lines) | 6-line offset (4 lines on long lines) |
+| P1 | **Scroll position lost when switching edit ↔ read**; edit-mode progress never persisted | jumped back to top; 0 writes | stays on the same block; writes normally |
+| P1 | **Alternating Ctrl+Z / Ctrl+Y only worked every other press** | 3/6 hits | **6/6** hits |
+| P1 | **Typewriter mode had no effect on the source surface** | caret stuck 425px off centre | **44px** off centre, really scrolls |
+
+Root causes were concrete: a content value inside a `callback ref` dependency array,
+`applySourceInput` unconditionally clearing the ghost, `layoutAvailable` probed only once at
+mount time, a scroll listener bound to a non-scrolling host div, and undo landing writing a
+new history entry of its own. Full evidence chains in `_plan/v0170-fix-summary.md`.
+
+#### Known limitations
+
+- **Paired-enhancement gestures** (auto-close brackets / Tab-jump-out / paired deletion) are not
+  active on the source surface; **Tab indentation, undo, typewriter and focus mode all work**.
+- **Split-view alignment still has a small estimation drift on soft-wrapped long lines**
+  (CM6 estimates line heights outside the viewport; measured max ≈ 6 source lines).
+  Regular documents align well.
+- **The format ghost placeholder only appears when the caret sits at an empty position** —
+  this is existing intended behaviour, not a defect.
+- **IME candidate-window following needs manual verification**: the candidate window is rendered
+  by the OS and is unreachable by automation. Caret geometry (rectangle, vertical/horizontal
+  movement, wrapped-line following) has been measured correct, but a real-device check is
+  still recommended.
+
+#### Behaviour difference (not a defect)
+
+- **`Home` on a wrapped line** moves to the visual line start first, then to the logical line
+  start on a second press. This matches VS Code / Sublime / JetBrains and is the mature
+  behaviour; the old `<textarea>` only had the logical line start.
+
+#### Engineering
+
+- `EditorContainer.tsx` split from **10083 → 1896 lines** (8 panes); 272 of 275 statements moved
+  byte-for-byte.
+- Round-trip fuzz infrastructure (1000 random documents; three official oracles, each covering one path):
+  - `md→tree→md` (UnifiedDoc model path): **1000/1000 byte-identical**;
+  - `md→blocks→md` (export exit): **lossy = 0 / corrupt = 0**;
+  - `md→doc→md` (reading-surface path, unedited): **lossy = 0 / corrupt = 0**.
+- The four-outlet consistency matrix (**118 cases**) covers **semantic-fact-level** consistency
+  (heading level, code blocks, quote depth, structural fidelity) — it is **not** HTML byte/visual
+  equivalence. The latter has no baseline yet, so it cannot be cited as proof that preview and
+  export HTML are identical.
+- Known pre-existing item (**not introduced by this release, not a regression**):
+  `md-doc-md#reserialize` (forced per-block re-serialization) still shows 64 corrupt documents out
+  of 1000. It measures pre-existing loss in the **legacy PM block serializer**, which is outside
+  this release's scope; it is registered as a tracked debt item and will go to zero together with
+  "wire serialization onto the model tree".
 
 ### v0.16.0 (2026-11-05 ~ 11-08)
 

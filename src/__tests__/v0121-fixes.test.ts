@@ -74,8 +74,14 @@ describe("v0.12.1 需求3：编辑模式滚动条移到最右（整区可滚动�
     // 正文列与旧版逐像素一致：(W - CM)/2 + 60（W ≤ CM 时退化为 60）——
     // 该 "+60px" 不可省：漏掉会把正文列放宽 120px（已用真实 Chromium 量过，见
     // _verify-out/v0121-edit-scroll-geometry.mjs）
+    //
+    // ⚠️ v0.17.0 第二轮更新（2026-11-11）：兜底值 960 → **860**。
+    // 理由：`--editor-content-max-width` 未设置时，阅读面 `.ProseMirror` 走
+    // `max-width: var(--editor-content-max-width, 860px)`，而源码面此前各自走 960px
+    // → 两模式正文列宽差 100px，正是用户报的「阅读模式和编辑模式文档没有对齐」。
+    // 同一个变量只能有一个兜底值。断言意图（正文列 = CM - 120）不变，故同步期望值。
     expect(block).toMatch(
-      /padding-inline:\s*max\(\s*60px,\s*calc\(\(100% - var\(--editor-content-max-width, 960px\)\) \/ 2 \+ 60px\)\s*\)/,
+      /padding-inline:\s*max\(\s*60px,\s*calc\(\(100% - var\(--editor-content-max-width, 860px\)\) \/ 2 \+ 60px\)\s*\)/,
     );
     expect(block).toMatch(/overflow-y:\s*auto/);
     // 旧实现的两条关键声明必须消失（否则滚动条又回到正文右缘）
@@ -91,12 +97,30 @@ describe("v0.12.1 需求3：编辑模式滚动条移到最右（整区可滚动�
   });
 
   it("分屏模式不参与居中（.split-editor 覆盖 padding，滚动条贴分栏右缘）", () => {
-    const splitIdx = editorCss.indexOf(".split-editor {");
-    expect(splitIdx).toBeGreaterThan(-1);
+    /**
+     * ⚠️ v0.17.0 第二轮更新（2026-11-11）：选择器从 `.split-editor {` 变成
+     * `.split-editor:not(.source-editor-cm6) {`，**意图不变**（分栏内缩 40/30）。
+     *
+     * 为什么要加 `:not()`：CM6 路径下 `.split-editor` 挂在**中性宿主 div** 上，
+     * 而该 div 的滚动与内边距已归 `.cm-scroller`（见 editor.css 的
+     * 「内边距只留在滚动容器」一段）。若 `.split-editor` 仍无条件写
+     * `padding: 40px 30px`，它会与 scroller 的内边距**叠加** → 正文被内缩两倍、
+     * 左右两屏正文左缘差 64px（用户第 9/5 项）。所以只对**真 textarea** 生效。
+     *
+     * 断言意图（textarea 路径分栏内缩仍为 40/30、且规则仍位于 .source-editor 之后）
+     * 完全保留；只是把选择器形态的期望同步为修好后的样子。
+     */
+    const splitIdx = editorCss.indexOf(".split-editor:not(.source-editor-cm6) {");
+    expect(splitIdx, "split-editor 规则必须存在（带 :not 排除 CM6 宿主）").toBeGreaterThan(-1);
     const block = editorCss.slice(splitIdx, editorCss.indexOf("}", splitIdx));
     expect(block).toMatch(/padding:\s*40px 30px/);
     // 且该规则位于 .source-editor 之后（同特异性下后者生效）
     expect(splitIdx).toBeGreaterThan(editorCss.indexOf("\n.source-editor {"));
+    // 反向护栏：CM6 宿主自身不得再带内边距（否则双重内缩复发）
+    const cmHostIdx = editorCss.indexOf(".source-editor-cm6 {");
+    expect(cmHostIdx).toBeGreaterThan(-1);
+    const cmHostBlock = editorCss.slice(cmHostIdx, editorCss.indexOf("}", cmHostIdx));
+    expect(cmHostBlock, "CM6 宿主必须 padding: 0（内边距归 .cm-scroller）").toMatch(/padding:\s*0/);
   });
 
   it("阅读模式（对照基线）滚动容器仍为整个 .editor-container，overflow: auto", () => {

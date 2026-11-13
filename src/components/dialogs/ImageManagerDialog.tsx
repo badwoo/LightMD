@@ -47,6 +47,7 @@ import {
   imageExtNameOf,
   imageFileNameOf,
   imageSourceKind,
+  imageSrcLabel,
   isExternalImageSrc,
   livesInAssetsDir,
   oppositeConversionOf,
@@ -56,6 +57,7 @@ import {
   planRenameBaseName,
   resolveImageAbsPath,
   revealTargetOf,
+  suggestedFileNameForSrc,
   countRefsOf,
   base64ToBytes,
   type DocImage,
@@ -520,6 +522,23 @@ export function ImageManagerDialog({
                     const ext = imageExtNameOf(img.src);
                     const draft = renameDraft[img.src] ?? "";
                     const ioDisabled = busy !== null || !docDir;
+                    /**
+                     * ## v0.17.0 第三轮 #9-A：`title` / 行内文本**绝不能用原始 src**
+                     *
+                     * 实测（真实 4MB 文档）：`title={img.src}` 让面板 DOM 的
+                     * title 属性总长达 **4,181,923 字符**、HTML 达 **8.1MB**、
+                     * 打开面板时最长帧间隔 **214ms** —— 用户看到的是"点了没反应/
+                     * 面板冻住"，于是报告"图片管理功能全部失效"。
+                     *
+                     * `srcLabel` 是**展示层唯一允许**把 src 送进 DOM 的形态：
+                     * data URL → `data:image/png;base64,…(2.6 MB)`；
+                     * 本地/远程 → 中间省略到 180 字符。完整 src 只保留在
+                     * React 状态与回调里（不进 DOM），功能一字不差。
+                     */
+                    const srcLabel = imageSrcLabel(img.src);
+                    // base64 图取不到"文件名"（data URL 没有末段），
+                    // 用 mime 合成的建议名（image.png）兜底，避免显示一大串载荷。
+                    const displayName = img.alt || imageFileNameOf(img.src) || suggestedFileNameForSrc(img.src);
                     // ⑩ 已经在 assets/ 里的图片再"转 assets"只是自我复制（无意义）；
                     // 真远程图不联网抓取。其余本地文件（相对 / 绝对 / asset.localhost）
                     // 的「转 assets」是既有能力，必须保留可用。
@@ -530,11 +549,12 @@ export function ImageManagerDialog({
                     const inlineApplicable = conversion === "toBase64";
                     return (
                       // ⑫ 同一 src 会出现多行：key 必须带文档序号，
-                      // 否则 React 会因重复 key 丢行/串行
-                      <tr key={`${img.docIndex}-${img.src}`}>
-                        <td className="image-mgr-name" title={img.src}>
-                          {img.alt || imageFileNameOf(img.src) || img.src}
-                          <span className="image-mgr-src">{img.src}</span>
+                      // 否则 React 会因重复 key 丢行/串行。
+                      // ⚠️ 不再拼 `img.src`（4MB 字符串做 key 的比较/存储都很重）。
+                      <tr key={`row-${img.docIndex}`}>
+                        <td className="image-mgr-name" title={srcLabel}>
+                          {displayName}
+                          <span className="image-mgr-src">{srcLabel}</span>
                         </td>
                         <td className="image-mgr-kind">
                           {/* ─── v0.13.1 需求9：本地文件徽标可点 ───────────────

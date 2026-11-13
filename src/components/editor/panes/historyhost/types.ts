@@ -63,6 +63,8 @@ export interface HistoryHostResult {
   prevViewModeRef: MutableRefObject<ViewMode>;
   isRestoringScrollRef: MutableRefObject<boolean>;
   historyScrollGuardUntilRef: MutableRefObject<number>;
+  /** v0.17.0 P1-2：历史桥接深度（>0 = 时间线落地期间，源码面不得再提交新历史） */
+  historyBridgeDepthRef: MutableRefObject<number>;
   HISTORY_SCROLL_GUARD_MS: 400;
   inHistoryScrollGuard: () => boolean;
   scrollRestoreGenRef: MutableRefObject<number>;

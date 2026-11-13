@@ -1,0 +1,20 @@
+import fs from "node:fs";
+import path from "node:path";
+import { runProbe, sleep } from "./_lib/probe-harness.mjs";
+const ROOT="D:\\AI\\markdown view\\lightmd";
+const p=path.join(ROOT,"_verify-out","v4-diag","formula-min.md");
+const doc=fs.readFileSync(p,"utf8");
+const READ=`const c=document.querySelector(".cm-content");const v=c&&c.cmTile&&c.cmTile.view;return v&&v.state?v.state.doc.toString():(document.querySelector("textarea.source-editor")?.value??"");`;
+await runProbe({name:"v0170-r5-diag-formula",doc,docTitle:"公式最小夹具",viewMode:"edit"},async(ui)=>{
+  const before=await ui.ev(READ);
+  console.log("[D] 初始源码面:", JSON.stringify(before));
+  await ui.command("view.preview"); await sleep(2000);
+  console.log("[D] 已切阅读");
+  await ui.command("view.edit"); await sleep(2000);
+  const after=await ui.ev(READ);
+  console.log("[D] 切回编辑:", JSON.stringify(after));
+  await ui.command("file.save"); await sleep(1200);
+  const disk=fs.readFileSync(p,"utf8");
+  console.log("[D] 磁盘:", JSON.stringify(disk));
+  ui.add("D1","诊断完成","PASS",`初始=${JSON.stringify(before.slice(0,50))} 切回后=${JSON.stringify(after.slice(0,50))}`);
+});

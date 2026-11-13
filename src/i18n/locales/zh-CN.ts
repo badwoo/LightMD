@@ -1056,6 +1056,16 @@ export const zhCN: Record<string, string> = {
   "menu.insertMermaid": "插入 Mermaid",
   // v0.12.0 需求2：格式刷 + PM 右键菜单项
   "menu.formatPainter": "格式刷",
+  /**
+   * v0.17.0 R4（用户第 7 项后续裁决）：阅读模式右键菜单补「连续刷」入口。
+   *
+   * 为什么必须单列一项：格式刷的持续模式（persistent）**只能靠双击按钮进入**，
+   * 而阅读模式工具栏根本不渲染（只有右键菜单），右键条目又没有双击语义 ——
+   * 于是 armPersistent 在阅读面是**无可达入口的死代码**（R4 已作为 KNOWN 记录）。
+   * 用户裁决「阅读模式右键菜单加上双击格式刷连刷菜单项」，因此这里把两档拆成
+   * 两个独立菜单项，而不是去给右键加双击手势（双击右键在 Windows 上是非法交互）。
+   */
+  "menu.formatPainterContinuous": "格式刷（连续刷）",
   "menu.highlight": "高亮",
   "menu.underline": "下划线",
   "menu.deleteCodeBlock": "删除代码块",
@@ -1074,6 +1084,13 @@ export const zhCN: Record<string, string> = {
   "blockMenu.moveDown": "移动到下方",
   "blockMenu.clipboardFailed": "剪贴板不可用或权限被拒绝",
   "formatPainter.hintOnce": "格式刷：单击目标应用",
+  /* v0.17.0 R4 · 用户第 7 项 D1：采集失败/无选区时的明确提示。
+     要求的不是"静默拒绝"而是"告诉用户为什么、该怎么做" ——
+     用户已经点了按钮，没有反馈会被理解为"按钮坏了"。
+     文案刻意给出**具体例子**（加粗/标题/列表），因为根因是
+     用户不知道"要选中含语法符的那段文字"。 */
+  "formatPainter.emptySelection": "所选内容没有可复制的格式（请选中带格式的文字，如加粗、标题、列表）",
+  "formatPainter.needSelection": "请先选中要复制格式的文字，再点格式刷",
   "formatPainter.hintPersistent": "格式刷：持续应用中（剩余 {count} 次），按 Esc 退出",
   // ─── SlashCommand 命令菜单 ────────────────────────────────────
   "command.group.basic": "基本块",
@@ -1096,6 +1113,31 @@ export const zhCN: Record<string, string> = {
   // v0.12.2 P7：Mermaid NodeView 内联提示（此前硬编码中文，英文界面穿帮）
   "mermaid.empty": "双击编辑 Mermaid 图表",
   "mermaid.syntaxError": "图表语法错误",
+  // v0.17.0 R3 #10：Mermaid 图表类型下拉菜单文案。
+  // 缺陷背景（用户原话）：「格式栏的 mermaid 图标文字又变成英文了」——
+  // 旧实现 MERMAID_TEMPLATES 的 label 是硬编码 "Flowchart"/"Sequence"…，
+  // 中文界面下直接显示英文。现改走 i18n key（zh-CN / en-US 必须成对补齐，
+  // 否则 src/__tests__/i18n.test.ts 的「中英文 key 集合完全一致」会红）。
+  "mermaid.type.flowchart": "流程图",
+  "mermaid.type.sequence": "时序图",
+  "mermaid.type.class": "类图",
+  "mermaid.type.state": "状态图",
+  "mermaid.type.er": "实体关系图",
+  "mermaid.type.journey": "用户旅程图",
+  "mermaid.type.gantt": "甘特图",
+  "mermaid.type.pie": "饼图",
+  "mermaid.type.quadrant": "象限图",
+  "mermaid.type.timeline": "时间线",
+  "mermaid.type.mindmap": "思维导图",
+  "mermaid.type.gitgraph": "Git 图",
+  "mermaid.type.c4": "C4 架构图",
+  "mermaid.type.block": "块图",
+  "mermaid.type.packet": "数据包图",
+  "mermaid.type.kanban": "看板",
+  "mermaid.type.xychart": "XY 图",
+  "mermaid.type.sankey": "桑基图",
+  "mermaid.type.radar": "雷达图",
+  "mermaid.type.treemap": "矩形树图",
   "command.table.name": "表格",
   "command.bold.name": "加粗",
   "command.italic.name": "斜体",
@@ -1285,6 +1327,10 @@ export const zhCN: Record<string, string> = {
   "syntax.h1": "一级标题",
   "syntax.h2": "二级标题",
   "syntax.h3": "三级标题",
+  // v0.17.0 R3 #3：格式栏 H1~H6 齐全、语法栏只有 H1~H3，补齐后需要这三条文案
+  "syntax.h4": "四级标题",
+  "syntax.h5": "五级标题",
+  "syntax.h6": "六级标题",
   "syntax.bold": "粗体",
   "syntax.italic": "斜体",
   "syntax.boldItalic": "粗斜体",
@@ -1421,6 +1467,9 @@ export const zhCN: Record<string, string> = {
   "translate.full.cancel": "取消翻译",
   "translate.full.dismiss": "关闭提示",
   "translate.full.segmentFailed": "该段翻译失败，已保留原文",
+  // v0.17.0 第三轮 #9-C：译文把图片短标记（image-1.png）改坏时拒绝回写 ——
+  // 若静默回写，unmask 会找不到标记 → 用户保存后磁盘 base64 永久丢失。
+  "translate.markerLostNotify": "译文丢失了图片引用，已保留原文（图片不会丢）",
   "translate.full.segmentFailedCount": "{count} 段翻译失败，已保留原文",
   // v0.6.1 问题2：取消翻译气泡
   "translate.undo.label": "取消翻译",

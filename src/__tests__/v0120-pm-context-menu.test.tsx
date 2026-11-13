@@ -27,17 +27,24 @@ describe("v0.12.0 需求2：buildPmMenuItems 三态", () => {
     const items = buildPmMenuItems({ ...baseCtx, hasSelection: true });
     const actions = items.filter((i) => i.type === "item").map((i) => i.action);
     // v0.13.1 需求16：「剪切 / 复制 / 粘贴 / 粘贴为纯文本」置于**最上面一栏**
+    // v0.17.0 R4（用户第 7 项后续裁决）：格式刷两档拆成「格式刷」+「格式刷（连续刷）」。
+    //   原因：阅读模式不渲染工具栏，右键条目又无双击语义 → persistent 档此前无可达入口。
     expect(actions).toEqual([
       "cut", "copy", "paste", "pastePlain",
       "bold", "italic", "strikethrough", "code", "highlight", "underline",
-      "formatPainter", "translate",
+      "formatPainter", "formatPainterContinuous", "translate",
     ]);
+    // 两档文案必须可区分（用户要能看出"连续刷"是另一档）
+    expect(items.find((i) => i.action === "formatPainter")?.label).toBe("格式刷");
+    expect(items.find((i) => i.action === "formatPainterContinuous")?.label).toBe("格式刷（连续刷）");
   });
 
   it("NodeSelection（块选中）：格式刷 + 删除 XX（按类型映射）", () => {
     const table = buildPmMenuItems({ ...baseCtx, nodeKind: "table" });
     expect(table.find((i) => i.action === "deleteNode")?.label).toBe("删除表格");
     expect(table.find((i) => i.action === "formatPainter")).toBeTruthy();
+    // v0.17.0 R4：块选中态同样要有连续刷入口（与文本选区态保持一致）
+    expect(table.find((i) => i.action === "formatPainterContinuous")).toBeTruthy();
     // 各类型映射
     expect(NODE_DELETE_LABEL_KEYS.code_block).toBe("menu.deleteCodeBlock");
     expect(NODE_DELETE_LABEL_KEYS.mermaid_block).toBe("menu.deleteMermaid");

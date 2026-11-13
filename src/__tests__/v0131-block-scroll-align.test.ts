@@ -279,9 +279,13 @@ describe("需求13 · 分屏接线：先试块对齐、失败退回百分比", (
   });
 
   it("块对齐不可用时**必须**退回百分比映射（增强而非替代）", () => {
-    // handled 标志 + 兜底分支同时存在
-    expect(src).toContain("if (!handled) {");
-    expect(src).toContain("preview.scrollTop = computeSyncScrollTop(");
+    /**
+     * v0.17.0 R4（用户第 1 项，T2）：块锚点映射的"不可用"判据从 `handled` 标志
+     * 改为 `line === null`（映射不出行号即视为不可用）；百分比兜底仍然存在。
+     * 契约不变：**块对齐优先、不可用才退百分比**。
+     */
+    expect(src).toContain("if (line === null) {");
+    expect(src).toContain("computeSyncScrollTop(");
   });
 
   it("贴标签走数量自校验，且异常被吞掉（不影响预览）", () => {

@@ -45,9 +45,10 @@ import { useEditorStore } from "../../stores/useEditorStore";
 import { useFileStore } from "../../stores/useFileStore";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useTypographyPreviewStore, withPreview } from "../../stores/useTypographyPreviewStore";
-import { Base64Tokens, unmaskBase64Images } from "../../utils/base64ImageMask";
+import { Base64Tokens, maskBase64Images, unmaskBase64Images } from "../../utils/base64ImageMask";
 import { buildBlockMenuItems } from "../../utils/blockActionMenu";
 import { measureSourceLineAxis } from "../../utils/blockScrollAlign";
+import { measureLineAxis, surfaceMeasureSource } from "../../editor/surface/sourceLineAxis";
 import { isMarkdownFile } from "../../utils/constants";
 import { ContentAnchor, blockGeometryFromLineAxis, restoreTextareaContentAnchor } from "../../utils/contentScrollMap";
 import { isInInlineCodeOrMath } from "../../utils/inlineContext";
@@ -91,6 +92,41 @@ import { useFormatMenuHost } from "./panes/formatmenuhost/FormatMenuHost";
 import { usePreviewPane } from "./panes/previewpane/PreviewPane";
 import { createSourceSurface } from "../../editor/createSourceSurface";
 import type { SourceSurface } from "../../editor/types";
+/**
+ * ## v0.17.0 第二轮修复：模式切换滑入动画的样式表**必须在这里导入**
+ *
+ * ### 缺陷（用户报告第 11 项：「阅读模式和编辑模式间的切换原来是有过渡效果的，现在丢失了」）
+ *
+ * `styles/modeSwitchSlide.css` 里定义了 `data-lmd-mode-anim="to-edit" | "to-preview"`
+ * 对应的 `@keyframes`，本组件也一直在正确地把该属性写到 `.editor-main-area` 上
+ * （见下方 render 里的 `data-lmd-mode-anim={modeAnim ?? undefined}`）。
+ *
+ * **但这份 CSS 从 v0.17.0 P0-1 拆分后就没有任何地方 import 了** ——
+ * 拆分前它在旧 `EditorContainer.tsx:284` 的 `import "../../styles/modeSwitchSlide.css";`，
+ * 拆分时该行被搬进了快照 `EditorContainerSource.ts.txt`（那不是编译单元，只是文本），
+ * 却没有搬回任何真正参与打包的模块。
+ *
+ * 实机证据（本仓库 `dist/assets/index-*.css` 直接 `grep`）：
+ * ```
+ * lmd-mode-slide-in-from-left  => 0 处
+ * lmd-mode-slide-in-from-right => 0 处
+ * data-lmd-mode-anim           => 0 处
+ * ```
+ * → JS 侧属性写得好好的，**键盘帧根本没进包** → 属性无规则可匹配 → 切换时零位移。
+ * 表现为"过渡效果丢失"，且**不报任何错**（CSS 缺文件不会报错，这是最阴的一类）。
+ *
+ * ### 为什么既有单测没抓到
+ * `src/__tests__/v0152-mode-slide.test.ts` 是**直接 `readFileSync` 读源 CSS 文件**做断言，
+ * 它证明"文件内容正确"，但证明不了"文件被 import 进了打包图"。
+ * 本轮同时补了一条**打包图断言**（见该测试文件新增用例），防止再次静默丢失。
+ *
+ * ### 放在本文件（而不是 global.css）的理由
+ * `.editor-main-area` 是本组件渲染的根节点，`modeAnim` 状态也在本组件；
+ * CSS 与被控 DOM 同源是拆分前的原始设计，恢复原貌最不容易再被漏掉。
+ * 且它与 `editor.css`（由 `SyntaxHelper.tsx` 导入）无顺序依赖 ——
+ * 本文件所有选择器都是在 `[data-lmd-mode-anim]` 条件下生效，或带 `!important`。
+ */
+import "../../styles/modeSwitchSlide.css";
 
 export function shouldOpenImageEditor(img: { getAttribute(name: string): string | null }, isReadonly: boolean): boolean {
   if (img.getAttribute("data-editable") !== "true") return false;
@@ -227,6 +263,16 @@ export interface ScrollRestoreTarget {
   scrollHeight: number;
   clientHeight: number;
   scrollTop: number;
+  /**
+   * v0.17.0 R5（V2 百分比兜底写临时对象）：可选**写入器**。
+   *
+   * CM6 下源面的真实滚动容器是 `view.scrollDOM`，宿主 div 不滚动
+   * （`scrollHeight === clientHeight`、写 `scrollTop` 空转）；调用方有时只能
+   * 提供临时度量对象（如 `getMetrics()` 的结果），直接写 `target.scrollTop`
+   * 落在临时对象上、真实滚动一动不动（实机：内容锚点失败时百分比兜底整条静默失效）。
+   * 有此字段时 `restoreScrollWithRetry` 一律经它写入；缺省仍走 `target.scrollTop`。
+   */
+  setScrollTop?: (top: number) => void;
 }
 
 export interface ScrollRestorePlan {
@@ -397,10 +443,40 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
   const onEditorReadyRef = useRef(onEditorReady);
   // v0.6.6 问题4：源码显示层 base64 短标记表（marker → dataUrl，会话内有效，不落盘）
   const base64TokensRef = useRef<Base64Tokens>(new Map());
+  /**
+   * 最近一次**经本编辑器出口**上报给 App 的真实内容（`onContentChange` 的入参值）。
+   *
+   * ## 为什么需要它（v0.17.0 第三轮 #9-B：短格式回归的根因修复）
+   *
+   * `content` prop 有两个来源，**语义完全不同**，但它们在 effect 里长得一模一样：
+   * 1. **外部权威写入** —— 打开文件 / 切标签 / 外部重载 → 必须推进 `sourceContent`；
+   * 2. **自己编辑的回声** —— 用户敲一个字 → `onContentChange(masked)` →
+   *    App.setContent(真实内容) → `content` prop 变化 → 回到本组件。
+   *
+   * 第 2 类**绝不能**用 prop 覆盖 `sourceContent`：此时 `sourceContent` 才是权威
+   * （它已是 masked 展示坐标），而 prop 是 unmask 后的真实内容。
+   * 用真实内容覆盖 → 源码面变回 4MB base64（本轮用户报的"又变成长串编码"）。
+   *
+   * 而且这个 effect **每次按键都会跑**，所以无条件 mask 也不行：
+   * 4MB 文档上 `maskBase64Images` 实测 **3ms/次**，那正是 c405198 要消除的开销。
+   *
+   * 判据因此是"**这次 prop 变化是不是我自己刚发出去的那份内容**"：
+   * - 是 → 回声，直接 return（零成本，一次字符串引用比较）；
+   * - 否 → 外部写入，mask 后推进（正确性优先，且这是低频事件）。
+   *
+   * ⚠️ 用**引用相等** `===` 而不是深比较：`onContentChangeRef` 传出去的字符串
+   * 会原样经 App.setState → prop 回到这里，V8 对同一字符串变量传递保持引用一致。
+   * 万一某条路径复制了字符串（引用不等但值相等），后果只是"多 mask 一次"，
+   * 正确性不受损 —— 这个失败方向是刻意选的（保守side）。
+   */
+  const lastEmittedContentRef = useRef(content);
   // 出口统一 unmask：上层（App.tsx 的 content state / Ctrl+S 保存 / localStorage）
   // 拿到的始终是真实内容（含完整 base64），磁盘格式不受显示层折叠影响
   onContentChangeRef.current = (masked: string) => {
-    onContentChange?.(unmaskBase64Images(masked, base64TokensRef.current));
+    const real = unmaskBase64Images(masked, base64TokensRef.current);
+    // 记录出口值 + 交付给上层的值（App 会把后者原样变成下一次 `content` prop）
+    lastEmittedContentRef.current = real;
+    onContentChange?.(real);
   };
   onEditorReadyRef.current = onEditorReady;
 
@@ -604,6 +680,16 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    */
   const sourceContentRef = useRef(content);
   sourceContentRef.current = sourceContent;
+  /**
+   * `content` prop 的**实时快照**（仅用于 callback ref 的"首帧兜底"，不进依赖）。
+   *
+   * 与 `sourceContentRef` 的区别：`sourceContentRef` 是 `sourceContent` **state** 的快照
+   * （含 base64 mask 后的展示文本），而本 ref 是 **prop 原值**。挂载瞬间两者都还没被
+   * 赋值（React 首次渲染时 `useRef(content)` 已用当前 prop 初始化，实际都有值），
+   * 兜底只防"极端时序"。
+   */
+  const contentRef = useRef(content);
+  contentRef.current = content;
   const sourceHostRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
       sourceHostElRef.current = el;
@@ -614,13 +700,61 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
          *   （受控渲染已把 value 放好，条件不成立则完全不碰 DOM —— 见 A2 那次修复）；
          * - CM6 实现：**这是它唯一能拿到初始文档的时机**，必须传真实内容。
          *
-         * 用 `?? content` 兜底：若挂载发生在首帧、`sourceContentRef` 尚未被赋值的前一轮
-         * （React 严格模式下可能出现），退回 `content` prop（同一份数据的权威来源）。
+         * 用 `?? contentRef.current` 兜底（**不是** `content` 变量）：
+         * 若挂载发生在首帧、`sourceContentRef` 尚未被赋值的前一轮（React 严格模式
+         * 下可能出现），退回 prop 的实时快照。走 ref 而非直接捕获 `content`，
+         * 是为了不给下面的依赖数组引入内容值 —— 原因见函数末尾的 ⚠️ 注释。
          */
-        sourceSurface.mount(el, { initialText: sourceContentRef.current ?? content });
+        sourceSurface.mount(el, { initialText: sourceContentRef.current ?? contentRef.current });
       } else sourceSurface.destroy();
     },
-    [sourceSurface, content],
+    /**
+     * ⛔ **绝对不要把 `content`（或任何"内容值"）加回这个依赖数组。**
+     *
+     * ## 为什么（v0.17.0 P0-1，实测确认的阻断级缺陷）
+     *
+     * React 对 **callback ref** 的语义是：**ref 回调的函数标识一变，就先以 `null`
+     * 调用旧回调、再以元素调用新回调**。于是把 `content` 放进依赖会造成：
+     *
+     * ```
+     * 用户敲 1 个字符
+     *   → onDidChange → setSourceContent + onContentChange
+     *   → App.setContent(新内容) → `content` prop 变化
+     *   → 本 useCallback 返回**新函数**
+     *   → React: 以 null 调旧 ref → sourceSurface.destroy()   ← 整个 CM6 实例被销毁
+     *   → React: 以 el 调新 ref   → sourceSurface.mount(...)  ← 建一个全新 CM6
+     *   → 新实例的 contentDOM 不持有焦点
+     *   → 下一次按键打到 <body> → 字符丢失
+     * ```
+     *
+     * 实机症状：**连打 10 个字符只落地 1 个**；焦点掉到 `BODY`；用户必须
+     * 「每打一个字重新点一次编辑区」。任何改变内容的操作（打字/撤销/格式按钮/
+     * 替换/AI 回写）都会触发，因为它们的终点都是 `content` prop 变化。
+     *
+     * 证据（探针 `scripts/v0170-lead-perkey-remount.mjs` / `v0170-lead-rootcause.mjs`）：
+     * - 只移动光标（内容不变）→ `.cm-editor` del/add = **0/0**
+     * - 仅滚动（内容不变）    → **0/0**
+     * - 输入 1 个字符         → **1/1**
+     * - 撤销                  → **1/1**
+     *
+     * ## 为什么"但挂载需要最新文本"不构成理由
+     *
+     * `sourceContentRef.current` / `contentRef.current` **本身就是实时快照**
+     * （每次渲染都赋值），callback ref 被调用时读到的永远是最新值 ——
+     * **不需要靠依赖重建来拿新值**。依赖数组只应包含"真正影响挂载语义"的东西：
+     * 这里只有 `sourceSurface`（换实现才需要重新挂载）。
+     *
+     * ## 曾经的历史坑（别重蹈）
+     *
+     * commit `bfa67a6` 为了修「`initialText` 时序」（挂载那一刻读到 `undefined`
+     * → CM6 以空文档建 view → 源码面空白）而把 `content` 加了进来 ——
+     * 那个"时序"问题的**正解是把 ref 声明提到 callback ref 之前**
+     * （已在上面第 605 行做到），不是把内容值塞进依赖。
+     * 修 A 缺陷却引入 B 缺陷的教训，见 `_plan/v0170-p0-1-cm6-remount-focus.md §7`。
+     *
+     * @see `_plan/v0170-fix-p0-1.md` —— 修复记录、实测前后对比
+     */
+    [sourceSurface],
   );
   const lastTextareaCursorRef = useRef(0);
   /**
@@ -799,6 +933,50 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     anchor: ContentAnchor | null | undefined,
   ): number | null => {
     if (!anchor) return null;
+    /**
+     * ## ═══ v0.17.0 P1-4：CM6 路径必须走 `surfaceMeasureSource` ═══
+     *
+     * 旧实现无条件调 `measureSourceLineAxis({ textarea, … })` —— 那是 **mirror div**
+     * 方案：建一个复刻 textarea 排版的隐藏 div 再逐块量 `getBoundingClientRect`。
+     * CM6 下 `sourceTextareaRef.current` 是**中性宿主 div**（非 null），于是这里继续执行，
+     * 而 `measureSourceLineAxis` 内部首行 `const text = textarea.value` 拿到 `undefined`
+     * → 返回 null → **阅读→编辑方向的位置恢复整条链静默失败**（实机：
+     * 阅读 88% 切回编辑后停在 50%，纹丝不动，零报错）。
+     *
+     * 修法与 `PreviewPane` 的行轴测量同源：真 textarea 走 mirror（行为零变化），
+     * 否则走 `surfaceMeasureSource(sourceSurface)`（CM6 用 `lineBlockAt`，全文档可用）。
+     * 块几何的**下游纯函数**（`blockGeometryFromLineAxis` / `restoreTextareaContentAnchor`）
+     * 一行未改 —— 它们只吃 `{ totalLines, lineAxis, contentHeight, maxScroll }`。
+     */
+    const isRealTextarea =
+      !!textarea && typeof (textarea as unknown as { value?: unknown }).value === "string";
+    if (!isRealTextarea) {
+      // ── CM6 路径：几何全部取 surface metrics ──
+      const m = sourceSurface.getMetrics();
+      if (!(m.clientHeight > 0) || !(m.scrollHeight > 0)) return null;
+      const md = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
+      if (!md) return null;
+      try {
+        const blockLines = topLevelBlockStartLines(md);
+        const measured = measureLineAxis(surfaceMeasureSource(sourceSurface), blockLines);
+        if (!measured) return null;
+        const blocks = blockGeometryFromLineAxis({
+          totalLines: measured.totalLines,
+          lineAxis: measured.axis,
+          blockLines,
+          contentHeight: m.scrollHeight,
+          maxScroll: Math.max(0, m.scrollHeight - m.clientHeight),
+        });
+        if (!blocks) return null;
+        return restoreTextareaContentAnchor(blocks, anchor, {
+          scrollHeight: m.scrollHeight,
+          clientHeight: m.clientHeight,
+        });
+      } catch {
+        return null;
+      }
+    }
+    // ── 真 textarea 路径：原实现一字未改 ──
     if (!(textarea.clientHeight > 0) || !(textarea.scrollHeight > 0)) return null;
     const markdown = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
     if (!markdown) return null;
@@ -834,7 +1012,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     if (!target) return false;
     const plan = planScrollRestore(percent, target.scrollHeight, target.clientHeight, attempt);
     if (plan.apply) {
-      target.scrollTop = plan.top;
+      // v0.17.0 R5：有写入器（`ScrollRestoreTarget.setScrollTop`）时经它落到真实
+      // 滚动容器（CM6 的 scrollDOM / textarea），没有才写对象自身（iframe 等真元素）
+      if (target.setScrollTop) target.setScrollTop(plan.top);
+      else target.scrollTop = plan.top;
       return true;
     }
     if (!plan.retry) return false;
@@ -921,6 +1102,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     prevViewModeRef,
     isRestoringScrollRef,
     historyScrollGuardUntilRef,
+    historyBridgeDepthRef,
     HISTORY_SCROLL_GUARD_MS,
     inHistoryScrollGuard,
     scrollRestoreGenRef,
@@ -1049,6 +1231,7 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     isMdFile,
     viewRef,
     historyScrollGuardUntilRef,
+    historyBridgeDepthRef,
     HISTORY_SCROLL_GUARD_MS,
     sourceTextareaRef,
     pushUndoEntry,
@@ -1166,13 +1349,53 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    * 这条对两种实现都成立：textarea 路径的 `value={sourceContent}` 同样依赖它。
    */
   const lastContentPropRef = useRef(content);
+  /** 上次为哪份文件建立 base64 标记表（换文档必须重建，见下方 effect 的注释） */
+  const lastMaskFilePathRef = useRef(filePath);
   useEffect(() => {
     // 只在 prop **自身变化**时同步（用户编辑不改 prop，所以不会触发回滚）
     if (lastContentPropRef.current === content) return;
     lastContentPropRef.current = content;
-    setSourceContent(content);
-    sourceContentRef.current = content;
-  }, [content]);
+    /**
+     * ## v0.17.0 第三轮 #9-B：**回声判定**（缺了它短格式就会消失）
+     *
+     * 用户报「之前插入的图片都以短格式展示，现在编辑模式下又变成长串编码了」。
+     *
+     * 根因：本 effect 由 `content` prop 变化触发，而这个 prop **每次按键都会变**
+     * （`onContentChange` → App.setContent）。旧实现无条件
+     * `setSourceContent(content)` —— 而 `content` 是**真实内容**（含完整 base64），
+     * `sourceContent` 才是 **masked 展示内容**。于是：
+     * ```
+     * 打开文件 → HistoryHost 先 mask（image-1.png）→ 本 effect 用 raw 覆盖 → 4MB 裸 base64
+     * 每敲一键 → 同样被 raw 覆盖一次
+     * ```
+     * 实测（`scripts/v0170-r3-images.mjs`，4,182,172 字节文档）：
+     * 源码面 `len=4182120`（= 原文长度，而非 masked 的 515）+ `hasRawBase64=true`。
+     * 这条 effect 在 HistoryHost 之后注册，所以**总是**赢，mask 等于白做。
+     *
+     * 修法：区分两种 prop 变化——
+     * - **回声**（我刚通过 `onContentChange` 发出去的那份内容又回来了）→ return，
+     *   `sourceContent` 保持不动（它已是权威的 masked 坐标）；
+     * - **外部权威写入**（打开文件 / 切标签 / 外部重载）→ mask 后推进。
+     *
+     * ⚠️ 回声判定同时解决了性能问题：本 effect 每键都跑，无条件 mask 是
+     * 4MB × 3ms/次 的全文扫描，会精确复活 c405198 优化掉的每键开销。
+     * 升级成 mask 之后，热路径只剩一次字符串引用比较。
+     */
+    if (content === lastEmittedContentRef.current) return;
+    /**
+     * 换文档必须**重置标记表**：`base64TokensRef` 是每文档的 marker→dataUrl 映射。
+     * 不重置的后果不是"少个标记"，而是**数据错乱**——新文档里的 `image-1.png`
+     * 会 unmask 成上一份文档的图片，用户保存后图片被静默替换成别人的图。
+     * 与 `HistoryHost` 的换文档重置（`lastMaskFilePathRef`）保持同一口径。
+     */
+    if (lastMaskFilePathRef.current !== filePath) {
+      lastMaskFilePathRef.current = filePath;
+      base64TokensRef.current = new Map();
+    }
+    const { text: masked } = maskBase64Images(content, base64TokensRef.current);
+    setSourceContent(masked);
+    sourceContentRef.current = masked;
+  }, [content, filePath]);
 
   useEffect(() => {
     if (sourceSurface.impl !== "cm6") return;
@@ -1208,8 +1431,19 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
     const off = sourceSurface.onDidChange((ev) => {
       // 组合输入期间不落时间线（与 textarea 路径的 nativeComposing 口径一致）：
       // 由 surface 的 compositionGroupId 表达"这是同一次组合"，核心逻辑里照常归并。
+      /**
+       * ⚠️ v0.17.0 P1-6：**必须把 `origin` / `docChanged` 一起透传下去**。
+       *
+       * 这两个字段决定"这次到底算不算用户敲了字"。不透传 → `applySourceInput`
+       * 只能对**所有**事件一视同仁地当 input → 格式按钮自己造成的内容同步、
+       * 以及"只移动光标"都会被当成键入，把刚设置的格式 ghost 清掉
+       * （实机：点一次「标题一」4 次误清，ghost 0/211 帧不可见）。
+       * 修复详见 `SourcePane.applySourceInput` 里 `isRealInput` 的长注释。
+       */
       applySourceInput.current(ev.text, ev.selection.start, {
         composing: ev.kind === "ime" || !!ev.compositionGroupId,
+        origin: ev.origin,
+        docChanged: ev.docChanged,
       });
     });
     return off;
@@ -1539,12 +1773,14 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
                     <div className="mermaid-dropdown-menu" role="menu">
                       {MERMAID_TEMPLATES.map((tpl) => (
                         <button
-                          key={tpl.label}
+                          key={tpl.id}
                           className="mermaid-dropdown-item"
                           role="menuitem"
                           onClick={() => handleMermaidTemplateSelect(tpl.syntax)}
                         >
-                          {tpl.label}
+                          {/* v0.17.0 R3 #10：文案走 i18n（旧实现直接渲染硬编码英文 label
+                              → 中文界面下拉菜单是 Flowchart/Sequence/Gantt…） */}
+                          {t(tpl.labelKey)}
                         </button>
                       ))}
                     </div>
@@ -2100,10 +2336,21 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
         onClose={() => setHeadingMenu((s) => ({ ...s, open: false }))}
       />
 
-      {/* SlashCommand 菜单：仅源码模式 + Markdown 文件 + 行首 / 触发时渲染 */}
+      {/* SlashCommand 菜单：仅源码模式 + Markdown 文件 + 行首 / 触发时渲染
+          ─── v0.17.0 R4 · P0 崩溃修复（用户一敲斜杠就废掉整个编辑器）───
+          `sourceTextareaRef.current` 在 **CM6 下是中性 `<div>`**（truthy、但 `.value`
+          是 undefined）。旧代码把它当 textarea 传进去 → 组件 render 期
+          `textarea.value.substring(...)` 抛 TypeError → ErrorBoundary 接管整棵树
+          （实测复现：编辑模式 + 空行行首敲 `/`，`scripts/v0170-r4-slash-rec.mjs`）。
+
+          修法（A2 既有收敛口径「纯值语义经 SourceSurface」）：
+          传入 `getText` / `getSelection` 两个纯值 provider，组件不再直读 DOM。
+          保留 `textarea` 入参供 **textarea 实现**（jsdom 单测 / 降级路径）逐字节不变。 */}
       {isSourceMode && isMdFile && slashCommandOpen && (
         <SlashCommand
           textarea={sourceTextareaRef.current}
+          getText={() => sourceSurface.getText()}
+          getSelection={() => sourceSurface.getSelection()}
           onInsert={handleSlashInsert}
           onClose={handleSlashClose}
         />

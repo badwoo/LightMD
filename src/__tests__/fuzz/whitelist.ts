@@ -115,9 +115,10 @@ export const CARRIER_WHITELIST: WhitespaceEntry[] = [
     feature: "heading-setext",
     pattern: CARRIER_MARK,
     reason:
-      "PM 出口（serializer.headingToMarkdown）恒输出 ATX；Setext 只保留在未编辑块的原文切片（B6 快路径）。" +
-      "经 nodeFromJSON 克隆（等价「PM 内编辑过该标题」）后走规范序列化 → 归一化为 ATX。" +
-      "标题级别（h1/h2）与文本完全不变，属**写法**归一化。B 线按设计稿 §6.1 方案 A 用 raw.setext 保写法。",
+      "v0.17.0 T4 起 PM 出口（serializer.headingToMarkdown）读 raw.setext 保 Setext 写法，" +
+      "不再归一化为 ATX；经 nodeFromJSON 克隆（等价「PM 内编辑过该标题」）后走规范序列化，" +
+      "剩余差异仅为**下划线长度按新文字重算**（G5-1 口径 max(3, len)，`===` ↔ `======`）。" +
+      "标题级别（h1/h2）与文本完全不变，属**写法**归一化。",
     expires: "B2 序列化收敛",
   },
   {

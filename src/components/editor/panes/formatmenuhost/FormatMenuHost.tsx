@@ -23,7 +23,17 @@ import {
   useEffect,
 } from "react";
 import { useFormatPainterStore } from "../../../../stores/useFormatPainterStore";
-import { collectPmSnapshot, collectSourceSnapshot, buildPmSnapshotTr, applyPmBlockSnapshot, applyBlockTypeToLine, wrapRangeWithMarks } from "../../../../utils/formatPainter";
+import {
+  collectPmSnapshot,
+  collectSourceSnapshot,
+  buildPmSnapshotTr,
+  applyPmBlockSnapshot,
+  applyBlockTypeToLine,
+  wrapRangeWithMarks,
+  // v0.17.0 R4 · 用户第 7 项 D1：空快照判定（arm 前拒绝 + 提示）
+  isSnapshotEmpty,
+  type FormatSnapshot,
+} from "../../../../utils/formatPainter";
 import { getLineRange, MERMAID_TEMPLATES } from "../.././sourceFormat";
 import { unmaskBase64Images } from "../../../../utils/base64ImageMask";
 import { NodeSelection, TextSelection } from "prosemirror-state";
@@ -35,7 +45,7 @@ import { toggleMark } from "prosemirror-commands";
 import { cutSelection, copySelection, pasteIntoView, pastePlainIntoView } from "../../../../utils/textClipboardOps";
 import { isCursorOutsideViewport, computeViewportCenter } from "../../../../utils/typewriter";
 import { focusModeKey } from "../../../../core/plugins/focus-mode";
-import { findFocusRowRange, measureTextareaRangeY, resolveLineHeight, destroyMirror } from "../../../../utils/focus-paragraph";
+import { findFocusRowRange, resolveFocusMeasureRange, expandFocusRangeToRows, measureTextareaRangeY, resolveLineHeight, destroyMirror } from "../../../../utils/focus-paragraph";
 import { isDarkTheme } from "../../../../utils/themeTone";
 import type { AiTask as AiTask } from "../../../../services/aiAssistService";
 import type { EditorView as EditorView } from "prosemirror-view";
@@ -46,6 +56,173 @@ import {
   PM_MARK_BY_ACTION,
 } from "../../EditorContainer";
 import type { FormatMenuHostParams, FormatMenuHostResult } from "./types";
+
+/**
+ * 把「内容坐标系」的一段 Y 换算成「overlay 视口坐标系」。
+ *
+ * ## 为什么需要这道换算（v0.17.0 第二轮缺陷 #4 的根因）
+ *
+ * 用户原话：「高亮位置要跟随插入光标，光标移动到哪，高亮就跟随到哪。
+ * 如果没有检测到插入光标则默认高亮文档中间 3 行。」
+ * 缺陷形态：3 行高亮**固定在页面中间**，完全不动。
+ *
+ * `SourceSurface.measureRangeContentY()` 的契约是**内容坐标系**（相对文档内容顶部），
+ * 而 `.source-focus-overlay` 是 `position: absolute; inset: 0` 铺在宿主上的——
+ * 它要的是**相对宿主视口顶部**的 Y。两者差**两项**：
+ *
+ * ```
+ * overlay 视口 Y = 内容 Y - scrollTop + originOffset
+ * ```
+ *
+ * ### 第 2 项 `originOffset` 是**容易漏掉的**（我在这里推翻过一次错误推断）
+ *
+ * 只说"差一整个滚动偏移"是**不完整的**。实测（`scripts/v0170-r2-focus-overlay.mjs`
+ * 的 A4/A5/A8 三段式取证，CM6 分屏态）：
+ *
+ * ```
+ * A4  KNOWN  只减 scrollTop 时：算出的 Y 与真实 caretRel 差 = 恒定 44px
+ *            （5 个样本全是 44，且 scrollTop 从 0 到 3966 一路不变）
+ * A5  PASS   originOffset 极差 = 0  → 它是一个**与滚动无关的静态量**，可以安全缓存/实测
+ * A8  PASS   originOffset = 44 = scrollerTop-overlayTop(0) + scroller padding(40) + content padding(4)
+ * ```
+ *
+ * 也就是说：overlay 与 `.cm-scroller` 顶部对齐，但 `.cm-scroller` 的
+ * `padding-block: 40px` 加上 `.cm-content` 的 `padding: 4px 0`，把**内容原点**
+ * （首行行盒顶部）从 overlay 顶部往下推了 44px。漏掉它 → 遮罩整体偏上 44px。
+ *
+ * ⚠️ 这 44px **不是常量**：`.split-editor` 分栏内缩、主题、字号/行高设置、
+ * 未来的排版改动都会动这几段内边距。所以必须像 `measureOverlayGeometry()` 那样
+ * **运行时实测**，绝不能硬编码 44（硬编码会在样式一变后静默错位）。
+ *
+ * ## 为什么必须做成纯函数
+ *
+ * 这是"坐标系换算"而不是"DOM 测量"，两种实现的差异应该只体现在
+ * **入参取值**上，算法本身只有一份。写成纯函数才能用单测锁住
+ * "忘了减 scrollTop / 忘了加 originOffset"这类**恒真测不出**的回归
+ *（见 `src/__tests__/v0170-r2-focus-overlay-coords.test.ts` 的破坏性对照）。
+ *
+ * ⚠️ **textarea 路径不要走这里**：那个实现的 `measureRangeContentY` 内部
+ * （`measureTextareaRangeY`）**已经减过 `scrollTop` 且已含 `paddingTop`**，
+ * 返回值本来就是 overlay 视口坐标（textarea 自身即滚动容器、overlay 与其顶对齐）。
+ * 再套一次换算会**双重扣除滚动偏移**。调用方必须按 `surface.impl` 分流。
+ */
+export function contentRangeToOverlayViewportY(
+  contentStartY: number,
+  contentEndY: number,
+  scrollTop: number,
+  originOffset: number,
+): { startY: number; endY: number } {
+  const delta = originOffset - scrollTop;
+  return { startY: contentStartY + delta, endY: contentEndY + delta };
+}
+
+/**
+ * 量出「内容坐标原点」到 overlay 顶部的**与滚动无关**的静态偏移 `originOffset`，
+ * 以及可见内容区（源码面滚动容器视口）在 overlay 坐标系里的顶部 `viewportTop`。
+ *
+ * ## 为什么要从 DOM 实测，而不是硬编码 84
+ *
+ * 84px 是"当前这份 CSS"下的实测值（scroller 相对 overlay 偏移 40 + scroller
+ * padding-top 40 + content padding-top 4）。但这几段内边距是**可配置的样式**
+ * （`.split-editor` 分栏内缩、主题、未来的排版改动都会动它们）。硬编码会让本修复
+ * 在样式一变后**静默错位**——又是"看起来在工作"的那类缺陷。所以每次重绘都实测一次
+ * （几次 `getBoundingClientRect`，仅在专注模式开启时执行，开销可忽略）。
+ *
+ * ## 算法（关键是别把滚动混进来）
+ *
+ * 内容 Y=0 定义为**首行行盒顶部** = `contentDOM.top + contentDOM.paddingTop`
+ * （与 CM6 `view.documentTop` 同口径）。但 `contentDOM.getBoundingClientRect().top`
+ * 是**随滚动变化**的屏幕坐标，直接用它会让 `originOffset` 混进滚动分量、
+ * 与换算公式里的 `-scrollTop` **重复扣除**。因此以**不随滚动变化**的滚动容器为基准：
+ *
+ * ```
+ * originOffset = (scrollerRect.top + scrollerPadTop + contentPadTop) - overlayRect.top
+ * ```
+ *
+ * @returns 几何量；结构不符/布局未就绪（高度为 0）时返回 null
+ *          （调用方走中央 3 行窗兜底，**绝不把 originOffset 当 0**——那正是"差 84px"的原始缺陷）
+ */
+export function measureOverlayGeometry(
+  ov: HTMLElement,
+  host: HTMLElement | null,
+): { originOffset: number; viewportTop: number; viewportHeight: number } | null {
+  if (!host) return null;
+  const contentEl = host.querySelector(".cm-content") as HTMLElement | null;
+  if (!contentEl) return null;
+  const scroller = contentEl.closest(".cm-scroller") as HTMLElement | null;
+  if (!scroller) return null;
+  const ovRect = ov.getBoundingClientRect();
+  const scrollerRect = scroller.getBoundingClientRect();
+  // 高度为 0 = 布局未就绪 / 宿主被隐藏（display:none），此时任何计算都无意义
+  if (!(ovRect.height > 0) || !(scrollerRect.height > 0)) return null;
+  const scrollerPadTop = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+  const contentPadTop = parseFloat(getComputedStyle(contentEl).paddingTop) || 0;
+  const originOffset = scrollerRect.top + scrollerPadTop + contentPadTop - ovRect.top;
+  // 可见内容区顶部 / 高度（= 滚动容器视口）在 overlay 坐标系里的位置
+  const viewportTop = scrollerRect.top - ovRect.top;
+  const viewportHeight = scrollerRect.height;
+  if (!Number.isFinite(originOffset) || !Number.isFinite(viewportTop)) return null;
+  return { originOffset, viewportTop, viewportHeight };
+}
+
+/**
+ * 估算「一个视觉行」的行高（px），供兜底窗使用（`findFocusRowRange` 的 3 行窗要乘行高）。
+ *
+ * ## 为什么不能直接用「第 0 行到第 1 行」的差（实测踩到的坑）
+ *
+ * 旧实现取 `offsetToContentY(0)` 与 `offsetToContentY(首个 \n + 1)` 之差。在 **textarea**
+ * 路径下这没问题（textarea 全文同一字号，所有行等高）。但 **CM6 源码面会对 markdown
+ * 做语法高亮并按级别放大标题**（`.cm-md-heading1 { font-size: 1.4em }`）——
+ * 于是"第 0 行是 `# 标题`"时该差值 ≈ 1.4 倍正文行高，兜底窗被画宽约 40%
+ * （实测：期望 72px 的 3 行窗画成了 115px）。
+ *
+ * ## 为什么取「**最小**间距」而不是中位数/均值（第二次踩坑，数据如下）
+ *
+ * 实测某文档的 `.cm-line` 行盒高度序列（24 行）：
+ *
+ * ```
+ * [40.3, 28.8, 86.4, 28.8, 86.4, 28.8, 86.4, 28.8, 86.4, ...]
+ *   H1    空行  段落   空行  段落   空行  ...
+ * ```
+ *
+ * 关键：**软换行的段落在 DOM 里是「一个 .cm-line 行盒」**，高度 86.4 = **3 个视觉行**
+ * （86.4 = 3 × 28.8）。markdown 正文里长段落必然换行，所以"3 行高"的行盒在数量上
+ * **占多数** → 中位数会落在 86.4 附近（实测中位数算出行高 38.3、兜底窗又偏宽）。
+ *
+ * 而"一个视觉行"的行高必然是所有行盒高度的**最小值**（任何行盒都是 ≥1 个视觉行；
+ * 换行 = 整数倍，标题 ≥1 倍）。所以取**最小合法间距**才能拿到真正的单行高 28.8。
+ *
+ * ## 防一个坏样本
+ *
+ * 最小值的弱点：单个异常小的行盒（测量抖动/特殊行内元素）会把结果带偏。
+ * 因此要求该最小值**至少被两个样本支持**（±2px 内），否则退回中位数。
+ *
+ * @param ys 连续若干行的内容坐标 Y（升序），取自 `offsetToContentY`
+ * @returns 行高（px）；样本不足/全无效时返回 null（调用方退回 CSS 变量口径）
+ */
+export function estimateLineHeightFromYs(ys: Array<number | null>): number | null {
+  const gaps: number[] = [];
+  for (let i = 1; i < ys.length; i++) {
+    const a = ys[i - 1];
+    const b = ys[i];
+    if (a == null || b == null) continue;
+    const d = b - a;
+    // 排除零/负值（同一行内换行、测量失败）与离谱值（> 200px 不是一行）
+    if (d > 1 && d < 200) gaps.push(d);
+  }
+  if (!gaps.length) return null;
+
+  const sorted = [...gaps].sort((x, y) => x - y);
+  const min = sorted[0];
+  // 「最小值至少被两个样本支持」：否则可能是单个测量抖动，退回中位数更稳
+  const supportMin = gaps.filter((d) => Math.abs(d - min) <= 2).length;
+  if (supportMin >= 2) return min > 0 ? min : null;
+
+  const mid = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return median > 0 ? median : null;
+}
 
 export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult {
   // 解构到本地同名绑定：函数体因此可以逐字节原样
@@ -167,7 +344,36 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
   // 采集（源侧）→ armed → 下一次「单击」应用（目标侧，覆盖式）；Esc 退出。
   // 跨模式可用：PM 采集 → 切编辑模式应用（反向亦可），快照为模式无关中间表示。
 
-  /** 采集当前选区格式并 arm（persistent=true 为双击持续模式；持续态下再次双击 = 结束） */
+  /**
+   * 采集当前选区格式并 arm（persistent=true 为双击持续模式；持续态下再次双击 = 结束）
+   *
+   * ## ═══ v0.17.0 第四轮 · 用户第 7 项 D1：「点了没反应、而且退不出去」═══
+   *
+   * ### 缺陷（端到端实测，`scripts/v0170-r4-painter-matrix.mjs`）
+   * 原实现只检查「选区非空」（`from === to` / `start === end`），**不检查采到了格式没有**：
+   * ```
+   * 用户选中普通文字「这是一段纯文本」
+   *   → collectSourceSnapshot → { marks: [], blockType: "paragraph", taskStyle: null }
+   *   → 仍然 arm 成功（bodyClass=true、状态栏"单击目标应用"）
+   *   → 点目标 → applyFormatPainterTo* 算出 next === text → 返回 false
+   *   → 不 consume、不退出待刷态
+   * ```
+   * 用户视角：**"点了没反应，而且还退不出去"**。
+   *
+   * ### 为什么用户必然踩到
+   * `collectSourceSnapshot` 的语义是「**选中文本本身就是 `**abc**` 这种含符号形态**」
+   *（靠 `body.startsWith("**") && body.endsWith("**")` 判 mark）。
+   * 但真实用户选中"粗体源"三个字（**不含** `**`）或随手选一整行时，
+   * 采集必然为空 —— **用户不可能知道要选含语法符的那段**。
+   *
+   * ### 修法（两处，缺一不可）
+   * **A. arm 前拒绝空快照 + 明确提示**（本节）—— 让用户知道"为什么不行、该怎么做"；
+   * **B. 应用无效时按模式退出**（见 apply 调用点）—— 兜底其它无效场景
+   *    （例如目标本来就是同格式）。
+   *
+   * ⚠️ 提示必须说清**原因**，不能静默拒绝：用户已经点了按钮，
+   * 没有任何反馈会被理解为"按钮坏了"。
+   */
   const armFormatPainter = useCallback((persistent: boolean) => {
     const store = useFormatPainterStore.getState();
     if (persistent && store.mode === "persistent") {
@@ -175,12 +381,28 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       store.exit();
       return;
     }
+    /**
+     * 采集失败时的统一处理：**不 arm** + 提示。
+     *
+     * 复用既有 toast（`notifyWarning`，与块剪贴板失败同一通道），
+     * 不新造提示体系 —— 本项目已经因为"两套提示并存"踩过坑。
+     */
+    const rejectIfEmpty = (snapshot: FormatSnapshot): boolean => {
+      if (!isSnapshotEmpty(snapshot)) return false;
+      notifyWarning(t("formatPainter.emptySelection"));
+      return true;
+    };
     // 阅读模式：PM 选区采集（文本选区或 NodeSelection 块范围）
     if (viewMode === "preview" && viewRef.current) {
       const { state } = viewRef.current;
       const { from, to } = state.selection;
-      if (from === to) return; // 无可采集内容
+      if (from === to) {
+        // 无选区：同样要给反馈（否则用户以为"点了没反应"）
+        notifyWarning(t("formatPainter.needSelection"));
+        return;
+      }
       const snapshot = collectPmSnapshot(state, from, to);
+      if (rejectIfEmpty(snapshot)) return;
       if (persistent) store.armPersistent(snapshot);
       else store.armOnce(snapshot);
       return;
@@ -189,8 +411,12 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     const fsel = sourceSurface.getSelection();
     const start = fsel.start;
     const end = fsel.end;
-    if (start === end) return;
+    if (start === end) {
+      notifyWarning(t("formatPainter.needSelection"));
+      return;
+    }
     const snapshot = collectSourceSnapshot(sourceContentRef.current, start, end);
+    if (rejectIfEmpty(snapshot)) return;
     if (persistent) store.armPersistent(snapshot);
     else store.armOnce(snapshot);
   }, [viewMode, sourceSurface]);
@@ -295,6 +521,26 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       if (useFormatPainterStore.getState().mode === "idle") return;
       if (applyFormatPainterToPm(e.clientX, e.clientY)) {
         useFormatPainterStore.getState().consume();
+      } else {
+        /**
+         * ## v0.17.0 R4 · 第 7 项修法 B：应用**无效**时也要让用户出得来
+         *
+         * ### 为什么需要这条（即使修法 A 已经挡住了空快照）
+         * 修法 A 只挡"采集时就没格式"的场景。还有一类"采到了格式但应用到目标无效"：
+         * - 目标**本来就已经是同格式**（刷粗体到一个已经加粗的段落）→ `tr.docChanged` false
+         * - 点在文档空白/非文本区域 → `posAtCoords` 返回 null
+         * - 目标块类型无法转换（如在表格单元格里刷标题）
+         *
+         * 原实现这些情况下**什么都不做**：不 consume、不退出 → 用户卡在待刷态，
+         * 只能自己发现按 Esc，但**没人告诉他**。这与 D1 是同一个"点了没反应"的体验。
+         *
+         * ### 为什么要按模式区分（不是无条件退出）
+         * - **once**：用户点一下就表达完意图了，无效也该退出（否则卡住）
+         * - **persistent**：连续刷本来就要反复点，其中一次无效不该中断整个模式
+         *   （用户可能刷 10 个目标，其中 1 个已经是同格式）
+         */
+        const st = useFormatPainterStore.getState();
+        if (st.mode === "once") st.exit();
       }
     };
     container.addEventListener("click", onClick);
@@ -318,6 +564,18 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       const pos = sourceSurface.getSelection().start;
       if (applyFormatPainterToSource(pos)) {
         useFormatPainterStore.getState().consume();
+      } else {
+        /**
+         * 与 PM 侧完全同源的修法 B（理由见 PM 侧 onClick 的长注释）：
+         * 应用无效时 once 模式退出、persistent 模式保持。
+         *
+         * ⚠️ 这里尤其容易被触发：用户点了"非当前行"的位置时，
+         * CM6 会先把光标移过去，`getSelection()` 读到的已是新行 —— 通常能刷上；
+         * 但若点的是空白区域（无光标移动）或行内容恰已是同格式，
+         * `applyFormatPainterToSource` 会返回 false。此时必须让用户出得来。
+         */
+        const st = useFormatPainterStore.getState();
+        if (st.mode === "once") st.exit();
       }
     };
     // v0.17.0 A3 收尾：**不因宿主元素缺失而放弃整个功能**。
@@ -527,6 +785,21 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       }
       case "formatPainter":
         armFormatPainter(false);
+        return;
+      /**
+       * v0.17.0 R4（用户第 7 项后续裁决）：阅读模式右键菜单的「连续刷」入口。
+       *
+       * 为什么不能复用上面那档：`armFormatPainter(persistent)` 的两档差异是
+       * **应用后是否自动退出**（once → 退出；persistent → 保持，需 Esc/再点结束）。
+       * 阅读模式既无工具栏、右键条目又无双击语义，所以必须由菜单显式给第二档，
+       * 否则 persistent 在阅读面永远是死代码（R4 已作为 KNOWN 缺陷记录）。
+       *
+       * ⚠️ 与格式栏按钮的双击**共用同一个 store**：若已在 persistent 态再点本项，
+       * `armFormatPainter` 内部会走 `store.exit()`（状态机 Persistent --再次进入--> Idle），
+       * 于是本项天然兼作「结束连续刷」—— 无需另加「停止」菜单项。
+       */
+      case "formatPainterContinuous":
+        armFormatPainter(true);
         return;
       case "deleteNode":
         if (view) {
@@ -803,43 +1076,219 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       // 纯函数不动：它只吃 (text, pos)
       const range = findFocusRowRange(text, cursorPos, 1);
 
-      const measuredRange = sourceSurface.measureRangeContentY(range.start, range.end);
+      /**
+       * ⭐ v0.17.0 第三轮缺陷 #7：**测量区间要按「完整行」翻译一次再喂给测量函数**。
+       *
+       * 用户原话：「以编辑符所在行为中心进行上下行一共3行进行高亮……当前在空白行情况下
+       * 只高亮了两行。」
+       *
+       * ## 根因（两个契约各自正确、组合起来错）
+       * - `findFocusRowRange` 的 `[start, end)` 是**完整行**语义：`end` 是「窗口末行之后
+       *   那个 `\n` 的下标」，区间内容形如 `"行1\n行2\n行3"`，**不含**末行的换行符。
+       * - `measureRangeContentY(start, end)` 是**字形矩形**语义，内部用
+       *   `coordsAtPos(end - 1)` 取「区间最后一个字符」的 bottom。
+       *
+       * 于是当**窗口末行是空行**（没有任何字符）时，`end - 1` 落到**上一行末尾的 `\n`**
+       * → 拿到上一行行底 → **空行的行盒一 px 都没被覆盖**，视觉上就是"只亮了两行"。
+       *
+       * ## 为什么是主路径而不是边角 case
+       * markdown 用空行分隔段落，「窗口末行是空行」在正常文档里极其常见（段间距、标题
+       * 与正文之间）。实测（`scripts/v0170-r3-caret-focus.mjs`）：光标在**普通段落中间**
+       * 时常因下一行是空行而只亮 2 行 —— 用户在绝大多数位置都能看到这个缺陷。
+       *
+       * ## 修法
+       * 由纯函数 `resolveFocusMeasureRange` 翻译：窗口末行为空行时把 `end` 借位到 `end+1`
+       *（于是内部的 `end - 1` 正好落在那个 `\n` 上，`coordsAtPos` 给的是空行自身行盒）；
+       * 末尾空行没有字符可借位 → 返回 `extendEndByLineHeight`，由这里补一行高。
+       *
+       * ⚠️ **不要动下面 `normalizeToOverlay` / `measureOverlayGeometry`**：那套做的是
+       * 「内容坐标 → 视口坐标」的归一化（R2 缺陷 #4 的成果），与本缺陷正交。
+       */
+      const measureSpec = resolveFocusMeasureRange(
+        text,
+        /**
+         * ⭐ v0.17.0 第三轮缺陷 #7（续）：文档边界处把窗口**补齐到 3 行**。
+         *
+         * `findFocusRowRange` 的既有语义是「光标行 ±1，文档边界自动收缩」——
+         * 首行只能向下取 1 行、末行只能向上取 1 行 → 共 **2 行**。这是 v0.12.0 的设计
+         * （`v0120-focus-row-range.test.ts` 锁着），但用户这次明确要求
+         * 「以编辑符所在行为中心进行上下行**一共 3 行**」——强调总行数，不是"上下各 1 行"。
+         *
+         * 实测证明末行场景**不是视口裁剪**（`_verify-out/t1-eof.log`）：
+         * ```
+         * bandTouchesOverlayBottom=false   → 窗没被钳位（窗底 753.8 / overlay 高 759.41）
+         * maxScroll 608 > scrollTop 564    → 还有 44px 可滚，第 3 行物理可达
+         * bandH=49.8 恒定 vs 正常 78.6     → 窗本身就少了一行
+         * ```
+         * 因此必须补齐。`expandFocusRangeToRows` 优先向**上方**补（下方补会触发滚动，
+         * 把光标推离视口中心）；上方无余量（首行）时才补下方。
+         * 文档总行数不足 3 行时补不满 —— 那是文档物理限制，不是缺陷。
+         */
+        expandFocusRangeToRows(text, range, 3),
+      );
+      const measuredRange = sourceSurface.measureRangeContentY(measureSpec.start, measureSpec.end);
+      // 末尾空行：没有字符可借位 → 按一行高把底边补下去（只在测量可信时补）
+      const lineHeightFallback = (() => {
+        const root = getComputedStyle(document.documentElement);
+        const lh = parseFloat(root.getPropertyValue("--editor-line-height"));
+        const fs = parseFloat(root.getPropertyValue("--editor-font-size"));
+        if (Number.isFinite(lh) && Number.isFinite(fs) && lh > 0 && fs > 0) return lh * fs;
+        return 28.8; // 与既有默认行高一致（editor.css 的 line-height:1.8 × 16px）
+      })();
+      const measuredRangeFull =
+        measuredRange && measureSpec.extendEndByLineHeight
+          ? { startY: measuredRange.startY, endY: measuredRange.endY + lineHeightFallback }
+          : measuredRange;
       const metrics = sourceSurface.getMetrics();
       const height = metrics.clientHeight;
+
+      /**
+       * ⭐ v0.17.0 第二轮缺陷 #4 修复：**把内容坐标系 Y 归一到 overlay 视口坐标系**。
+       *
+       * ## 缺陷形态（用户原话）
+       * 「高亮的 3 行是固定在页面中间的，这个不对……高亮位置要跟随插入光标」。
+       *
+       * ## 根因（实测数据见 `scripts/v0170-r2-focus-overlay.mjs`）
+       *
+       * 旧代码把 `measureRangeContentY()` 的返回值**直接**当 overlay 像素坐标画渐变。
+       * 但 CM6 实现返回的是**内容坐标系**（`coords.top - view.documentTop`），
+       * 而 overlay 要的是**相对宿主视口顶部**的坐标。两者差：
+       *
+       * ```
+       * overlay 视口 Y = 内容 Y - scrollTop + originOffset
+       * ```
+       *
+       * 实测（CM6 / 分屏态）：`originOffset = 84px`（host 40 + scroller 40 + content 4），
+       * `scrollTop` 在滚动后可达数千 px。旧代码把 84 当成 0、还完全不减 scrollTop
+       * → 开窗恒贴在视口顶部附近；一旦光标滚出视野，`endY <= 0 || startY >= height`
+       * 判定成立 → 落到"屏幕中央 3 行窗"兜底 → **用户看到的就是"永远固定在中间"**。
+       *
+       * ## ⚠️ 为什么必须按 `impl` 分流（这是最容易写错的一点）
+       *
+       * 两个实现对 `measureRangeContentY` 的**返回语义并不一致**（实测）：
+       * - `CmSourceSurface`：`coords.top - documentTop` → 纯内容坐标，需要换算；
+       * - `TextareaSourceSurface`：复用 `measureTextareaRangeY`，内部**已经**
+       *   `- textarea.scrollTop` 且以 mirror top（含 paddingTop）为基准 →
+       *   返回值**本来就是 overlay 视口坐标**（textarea 自身即滚动容器，
+       *   overlay 与它顶对齐）。
+       *
+       * 所以 textarea 路径**必须原样使用**、绝不能也套一次换算（会双重扣 scrollTop）。
+       * 这也正是 Lead 要求"不改进实现层"的原因：改实现层会连带打坏
+       * `captureViewportAnchor` 等按内容坐标使用的调用点。
+       */
+      /**
+       * ⭐ overlay 自身的坐标系与「可见内容区」的基准。
+       *
+       * overlay 是 `position:absolute; inset:0` 铺在 `.source-editor-wrapper` 上的，
+       * 它的高度**不一定等于**滚动容器的 clientHeight —— 实测 CM6 分屏态：
+       * overlay 高 759.4，而 `.cm-scroller` clientHeight 679.4（差 80 = 宿主上下内边距）。
+       * 旧代码用 `height = metrics.clientHeight` 当渐变总高，于是 overlay 底部
+       * 80px 永远不被遮住（暗色下看不出，浅色下是一条未变暗的边）。
+       *
+       * 现在：几何量从 overlay **自己的** rect 取；"可见内容区"单独记，
+       * 供"光标是否在视口内"的判据与中央兜底窗使用。
+       *
+       * textarea 路径：textarea 自身即滚动容器且与 overlay 顶对齐
+       * → `viewportTop = 0`、`viewportHeight = metrics.clientHeight`、
+       *   `originOffset = 0`（它的 measureRangeContentY 已返回 overlay 坐标）。
+       * 三者的取值让下面的判据与渐变与旧实现**逐字节等价**（无行为变化）。
+       */
+      const overlayHeight = ov.getBoundingClientRect().height || height;
+      /**
+       * 宿主元素怎么拿：正常情况 `sourceTextareaRef.current` 就是宿主
+       *（CM6 路径下它是那个中性 div，textarea 路径下是真 textarea）。
+       * 但该 ref 在过渡期**可能为 null**（见 EditorContainer 的 @deprecated 说明），
+       * 这里再退一层到 overlay 的父节点（`.source-editor-wrapper`）里找 ——
+       * 拿不到就返回 null 走中央兜底，绝不硬算一个错的值。
+       */
+      const overlayHost =
+        (textarea as HTMLElement | null) ??
+        (ov.parentElement ? (ov.parentElement as HTMLElement) : null);
+      const geometry =
+        sourceSurface.impl === "cm6"
+          ? measureOverlayGeometry(ov, overlayHost)
+          : { originOffset: 0, viewportTop: 0, viewportHeight: height };
+      const viewportTop = geometry ? geometry.viewportTop : 0;
+      const viewportHeight = geometry ? geometry.viewportHeight : height;
+      const viewportBottom = viewportTop + viewportHeight;
+
+      const normalizeToOverlay = (
+        r: { startY: number; endY: number } | null,
+      ): { startY: number; endY: number } | null => {
+        if (!r) return null;
+        // textarea 实现已是 overlay 视口坐标（它自己减过 scrollTop 且含 paddingTop）
+        if (sourceSurface.impl !== "cm6") return r;
+        // 换算基准不可测（结构不符/布局未就绪）→ null 走中央 3 行窗兜底。
+        // **绝不把 originOffset 当 0**：那正是"差 84px"的原始缺陷。
+        if (!geometry) return null;
+        return contentRangeToOverlayViewportY(
+          r.startY,
+          r.endY,
+          sourceSurface.getScrollTop(),
+          geometry.originOffset,
+        );
+      };
+      const viewRange = normalizeToOverlay(measuredRangeFull);
 
       /**
        * ⚠️ 测量不可用（CM6 视口外 / 布局未就绪）时**必须走兜底**，
        * 绝不能把它当成 `{ startY: 0, endY: 0 }` —— 那会在顶部画一小条遮罩，
        * 用户会以为"专注模式坏了但还在工作"，比明确不画更糟。
+       *
+       * 钳位只用于**绘制**；"是否在视口内"的判据必须用**未钳位**的 raw 值，
+       * 否则"区间整体在视口上方"会被 max(0, …) 变成 0 而误判成"在视口内"。
        */
-      // 限制到可视区域内，避免遮罩溢出；不可测时用 (0,0) 只是为了让下面的
-      // "startY >= height" 兜底判据成立 —— 真正的兜底在下一个分支，不会画空条。
-      const rawStartY = measuredRange ? measuredRange.startY : 0;
-      const rawEndY = measuredRange ? measuredRange.endY : 0;
-      const startY = Math.max(0, rawStartY);
-      const endY = measuredRange ? Math.min(height, rawEndY) : 0;
+      const rawStartY = viewRange ? viewRange.startY : 0;
+      const rawEndY = viewRange ? viewRange.endY : 0;
+      const startY = Math.max(0, Math.min(overlayHeight, rawStartY));
+      const endY = viewRange ? Math.max(0, Math.min(overlayHeight, rawEndY)) : 0;
 
       // 修复：暗色主题下遮罩颜色适配，避免 rgba(0,0,0,0.45) 在深色背景上过暗
       const dimColor = isDarkTheme(theme) ? "rgba(0,0,0,0.28)" : "rgba(0,0,0,0.45)";
 
-      // 若聚焦行不在可视区域（如光标在文档开头但已滚动到中间），默认高亮屏幕中央的 3 行窗
-      // 修复：原代码整个视口遮罩，用户看不到高亮内容；改为高亮屏幕中央
-      // v0.12.0 需求9：单行窗 → 3 行窗（中心行 ±1.5 行高）
-      if (endY <= 0 || startY >= height) {
+      // 若聚焦行不在**可见内容区**（如光标在文档开头但已滚动到中间），
+      // 默认高亮屏幕中央的 3 行窗 —— v0.12.0 需求9 的既有行为，用户明确要求保留
+      //（"如果没有检测到插入光标则默认高亮文档中间3行"）。
+      // 判据用 raw 值：区间与可见区**完全不相交**才兜底。
+      const rangeOutsideViewport =
+        !viewRange || rawEndY <= viewportTop || rawStartY >= viewportBottom;
+      if (rangeOutsideViewport) {
         /**
          * 兜底：聚焦行不在可视区（或测量不可用）→ 高亮屏幕中央 3 行窗（既有行为）。
          *
          * 行高来源：优先用 surface 的几何接口**推导**（不依赖 textarea 元素）——
          * 这正是原来 `getComputedStyle(ta)` 在 CM6 下会失效的地方。
-         * 取"相邻两个内容 Y 的差"作为行高；不可得时退回 CSS 变量口径的默认行高。
+         *
+         * ⚠️ 取「多行间距的最小值」，**不是**「第 0 行到第 1 行」的差：
+         * CM6 源码面会按级别放大 markdown 标题（`.cm-md-heading1` 等），
+         * 文档以 `# 标题` 开头时"第 0→1 行"的差是 1.4 倍正文行高，
+         * 兜底窗会被画宽约 40%（实测 3 行窗该 72px 却画成 115px）。
+         *
+         * 为什么是"最小值"而不是中位数/均值（我在这里连错两次，务必别改回去）：
+         * 首次改成中位数 → 又被"长段落占多数"污染，因为**软换行的段落是一个
+         * `.cm-line` 行盒、高度 = N 个视觉行**（实测 86.4 = 3 × 28.8），
+         * 长文档里它数量上占多数 → 中位数落到 86.4，兜底窗反而更宽（实测 115px）。
+         * 「一个视觉行」的高度必然是所有行盒高度的**最小值**，故取最小值；
+         * 并加"≥2 个样本支持"护栏，防单个测量抖动的小值带偏。
+         * 详见 `estimateLineHeightFromYs` 的注释（含两次失败的数据）。
+         *
+         * ⚠️ textarea 路径**故意不分流**（不按 `impl` 走两套逻辑）：
+         * 真 textarea 全文同一字号、无 markdown 标题放大、且一个 `\n` 行就是一个视觉行，
+         * 因此所有间距相等 → 本算法（最小值）与旧的"第 0→1 行差"结果**完全等价**。
+         * 加 `impl` 分流会让"兜底窗行高"这一件事长期存在两份实现、日后必然分叉，
+         * 是比"textarea 走一条多余但等价的代码路径"更大的维护负担。已与 Lead 确认接受。
          */
         const lineHeight = (() => {
-          const y0 = sourceSurface.offsetToContentY(0);
-          // 用第 1 个换行符之后的偏移推一行高
           const text0 = sourceSurface.getText();
-          const nl = text0.indexOf("\n");
-          const y1 = nl >= 0 ? sourceSurface.offsetToContentY(nl + 1) : null;
-          if (y0 !== null && y1 !== null && y1 > y0) return y1 - y0;
+          // 采样前若干行的行首偏移（24 行足够让"最小间距"有 ≥2 个样本支持，不必全文档）
+          const lineStarts: number[] = [0];
+          for (let i = 0; i < text0.length && lineStarts.length < 24; i++) {
+            if (text0[i] === "\n") lineStarts.push(i + 1);
+          }
+          const measured = estimateLineHeightFromYs(
+            lineStarts.map((off) => sourceSurface.offsetToContentY(off)),
+          );
+          if (measured !== null) return measured;
           // 退路：读 CSS 变量（CM6 与 textarea 共用同一套排版变量）
           const root = getComputedStyle(document.documentElement);
           const lh = parseFloat(root.getPropertyValue("--editor-line-height"));
@@ -847,16 +1296,16 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
           if (Number.isFinite(lh) && Number.isFinite(fs) && lh > 0 && fs > 0) return lh * fs;
           return 24; // 最后兜底：与既有默认行高一致
         })();
-        const centerY = height / 2;
+        const centerY = viewportTop + viewportHeight / 2;
         const centerStartY = Math.max(0, centerY - lineHeight * 1.5);
-        const centerEndY = Math.min(height, centerY + lineHeight * 1.5);
+        const centerEndY = Math.min(overlayHeight, centerY + lineHeight * 1.5);
         ov.style.backgroundImage = `linear-gradient(to bottom,
           ${dimColor} 0px,
           ${dimColor} ${centerStartY}px,
           transparent ${centerStartY}px,
           transparent ${centerEndY}px,
           ${dimColor} ${centerEndY}px,
-          ${dimColor} ${height}px
+          ${dimColor} ${overlayHeight}px
         )`;
         return;
       }
@@ -868,7 +1317,7 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
         transparent ${startY}px,
         transparent ${endY}px,
         ${dimColor} ${endY}px,
-        ${dimColor} ${height}px
+        ${dimColor} ${overlayHeight}px
       )`;
     };
 
@@ -907,6 +1356,24 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       // select 事件覆盖键盘方向键移动选区的情况
       textarea.addEventListener("select", scheduleUpdate);
     }
+    /**
+     * ⭐ v0.17.0 第二轮缺陷 #4 补修（A6）：**CM6 路径没有滚动事件源**。
+     *
+     * 上面那批监听全绑在 `textarea` 上，而 CM6 路径 `textarea === null`，
+     * 于是"滚轮滚动 / 拖动滚动条（光标不动）"时遮罩**完全不重算**：
+     * 实测仅滚动 300px 后 `caretRel` 从 343 → 643，开窗还停在 `[303.5, 375.5]`
+     * —— 即使坐标换算修好了，只滚动场景依然错位。
+     *
+     * CM6 的滚动发生在 `view.scrollDOM`（`.cm-scroller`），宿主收不到该事件，
+     * 因此必须经 `SourceSurface.onDidScroll`（契约里正是为此存在的能力）。
+     * 它同时覆盖 textarea 实现，但那条路径上面已绑过 `scroll` → 会双触发；
+     * `scheduleUpdate` 内部用 rAF 合并，双触发只是多一帧合并，行为无差异
+     *（已知的额外一帧调度开销，可接受 —— 与 Lead 确认保留，不做 `impl` 分流）。
+     */
+    const offScroll = sourceSurface.onDidScroll(() => scheduleUpdate());
+    // 滚动容器不在视口内变化（窗口 resize / 拖分割条 / 开合预览）时几何基准会变
+    const onResize = () => scheduleUpdate();
+    window.addEventListener("resize", onResize);
     // v0.12.0 返修（需求9）：document selectionchange 覆盖所有光标移动路径
     // （方向键/Home/End/PgUp/PgDn 等不触发 select 事件，keyup 也可能被吞），
     // 保证 3 行高亮窗始终跟随光标
@@ -923,6 +1390,8 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       textarea.removeEventListener("scroll", scheduleUpdate);
       textarea.removeEventListener("select", scheduleUpdate);
       }
+      if (typeof offScroll === "function") offScroll();
+      window.removeEventListener("resize", onResize);
       document.removeEventListener("selectionchange", scheduleUpdate);
       if (followUpRaf) cancelAnimationFrame(followUpRaf);
       updateOverlayRef.current = null;

@@ -40,14 +40,349 @@ import { topLevelBlockStartLines } from "../../../../core/renderPipeline";
 import { createIframeFoldBridge, readingFold } from "../.././readingFold";
 import { bindPreviewLightbox } from "../../../../core/plugins/image-lightbox";
 import { createScrollDirectionLock, shouldAcceptScroll, markScrollSource, resetScrollDirectionLock } from "../../../../utils/splitScrollSync";
+import { previewAllowedMove, clampPreviewTarget } from "../../../../utils/scrollSyncPolicy";
 import { shouldContinuePreviewRealign, PREVIEW_REALIGN_DELAYS } from "../../../../utils/textOffsetRemap";
 import type { EditorView as EditorView } from "prosemirror-view";
 import type { ViewMode as ViewMode } from "../../../../stores/useEditorStore";
+import type { SourceSurface } from "../../../../editor/types";
 import {
   renderMarkdownToHtml,
   traceScroll,
 } from "../../EditorContainer";
 import type { PreviewPaneParams, PreviewPaneResult } from "./types";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * P1-3（v0.17.0 修复）：**判「是不是真 textarea」只能用类型判定**
+ *
+ * ## 缺陷（本题本体）
+ *
+ * A3 把源码面宿主从受控 `<textarea>` 换成中性 `<div class="source-editor-cm6">`，
+ * 但宿主 ref 的**类型标注仍是 `RefObject<HTMLTextAreaElement>`**
+ * （`EditorContainer.tsx` 里 `sourceTextareaRef = sourceHostElRef`）。
+ * TypeScript 因此全程沉默，于是下面这种**真值性判断**被当成了"类型判断"：
+ *
+ * ```ts
+ * const source = textarea ? textareaMeasureSource(textarea) : surfaceMeasureSource(sourceSurface);
+ * //                ^^^^^^^^ div 是 truthy（非 null）→ 永远走左边
+ * ```
+ *
+ * 左边那条路读 `textarea.value` 得 `undefined` → 返回 null →
+ * **专为 CM6 写的 `surfaceMeasureSource` 永远不会被调用** →
+ * 分屏对齐的行轴恒为 null → 退回"按总行数线性插值"（软换行感知归零）→
+ * **左右两屏显示的不是同一段正文**（实测文字同源 0/4，最差 31 行 ≈ 932px）。
+ *
+ * ## 为什么它会骗过上一轮的护栏
+ *
+ * 上一轮的静态守卫扫的是「对可能是 div 的元素**裸调** textarea 专属成员」
+ * （`setSelectionRange` / `.value.length` 等）。`div ?` 这个写法不含任何成员调用，
+ * 于是**完全扫不到** —— 这也正是本轮补的门禁规则（见
+ * `src/__tests__/v0170-div-as-textarea-guard.test.ts`）所针对的形态。
+ *
+ * ## 本文件采用的写法（项目既有正确范式：`SourcePane.tsx:454`）
+ *
+ * ```ts
+ * const isRealTextarea = !!el && typeof (el as { value?: unknown }).value === "string";
+ * ```
+ *
+ * 并且**把结论收成一个返回值**（`asRealTextarea`），调用点因此拿到的是
+ * `HTMLTextAreaElement | null` —— 类型系统重新变得可信：真 textarea 与 CM6 宿主
+ * 从此在类型上就是两个世界，忘写 CM6 分支会**编译报错**而不是静默降级。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * 类型判定：传入的是真 `<textarea>` 吗？
+ *
+ * div 宿主上 `value` 是 `undefined`（不是抛错），所以**必须**用
+ * `typeof … === "string"` 而不是 `if (el)`。
+ */
+function asRealTextarea(el: Element | null | undefined): HTMLTextAreaElement | null {
+  if (!el) return null;
+  return typeof (el as unknown as { value?: unknown }).value === "string"
+    ? (el as HTMLTextAreaElement)
+    : null;
+}
+
+/* ─── 行轴诊断钩子（**opt-in 接收器**模式，与 `editorHistory/historyTrace.ts` 同款）───
+ *
+ * ## 为什么要这个钩子
+ * P1-3 的判定关键就是「行轴到底走了哪条测量源、为什么没建成」：
+ * 修复前 `surfaceMeasureSource` **永远不会被调用**（`textarea ?` 恒真），
+ * 而这种"静默降级"没有任何异常、没有任何日志。探针必须能从页面侧读到
+ * 「本次行轴用的是 textarea 源还是 surface 源」与「降级原因」，否则
+ * 只能靠"结果偏了多少"反推根因 —— 那既慢又会误导（缺陷详报 §3 的教训）。
+ *
+ * ## 为什么**不**用 `import.meta.env.DEV` 门控（也没有无条件写 window）
+ * 两个理由缺一不可：
+ * 1. **必须在 release exe 上可读**：本缺陷只在打包产物 + 真 WebView2 上复现
+ *    （jsdom 恒走 textarea 实现、无布局），dev server 下时序也完全不同 →
+ *    门控掉就等于"永远无法取证"。
+ * 2. **不能在生产包无条件写全局**：那会让用户安装版平白多出全局状态，
+ *    且热路径（每次行轴重建）都会写一次属性。
+ *
+ * 结论：采用 **opt-in 接收器** —— 探针先安装 `window.__LMD_AXIS = { source, degrade: [] }`，
+ * 我们才写；**没安装时只做一次 `typeof` 判定就返回**（零日志、零字符串拼接、零副作用）。
+ * 这与 `historyTrace.ts` 的 `histTraceEnabled()` 完全同一套契约。
+ *
+ * ⚠️ 这两个字段是**诊断钩子，不是业务状态**：任何业务代码都不得读取它们。
+ *
+ * ```js
+ * // 探针侧（CDP evaluate）
+ * window.__LMD_AXIS = { source: "", degrade: [] };
+ * ```
+ */
+interface AxisDiagnosticsSink {
+  /** 最近一次行轴测量实际走的源 */
+  source?: "textarea" | "surface";
+  /** 行轴降级原因（有上限，防长时间运行吃内存） */
+  degrade?: string[];
+}
+
+/** 单次会话最多累积多少条降级原因 */
+const AXIS_DEGRADE_LIMIT = 200;
+
+/** 取接收器：**未安装时返回 null**（生产环境恒为 null → 后续一行都不执行） */
+function axisSink(): AxisDiagnosticsSink | null {
+  if (typeof window === "undefined") return null;
+  const w = window as unknown as { __LMD_AXIS?: unknown };
+  const s = w.__LMD_AXIS;
+  return s && typeof s === "object" ? (s as AxisDiagnosticsSink) : null;
+}
+
+/** 探针取证：记录「行轴测量实际走了哪条源」（textarea / surface） */
+function markAxisSource(source: "textarea" | "surface"): void {
+  const s = axisSink();
+  if (!s) return;
+  s.source = source;
+}
+
+/** 降级可观测：把「行轴为什么没建成」报给探针（不是静默返回 null） */
+function reportAxisDegrade(reason: string): void {
+  const s = axisSink();
+  if (!s) return;
+  if (!Array.isArray(s.degrade)) s.degrade = [];
+  if (s.degrade.length < AXIS_DEGRADE_LIMIT) s.degrade.push(reason);
+}
+
+/** 每个逻辑行行首的字符偏移（`starts[i]` = 第 i 行首字符偏移） */
+function lineStartOffsets(text: string): number[] {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) starts.push(i + 1);
+  }
+  return starts;
+}
+
+/** 字符偏移 → 逻辑行号（0-based） */
+function lineIndexAtOffset(text: string, offset: number): number {
+  const p = Math.max(0, Math.min(text.length, offset));
+  let line = 0;
+  for (let i = 0; i < p; i++) if (text.charCodeAt(i) === 10) line++;
+  return line;
+}
+
+/**
+ * 源码面几何门面（P1-3）：把「读像素 / 写像素 / 采锚点 / 还锚点」收成一套，
+ * 两个实现（textarea / CM6）共用**同一批调用点**。
+ *
+ * ## 为什么需要它
+ *
+ * `PreviewPane` 里有 6 处「按 textarea 语义读几何」的代码（预览开合冻结、
+ * 排版变化补偿、缩放补偿、打字机、分屏行轴……）。若每处都自己写
+ * `textarea ? … : …`，就会重演本缺陷（有的写对、有的写错、没人发现）。
+ * 收成门面后，CM6 的实现只在**一个地方**出现。
+ *
+ * ## textarea 分支一行未改
+ * 真 textarea 走既有的 mirror 实现（`captureTextAnchor` / `restoreTextAnchor`），
+ * 行为与 v0.16.0 完全相同。
+ *
+ * ## CM6 分支：行轴 + `coordsAtPos`
+ * - 锚点用**字符偏移**（与排版/字号/软换行无关，这正是"锚内容不锚像素"）；
+ * - 「偏移 ↔ 内容坐标 Y」走 `SourceSurface.offsetToContentY`（`coordsAtPos`）；
+ * - 偏移落在视口外（`coordsAtPos` 测不到）时，退回**行轴**估算
+ *   （`lineBlockAt` 全文档可用，代价是视口外为估算 —— 源码 R2 已说明）。
+ */
+interface SourceGeometry {
+  /** 源码面宿主元素（textarea 实现是 textarea 本身；CM6 是中性 div，事件会从内部冒泡上来） */
+  host(): HTMLElement | null;
+  /** 真 textarea（类型判定后）；CM6 下恒为 null */
+  realTextarea(): HTMLTextAreaElement | null;
+  scrollTop(): number;
+  setScrollTop(px: number): void;
+  metrics(): { scrollHeight: number; clientHeight: number; clientWidth: number; totalLines: number };
+  /** 行号 → 内容坐标顶部（行轴）；不可用时 null */
+  lineAxis(): number[] | null;
+  /** 采「视口 Y 处那段内容」的锚点 */
+  captureAt(viewportY: number): TextContentAnchor | null;
+  /** 把锚点那段内容拉回它原来的视口 Y */
+  restore(anchor: TextContentAnchor | null | undefined): void;
+  /** 只计算"把锚点拉回原位"所需的 scrollTop，**不写入**（用于先算后写的防抖策略） */
+  scrollTopForAnchor(anchor: TextContentAnchor | null | undefined): number | null;
+}
+
+function createSourceGeometry(
+  surface: SourceSurface,
+  hostRef: { current: HTMLTextAreaElement | null },
+): SourceGeometry {
+  let axisCache: { key: string; axis: number[] | null } | null = null;
+  let offsetsCache: { text: string; starts: number[] } | null = null;
+
+  const host = (): HTMLElement | null =>
+    (hostRef.current as unknown as HTMLElement | null) ?? null;
+  const realTextarea = (): HTMLTextAreaElement | null => asRealTextarea(hostRef.current);
+  const metrics = () => surface.getMetrics();
+
+  const startsOf = (text: string): number[] => {
+    if (offsetsCache && offsetsCache.text === text) return offsetsCache.starts;
+    const starts = lineStartOffsets(text);
+    offsetsCache = { text, starts };
+    return starts;
+  };
+
+  /**
+   * 行轴：`axis[line]` = 该行行盒顶部在**内容坐标系**的位置。
+   *
+   * 缓存键含「文本长度 + 宽高 + scrollHeight」：内容变、拖分割条、改字号/行高/
+   * `--doc-zoom` 都会让软换行位置变，轴必须重算（与分屏联动侧同一条口径）。
+   */
+  const lineAxis = (): number[] | null => {
+    const text = surface.getText();
+    const total = text.split("\n").length;
+    if (total <= 1) return null;
+    const m = metrics();
+    const key = `${text.length}|${m.clientWidth}|${m.clientHeight}|${m.scrollHeight}`;
+    if (axisCache && axisCache.key === key) return axisCache.axis;
+    let axis: number[] | null = null;
+    try {
+      const measured = measureLineAxis(
+        surfaceMeasureSource(surface),
+        topLevelBlockStartLines(text),
+        reportAxisDegrade,
+      );
+      if (measured && measured.totalLines === total) axis = measured.axis;
+    } catch {
+      axis = null;
+    }
+    axisCache = { key, axis };
+    return axis;
+  };
+
+  const captureAt = (viewportY: number): TextContentAnchor | null => {
+    // ── textarea 实现：mirror 路径，原实现一行未改 ──
+    const ta = realTextarea();
+    if (ta) return captureTextAnchor(ta, viewportY);
+    // ── CM6 实现：行轴定行 → 行首偏移 → coordsAtPos 定 Y ──
+    const m = metrics();
+    if (!(m.scrollHeight > m.clientHeight)) return null;
+    const text = surface.getText();
+    if (!text) return null;
+    const axis = lineAxis();
+    if (!axis) return null;
+    const scrollTop = surface.getScrollTop();
+    const targetY = scrollTop + (Number.isFinite(viewportY) ? viewportY : 0);
+    const total = text.split("\n").length;
+    const line = estimateTopSourceLine({
+      scrollTop: targetY,
+      scrollHeight: m.scrollHeight,
+      clientHeight: m.clientHeight,
+      totalSourceLines: total,
+      lineTops: axis,
+    });
+    const starts = startsOf(text);
+    const idx = Math.max(0, Math.min(starts.length - 1, Math.floor(line)));
+    const offset = starts[idx];
+    /**
+     * 行首字符的真实内容坐标 Y：优先 `coordsAtPos`（实测），
+     * 测不到（该行此刻不在渲染视口内）时用行轴值（估算）。
+     * **两者都不可用时返回 null，绝不返回 0** —— 0 会被当成"文档最顶部"，
+     * 后续补偿会把视口拉到文首（与打字机那条 `cursorY = 0` 的坑同源）。
+     */
+    let contentY = surface.offsetToContentY(offset);
+    if (contentY === null) {
+      const v = axis[Math.max(0, Math.min(axis.length - 1, idx))];
+      contentY = Number.isFinite(v) ? v : null;
+    }
+    if (contentY === null || !Number.isFinite(contentY)) return null;
+    return { offset, viewportY: contentY - scrollTop };
+  };
+
+  /**
+   * 把锚点送回原位**所需的 scrollTop**（只计算、不写入）。
+   *
+   * ## 为什么需要"只算不写"（v0.17.0 第三轮 · 用户第 12 项）
+   *
+   * 预览开合的宽度过渡期间（420ms，每帧布局都在变），原来每帧都无条件
+   * `restore(anchor)`：写一次就产生一次可见位移，随后 CM6 的 `measure()`
+   * 又按新的渲染事实钳位 —— 两个写者互相覆盖。
+   * 实测 `scrollTop` 单帧跳变 **231px**、方向反转 **4 次**，用户看到"文档抖一下"。
+   *
+   * 改成"先算目标、与当前值比较、只有偏离超阈值才写"之后，
+   * 大部分帧**一次都不写** → 没有往复 → 抖动消失；
+   * 真正跑偏（>阈值）时仍然纠正 → 保住"视野不能被拽走"的下限。
+   *
+   * @returns 目标 scrollTop；锚点测量不可用时 null（调用方跳过，绝不当成 0）
+   */
+  const scrollTopForAnchor = (anchor: TextContentAnchor | null | undefined): number | null => {
+    if (!anchor) return null;
+    const ta = realTextarea();
+    const m = metrics();
+    const max = Math.max(0, m.scrollHeight - m.clientHeight);
+    if (!(max > 0)) return null;
+    const text = surface.getText();
+    if (!text) return null;
+    const offset = Math.max(0, Math.min(text.length - 1, anchor.offset));
+    let contentY = surface.offsetToContentY(offset);
+    if (contentY === null) {
+      // 重排后该偏移已滚出渲染视口（CM6 只渲染视口附近）→ 用行轴估算兜底
+      const axis = lineAxis();
+      if (!axis) return null;
+      const line = lineIndexAtOffset(text, offset);
+      const v = axis[Math.max(0, Math.min(axis.length - 1, line))];
+      contentY = Number.isFinite(v) ? v : null;
+    }
+    if (contentY === null || !Number.isFinite(contentY)) return null;
+    void ta;
+    return Math.max(0, Math.min(max, contentY - anchor.viewportY));
+  };
+
+  const restore = (anchor: TextContentAnchor | null | undefined): void => {
+    if (!anchor) return;
+    const ta = realTextarea();
+    if (ta) {
+      restoreTextAnchor(ta, anchor);
+      return;
+    }
+    const m = metrics();
+    const max = Math.max(0, m.scrollHeight - m.clientHeight);
+    if (!(max > 0)) return;
+    const text = surface.getText();
+    if (!text) return;
+    const offset = Math.max(0, Math.min(text.length - 1, anchor.offset));
+    let contentY = surface.offsetToContentY(offset);
+    if (contentY === null) {
+      // 重排后该偏移已滚出渲染视口（CM6 只渲染视口附近）→ 用行轴估算兜底
+      const axis = lineAxis();
+      if (!axis) return;
+      const line = lineIndexAtOffset(text, offset);
+      const v = axis[Math.max(0, Math.min(axis.length - 1, line))];
+      contentY = Number.isFinite(v) ? v : null;
+    }
+    if (contentY === null || !Number.isFinite(contentY)) return;
+    const want = Math.max(0, Math.min(max, contentY - anchor.viewportY));
+    if (Math.abs(surface.getScrollTop() - want) > 0.5) surface.setScrollTop(want);
+  };
+
+  return {
+    host,
+    realTextarea,
+    scrollTop: () => surface.getScrollTop(),
+    setScrollTop: (px: number) => surface.setScrollTop(px),
+    metrics,
+    lineAxis,
+    captureAt,
+    restore,
+    scrollTopForAnchor,
+  };
+}
 
 export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 解构到本地同名绑定：函数体因此可以逐字节原样
@@ -102,6 +437,63 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   } = p;
 
 
+  /**
+   * P1-3：源码面几何门面（唯一入口）。
+   *
+   * 本 pane 里所有「按 textarea 语义读/写源码面几何」的调用点（排版补偿、
+   * 宽度锚点、缩放补偿、预览开合冻结、打字机、分屏行轴）**一律经它**，
+   * 内部按类型判定分派到两个实现。这样"CM6 分支漏写"只可能发生在一个地方，
+   * 而不是在 6 个调用点各写一遍真值性判断（那正是本缺陷的成因）。
+   *
+   * 依赖只给 `sourceSurface`：宿主 ref 是对象引用，取值时机由 `host()` 决定，
+   * 不需要（也不应该）作为 effect 依赖 —— 它就是 ref 的语义。
+   */
+  const sourceGeometry = useMemo(
+    () => createSourceGeometry(sourceSurface, sourceTextareaRef),
+    [sourceSurface, sourceTextareaRef],
+  );
+
+  /**
+   * ## ═══ v0.17.0 第四轮 · 用户第 4 项：「编辑模式下按回车页面明显抖动」═══
+   *
+   * 根因与修法的完整推导见 `syncToPreview` / `syncToSource` 上方的注释。
+   * 这里只保留修复所需的**唯一状态**：一个时间窗口。
+   *
+   * ### 为什么是"时间窗口"而不是更聪明的耦合（试过，否掉）
+   * 抖动的本质是**右屏动完又回去**（回弹），不是"右屏动了" ——
+   * 明细：左屏 smooth 28px/5 帧（正确），右屏跟随 189→12→3→2（也正确），
+   * 最后 `−185px` 那一下才是缺陷。所以只需要拦住"回声反向接管"，
+   * **逐帧跟随必须保留**（否掉"合并成一次写"的原因见 `syncToPreview` 注释）。
+   *
+   * ### 为什么放 ref 而不是 state
+   * 它在 scroll 事件处理器里被读写。滚动路径上一旦触发 React 重渲染，
+   * 单个 smooth 动画的帧预算就会被吃掉 —— 那本身就能被感知成"抖"。
+   */
+  const TYPEWRITER_SMOOTH_WINDOW_MS = 320;
+  /**
+   * 打字机平滑动画窗口的结束时刻（`performance.now()` 口径；已过期为 0 语义）。
+   *
+   * 取值依据：一次 `scrollTo({behavior:"smooth"})` 在 Chromium 里实测约 218~283ms
+   * （R3 #8 的逐帧数据），取 **320ms** 留出掉帧余量；同时**小于**用户"接着滚一下"
+   * 的最快反应时间（人手连续两动作的间隔下限约 350~400ms），所以不会把
+   * 紧接着的真实滚动误判成回声。
+   */
+  const typewriterSmoothUntilRef = useRef(0);
+  /**
+   * 标记一次打字机平滑写入。**只在"我们主动发起 smooth 动画"的三处调用**：
+   * 1. `scrollCursorToCenter`（其后的 writeScrollTop，CM6/textarea 两条实现）
+   * 2. `handleKeyUp` 的普通字符偏离中央分支
+   * 3. 阅读面 `scrollToCenter`（ProseMirror）
+   *
+   * ⚠️ 用户滚轮 / 拖动滚动条 / instant 恢复 / 预览开合冻结还原**都不开窗**，
+   * 因此双向联动的响应速度与 `isRestoringScrollRef` / `inHistoryScrollGuard`
+   * 两道历史防线语义**一行未改**。
+   */
+  const markTypewriterSmooth = useCallback(() => {
+    typewriterSmoothUntilRef.current = performance.now() + TYPEWRITER_SMOOTH_WINDOW_MS;
+  }, [TYPEWRITER_SMOOTH_WINDOW_MS]);
+
+
   // ─── v0.12.1 需求9（二轮）：排版变化时保持阅读焦点 ────────────────
   //
   // 用户反馈：在设置里调字号 / 行高 / 段间距 / 内容区宽度时，文档会重排，视口内容漂移
@@ -113,13 +505,36 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // 用 useLayoutEffect 而非 useEffect，整段发生在浏览器绘制之前 → 不会闪一帧。
   // 量 getBoundingClientRect 会强制同步布局，所以写变量后立刻测量拿到的一定是新排版。
   //   · 阅读模式 → 块锚点（视口内首个顶层块 + 其相对视口顶的偏移）
-  //   · 编辑/分屏左侧 → textarea 内容锚点（视口顶部字符偏移 + 视口 Y）
+  //   · 编辑/分屏左侧 → 内容锚点（视口顶部字符偏移 + 视口 Y）
   // 内容不足一屏（无可滚动空间）时两个 capture 都返回 null，安全跳过。
+  //
+  // ⚠️ v0.17.0 P1-3：源码侧锚点改经 `sourceGeometry`（类型判定分派）。
+  // 原写法 `const ta = …; const textAnchor = ta ? captureTextAnchor(ta) : null;`
+  // 在 CM6 下拿到 div（truthy）→ 进函数 → 读 `div.value` 得 undefined → 返回 null。
+  // **结果看似"没锚点就跳过"（无害），实际是"排版补偿在 CM6 下从未生效"**
+  // —— 这正是 C 流实测"改行高/内容宽度后视觉位置丢 5–12 行"的机制缺口。
   const captureTypographyAnchor = useCallback(() => {
     const container = viewMode === "preview" && isMdFile ? editorRef.current : null;
     const blockAnchor = container ? captureAnchor(container, ".ProseMirror > *") : null;
-    const ta = isSourceMode ? sourceTextareaRef.current : null;
-    const textAnchor = ta ? captureTextAnchor(ta) : null;
+    /**
+     * ⚠️ v0.17.0 P1-3：`ta` 必须经**类型判定**取得（不是 `sourceTextareaRef.current`）。
+     *
+     * 旧写法 `const ta = isSourceMode ? sourceTextareaRef.current : null;` 声明类型是
+     * `HTMLTextAreaElement | null`，CM6 下拿到的却是 `<div>`（truthy）→
+     * `ta ? captureTextAnchor(ta) : null` **进了函数**、读 `div.value` 得 undefined、
+     * 返回 null。于是表面上"没锚点就跳过"（无害），**实际上排版补偿在 CM6 下从未生效**
+     * —— 这正是 C 流实测"改行高/内容宽度后视觉位置丢 5–12 行"的机制缺口。
+     *
+     * `sourceGeometry.realTextarea()` 内部就是 `typeof el.value === "string"` 判定，
+     * 返回 **类型为真的** `HTMLTextAreaElement | null` —— 这里 `ta ? … : …` 因此是
+     * 一次**真·类型分派**，而不是"div 恰好 truthy"的巧合。
+     */
+    const ta = isSourceMode ? sourceGeometry.realTextarea() : null;
+    const textAnchor = ta
+      ? captureTextAnchor(ta)
+      : isSourceMode
+        ? sourceGeometry.captureAt(0)
+        : null;
     // v0.12.2 P8：分屏右侧 iframe 也要参与锚点补偿。
     // 此前只处理了「preview 的阅读容器」与「edit/split 左侧 textarea」，
     // 分屏右侧 iframe 的行高/段间距/内容宽度变化**完全没有补偿**
@@ -136,19 +551,21 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       }
     }
     return { container, blockAnchor, ta, textAnchor, iframeScroller, iframeBlockAnchor };
-  }, [viewMode, isMdFile, isSourceMode, previewShown]);
+  }, [viewMode, isMdFile, isSourceMode, previewShown, sourceGeometry]);
 
 
   const restoreTypographyAnchor = useCallback(
     (anchor: ReturnType<typeof captureTypographyAnchor>) => {
       if (anchor.container && anchor.blockAnchor) restoreAnchor(anchor.container, anchor.blockAnchor);
-      if (anchor.ta && anchor.textAnchor) restoreTextAnchor(anchor.ta, anchor.textAnchor);
+      // 真 textarea 走既有 mirror 还原；CM6 走 surface（`coordsAtPos` / 行轴估算）
+      if (anchor.ta) restoreTextAnchor(anchor.ta, anchor.textAnchor);
+      else sourceGeometry.restore(anchor.textAnchor);
       // v0.12.2 P8：分屏右侧 iframe 同步补偿
       if (anchor.iframeScroller && anchor.iframeBlockAnchor) {
         restoreAnchor(anchor.iframeScroller, anchor.iframeBlockAnchor);
       }
     },
-    [],
+    [sourceGeometry],
   );
 
 
@@ -354,23 +771,36 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // - 捕获：滚动停止 150ms 后（debounce，避免滚动中每帧二分测量）与进入模式时；
   // - 还原：仅在**宽度变化**且不在主动恢复窗口时补偿（软换行重排后准确回到原内容）；
   // - resize 抑制：窗口缩放时浏览器会把光标滚入视口，其 scroll 事件不得刷新锚点。
+  //
+  // ⚠️ v0.17.0 P1-3：**CM6 分支此前完全不存在**（旧写法 `const ta = sourceTextareaRef.current;
+  // if (!ta) return;` 拿到 div 后继续执行，`captureTextAnchor(div)` 是空操作）。
+  // 现在按类型判定分成两条**都真的会生效**的路径：
+  //   · 真 textarea → 原 mirror 实现，一行未改；
+  //   · CM6 宿主   → `ResizeObserver` 观察宿主 div（它本来就是真实元素），
+  //                  锚点/还原走 `sourceGeometry`，滚动订阅走 `sourceSurface.onDidScroll`
+  //                  （CM6 的滚动发生在 `view.scrollDOM` 上，绑宿主 div 收不到事件）。
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — 缩放/宽度变化的锚点采集（`ResizeObserver` 需真实元素）。当前 CM6 表现：不做锚点补偿，改字号后视口可能偏移一段 | 用户可感知度：低 | 建议优先级：P2
-    const ta = sourceTextareaRef.current;
-    if (!ta || typeof ResizeObserver === "undefined") return;
-    textAnchorRef.current = captureTextAnchor(ta);
+    const host = sourceGeometry.host();
+    if (!host || typeof ResizeObserver === "undefined") return;
+    /** 真 textarea（类型判定）；CM6 下为 null —— 下面的 mirror 快路径只对它生效 */
+    const ta = sourceGeometry.realTextarea();
+    const captureAnchorNow = () => sourceGeometry.captureAt(0);
+    textAnchorRef.current = captureAnchorNow();
     let suppressUntil = 0;
-    let lastWidth = ta.clientWidth;
+    let lastWidth = sourceGeometry.metrics().clientWidth;
     let captureTimer: ReturnType<typeof setTimeout> | null = null;
     const markResize = () => { suppressUntil = performance.now() + 350; };
+    const captureSoon = () => {
+      if (captureTimer) clearTimeout(captureTimer);
+      captureTimer = setTimeout(() => { textAnchorRef.current = captureAnchorNow(); }, 150);
+    };
     const scheduleCapture = () => {
       if (performance.now() < suppressUntil) return;
-      if (captureTimer) clearTimeout(captureTimer);
-      captureTimer = setTimeout(() => { textAnchorRef.current = captureTextAnchor(ta); }, 150);
+      captureSoon();
     };
     const ro = new ResizeObserver(() => {
-      const w = ta.clientWidth;
+      const w = sourceGeometry.metrics().clientWidth;
       const widthChanged = w !== lastWidth;
       lastWidth = w;
       const suppressed = performance.now() < anchorSuppressUntilRef.current;
@@ -388,45 +818,60 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         // 冻结窗口内只允许「重新捕获锚点」，不允许补偿。
         if (scrollFreezeRef.current || isFrozenRestoreRef.current) {
           if (widthChanged) formatGhostHandlersRef.current.render();
-          if (captureTimer) clearTimeout(captureTimer);
-          captureTimer = setTimeout(() => { textAnchorRef.current = captureTextAnchor(ta); }, 150);
+          captureSoon();
           return;
         }
-        if (!suppressed && widthChanged) restoreTextAnchor(ta, textAnchorRef.current);
+        if (!suppressed && widthChanged) {
+          if (ta) restoreTextAnchor(ta, textAnchorRef.current);
+          else sourceGeometry.restore(textAnchorRef.current);
+        }
         // 还原后重新捕获（延迟，避免与后续 RO 抢跑）
-        if (captureTimer) clearTimeout(captureTimer);
-        captureTimer = setTimeout(() => { textAnchorRef.current = captureTextAnchor(ta); }, 150);
+        captureSoon();
         // v0.12.0 返修：overlay 的内容宽度在渲染时固化（syncTextareaMetrics），
         // 宽度变化后必须重绘，否则 ghost / 续写预览会按旧宽度换行（视觉竖排偏移）
         if (widthChanged) formatGhostHandlersRef.current.render();
       });
     });
-    ro.observe(ta);
+    /**
+     * 观察谁：
+     * - 真 textarea → 观察它（原行为，宽度变化的直接载体）；
+     * - CM6 → 观察**宿主 div**（`host` 是真实元素，且宽度变化同样体现在它身上；
+     *   之前 `if (ta) ro.observe(ta)` 在 CM6 下意味着**既没观察也没补偿**）。
+     */
+    ro.observe(ta ?? host);
     window.addEventListener("resize", markResize);
-    ta.addEventListener("scroll", scheduleCapture, { passive: true });
+    /**
+     * 滚动订阅：textarea 绑元素；CM6 必须绑 `view.scrollDOM`（宿主 div 不滚）。
+     * 这就是 `SourceSurface.onDidScroll` 存在的理由（接口注释已写明）。
+     */
+    const offScroll = sourceSurface.onDidScroll(() => scheduleCapture());
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", markResize);
-      ta.removeEventListener("scroll", scheduleCapture);
+      offScroll();
       if (captureTimer) clearTimeout(captureTimer);
     };
-  }, [isSourceMode, viewMode, forceUpdateKey]);
+  }, [isSourceMode, viewMode, forceUpdateKey, sourceGeometry, sourceSurface]);
 
 
   // v0.12.0 需求5：缩放（字号换算）变化后按内容锚点还原 textarea 滚动位置。
   // 字号/缩放变化后行高与换行都变，像素 scrollTop 不变会让视口跳到别处；
   // 用"视口顶部内容偏移"还原，视觉上视口顶部内容保持不动。
+  //
+  // ⚠️ v0.17.0 P1-3：旧写法 `const ta = sourceTextareaRef.current; if (!ta) return;`
+  // 在 CM6 下拿到 div（非 null）→ 继续执行 → `restoreTextAnchor(div, …)` 读
+  // `div.value` 得 undefined → 内部 `if (!text) return` 恰好兜住 → **静默空操作**。
+  // 现在真 textarea 走原路，CM6 走 surface（`coordsAtPos` + 行轴估算）。
   useEffect(() => {
     if (!isSourceMode) return;
-    // TODO(v0.18): CM6 能力缺口 — 缩放后的锚点恢复需真实视口坐标（CM6 应用 `coordsAtPos`）。当前 CM6 表现：该补偿不执行，视口位置不精确 | 用户可感知度：低 | 建议优先级：P2
-    const ta = sourceTextareaRef.current;
-    if (!ta) return;
+    const ta = sourceGeometry.realTextarea();
     const raf = requestAnimationFrame(() => {
-      restoreTextAnchor(ta, textAnchorRef.current);
-      textAnchorRef.current = captureTextAnchor(ta);
+      if (ta) restoreTextAnchor(ta, textAnchorRef.current);
+      else sourceGeometry.restore(textAnchorRef.current);
+      textAnchorRef.current = sourceGeometry.captureAt(0);
     });
     return () => cancelAnimationFrame(raf);
-  }, [docZoom, isSourceMode]);
+  }, [docZoom, isSourceMode, sourceGeometry]);
 
 
   // v0.11.0 B4-10：阅读进度上报（状态栏显示百分比）。
@@ -566,6 +1011,15 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
           scrollContainer.scrollTop
         );
         if (target !== null) {
+          /**
+           * v0.17.0 第四轮 · 用户第 4 项：阅读面打字机的 smooth 也要开窗。
+           *
+           * 阅读面虽然不驱动分屏右屏（它就是右屏本身），但**编辑模式下右屏
+           * 用的是同一份 iframe**；不在这里开窗会让"阅读↔编辑"两条路径的
+           * 分屏联动行为不一致，将来排查时无法用同一套判据。语义上仍成立：
+           * 这确实是一次"我们的平滑动画"，期间右→左回声不该反向接管。
+           */
+          markTypewriterSmooth();
           scrollContainer.scrollTo({ top: target, behavior: "smooth" });
         }
       });
@@ -672,6 +1126,52 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       const cursorY = getCursorY();
       const diff = Math.abs(cursorY - savedCursorY);
 
+      /**
+       * ## ═══ v0.17.0 R3 · 用户第 1 项：Backspace 不能走"恢复旧 scrollTop"分支 ═══
+       *
+       * ### 缺陷（A/B 单变量 + 写入打桩实测）
+       * 用户：「阅读模式下开启打字机模式使用退格键删除文字时，页面会抖动。」
+       *
+       * | 组 | scrollTop 单帧最大跳变 | 方向反转 | 写入次数 |
+       * |---|---|---|---|
+       * | 打字机开 | **1442px** | **29** | **30** |
+       * | 打字机关 | **0px** | **0** | **0** |
+       *
+       * 打桩抓到两笔**互相独立**的写入：
+       * ```
+       * 1442 → 1433  [scrollTo(smooth)]  我们的 scrollToCenter（打字机居中）
+       *    0 → 1442  [scrollTop=]        CM6 内部 measure
+       * ```
+       * 单变量：把我们的 `scrollTo` 打桩成不执行 → **「归 0」仍然存在**
+       * ⇒ 归 0 是**原生/CM6 滚动**，不是我们写的（两笔要分开归因）。
+       *
+       * ### 根因
+       * `Backspace` **不在** `isTypewriterTriggerKey` 的 NAV_KEYS 里
+       *（只有 Enter/Arrow/PageUp/PageDown/Home/End）⇒ 退格走"**普通字符输入**"分支：
+       * ```
+       * if (diff <= 5) { scrollContainer.scrollTop = savedScrollTop; return; }   ← 恢复旧像素
+       * ```
+       * 但删字会让**内容变短** → CM6 重新排版 → 浏览器把 `scrollTop` 往新坐标系钳位。
+       * 我们随后把**旧像素**写回去，下一帧 CM6 又钳一次 → **两个写者往复**
+       *（与 #12 同一类机制）。
+       *
+       * 实测「时跳时不跳」正对应 `diff <= 5` 判据在删字场景下**是否恰好成立**，
+       * 于是表现为 29 次方向反转而不是稳定抖动。
+       *
+       * ### 为什么修法不是"把 Backspace 加进 NAV_KEYS"
+       * 试过：加了之后退格改走"每次重新居中"，**更差** ——
+       * 实测 30 次反转、且 `caretY` 净漂移 **+1400px**（视口被一路推下去）。
+       * 因为退格的语义是"往回删"，把它当导航键会让打字机每次都试图重新居中，
+       * 而内容同时在变短 → 目标值每帧都在动。**该实验已回退**。
+       *
+       * ### 采用的修法
+       * 退格时**不恢复旧 `scrollTop`**（不让两个写者打架），
+       * 但保留"光标离开视口时拉回可见"这一层保护（真正的可用性下限）。
+       * 语义上：删字后视口跟随浏览器/CM6 的钳位结果（那是渲染事实），
+       * 我们只在光标真的跑出视口时才出手。
+       */
+      const isBackspace = e.key === "Backspace";
+
       // v0.15.4 需求10：撤销/恢复的滚动窗口内**不允许**按键驱动滚动。
       //
       // 实测（`scripts/v0154-probe-real-keys.mjs`）：Ctrl+Z 之后 keyup 到达，
@@ -690,9 +1190,15 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       }
 
       if (diff <= 5) {
-        // 同行输入：恢复 scrollTop，防止 dispatchTransaction 后的异步 scrollIntoView
-        // 问题2修复：使用 scrollContainer 的 scrollTop
-        if (scrollContainer.scrollTop !== savedScrollTop) {
+        /**
+         * 同行输入：恢复 scrollTop，防止 dispatchTransaction 后的异步 scrollIntoView。
+         *
+         * ⚠️ v0.17.0 R3 · 第 1 项：**退格不走这条路**。
+         * 退格会让内容变短 → CM6 重排 → `scrollTop` 被钳到新坐标系；
+         * 我们把旧像素写回去 → 下一帧 CM6 又钳 → 两个写者往复（实测 1442px / 29 次反转）。
+         * 所以退格时**只接受浏览器的结果**，见下面 `isBackspace` 分支。
+         */
+        if (!isBackspace && scrollContainer.scrollTop !== savedScrollTop) {
           scrollContainer.scrollTop = savedScrollTop;
         }
         return;
@@ -709,14 +1215,25 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         // 普通字符输入且光标在视口内：跳过滚动（避免软换行 cursorY 减小误触发）
         if (shouldSkipScrollForCharInput(e.key, cursorTop, cursorBottom, scrollContainer.clientHeight)) {
           // 光标在视口内：恢复 scrollTop，防止异步 scrollIntoView
-          if (scrollContainer.scrollTop !== savedScrollTop) {
+          // ⚠️ 同上：退格不恢复（内容变短时旧像素已失效）
+          if (!isBackspace && scrollContainer.scrollTop !== savedScrollTop) {
             scrollContainer.scrollTop = savedScrollTop;
           }
           return;
         }
       }
 
-      // 触发滚动：导航键 或 光标在视口外
+      /**
+       * 触发滚动：导航键 或 光标在视口外。
+       *
+       * ⚠️ v0.17.0 R3 · 第 1 项：退格**也不触发居中**。
+       * 试过把 Backspace 加进 NAV_KEYS（改走 `scrollToCenter`）——**更差**：
+       * 实测 30 次反转、`caretY` 净漂移 +1400px。因为退格每次都在缩短内容，
+       * 居中目标值每帧都在变，等于让打字机追一个移动靶。
+       * 退格时唯一该保证的是"光标仍可见"，那由浏览器原生行为 + `cursorWasOutside`
+       * 分支（上方）负责，不需要我们再居中。
+       */
+      if (isBackspace) return;
       if (typewriterModeRef.current) {
         scrollToCenter();
       } else {
@@ -751,11 +1268,107 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
   // textarea 打字机滚动（编辑/分屏模式）
   useEffect(() => {
     if (!typewriterMode || viewMode === "preview") return;
-    // TODO(v0.18): CM6 能力缺口 — 源码面打字机的键位事件绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：**开启了打字机但源码面无居中效果**（CM6 自身保持光标可见，所以不是白屏级故障） | 用户可感知度：高 | 建议优先级：P1
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
-    // 不设置 scrollBehavior = "smooth"，与 ProseMirror 模式保持一致：
-    // 避免全局 CSS 影响所有滚动操作，改用 scrollTo({ behavior: "smooth" }) 显式控制
+    /**
+     * ═══ v0.17.0 P1-3：源码面打字机在 CM6 下的接线（迁移回归修复）═══════════
+     *
+     * ## 缺陷（实测）
+     * 光标距中线 425px → 开打字机（开关值已 true）→ 仍 425px；敲字后
+     * `scrollTop` 全程 **0→0**。即「开了打字机但源码面毫无反应」。
+     *
+     * ## 根因：**迁移回归**，不是 CM6 本来没这个能力
+     * 旧实现取 `const textarea = sourceTextareaRef.current; if (!textarea) return;`
+     * —— CM6 下拿到的是 `<div class="source-editor-cm6">`（**非 null**），
+     * 于是代码继续执行，但：
+     *   ① `measureTextareaCursorY(div)` 建 mirror 复刻 textarea 排版 → 读 `div.value`
+     *      得 undefined → 无输出；
+     *   ② `div.clientHeight / scrollHeight / scrollTop` 是**宿主 div 的**，
+     *      而 CM6 真正的滚动容器是 `view.scrollDOM`（宿主 div 的 `scrollHeight
+     *      === clientHeight`，即"无可滚动空间"）→ `computeTypewriterScrollTop`
+     *      直接返回 null；
+     *   ③ 事件绑在宿主 div 上 —— CM6 的 keydown/keyup 发生在 `.cm-content` 内部，
+     *      **会冒泡到宿主**，所以这一条其实还能工作（`sourceGeometry.host()` 同样绑它）。
+     *
+     * ## 修法（与专注遮罩 `e694d0b`/`88868f4` 完全同一套）
+     * **机制一行未改**（`computeTypewriterScrollTop` 纯函数、5px 抖动阈值、
+     * smooth/instant 取舍、keydown 基线恢复、`isRestoringScrollRef` /
+     * `inHistoryScrollGuard` 闸门全部照搬）—— 只换三样"从哪来/写到哪"：
+     *   · 光标内容坐标 Y → `sourceSurface.offsetToContentY(offset)`（CM6 用 `coordsAtPos`）
+     *   · 视口尺寸/滚动位置 → `sourceSurface.getMetrics()` / `getScrollTop()`
+     *   · 写滚动 → `sourceSurface.setScrollTop()`
+     *
+     * ## 「抑制 textarea 自动滚动」那套 keydown/keyup 监听还要不要？
+     * **keydown 基线 + keyup 判定必须保留**（不只是为了抑制自动滚动）：
+     * 它是打字机的**触发入口** —— 用户敲字/按方向键后要即时居中，靠的就是它。
+     * 但"抑制浏览器 scrollIntoView"这个**动机**在 CM6 下不成立：
+     * CM6 自己的 `scrollIntoView` 由事务驱动，`setSelection(…, scrollIntoView:false)`
+     * 与宿主的事务策略already 管住了，我们额外的 instant 回写反而会与它抢。
+     * 因此分支这样分：
+     *   · 真 textarea → **原样保留** instant 恢复（抑制原生 scrollIntoView，v0.7.x 的修复）；
+     *   · CM6 → 只在"确实需要居中"时写一次 smooth，**不再做 instant 回写**
+     *     （CM6 没有"input 后同步 scrollIntoView"那个时序，回写只会引入抖动）。
+     */
+    const host = sourceGeometry.host();
+    if (!host) return;
+    /** 真 textarea（类型判定）—— 只有它需要 mirror 测量与"抑制自动滚动"那套 */
+    const textarea = sourceGeometry.realTextarea();
+    /**
+     * 滚动器：textarea → 元素本身；CM6 → 无独立元素，一律经 surface 读写。
+     * （CM6 的真实滚动容器是 `view.scrollDOM`，宿主 div 不滚 —— 直接读宿主
+     *  的 scrollTop/scrollHeight 会得到"无可滚动空间"的假象。）
+     */
+    const readMetrics = () =>
+      textarea
+        ? { scrollTop: textarea.scrollTop, scrollHeight: textarea.scrollHeight, clientHeight: textarea.clientHeight }
+        : {
+            scrollTop: sourceSurface.getScrollTop(),
+            scrollHeight: sourceGeometry.metrics().scrollHeight,
+            clientHeight: sourceGeometry.metrics().clientHeight,
+          };
+    /**
+     * 写滚动位置：textarea 需要 behavior 控制；surface 只有像素接口。
+     *
+     * ## ═══ v0.17.0 第三轮 · 用户第 8 项：`behavior` 被静默丢弃（机制级根因）═══
+     *
+     * ### 缺陷现象
+     * 「编辑模式下开启打字机模式，画面居中时要跟阅读模式一样，要有平滑的移动效果，
+     *  而不是突然页面就居中，而且回车换行时画面也应该平滑移动。」
+     *
+     * ### 根因（不是阈值问题 —— 这一条推翻了"5px 阈值导致突然居中"的假设）
+     * 上一版本函数是：
+     * ```ts
+     * if (textarea) { textarea.scrollTo({ top, behavior }); return; }
+     * sourceSurface.setScrollTop(top);      // ← behavior 在这里被丢弃
+     * ```
+     * 而 `CmSourceSurface.setScrollTop` 是**裸赋值** `scrollDOM.scrollTop = px`
+     * = 瞬时。阅读面（ProseMirror）走 `scrollTo({ behavior: "smooth" })` 一直是平滑的。
+     * 于是**同一份打字机逻辑，两种实现两种观感**：阅读面平滑、源码面瞬移。
+     * 这与 `computeTypewriterScrollTop` 的 5px 阈值**无关**（阈值只决定"要不要滚"，
+     * 不决定"怎么滚"）。
+     *
+     * ### 修法
+     * 经接口的**可选**平滑能力 `setScrollTopSmooth`（见 `src/editor/types.ts` 的注释，
+     * 那里写了为什么**不能**给 `setScrollTop` 加 behavior 参数 ——
+     * 几十处恢复类调用点必须保持 instant，否则会重演
+     * "smooth 覆盖 applyScroll 的 instant → 模式切换后滚动位置丢失"那个历史 bug）。
+     *
+     * ⚠️ 既有 `writeScrollTop(x, "instant")` 的调用点语义**一行没变**：
+     * - 有 `setScrollTopSmooth` → 传 `"instant"`，实现内部就是裸赋值；
+     * - 没有（第三方/测试替身）→ 退回 `setScrollTop`（同样是 instant）。
+     */
+    const writeScrollTop = (top: number, behavior: "smooth" | "instant") => {
+      if (textarea) {
+        // 不设置 scrollBehavior = "smooth"，与 ProseMirror 模式保持一致：
+        // 避免全局 CSS 影响所有滚动操作，改用 scrollTo({ behavior }) 显式控制
+        textarea.scrollTo({ top, behavior });
+        return;
+      }
+      // CM6：优先走平滑能力通道；实现缺失时退回即时写入（保持旧语义，不静默丢动画以外的行为）
+      if (sourceSurface.setScrollTopSmooth) {
+        sourceSurface.setScrollTopSmooth(top, behavior);
+        return;
+      }
+      sourceSurface.setScrollTop(top);
+    };
 
     const scrollCursorToCenter = () => {
       requestAnimationFrame(() => {
@@ -782,16 +1395,25 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
          * 而不是让 0 流进计算。
          */
         if (cursorY === null) return;
+        const m = readMetrics();
         // 使用纯函数计算目标滚动位置（内置视口溢出检查和阈值抖动过滤）
         const target = computeTypewriterScrollTop(
           cursorY,
-          textarea.clientHeight,
-          textarea.scrollHeight,
-          textarea.scrollTop
+          m.clientHeight,
+          m.scrollHeight,
+          m.scrollTop,
         );
         if (target !== null) {
-          // 使用 scrollTo 显式指定 smooth，避免全局 scrollBehavior 影响其他滚动操作
-          textarea.scrollTo({ top: target, behavior: "smooth" });
+          /**
+           * ⚠️ v0.17.0 第四轮 · 用户第 4 项：**必须在写之前开窗**。
+           *
+           * `writeScrollTop(target, "smooth")` 只在**动画开始**时写一次，
+           * 之后位移全部由浏览器补间产生（没有 JS 写入）。所以窗口只能在这里开，
+           * 由时间长度覆盖整个动画。若改成"每次 scroll 事件时续期"，
+           * 窗口结束时刻会被不断推迟 → 右屏永远不写（比抖动更糟）。
+           */
+          markTypewriterSmooth();
+          writeScrollTop(target, "smooth");
         }
       });
     };
@@ -803,7 +1425,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     const scrollBaseline = createScrollKeyBaseline();
     let savedScrollTop = 0;
     const handleKeyDown = () => {
-      savedScrollTop = textarea.scrollTop;
+      savedScrollTop = readMetrics().scrollTop;
       markScrollKeyDown(scrollBaseline, 0, savedScrollTop, false);
     };
     // 抑制 textarea 输入时的自动滚动（打字机模式核心修复）
@@ -824,6 +1446,10 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     //      * 偏离超过阈值（软换行场景）：smooth 滚动到中央
     //      * 偏离不超过阈值（同行输入）：instant 恢复 savedScrollTop，抑制浏览器自动滚动
     //   用 savedScrollTop（scrollIntoView 前的位置）计算，避免 scrollIntoView 影响
+    //
+    // ⚠️ v0.17.0 P1-3：「instant 恢复 savedScrollTop」这个动作**只对真 textarea 有意义**
+    // （CM6 没有 input 后同步 scrollIntoView，回写只会把刚居中的位置再拉回去）。
+    const isRealTextarea = textarea !== null;
     const handleKeyUp = (e: KeyboardEvent) => {
       // v0.7.5 修复：先消费基线（保证 seen 一定被复位）
       const paired = consumeScrollKeyUp(scrollBaseline);
@@ -848,21 +1474,25 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         const cursorPos = sourceSurface.getSelection().start;
         const cursorY = sourceSurface.offsetToContentY(cursorPos);
         if (cursorY === null) {
-          textarea.scrollTo({ top: savedScrollTop, behavior: "instant" });
+          if (isRealTextarea) writeScrollTop(savedScrollTop, "instant");
           return;
         }
+        const m = readMetrics();
         const target = computeTypewriterScrollTop(
           cursorY,
-          textarea.clientHeight,
-          textarea.scrollHeight,
-          savedScrollTop
+          m.clientHeight,
+          m.scrollHeight,
+          savedScrollTop,
         );
         if (target !== null) {
           // 光标偏离中央超过阈值（软换行等场景），smooth 滚动到中央
-          textarea.scrollTo({ top: target, behavior: "smooth" });
-        } else {
-          // 光标在中央附近（同行输入），instant 恢复 savedScrollTop，抑制浏览器自动滚动
-          textarea.scrollTo({ top: savedScrollTop, behavior: "instant" });
+          // v0.17.0 第四轮 · 用户第 4 项：同样要开窗（理由见 scrollCursorToCenter 处）
+          markTypewriterSmooth();
+          writeScrollTop(target, "smooth");
+        } else if (isRealTextarea) {
+          // 光标在中央附近（同行输入），instant 恢复 savedScrollTop，抑制浏览器自动滚动。
+          // CM6 下不写：它没有"input 后同步 scrollIntoView"这个时序，
+          // 回写只会把 CM6 自己维护的光标可见性策略打乱（且会与上面的 smooth 抢）。
         }
       }
     };
@@ -874,10 +1504,10 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       scrollBaseline.seen = false;
     };
 
-    textarea.addEventListener("keydown", handleKeyDown);
-    textarea.addEventListener("keyup", handleKeyUp);
-    textarea.addEventListener("click", handleClick);
-    textarea.addEventListener("blur", handleBlur);
+    host.addEventListener("keydown", handleKeyDown);
+    host.addEventListener("keyup", handleKeyUp);
+    host.addEventListener("click", handleClick);
+    host.addEventListener("blur", handleBlur);
     // 打字机模式开启时，初始居中
     // 但模式切换时跳过：applyScroll 正在恢复滚动位置，scrollCursorToCenter 的 smooth
     // 滚动会覆盖 applyScroll 的 instant 设置（smooth 是异步多帧的）
@@ -885,12 +1515,13 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     if (!shouldSkipInitialScrollToCenter(isRestoringScrollRef.current, typewriterModeRef.current)) scrollCursorToCenter();
 
     return () => {
-      textarea.removeEventListener("keydown", handleKeyDown);
-      textarea.removeEventListener("keyup", handleKeyUp);
-      textarea.removeEventListener("click", handleClick);
-      textarea.removeEventListener("blur", handleBlur);
+      host.removeEventListener("keydown", handleKeyDown);
+      host.removeEventListener("keyup", handleKeyUp);
+      host.removeEventListener("click", handleClick);
+      host.removeEventListener("blur", handleBlur);
     };
-  }, [typewriterMode, viewMode, forceUpdateKey]);
+  }, [typewriterMode, viewMode, forceUpdateKey, sourceGeometry, sourceSurface]);
+
 
   const justEnteredSplitRef = useRef(false);
 
@@ -1070,14 +1701,36 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     freezePrevShownRef.current = previewShown;
     if (modeChanged || !shownChanged) return;
     if (viewMode !== "edit") return;
-    // TODO(v0.18): CM6 能力缺口 — 预览开合时的滚动冻结（记录开合前像素/锚点）。当前 CM6 表现：不冻结 → 开合瞬间可能有一次位置跳动 | 用户可感知度：低 | 建议优先级：P2
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
+    /**
+     * ═══ v0.17.0 P1-3：冻结分支的**第二处同源缺陷**（"结果巧合、机制未生效"）═══
+     *
+     * 旧写法：
+     * ```ts
+     * const textarea = sourceTextareaRef.current;
+     * if (!textarea) return;                       // CM6 下是 div（非 null）→ 不 return
+     * const frozenTop = textarea.scrollTop;         // 读的是**宿主 div** 的 scrollTop（恒 0）
+     * const anchor = captureTextAnchor(textarea, textarea.clientHeight / 2);  // 空操作
+     * ```
+     * 后果：A 流 E1「关/开预览后左屏位置保留，Δ=0px」判 PASS，**其实是巧合**
+     * （开合只改宽度、宿主 div 的 scrollHeight 未变、浏览器没有钳位），
+     * 一旦宽度变化引起重排就会暴露。这类「结果对了但机制没跑」的 PASS 比 FAIL 更危险
+     * —— 它会给后续维护者虚假信心（缺陷详报 §6 的原话）。
+     *
+     * 现在：
+     * - `ta` 经**类型判定**（CM6 下为 null），镜像/锚点路径只对它生效；
+     * - `host` 是事件宿主（CM6 下事件从 `.cm-content` 冒泡上来，滚轮/按键都能收到）；
+     * - 读像素/写像素/采锚/还锚一律经 `sourceGeometry`（CM6 走 `scrollDOM` + `coordsAtPos`）。
+     */
+    const host = sourceGeometry.host();
+    if (!host) return;
+    /** 真 textarea（类型判定）；CM6 下为 null —— 下面的 mirror 路径只对它生效 */
+    const ta = sourceGeometry.realTextarea();
     // 记录开合前的滚动像素与**视口中央内容锚点**。
     // 必须用 layout effect：此时 DOM 已提交、浏览器尚未绘制，宽度过渡还没走第一帧，
     // 读到的 clientWidth/scrollTop 仍是用户眼前的真实状态。
-    const frozenTop = textarea.scrollTop;
-    const frozenMax = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+    const frozenTop = sourceGeometry.scrollTop();
+    const frozenMetrics = sourceGeometry.metrics();
+    const frozenMax = Math.max(0, frozenMetrics.scrollHeight - frozenMetrics.clientHeight);
     // 是否"在底部"：滚动位置距 max 不足 2px 视为贴底（用户拖动到底时的亚像素误差）
     const atBottom = frozenMax > 0 && frozenTop >= frozenMax - 2;
     // 顶部同理：贴顶时用户期望继续贴顶，中央锚点反而会把文档往下推
@@ -1085,7 +1738,9 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     // 非底部/顶部才取中央锚点：两端由 atBottom/atTop 单独处理
     const anchor = atBottom || atTop
       ? null
-      : captureTextAnchor(textarea, textarea.clientHeight / 2);
+      : ta
+        ? captureTextAnchor(ta, ta.clientHeight / 2)
+        : sourceGeometry.captureAt(frozenMetrics.clientHeight / 2);
     const until = performance.now() + PREVIEW_TOGGLE_FREEZE_MS;
     scrollFreezeRef.current = { scrollTop: frozenTop, until, atBottom, anchor, programTop: frozenTop };
     let cancelled = false;
@@ -1103,9 +1758,9 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       const cur = scrollFreezeRef.current;
       if (cur && cur.until === until) scrollFreezeRef.current = null;
     };
-    textarea.addEventListener("wheel", abort, { passive: true });
-    textarea.addEventListener("pointerdown", abort, { passive: true });
-    textarea.addEventListener("touchstart", abort, { passive: true });
+    host.addEventListener("wheel", abort, { passive: true });
+    host.addEventListener("pointerdown", abort, { passive: true });
+    host.addEventListener("touchstart", abort, { passive: true });
     /**
      * ⚠️ 不能把任意 keydown 都当"用户滚动"：双击 Shift 开关预览时，
      * 第二次 Shift 的 keydown/keyup 可能落在冻结窗口内 → 会把刚刚开始的还原取消掉，
@@ -1123,7 +1778,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         abort();
       }
     };
-    textarea.addEventListener("keydown", onKeyDown);
+    host.addEventListener("keydown", onKeyDown);
     /**
      * 单次还原：只**定位**，**不清窗口**。
      *
@@ -1134,35 +1789,127 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
      *
      * 三种口径（实测决定，见 scrollFreezeRef 的字段注释）：
      * - 原来**在底部** → 对齐到**当前新的** `max`（贴底语义，不能离底）；
-     * - 非底部且有中央锚点 → 用 `restoreTextAnchor` 把"中央那行文字"拉回中央
+     * - 非底部且有中央锚点 → 把"中央那行文字"拉回中央
      *   （宽度过渡每一帧都调用，长段落重排后仍锁定同一内容）；
      * - 测量不可用 → 退回原像素值（安全兜底）。
+     *
+     * ## ═══ v0.17.0 第三轮 · 用户第 12 项：**别跟 CM6 的 measure 对着拉** ═══
+     *
+     * ### 缺陷（逐帧 + scrollTop 写入打桩实测，`scripts/_tmp-toggle-writer.mjs`）
+     * 开合期间同一帧里出现**两笔方向相反**的写入：
+     * ```
+     * 4788 → 4615   我们的 setScrollTop（还原到锚点）
+     * 4615 → 4557   CM6 内部 On.measure（宽度变化后 heightMap 重估，它自己钳位）
+     * 4557 → 4615   我们的 setScrollTop（又拉回来）
+     * ```
+     * 逐帧结果：`scrollTop` 单帧最大跳变 **231px**、**方向反转 4 次**。
+     * 用户看到的就是"文档抖一下"。
+     *
+     * ### 为什么不能靠"每帧硬拉回"
+     * CM6 的 `measure()` 是**渲染事实**：宽度变了 → 行高/软换行变了 → 滚动坐标系的
+     * 换算基准变了，它必须钳位才不至于让视口悬在文档外。
+     * 我们每帧都把它拉回"旧像素对应的位置"，它下一帧又钳一次 →
+     * **两个写者互相覆盖**，形成 231px 的往复。这正是 R2 「多个写入者」教训的又一次复用。
+     *
+     * ### 采用的策略：**接受钳位，但守护内容**
+     * 1. 写完立刻**回读真实值**（浏览器/CM6 可能钳位）；
+     * 2. 用**内容锚**（视口中央那一行的字符偏移）复核：钳位后中央内容是否还落在
+     *    `TOLERANCE_PI` 段以内；
+     * 3. 只有**真的偏离**时才补一次修正，并把目标夹到 `[0, max]` 的合法区间。
+     *
+     * 这样：CM6 钳位不会被打断（无往复），而用户视野也不会被拽到别处
+     *（偏离超阈值仍然纠正 —— 满足"保住下限"的要求）。
      */
-    const restore = () => {
+    /**
+     * 钳位容忍度：目标位置与"CM6 钳位后的真实位置"相差超过这么多**像素**才补修正。
+     *
+     * 为什么必须有容忍度、且不能是 0（这是本项的核心取舍）：
+     * 宽度过渡期间 CM6 每帧都要 `measure()`。它按**渲染事实**钳位 scrollTop，
+     * 我们若每帧把它拽回"旧像素对应的位置"，就形成两个写者互相覆盖 ——
+     * 实测 `scrollTop` 单帧跳变 **231px**、方向反转 **4 次**（用户看到的"抖"）。
+     *
+     * 取值依据：一行 ≈ 28.8px（默认字号），2 行 ≈ 58px，取 **60px** 作为
+     * "用户能明显察觉视口跑偏"的门槛。低于它的钳位一律**接受**
+     *（CM6 的测量比我们的像素换算更接近渲染事实）。
+     */
+    const CLAMP_TOLERANCE_PX = 60;
+
+    /**
+     * 本帧是否已经写过一次（每帧最多写一次）。
+     *
+     * ## 为什么需要"每帧一写"上限（实测决定性证据）
+     *
+     * 逐帧 + scrollTop 写入打桩（`scripts/_tmp-toggle-writer.mjs`）抓到，关闭预览期间
+     * **同一段窗口内两方交替写了 7 次**：
+     * ```
+     * 4788 → 4615   我们 setScrollTop
+     * 4615 → 4557   CM6 Tn.measure   ← 按新布局钳位
+     * 4557 → 4471   CM6 Tn.measure
+     * 4471 → 4442   我们 setScrollTop  ← 又拉
+     * 4442 → 4558   我们 setScrollTop  ← 反方向再拉（阈值判断抖动导致的来回）
+     * ```
+     * 我们是 `rAF 链 ×3 + 260ms + 620ms + 1020ms` 五个入口，
+     * 而 CM6 的 `measure()` 也在同一时间段跑 —— 写入次数越多，往复越多。
+     *
+     * 因此：**每个动画帧最多写一次**，把写者数量降到最低。
+     * CM6 的 measure 仍然可以写（它是渲染事实），我们只负责"偏太多时纠一次"。
+     */
+    let lastWriteFrame = -1;
+    const canWriteThisFrame = () => {
+      const f = Math.round(performance.now() / 16);
+      if (f === lastWriteFrame) return false;
+      lastWriteFrame = f;
+      return true;
+    };
+
+    /**
+     * 只在**真的偏了**的时候还原（而不是每帧无条件还原）。
+     *
+     * @param force finalize 时用 true：无论如何都还原一次（收尾必须是精确的）
+     */
+    const restore = (force = false) => {
       if (cancelled || abortedByUser) return;
-      // TODO(v0.18): CM6 能力缺口 — 冻结窗口内的位置恢复。当前 CM6 表现：跳过恢复，开合后位置不精确 | 用户可感知度：低 | 建议优先级：P2
-      const ta = sourceTextareaRef.current;
-      if (!ta) return;
       // 确认窗口确实还属于本次（复开关时会被新值覆盖 → 交给最新那次）
       const cur = scrollFreezeRef.current;
       if (!cur || cur.until !== until) return;
+      // 非收尾的中间帧：每帧最多写一次（见 canWriteThisFrame 的注释）
+      if (!force && !canWriteThisFrame()) return;
+      const m = sourceGeometry.metrics();
       isFrozenRestoreRef.current = true;
       try {
         if (cur.atBottom) {
-          const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
-          if (Math.abs(ta.scrollTop - max) > 0.5) ta.scrollTop = max;
-        } else if (cur.anchor) {
-          restoreTextAnchor(ta, cur.anchor);
-        } else {
-          const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
-          const target = Math.min(Math.max(0, cur.scrollTop), max);
-          if (Math.abs(ta.scrollTop - target) > 0.5) ta.scrollTop = target;
+          const max = Math.max(0, m.scrollHeight - m.clientHeight);
+          if (force || Math.abs(sourceGeometry.scrollTop() - max) > CLAMP_TOLERANCE_PX) {
+            sourceGeometry.setScrollTop(max);
+          }
+          return;
+        }
+        if (cur.anchor) {
+          /**
+           * 先算"把锚点送回原位"需要写多少（不写），再决定要不要写。
+           *
+           * 这与"先写再回读"不同：写一次就已经产生了视觉位移，
+           * 哪怕随后又拉回来，用户也看到了那一帧的抖。所以**先算后写**。
+           */
+          const want = sourceGeometry.scrollTopForAnchor(cur.anchor);
+          const now = sourceGeometry.scrollTop();
+          if (want !== null && (force || Math.abs(now - want) > CLAMP_TOLERANCE_PX)) {
+            // 夹到合法区间，避免把越界值交给 CM6 再被它钳一次（又是一次可见跳变）
+            const max = Math.max(0, m.scrollHeight - m.clientHeight);
+            sourceGeometry.setScrollTop(Math.max(0, Math.min(max, want)));
+          }
+          return;
+        }
+        const max = Math.max(0, m.scrollHeight - m.clientHeight);
+        const target = Math.min(Math.max(0, cur.scrollTop), max);
+        if (force || Math.abs(sourceGeometry.scrollTop() - target) > CLAMP_TOLERANCE_PX) {
+          sourceGeometry.setScrollTop(target);
         }
       } finally {
         isFrozenRestoreRef.current = false;
       }
       // 记录写入后的**真实**读数（浏览器可能钳位/取整），供诊断与测试断言
-      cur.programTop = ta.scrollTop;
+      cur.programTop = sourceGeometry.scrollTop();
     };
 
     /**
@@ -1182,7 +1929,8 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       const expected = frozen ? frozen.scrollTop : 0;
       const wasAtBottom = frozen ? frozen.atBottom : false;
       const centerAnchor = frozen ? frozen.anchor : null;
-      restore();
+      // 收尾必须是精确的 → force=true 绕过容忍度
+      restore(true);
       const cur = scrollFreezeRef.current;
       if (cur && cur.until === until) scrollFreezeRef.current = null;
       /**
@@ -1233,20 +1981,21 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       tries = 4,
     ) => {
       if (cancelled || abortedByUser) return;
-      // TODO(v0.18): CM6 能力缺口 — 冻结解除后的位置还原。当前 CM6 表现：跳过 → 开合后滚动位置不精确 | 用户可感知度：低 | 建议优先级：P2
-      const ta = sourceTextareaRef.current;
-      if (!ta) return;
+      // v0.17.0 P1-3：同一处同源缺陷（旧写法 `if (!ta) return;` 在 CM6 下拿到 div
+      // 继续执行、`restoreTextAnchor(div, …)` 空操作）→ 现在经 `sourceGeometry` 分派。
+      const m = sourceGeometry.metrics();
       isFrozenRestoreRef.current = true;
       try {
         if (atBottom) {
-          const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
-          if (Math.abs(ta.scrollTop - max) > 0.5) ta.scrollTop = max;
+          const max = Math.max(0, m.scrollHeight - m.clientHeight);
+          if (Math.abs(sourceGeometry.scrollTop() - max) > 0.5) sourceGeometry.setScrollTop(max);
         } else if (anchor) {
-          restoreTextAnchor(ta, anchor);
+          if (ta) restoreTextAnchor(ta, anchor);
+          else sourceGeometry.restore(anchor);
         } else {
-          const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+          const max = Math.max(0, m.scrollHeight - m.clientHeight);
           const want = Math.min(Math.max(0, expected), max);
-          if (Math.abs(ta.scrollTop - want) > 0.5) ta.scrollTop = want;
+          if (Math.abs(sourceGeometry.scrollTop() - want) > 0.5) sourceGeometry.setScrollTop(want);
         }
       } finally {
         isFrozenRestoreRef.current = false;
@@ -1301,14 +2050,26 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     };
     restores.push(teardown);
     {
-      // TODO(v0.18): CM6 能力缺口 — 分屏右→左映射的源码几何需 `coordsAtPos`/`getMetrics`。当前 CM6 表现：右屏驱动左屏仍可用，但落点精度下降（走百分比兜底） | 用户可感知度：中 | 建议优先级：P1
-      const ta = sourceTextareaRef.current;
-      lastScrollHeight = ta ? ta.scrollHeight : -1;
-      if (ta && typeof ResizeObserver !== "undefined") {
+      /**
+       * v0.17.0 P1-3：关窗时机靠 `ResizeObserver` 盯"内容高度变没变"。
+       *
+       * 旧写法 `const ta = sourceTextareaRef.current; if (ta) ro.observe(ta);`
+       * 在 CM6 下观察的是**宿主 div**：它的 `scrollHeight === clientHeight`（不滚），
+       * 内容变高体现在 `view.scrollDOM` 上 → **观察器永远收不到回调** →
+       * 关窗只会按固定定时器走，实测 f≈1427ms 的 iframe 异步渲染写入就漏了。
+       *
+       * 现在：观察**真实滚动容器**——真 textarea 就是它自己；CM6 是宿主 div 也不行，
+       * 因此改用「轮询式校验」：`restore()` 本身幂等且只读 surface metrics，
+       * 由 rAF 链 + 定时器按 `PREVIEW_TOGGLE_SETTLE_MS` 的静默窗口判断即可。
+       * 保留 `ro` 只为「真 textarea」这条既有实现（一行未改）。
+       */
+      const hostEl = ta; // 只有真 textarea 才具备"内容高度在自身 scrollHeight 上体现"的语义
+      lastScrollHeight = ta ? ta.scrollHeight : sourceGeometry.metrics().scrollHeight;
+      if (hostEl && typeof ResizeObserver !== "undefined") {
         ro = new ResizeObserver(() => {
           const cur = scrollFreezeRef.current;
           if (!cur || cur.until !== until) return;
-          const sh = ta.scrollHeight;
+          const sh = hostEl.scrollHeight;
           // 只有"内容高度真的变了"才续期（宽度变化只会改 clientWidth，不改内容高度）
           if (Math.abs(sh - lastScrollHeight) < 0.5) return;
           lastScrollHeight = sh;
@@ -1320,7 +2081,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
           }
           armSettle();
         });
-        ro.observe(ta);
+        ro.observe(hostEl);
       }
       // 首次等待：固定窗口走完后再给一个"静默期"
       armSettle();
@@ -1328,10 +2089,10 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     return () => {
       cancelled = true;
       restores.forEach((f) => f());
-      textarea.removeEventListener("wheel", abort);
-      textarea.removeEventListener("pointerdown", abort);
-      textarea.removeEventListener("touchstart", abort);
-      textarea.removeEventListener("keydown", onKeyDown);
+      host.removeEventListener("wheel", abort);
+      host.removeEventListener("pointerdown", abort);
+      host.removeEventListener("touchstart", abort);
+      host.removeEventListener("keydown", onKeyDown);
       // effect 卸载（再次开关 / 离开编辑模式）：清掉本窗口，避免守卫长期生效
       const cur = scrollFreezeRef.current;
       if (cur && cur.until === until) scrollFreezeRef.current = null;
@@ -1905,8 +2666,20 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     if (!iframe) return;
     const previewWin = iframe.contentWindow;
     if (!previewWin) return;
-    // TODO(v0.18): CM6 能力缺口 — 分屏右→左联动需读取源码滚动几何。当前 CM6 表现：右屏滚动仍能驱动左屏（经 surface 指标），但落点精度下降 | 用户可感知度：中 | 建议优先级：P1
-    const textarea = sourceTextareaRef.current;
+    /**
+     * v0.17.0 P1-3：这一处旧写法是 `const textarea = sourceTextareaRef.current;`
+     * （类型标注骗人，CM6 下是 div）。它在下面只被用于三件**与 DOM 元素有关**的事：
+     * ① 绑 wheel/pointerdown/touchstart 判"用户接管"；② `ResizeObserver.observe`。
+     * 旧代码两处都套 `if (textarea)`，CM6 下因此**双双跳过** →
+     * 「realign 期间用户主动滚动的判定不生效」+「拖分割条不即时重对齐」。
+     *
+     * 现在：事件宿主用 `sourceGeometry.host()`（CM6 的事件从 `.cm-content` 冒泡到宿主，
+     * 与 textarea 语义一致）；宽度变化观察**宿主 div**（宽度变化本来就体现在它身上）。
+     * 真 textarea 得到的仍是它自己，行为不变。
+     */
+    const textarea = sourceGeometry.realTextarea();
+    /** 事件/布局宿主：真 textarea 就是它自己；CM6 是中性 div（同样能收到冒泡事件） */
+    const sourceHostEl = sourceGeometry.host();
 
     const lock = createScrollDirectionLock();
 
@@ -2029,9 +2802,46 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         /**
          * A3：走统一入口 `measureLineAxis`（textarea 源用 mirror；CM6 源用 lineBlockAt 估算，
          * 见 sourceLineAxis.ts 的 R2 处置）。**纯函数层 buildSourceLineAxis 一行未改。**
+         *
+         * ═══ v0.17.0 P1-3：**本缺陷本体**（旧写法 `textarea ? … : …`）═══
+         *
+         * `textarea` 来自 `const textarea = sourceTextareaRef.current;`，其**标注类型**
+         * 是 `HTMLTextAreaElement | null`，但 CM6 路径下装着 `<div class="source-editor-cm6">`
+         * —— div 是 **truthy（非 null）**，于是这个三元**永远走左边**：
+         *
+         * ```
+         * ① 判真 → 走 textareaMeasureSource(div)
+         * ② 其内部 measureSourceLineAxis 读 div.value → undefined → 首行守卫返回 null
+         * ③ 行轴 axis = null
+         * ④ estimateTopSourceLine 的 `lineTops === undefined` → 退回纯线性公式
+         *    （软换行感知归零）
+         * ⑤ 右屏位置 = 总行数 × 滚动百分比 → 与左屏真实内容脱钩
+         * ```
+         *
+         * 决定性证据（缺陷详报 §1.3）：线性公式预测 56.7/114/171/228 vs 实测右屏顶块
+         * 55/114/170/228（差 ≤1.7 行）—— **行轴一行都没被使用**。
+         * 最荒诞的地方：`surfaceMeasureSource`（专为 CM6 写的 `lineBlockAt` 实现，
+         * 含完整的「视口内实测 + 视口外估算」R2 处置）**写好了，但永远不会被调用**。
+         *
+         * ## 为什么不写 `textarea ? … : …` 的"修好版"
+         * 正确的类型判定是 `typeof el.value === "string"`（项目范式：`SourcePane.tsx:454`），
+         * 而不是"有没有值"。本文件把它收在 `sourceGeometry.realTextarea()` 里，
+         * 并把 **CM6 分支写成 `else` 的默认路径** —— 这样"忘写 CM6 分支"在结构上
+         * 不可能发生（不是靠人记得写三元）。
+         *
+         * 同时**保留** textarea 的 mirror 快路径（真 textarea 下行为与 v0.16.0 逐字节一致），
+         * 只有明确判定"不是真 textarea"时才走 surface 源。
          */
-        const source = textarea ? textareaMeasureSource(textarea) : surfaceMeasureSource(sourceSurface);
-        const measured = measureLineAxis(source, topLevelBlockStartLines(previewSourceMarkdown));
+        const realTextarea = asRealTextarea(textarea);
+        const source = realTextarea
+          ? textareaMeasureSource(realTextarea)
+          : surfaceMeasureSource(sourceSurface);
+        markAxisSource(realTextarea ? "textarea" : "surface");
+        const measured = measureLineAxis(
+          source,
+          topLevelBlockStartLines(previewSourceMarkdown),
+          reportAxisDegrade,
+        );
         // 长度必须与"当前逻辑行数"严格一致，否则是过期测量（内容刚变、DOM 未更新）→ 丢弃
         if (measured && measured.totalLines === total) axis = measured.axis;
       } catch {
@@ -2070,6 +2880,159 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
      *
      * 回退链：块锚点映射 → 百分比映射 → 无（测量不到就放弃，不写坏滚动位置）。
      */
+    /**
+     * 上一次"已被接受"的右屏目标值 + 当时的左屏 scrollTop。
+     *
+     * ## 为什么要记这两个数（本轮最关键的判据来源）
+     * 前两种判据都试过、都拦不住那个 +188px 猛跳：
+     * - **自洽性校验**（正向映射→逆映射回源码行）**无效** —— 锚点表整体平移后，
+     *   正向与反向是同一张表的互逆运算，反算回去仍然"自洽"。
+     * - **看 `tags` / `scrollHeight`** 也无效 —— 实测这两者全程恒定
+     *   （`tags=61`、`iframe scrollHeight=6130` 一帧都没变），表已经被换成另一套几何了。
+     *
+     * 唯一还站得住的判据是**物理约束**：两屏是同一份内容的两种排版，
+     * 左屏平移 `ΔL` 像素时右屏只应在 `ΔL × 高度比` 同量级移动。
+     * 实测那次猛跳：左屏 **+13px**，右屏 **+188px** = 14.5 倍，物理上不可能。
+     * （块锚点映射在正常时比值 ≈ 0.68，见右屏 20px / 左屏 28px 的实测。）
+     *
+     * ## ═══ v0.17.0 P1 返修：两个基准**每帧都更新（含被钳制的帧）** ═══
+     * 旧二值拒绝在拒写时不动基准 → `dLeft` 从陈旧基准累积、`allowed` 越攒越大
+     * → 累计跳变整包放行（延迟释放，实测单帧最大 46px + 1 次方向反转）。
+     * 连续钳制下基准跟帧走，"欠账"每帧清偿，陈旧基准不可能出现。
+     */
+    let lastAcceptedPreviewTarget: number | null = null;
+    let lastAcceptedSourceTop = 0;
+
+    /**
+     * 计算"当前左屏位置应指挥右屏到哪"（**纯计算，不写 DOM**）。
+     *
+     * @returns 目标 scrollTop（物理约束已按"每帧 ≤ allowed"有界连续钳制）；
+     * **测不出映射时返回 null**（调用方跳过本次写入，绝不写 0）
+     */
+    const computePreviewTarget = (preview: HTMLElement): number | null => {
+      const sourceTop = sourceSurface.getScrollTop();
+      try {
+        const anchors = collectAnchors();
+        if (anchors) {
+          const topLine = currentTopSourceLine();
+          const next = mapSourceLineToPreviewScroll(
+            anchors,
+            topLine,
+            preview.clientHeight,
+          );
+          if (next !== null && Number.isFinite(next)) {
+            /**
+             * ## ═══ v0.17.0 P1（右屏回声返修）：二值拒绝 → **有界连续钳制** ═══
+             *
+             * ### R5 之后仍实测到的"延迟释放"（本返修的根因）
+             * 旧逻辑（R4/R5）在 `dRight > allowed` 时 `return null` **拒写**，但
+             * `lastAcceptedPreviewTarget / lastAcceptedSourceTop` 两个基准**都不更新**：
+             * - 下一帧 `dLeft` 从**陈旧基准**开始累积 → `allowed = max(ALLOW_ABS, dLeft×3)`
+             *   越攒越大 → 累计的跳变最终被**整包放行**；
+             * - 实测残留：3 个非内容驱动脱同步帧 + 1 次方向反转，单帧最大 **46px**
+             *   —— 用户看到"右屏先不动、再猛跳"的回声观感。
+             *
+             * ### 新逻辑：每帧最多走 `allowed`，平滑追上
+             * const delta = next - lastAcceptedPreviewTarget;
+             * const clamped = lastAcceptedPreviewTarget + sign(delta) * min(|delta|, allowed);
+             * - 位移在阈值内 → 原值放行（正常跟随零损失）；
+             * - 超阈值 → 本帧只走 `allowed`，余量由后续帧逐帧追上（右屏**连续移动**，
+             *   不再"停一停再猛跳"，也天然消除方向反转）；
+             * - **两个基准每帧都更新（含被钳制的帧）**→ 基准永不陈旧，
+             *   "拒写攒欠账 → 整包放行"的延迟释放在机制上不可能再发生。
+             *
+             * 阈值沿用 R5 真机验证结论：`ALLOW_RATIO = 3`、`ALLOW_ABS = 16`
+             * （60 曾在动画起始帧放过 28.66px 残余错跳）。常量与钳制公式由
+             * `src/utils/scrollSyncPolicy.ts` 共享模块提供 —— **生产与测试同源**，
+             * 测试断言行为（真值表 + 时序回放），不再硬编码源码文本里的数值。
+             * 推导表见该模块文件头。
+             */
+            const dLeft = Math.abs(sourceTop - lastAcceptedSourceTop);
+            const allowed = previewAllowedMove(dLeft);
+            const clamped = clampPreviewTarget(lastAcceptedPreviewTarget, next, allowed);
+            if (lastAcceptedPreviewTarget !== null && clamped !== next) {
+              // 被钳制的帧（有界追帧进行中）留痕，便于真机探针确认"逐帧追上"形态
+              traceScroll("preview-sync-clamp", {
+                reason: "bounded-chase",
+                topLine, next, clamped, dLeft, allowed,
+              });
+            }
+            lastAcceptedPreviewTarget = clamped;
+            lastAcceptedSourceTop = sourceTop;
+            return clamped;
+          }
+          /**
+           * 有锚点表但映射不出目标（表为空/退化）→ **不退回百分比**：
+           * 纯比例映射完全无视块边界，在两屏高度比不同的文档上必然偏一大截
+           * （实测百分比给 3213、块锚点给 3032，差 181px —— 正是那次猛跳的量级）。
+           * 跳过一帧的代价是"右屏这一帧不动"，远小于"动错再弹回"。
+           */
+          return null;
+        }
+      } catch {
+        /* 测量异常 → 落到下面 */
+      }
+      /**
+       * **只有完全拿不到锚点表**（`collectAnchors` 返回 null，例如 iframe 还没贴标）
+       * 时才退回百分比。这是 v0.13.x 的兜底语义，保留不动。
+       */
+      const m2 = sourceSurface.getMetrics();
+      const pct = computeSyncScrollTop(
+        sourceTop, m2.scrollHeight, m2.clientHeight,
+        preview.scrollHeight, preview.clientHeight,
+      );
+      if (!Number.isFinite(pct)) return null;
+      lastAcceptedPreviewTarget = pct;
+      lastAcceptedSourceTop = sourceTop;
+      return pct;
+    };
+
+    /**
+     * 左 → 右同步。
+     *
+     * ## ═══ v0.17.0 第四轮 · 用户第 4 项：「编辑模式下按回车页面明显抖动」═══
+     *
+     * ### 缺陷（逐帧 + iframe-realm 写入打桩实测，`scripts/v0170-r4-enter-writer.mjs`）
+     * 打字机开启、光标在视口下部时按回车，**左屏是平滑的（5 帧 / 28px / 反转 0）**，
+     * 但**右屏分屏预览先单帧猛跳、214ms 后又反向弹回**：
+     * ```
+     * 左屏 st : 4243 → 4248 → 4263 → 4268 → 4270 → 4271     （smooth，正确）
+     * 右屏 deST: 3014 → 3203 → 3215 → 3218 → 3220 → 3035
+     *            ↑ +189（一帧）                ↑ −185（回弹）← 用户看到的"抖"
+     * 同帧对照：右屏 +188 那一帧，左屏只 +15px ⇒ 比值 12.5
+     * ```
+     * 抓到的写入栈（**未压缩构建**才能读出的符号名）：
+     * ```
+     * +189 帧：setScrollTop ← syncToPreview ← handler2（CM6 onDidScroll）
+     * −185 帧：setScrollTop ← syncToPreview ← realignLayoutNow ← syncPreviewAfterToggle
+     * ```
+     *
+     * ### 机制（**不是打字机的错，也不是右屏渲染的错**）
+     * 1. 打字机 `smooth` 让左屏 `scrollTop` 每帧变化 → CM6 派发 scroll →
+     *    `syncToPreview()` 被调用 5 次。**这部分是对的**（右屏应当逐帧跟随，
+     *    实测就是 189→12→3→2 的递减跟随，观感平滑）；
+     * 2. 但**右屏那几次 `preview.scrollTop =` 派发的 scroll 事件要晚很多才到**。
+     *    它们到达时，方向锁 `SPLIT_SCROLL_LOCK_MS = 250ms` 已经过期
+     *    （`splitScrollSync.ts` 文件头写过：这道锁是为吃"程序写入的回声"，
+     *    但一次 smooth 动画比 250ms 还长）→ `syncToSource()` 把回声**当成用户滚右屏**
+     *    → 反算写左屏 → 触发 `realignLayoutNow()` → `syncPreviewAfterToggle()`（force）
+     *    → 用动画结束后的正确映射**再写一次右屏** = 视觉上的"弹回去"。
+     *
+     * 一句话：**抖动不是"动了"，而是"动完又回去"** —— 回弹来自右→左回声反向接管。
+     *
+     * ### 修法（**只加一道时间闸，不动任何映射数学、不动联动逐帧跟随**）
+     * 打字机 smooth 写入时开一个 `TYPEWRITER_SMOOTH_WINDOW_MS` 窗口；
+     * **窗口内 `syncToSource` 直接 return**（见该函数注释）。
+     * 于是回声不会被当成用户操作，`realignLayoutNow` 也不再被误触发。
+     *
+     * ⚠️ **试过但否掉的两种修法**（记下来，别再试）：
+     * - ①「窗口内把右屏写入合并成动画结束后写一次」：回弹确实归 0，但右屏变成
+     *   "左屏停了之后才跳一下"，实测单帧位移 114px 且与左屏不同帧 —— 观感从"抖"
+     *   变成"顿"，不满足用户"平滑"的诉求。**已回退**。
+     * - ②「把方向锁 `SPLIT_SCROLL_LOCK_MS` 从 250ms 调大到 600ms」：会连带把
+     *   **用户真的切换去滚右屏**也判成回声 → 双向联动出现最长 600ms 死区。
+     *   方向锁是全局共享语义，不该为一个局部动画改它。
+     */
     const syncToPreview = (force = false) => {
       // v0.14.0 第六批：冻结窗口内不把左屏位置推给右屏。
       // 两道原因：① 开关预览不该动任何一侧的阅读位置；② 冻结还原写 scrollTop
@@ -2085,29 +3048,33 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       if (isSyncingScrollRef.current) return;
       isSyncingScrollRef.current = true;
       try {
-        let handled = false;
-        try {
-          const anchors = collectAnchors();
-          if (anchors) {
-            const next = mapSourceLineToPreviewScroll(
-              anchors,
-              currentTopSourceLine(),
-              preview.clientHeight,
-            );
-            if (next !== null && Number.isFinite(next)) {
-              preview.scrollTop = next;
-              handled = true;
-            }
+        const target = computePreviewTarget(preview);
+        if (target !== null) {
+          preview.scrollTop = target;
+          /**
+           * ### 关键：窗口必须从**每一次动画期写入**续期（不是只在动画发起时开一次）
+           *
+           * 实测时序（`scripts/v0170-r4-enter-rightcause.mjs`）：
+           * ```
+           * t=223ms  左屏 smooth 动画首帧（我们发起）
+           * t≈300ms  动画最后一帧 → 我们最后一次写右屏
+           * t=441ms  右屏回声 scroll 事件到达 → 若未拦住就反弹 −185px
+           * ```
+           * 也就是说**回声比"动画最后一帧"还晚约 140ms**（iframe 内部文档的 scroll
+           * 事件经跨文档队列派发，比主文档慢）。
+           *
+           * 若窗口只在发起时开一次（`t=223 + 320 = 543ms`）尚可覆盖，但若动画因
+           * 掉帧拖长到 400ms，末次写入 + 回声就会滑出窗口 → 回弹复现（实测过）。
+           * 因此：**只要还在窗口内（说明这次写入是动画驱动的），就按本次写入时刻续期**。
+           * 于是窗口终点自动变成"最后一次动画写入 + 320ms"，与动画真实时长无关。
+           *
+           * ⚠️ 续期条件必须带 `performance.now() < 窗口` 这个判断，不能无条件续期：
+           * 否则**用户滚轮滚动**（每次滚都写右屏）也会不断续期 → 双向联动被永久
+           * 屏蔽成单向，那是比抖动严重得多的回归。
+           */
+          if (!force && performance.now() < typewriterSmoothUntilRef.current) {
+            typewriterSmoothUntilRef.current = performance.now() + TYPEWRITER_SMOOTH_WINDOW_MS;
           }
-        } catch {
-          handled = false;
-        }
-        if (!handled) {
-          const m2 = sourceSurface.getMetrics();
-          preview.scrollTop = computeSyncScrollTop(
-            sourceSurface.getScrollTop(), m2.scrollHeight, m2.clientHeight,
-            preview.scrollHeight, preview.clientHeight,
-          );
         }
       } finally {
         isSyncingScrollRef.current = false;
@@ -2133,6 +3100,32 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       // 关键事实：开关预览**不改变** textarea 的 scrollHeight（实测两态都是 8833），
       // 内容与可滚动空间都没变 → 左屏本来就不该被写。
       if (isScrollFrozen()) return;
+      /**
+       * ## ═══ v0.17.0 第四轮 · 用户第 4 项：**拦下"右屏回声"反向接管左屏** ═══
+       *
+       * ⚠️ **诚实记录（破坏性对照 ② 的结论，很重要）**：单独把这一行关掉，
+       * 探针 `v0170-r4-enter-rightpane.mjs` **仍然 PASS**（右屏 maxJump=20 / 反转 0）。
+       * 原因是：真正的大幅误写已被 `computePreviewTarget` 的**物理约束
+       * （有界连续钳制）**压成"每帧 ≤ allowed"的有界追帧，写不出 188px 的错跳，
+       * 也就没有"回声 → 反向接管 → 再纠回"这条链。
+       *
+       * ⇒ 这道闸是**纵深防御，不是主修复**。保留它的理由：
+       * 1. 物理约束的 `ALLOW_ABS` 是容忍度，不是绝对正确性 —— 若某天出现
+       *    一次"左屏 ΔL 很大、右屏错写但仍在 `ALLOW_ABS`~3×ΔL 内"的漏网，这道闸还能兜住；
+       *    （v0.17.0 R5：`ALLOW_ABS` 已由 60 降到 16 —— 60 曾放过 28.66px 的残余错跳，
+       *      详见 `computePreviewTarget` 里的推导表。这里不写死数值，避免再次不同步。）
+       * 2. 它与"程序写入的回声不该被当成用户操作"这条既有原则一致
+       *    （`splitScrollSync.ts` 的方向锁本来就是同一个目的，只是 250ms 不够长）。
+       *
+       * 判据用时间窗口而不是 `isSyncingScrollRef`：后者是**同步重入**守卫，
+       * 而这些 scroll 事件在下一个任务里才到，那时 ref 早已复位
+       * （与 `splitScrollSync.ts` 文件头记的"异步 scroll 事件绕过同步锁"是同一类问题）。
+       *
+       * ⚠️ 只在"打字机平滑窗口"内屏蔽，**不动方向锁本身**：
+       * 用户真去滚右屏时窗口早已结束（窗口最长 320ms，且只在打字机写入时开启），
+       * 双向联动语义不变。
+       */
+      if (performance.now() < typewriterSmoothUntilRef.current) return;
       const now = performance.now();
       if (!shouldAcceptScroll(lock, "preview", now)) return;
       markScrollSource(lock, "preview", now);
@@ -2232,13 +3225,19 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       userScrolledRealign = true;
     };
     const realignStartedAt = performance.now();
-    // 用户接管判定：需绑具体元素（判据 2）。有 textarea 时绑它；
-    // CM6 下改绑 surface 的滚动容器能力尚不覆盖 wheel/pointer，故此处仅在无元素时跳过
-    // —— 影响是"realign 期间用户主动滚动的判定不生效"，属 A 类降级（realign 仍会按时序结束）。
-    if (textarea) {
-      textarea.addEventListener("wheel", markRealignUser, { passive: true });
-      textarea.addEventListener("pointerdown", markRealignUser, { passive: true });
-      textarea.addEventListener("touchstart", markRealignUser, { passive: true });
+    /**
+     * 用户接管判定：绑**源码面宿主**（真 textarea 就是它自己；CM6 是中性 div，
+     * 滚轮/指针事件从 `.cm-scroller` / `.cm-content` 冒泡到宿主 → 同样能收到）。
+     *
+     * v0.17.0 P1-3：旧代码是 `if (textarea) textarea.addEventListener(...)` ——
+     * CM6 下 `textarea` 是 div（truthy），所以**这行其实也生效了**（绑到宿主 div）。
+     * 但那个 `textarea` 变量声明类型是 `HTMLTextAreaElement`，语义上是"类型谎言"；
+     * 现在改成显式 `sourceHostEl`，让"绑宿主"这件事是**有意的**而不是巧合。
+     */
+    if (sourceHostEl) {
+      sourceHostEl.addEventListener("wheel", markRealignUser, { passive: true });
+      sourceHostEl.addEventListener("pointerdown", markRealignUser, { passive: true });
+      sourceHostEl.addEventListener("touchstart", markRealignUser, { passive: true });
     }
     const realignTimers: Array<ReturnType<typeof setTimeout>> = [];
     const runRealign = (delayMs: number) => {
@@ -2395,11 +3394,17 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
           })
         : null;
     /**
-     * ResizeObserver 必须 observe 一个**真实元素**。有 textarea 时 observe 它（原行为）；
-     * CM6 下没有元素可 observe → 跳过。影响：拖分割条时不即时重对齐，
-     * 但 `syncPreviewAfterToggle` 与右屏自身 ResizeObserver 仍会触发 → **A 类降级**。
+     * ResizeObserver 必须 observe 一个**真实元素**。
+     *
+     * v0.17.0 P1-3：旧代码 `if (textarea) layoutObserver?.observe(textarea);`
+     * —— CM6 下 `textarea` 是宿主 div（truthy）→ 其实也 observe 了；
+     * 但那不是"内容宽度变化"的正确观察对象：CM6 的正文列宽变化体现在
+     * `view.scrollDOM` 上（padLeft 变化 → `.cm-line` 重排 → scrollDOM 的 scrollHeight 变），
+     * 而宿主 div 的盒子尺寸在开合预览时也会变，所以**观察宿主仍然有效**
+     * （`layoutKeyOf()` 读的是 surface metrics，任一处变化都会让 key 变）。
+     * 现在显式写成 `sourceHostEl`：语义是"观察源码面可见宿主"，不再是类型巧合。
      */
-    if (textarea) layoutObserver?.observe(textarea);
+    if (sourceHostEl) layoutObserver?.observe(sourceHostEl);
     /**
      * 把"内容就绪 → 重对齐"的入口注册出去（见 `requestPreviewRealignRef` 的注释）。
      * 用 `realignLayoutNow` 而不是裸 `syncToPreview`：它带**右屏就绪闸门**
@@ -2422,10 +3427,20 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       if (requestPreviewRealignRef.current === requestPreviewRealign) {
         requestPreviewRealignRef.current = null;
       }
-      if (textarea) {
-        textarea.removeEventListener("wheel", markRealignUser);
-        textarea.removeEventListener("pointerdown", markRealignUser);
-        textarea.removeEventListener("touchstart", markRealignUser);
+      /**
+       * 解绑必须与上面 `addEventListener` 的**宿主一致**（都用 `sourceHostEl`）。
+       *
+       * v0.17.0 P1-3 自查修正：绑定时已改为显式 `sourceHostEl`，
+       * 但解绑仍写着 `textarea`。当前两者在 textarea / CM6 两种实现下恰好指向同一元素
+       * （真 textarea 时 `sourceHostEl === textarea`；CM6 时 `textarea` 是同一个宿主 div），
+       * 所以**没有实际泄漏**；但这是"靠巧合成立"，一旦将来两者分叉就会静默泄漏监听器
+       * （effect 每次重跑都叠加一组，用户滚一次会触发 N 次 markRealignUser）。
+       * 由 `v0153-preview-realign.test.ts` 的静态契约锁定必须一致。
+       */
+      if (sourceHostEl) {
+        sourceHostEl.removeEventListener("wheel", markRealignUser);
+        sourceHostEl.removeEventListener("pointerdown", markRealignUser);
+        sourceHostEl.removeEventListener("touchstart", markRealignUser);
       }
       cancelAnimationFrame(raf);
       offSourceScroll();

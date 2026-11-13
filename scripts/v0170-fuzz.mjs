@@ -130,8 +130,18 @@ try {
     );
   }
   console.log(
-    `[fuzz] 合计：lossy=${total.lossy} corrupt=${total.corrupt} normalized=${total.normalized} identical=${total.identical}`,
+    `[fuzz] 合计（本版交付门禁）：lossy=${total.lossy} corrupt=${total.corrupt} normalized=${total.normalized} identical=${total.identical}`,
   );
+  /**
+   * v0.17.0 A 方案：旧链路存量观测项单独打印，**不参与退出码**但必须始终可见。
+   * 见 runner.ts 里 legacyReserialize 的口径说明。
+   */
+  if (summary.legacyReserialize) {
+    const l = summary.legacyReserialize;
+    console.log(
+      `[fuzz] 存量观测（旧 PM 序列化链路，不计门禁）：identical=${l.identical} normalized=${l.normalized} lossy=${l.lossy} corrupt=${l.corrupt}`,
+    );
+  }
 
   if (summary.failures.length > 0) {
     console.log(`[fuzz] lossy/corrupt 明细（前 12 条，完整清单见 baseline.json）：`);

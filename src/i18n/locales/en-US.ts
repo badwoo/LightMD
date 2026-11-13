@@ -1049,6 +1049,11 @@ export const enUS: Record<string, string> = {
   "menu.insertMermaid": "Insert Mermaid",
   // v0.12.0 feature 2: format painter + PM context menu items
   "menu.formatPainter": "Format Painter",
+  // v0.17.0 R4 (user decision on issue 7): add a continuous entry to the reading-mode
+  // context menu. Persistent format-painter mode used to be reachable only by double-clicking
+  // a toolbar button, but the toolbar is not rendered in reading mode and right-click items
+  // have no double-click semantics — so armPersistent was dead code there.
+  "menu.formatPainterContinuous": "Format Painter (Continuous)",
   "menu.highlight": "Highlight",
   "menu.underline": "Underline",
   "menu.deleteCodeBlock": "Delete Code Block",
@@ -1067,6 +1072,9 @@ export const enUS: Record<string, string> = {
   "blockMenu.moveDown": "Move Down",
   "blockMenu.clipboardFailed": "Clipboard unavailable or permission denied",
   "formatPainter.hintOnce": "Format Painter: click a target to apply",
+  /* v0.17.0 R4 · #7 D1: explicit feedback for empty snapshot / no selection */
+  "formatPainter.emptySelection": "The selection has no formatting to copy (select formatted text such as bold, heading, or list)",
+  "formatPainter.needSelection": "Select the text whose formatting you want to copy first, then click Format Painter",
   "formatPainter.hintPersistent": "Format Painter: persistent mode ({count} left), press Esc to exit",
   // ─── SlashCommand command menu ───────────────────────────────────
   "command.group.basic": "Basic Blocks",
@@ -1089,6 +1097,27 @@ export const enUS: Record<string, string> = {
   // v0.12.2 P7
   "mermaid.empty": "Double-click to edit Mermaid diagram",
   "mermaid.syntaxError": "Diagram syntax error",
+  // v0.17.0 R3 #10：Mermaid 图表类型下拉菜单文案（与 zh-CN 逐 key 对齐）
+  "mermaid.type.flowchart": "Flowchart",
+  "mermaid.type.sequence": "Sequence Diagram",
+  "mermaid.type.class": "Class Diagram",
+  "mermaid.type.state": "State Diagram",
+  "mermaid.type.er": "Entity Relationship",
+  "mermaid.type.journey": "User Journey",
+  "mermaid.type.gantt": "Gantt Chart",
+  "mermaid.type.pie": "Pie Chart",
+  "mermaid.type.quadrant": "Quadrant Chart",
+  "mermaid.type.timeline": "Timeline",
+  "mermaid.type.mindmap": "Mindmap",
+  "mermaid.type.gitgraph": "Git Graph",
+  "mermaid.type.c4": "C4 Architecture",
+  "mermaid.type.block": "Block Diagram",
+  "mermaid.type.packet": "Packet Diagram",
+  "mermaid.type.kanban": "Kanban",
+  "mermaid.type.xychart": "XY Chart",
+  "mermaid.type.sankey": "Sankey Diagram",
+  "mermaid.type.radar": "Radar Chart",
+  "mermaid.type.treemap": "Treemap",
   "command.table.name": "Table",
   "command.bold.name": "Bold",
   "command.italic.name": "Italic",
@@ -1278,6 +1307,10 @@ export const enUS: Record<string, string> = {
   "syntax.h1": "Heading 1",
   "syntax.h2": "Heading 2",
   "syntax.h3": "Heading 3",
+  // v0.17.0 R3 #3：与 zh-CN 逐 key 对齐
+  "syntax.h4": "Heading 4",
+  "syntax.h5": "Heading 5",
+  "syntax.h6": "Heading 6",
   "syntax.bold": "Bold",
   "syntax.italic": "Italic",
   "syntax.boldItalic": "Bold Italic",
@@ -1414,6 +1447,9 @@ export const enUS: Record<string, string> = {
   "translate.full.cancel": "Cancel translation",
   "translate.full.dismiss": "Dismiss",
   "translate.full.segmentFailed": "This segment failed to translate and was kept as the original text",
+  // v0.17.0 round 3 #9-C: refuse to write back when the translation dropped image markers —
+  // otherwise unmask can't find them and the on-disk base64 is permanently lost.
+  "translate.markerLostNotify": "Translation lost the image reference; original text kept (images are safe)",
   "translate.full.segmentFailedCount": "{count} segment(s) failed and were kept as the original text",
   // v0.6.1 issue 2: undo translation toast
   "translate.undo.label": "Undo translation",

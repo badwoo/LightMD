@@ -485,6 +485,13 @@ function parseHeading(tokens: Token[], index: number): ParseResult {
   const level = parseInt(openToken.tag?.slice(1) || "1", 10);
   let content = "";
 
+  // v0.17.0 T4：Setext 保真——markdown-it 的 heading_open.markup 为 `=` / `-`
+  // 时表示下划线式标题（ATX 则是 `#` 串，见 unified/parse.ts 同款判定）。
+  // 记入节点 attr `raw.setext`，serializer 在**编辑后**仍输出下划线式，
+  // 不再归一化成 ATX（新建标题无 raw → ATX）。
+  const setext = openToken.markup === "=" || openToken.markup === "-";
+  const raw = setext ? { setext: true } : null;
+
   // v0.11.0 B4-5：读取 heading-anchor 插件算出的锚点 id 写入节点 attr。
   // 缺陷背景（P1）：id 此前只写进 token.attrs（影响 markdown-it 渲染），
   // 阅读模式走 PM toDOM 时标题**没有 id** → 文内锚点链接在阅读模式点不动。
@@ -503,14 +510,14 @@ function parseHeading(tokens: Token[], index: number): ParseResult {
     const t = tokens[i];
     if (t.type === "heading_close") {
       return {
-        node: schema.nodes.heading.create({ level, id: idAttr }, parseInline(content)),
+        node: schema.nodes.heading.create({ level, id: idAttr, raw }, parseInline(content)),
         nextIndex: i + 1,
       };
     }
     if (t.type === "inline") content += t.content;
   }
   return {
-    node: schema.nodes.heading.create({ level }, parseInline(content)),
+    node: schema.nodes.heading.create({ level, raw }, parseInline(content)),
     nextIndex: index + 3,
   };
 }
@@ -1065,7 +1072,7 @@ function parseFootnoteBlock(tokens: Token[], index: number): ParseResult {
 // ─── 定义列表 ──────────────────────────────────────────
 // 解析 dl_open 到 dl_close 之间的内容
 // dt_open/dt_close 之间的 inline 作为 definition_term
-// dd_open/dd_close 之间的段落内容作为 definition_description（取第一个段落）
+// dd_open/dd_close 之间的内容作为 definition_description（v0.17.0 T4：block+ 块级子树）
 
 function parseDefinitionList(tokens: Token[], index: number): ParseResult {
   const items: Node[] = [];
@@ -1088,32 +1095,44 @@ function parseDefinitionList(tokens: Token[], index: number): ParseResult {
       if (i < tokens.length && tokens[i].type === "dt_close") i++;
       items.push(schema.nodes.definition_term.create(null, parseInline(content)));
     } else if (t.type === "dd_open") {
-      // 收集 dd_open 到 dd_close 之间的内容
-      let content = "";
+      // v0.17.0 T4：dd 内容是**块级子节点**序列（段落/代码块/表格/列表/多段落…），
+      // 逐块递归解析（同 footnote_definition E15 先例）。
+      // 旧实现把子块 textContent 拼成 inline —— 结构被拍平（代码块变纯文本、
+      // 多段落粘连成一段），是 PM 主路径的保真失败项之一。
+      const blocks: Node[] = [];
       i++;
       while (i < tokens.length && tokens[i].type !== "dd_close") {
+        // 段落边界 token 跳过（段落交给裸 inline 分支整体组装）
+        if (tokens[i].type === "paragraph_open" || tokens[i].type === "paragraph_close") {
+          i++;
+          continue;
+        }
         if (tokens[i].type === "inline") {
-          if (content && !content.endsWith(" ")) content += " ";
-          content += tokens[i].content;
-        } else if (
-          tokens[i].type !== "paragraph_open" &&
-          tokens[i].type !== "paragraph_close"
-        ) {
-          // v0.9.0 D6：dd 内非段落类的块级内容（代码块/嵌套块等）递归解析
-          // 取文本拼接，防止内容整体丢失（接受结构扁平化，先保证不丢）。
-          // 段落仍走 inline 收集（保留 inline 格式），多段落以空格连接。
-          const sub = parseBlockToken(tokens, i, tokens.length);
-          if (sub && sub.nextIndex > i) {
-            if (content && !content.endsWith(" ")) content += " ";
-            content += sub.node.textContent;
-            i = sub.nextIndex;
-            continue;
-          }
+          // 单行 dd / 段落内容：markdown-it-deflist 可能给出裸 inline（无段落包裹）。
+          // 每个裸 inline 是一个独立段落（多段落 dd 不再以空格粘连）。
+          blocks.push(schema.nodes.paragraph.create(null, parseInline(tokens[i].content)));
+          i++;
+          continue;
+        }
+        // 其余块级 token（代码块、表格、列表、嵌套定义列表等）递归解析，
+        // 保留完整块级结构
+        const sub = parseBlockToken(tokens, i, tokens.length);
+        if (sub && sub.nextIndex > i) {
+          blocks.push(sub.node);
+          if (sub.extraNodes?.length) blocks.push(...sub.extraNodes);
+          i = sub.nextIndex;
+          continue;
         }
         i++;
       }
       if (i < tokens.length && tokens[i].type === "dd_close") i++;
-      items.push(schema.nodes.definition_description.create(null, parseInline(content)));
+      // block+ 至少一个块：空 dd 用空段落占位（同 footnote_definition）
+      items.push(
+        schema.nodes.definition_description.create(
+          null,
+          blocks.length > 0 ? blocks : [schema.nodes.paragraph.create()],
+        ),
+      );
     } else {
       i++;
     }

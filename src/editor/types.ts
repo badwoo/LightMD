@@ -181,6 +181,35 @@ export interface SourceChangeEvent {
    * change 处理（例如 `setText` 引起的整篇替换不应进 diff 撤销栈）。
    */
   origin?: "dom" | "programmatic";
+  /**
+   * 本次事件是否**真的改变了文档文本**（v0.17.0 P1-6 修复新增）。
+   *
+   * ## 为什么必须由实现方给出，而宿主不能自己比较字符串
+   *
+   * 宿主拿到的 `text` 与它自己记的文本比一次看似等价，但两者**语义不同**：
+   * `text` 是"编辑后的展示文本"，宿主已知值是"上次落地的展示文本"，
+   * 在 base64 mask / 撤销回填 / 受控写入之间存在时序差，
+   * 字符串比较会把"同步还没落地"误判成"变了"。实现方在事务源头知道
+   * `docChanged`，那是**事实**而不是推断。
+   *
+   * ## 为什么它不能由 `origin` 代替（P1-6 实机证据）
+   *
+   * 实测单次点击「标题一」期间，宿主收到 **4 次** `applySourceInput`，
+   * 其中 `origin` 全是 `"dom"`：
+   * - 1 次 `docChanged = true`（真实内容变更）
+   * - 2 次 `docChanged = false`（**只移动了选区/焦点**）
+   * - 1 次 programmatic
+   * 若只按 `origin` 区分，那 2 次纯选区变更仍会被当成"用户输入"，
+   * 而 `shouldClearFormatGhost` 的既有语义表明确写着 `click` / `arrow` → **false（保留）**。
+   * 于是格式 ghost 被自己的按钮点没 —— 这就是 P1-6 的根因。
+   *
+   * ## 宿主的正确用法
+   *
+   * `docChanged !== false` 才当作"文档内容变更"（缺省 `undefined` 按 `true` 处理，
+   * 保持既有实现/测试的行为不变）；`docChanged === false` 是"纯选区/焦点事件"，
+   * 只应更新光标行列等展示状态。
+   */
+  docChanged?: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -230,6 +259,33 @@ export interface SourceSurface {
   /** 视口滚动位置（px，供 SourceSelection.scrollTop 与进度恢复） */
   getScrollTop(): number;
   setScrollTop(px: number): void;
+
+  /**
+   * **平滑**写入滚动位置（v0.17.0 第三轮新增，打字机居中专用）。
+   *
+   * ## 为什么必须是独立方法，而不是给 `setScrollTop` 加 behavior 参数（★ 别合并）
+   *
+   * `setScrollTop` 有几十处调用点：进度恢复、撤销/恢复落地、预览开合冻结还原、
+   * 模式切换 applyScroll……**这些路径全都必须是 instant**。
+   * 它们与打字机的平滑需求是两种不可调和的语义：
+   *
+   * - 恢复类路径要求"写完即到位"（下一帧读到的就是终值），smooth 是**异步多帧**的，
+   *   会让紧随其后的测量/校正读到中间值 → 位置漂移；
+   * - 这正是 `shouldSkipInitialScrollToCenter` + `isRestoringScrollRef` 那条历史防线
+   *   存在的理由（smooth 覆盖 instant 导致模式切换后滚动位置丢失）。
+   *
+   * 若把 behavior 塞进 `setScrollTop` 的默认参数，任何一处漏传就会静默变成 smooth，
+   * 那类 bug 极难定位（表现为"偶发位置漂移"）。所以：
+   * - `setScrollTop` 语义**保持不变**（即时、确定性）；
+   * - 平滑能力走本**可选**方法，只有明确要动画的调用点才用。
+   *
+   * 声明为可选（`?`）是为了让未实现的第三方/测试替身仍能类型通过，
+   * 调用方按约定退回 `setScrollTop`（见 `PreviewPane` 的 `writeScrollTop`）。
+   *
+   * @param px       目标滚动位置（会被实现方钳制到 [0, max]）
+   * @param behavior 缺省 `"smooth"`；传 `"instant"` 时与 `setScrollTop` 等价
+   */
+  setScrollTopSmooth?(px: number, behavior?: "smooth" | "instant"): void;
 
   /**
    * 视口中央内容锚点（模式切换 / 预览开合用）。

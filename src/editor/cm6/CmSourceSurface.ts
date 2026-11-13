@@ -227,6 +227,43 @@ const markdownHighlightStyle = HighlightStyle.define([
 ]);
 
 /**
+ * ## v0.17.0 第二轮修复：从 `defaultKeymap` 中**剔除**被宿主占用的键位
+ *
+ * ### 缺陷（用户第 7 项修复期间由键位审计探针发现）
+ * `@codemirror/commands` 的 `defaultKeymap` 里有几条绑定与**本应用的宿主快捷键**冲突，
+ * 且 CM6 的 keymap 走 `Prec.default(domEventHandlers({keydown}))`、注册在宿主的
+ * `setDomEventHandlers` 之前 → 命中即 `preventDefault + break` →
+ * **宿主的 `handleSourceKeyDown` 一次都收不到**，功能在源码面静默失效。
+ *
+ * 实测（`scripts/v0170-r2-key-steal.mjs`，单变量逐键验证）：
+ *
+ * | 键 | CM6 里的绑定 | 宿主期望 | 实测 |
+ * |---|---|---|---|
+ * | `Mod-i`（Ctrl+I） | `selectParentSyntax`（`preventDefault: true`） | 斜体 `*…*` | **文本完全不变** ← 真缺陷 |
+ * | `Mod-/`（Ctrl+/） | `toggleComment` | 行注释 | 插入 `<!-- -->`，**行为恰好等效** → 保留 |
+ * | `Mod-m` / `Ctrl-m` | `toggleTabFocusMode` | —（宿主没绑） | 与本应用无冲突 → 保留 |
+ *
+ * ⚠️ 注意：此前有报告称 `Ctrl+Shift+M`（数学块）也失效，**经单变量实测为误报** ——
+ * 它工作正常（插入了 `$$\n\\sum…\n$$`）。原因很可能是测试时上一步（Ctrl+I）已把文档
+ * 改坏导致判据误判。**修键位这类问题必须逐个键单变量验证**，不能由"一串都失效"批量推断。
+ *
+ * ### 为什么用"过滤 defaultKeymap"而不是"再叠一层 Prec.highest keymap"
+ * 叠层只能让**我们的**绑定先跑，但要转发给宿主仍得靠 `domEventHandlers`，
+ * 而 `domEventHandlers` 的优先级问题本文件已经踩过（Tab：见下方 `handleTab` 注释，
+ * 三种写法实测结果不一致，最终改用捕获阶段原生监听）。过滤是**确定性**的：
+ * 移除冲突源 → 事件自然冒泡到宿主，不依赖任何优先级博弈。
+ *
+ * ### 为什么保留 `Mod-/`
+ * 它虽然也到不了宿主，但 `toggleComment` 在 Markdown 下插的就是 `<!--  -->`，
+ * 与宿主期望**行为一致**。剔除它反而要自己实现注释切换（还要处理已有注释的还原），
+ * 风险大于收益 → 明确保留，并在此注明这是**有意为之**，不是遗漏。
+ */
+const HOST_OWNED_KEYS: ReadonlySet<string> = new Set([
+  // 宿主 `format.italic`（Ctrl+I）—— CM6 的 selectParentSyntax 会抢走它
+  "Mod-i",
+]);
+
+/**
  * `SourceSurface` 的 CodeMirror 6 实现。
  *
  * 生命周期：`mount()` 在 host 里建 `EditorView`；`destroy()` 销毁它。
@@ -275,7 +312,72 @@ export class CmSourceSurface implements SourceSurface {
     this.attachCompositionHandlers();
     // 后置能力复核：jsdom 下构造是成功的，但布局测量不可用（`coordsAtPos` 会抛）。
     // 记录一下便于探针判定；不在此处抛（抛了会让本来就只跑逻辑的测试全挂）。
+    // v0.17.0 P1-3：mount 时刻探测只是**初值**，成功才置粘滞标志；
+    // 失败没关系 —— 各几何方法会经 `ensureLayout()` 惰性重探（见其注释）。
     this.layoutAvailable = this.probeLayout();
+    if (this.layoutAvailable) this.layoutProbedOk = true;
+    /**
+     * ## v0.17.0 P1-6：`mount()` 必须**重放**已有 ghost
+     *
+     * `this.ghost` 是实例字段，而 `mount()` 建的 `EditorState` 是全新的 ——
+     * `ghostField.create()` 恒等于 `Decoration.none`。所以在 destroy → mount
+     * 之后，实例自己还记得"有一个 ghost"，但新 view 里一个 decoration 都没有
+     * → ghost 静默消失。
+     *
+     * 这违反本类自己声明过的**可重挂载**契约（见 `destroy()` 上方注释：
+     * 「可重挂载：复位 disposed（destroy 后 React 可能再次挂载同一个实例）」）。
+     * `TextareaSourceSurface` 侧同样补上了这段，两个实现语义对齐。
+     *
+     * 注：P1-6 用户可见的那个缺陷（0/211 帧）**不是**这条引起的（已用因果实验
+     * 定位为宿主误清，见 `SourcePane.applySourceInput` 的 `isRealInput`），
+     * 但这是一个真实的契约缺口，重挂载场景下一旦成立就是静默丢功能。
+     */
+    if (this.ghost) this.showGhost(this.ghost);
+    // v0.17.0 第二轮：首帧布局后同步行号槽宽（正文列对齐用，见 syncGutterVar 注释）。
+    // 双 rAF：mount 发生时浏览器还没完成首帧布局，立刻量会得到 0。
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => requestAnimationFrame(() => this.syncGutterVar()));
+    }
+  }
+
+  /**
+   * 把行号槽的**实测宽度**写到 `.cm-scroller` 的 `--lm-cm-gutter-w`。
+   *
+   * ## 为什么需要（用户第 9 项「阅读模式和编辑模式文档没有对齐」）
+   *
+   * `.cm-gutters` 是 `.cm-scroller` 的 flex 子元素 → 它把 `.cm-content`（正文列）
+   * 整体右推一个槽宽 `G`，而阅读面 `.ProseMirror` 没有行号槽。
+   * 若两侧共用同一份 `padding-inline`，源码面正文列就会**既右移 G、又窄 G**。
+   *
+   * `editor.css` 里的补偿公式（推导见该处注释）需要知道 `G`：
+   * `padL = P - G`、`padR = P`。而 `G` **CSS 自己读不到**（无法取兄弟元素宽度），
+   * 且它随**行数位数与字号**变化（实测 2 位 ≈ 31px、3 位 = 41px）→ 必须实测注入。
+   *
+   * ## 精度取舍
+   * 用 `getBoundingClientRect().width`（含小数），比 `offsetWidth`（取整）少一次累积误差。
+   * 结果写进 scroller 的**内联** CSS 变量：作用域自动限定在本实例，不需要全局清理。
+   * 进度类副作用：写 CSS 变量会触发一次样式重算（每个 docChanged 一次），
+   * 但这正是"行号位数变了要重算内边距"所必需的；实测不在热路径上
+   * （`syncGutterVar` 只读两个 rect，不触发读写交错，不会 layout thrash）。
+   */
+  private syncGutterVar(): void {
+    const view = this.view;
+    if (!view) return;
+    try {
+      const scroller = view.scrollDOM as HTMLElement | null;
+      if (!scroller) return;
+      const gutters = scroller.querySelector(".cm-gutters") as HTMLElement | null;
+      if (!gutters) {
+        // 无行号槽（扩展被裁掉）→ 补偿量归零，正文列回到纯 padding-inline 口径
+        scroller.style.setProperty("--lm-cm-gutter-w", "0px");
+        return;
+      }
+      const w = gutters.getBoundingClientRect().width;
+      if (!Number.isFinite(w) || w <= 0) return; // 布局未就绪：保持上一次的值，**不要**写成 0
+      scroller.style.setProperty("--lm-cm-gutter-w", `${Math.round(w * 100) / 100}px`);
+    } catch {
+      /* 布局不可用（jsdom / 已销毁）时静默：缺省 0 是安全兜底 */
+    }
   }
 
   /**
@@ -286,6 +388,53 @@ export class CmSourceSurface implements SourceSurface {
    * 不可用时返回 null/0 让宿主退回百分比映射，而不是让异常冒到渲染流程里。
    */
   private layoutAvailable = false;
+
+  /**
+   * 布局探测结果是否**已确定可用**。
+   *
+   * ## 为什么必须有这个"只升不降"的粘滞标志（v0.17.0 P1-3 的真实根因）
+   *
+   * 旧实现只在 `mount()` 里调一次 `probeLayout()`，把结果**永久**写进 `layoutAvailable`。
+   * 但 `mount()` 发生在 React 提交后、**浏览器完成首帧布局之前** —— 此刻
+   * `view.coordsAtPos(0)` 常常拿不到有效 rect（元素还没被排版），于是
+   * `layoutAvailable` 被定为 `false` 且**再也不更新**。
+   *
+   * 后果（实机取证）：
+   * - `measureBlockTops()` 首行守卫 `if (!this.layoutAvailable) return null` → 恒 null
+   * - `measureLineAxis` 报 `axis_source_unavailable` → 行轴恒 null
+   * - 分屏对齐退回线性插值 → 软换行感知归零 → **左右两屏显示不同正文**
+   *   （实测文字同源 0/4，超长行最差 72 行）
+   *
+   * 注意这与"分派走错了分支"是**两个独立缺陷**：分派已由 `asRealTextarea()` 修好
+   * （诊断 `source: "surface"` 已证实），但走对分支后依然拿到 null —— 根因在这里。
+   *
+   * ## 修法：惰性重探
+   *
+   * 探测本身很便宜（一次 `coordsAtPos(0)`），只在"还没成功过"时才重试；
+   * 一旦成功就置真并保持（**不降回**，避免滚动到视口外导致的瞬时失败把能力关掉）。
+   */
+  private layoutProbedOk = false;
+
+  /**
+   * 确认布局可用（必要时重探）。
+   *
+   * @returns 是否可用。成功一次后不再重探（粘滞为真）。
+   */
+  private ensureLayout(): boolean {
+    if (this.layoutProbedOk) {
+      this.layoutAvailable = true;
+      return true;
+    }
+    const ok = this.probeLayout();
+    if (ok) {
+      this.layoutAvailable = true;
+      this.layoutProbedOk = true;
+    } else {
+      // 仍未就绪：保持 false，等下一次调用再试（不缓存失败）
+      this.layoutAvailable = false;
+    }
+    return ok;
+  }
 
   private probeLayout(): boolean {
     const view = this.view;
@@ -385,8 +534,8 @@ export class CmSourceSurface implements SourceSurface {
         ? []
         : [syntaxHighlighting(markdownHighlightStyle)]),
       // ⚠️ 硬约束 1：**不装 history()**，撤销归统一时间线
-      // 只保留基础编辑键位（去掉 history 相关的默认绑定由下面 keymap 再拦一次）
-      keymap.of([...defaultKeymap]),
+      // 只保留基础编辑键位，但**必须剔除与宿主快捷键冲突的条目**（见下方过滤说明）
+      keymap.of([...defaultKeymap].filter((b) => !HOST_OWNED_KEYS.has(b.key ?? ""))),
       // ⚠️ 硬约束 1 的第二道保险：把撤销/恢复键显式拦下并返回 false
       /**
        * ⚠️ `Prec.highest` 是必须的（实机探针 `v0170-probe-cm6` 判定项 3 实证）：
@@ -420,8 +569,12 @@ export class CmSourceSurface implements SourceSurface {
         if (!u.docChanged) {
           // 选区/滚动等仍要报告（宿主用它更新光标行列、进度）
           if (u.selectionSet || u.focusChanged) v.report("typing", undefined, "dom", false);
+          // v0.17.0 第二轮：行号槽宽度可能随**行数变化**（2 位→3 位）而变 → 重新同步。
+          // 只在 viewportChanged/geometryChanged 时才需要，避免每帧读布局。
+          if (u.viewportChanged || u.geometryChanged) v.syncGutterVar();
           return;
         }
+        v.syncGutterVar();
         v.onDocsChanged(u);
       }),
       // 只读 / 主题 / 属性三个 compartment（运行时可重配，避免重建 view）
@@ -483,11 +636,23 @@ export class CmSourceSurface implements SourceSurface {
   private pendingDelete = false;
   private pendingApplyEdit = false;
 
+  /**
+   * @param docChanged 本次更新是否**真的改了文档文本**。
+   *
+   * ## v0.17.0 P1-6：这个参数过去叫 `_docChanged`（下划线 = 未使用），是幽灵缺陷的一半
+   *
+   * 它一直存在、一直被正确传入（`onDocsChanged` 传 `true`、纯选区分支传 `false`），
+   * 但**从未被放进上报的事件里** —— 于是宿主无法区分"用户键入"和"只是移动了光标"，
+   * 只能对两者一视同仁地当作 input，把刚设置的格式 ghost 清掉
+   *（实机：点一次「标题一」共 4 次 clear("input")，其中 2 次来自纯选区变更）。
+   *
+   * 现在把它如实转发给宿主（见 `SourceChangeEvent.docChanged`）。
+   */
   private report(
     kind: SourceChangeKind,
     groupId: string | undefined,
     origin: "dom" | "programmatic",
-    _docChanged: boolean,
+    docChanged: boolean,
     textArg?: string,
   ): void {
     if (this.disposed) return;
@@ -500,6 +665,7 @@ export class CmSourceSurface implements SourceSurface {
       kind,
       compositionGroupId: groupId,
       origin,
+      docChanged,
     });
   }
 
@@ -707,19 +873,110 @@ export class CmSourceSurface implements SourceSurface {
     return this.view?.scrollDOM.scrollTop ?? 0;
   }
 
+  /**
+   * 即时写入滚动位置。
+   *
+   * ⚠️ **保持裸赋值语义，不要改成 `scrollTo({behavior})`**（v0.17.0 第三轮结论）：
+   * 本方法被进度恢复、撤销/恢复落地、预览开合冻结还原、模式切换 applyScroll
+   * 等**几十处恢复类路径**调用，它们都要求"写完即到位"。
+   * 这些路径下一帧就会读 `getScrollTop()` 做校正/幂等重试；
+   * 若这里变成 smooth（异步多帧），读到的是中间值 → 每轮补一点 → 累积漂移，
+   * 正是 `shouldSkipInitialScrollToCenter` 那条历史防线要防的问题。
+   *
+   * 需要动画的调用点请用 `setScrollTopSmooth`（两个语义刻意分开）。
+   */
   setScrollTop(px: number): void {
     const view = this.view;
     if (!view) return;
     view.scrollDOM.scrollTop = px;
   }
 
+  /**
+   * **平滑**写入滚动位置（v0.17.0 第三轮 · 用户第 8 项「编辑模式打字机要平滑」）。
+   *
+   * ## 为什么需要它（机制级缺陷，不是阈值问题）
+   *
+   * 用户原话：「编辑模式下开启打字机模式，画面居中时要跟阅读模式一样，
+   * 要有平滑的移动效果，而不是突然页面就居中。」
+   *
+   * 阅读面（ProseMirror）一直走 `scrollContainer.scrollTo({ behavior: "smooth" })`
+   * （`PreviewPane.tsx` 的 `scrollToCenter`），是平滑的。
+   * 源码面在 CM6 下走的是本类的 `setScrollTop`（裸赋值 = **瞬时**），
+   * 因为 `PreviewPane.writeScrollTop(top, behavior)` 的 CM6 分支把 `behavior`
+   * 参数**丢掉了** —— 于是同一份打字机逻辑，两种实现两种观感。
+   *
+   * 实测（`scripts/v0170-r3-typewriter-smooth.mjs`）：
+   * 编辑模式回车后 scrollTop 在**单帧内**从 0 跳到终值（首帧位移 = 总位移 100%），
+   * 阅读面同一操作耗时约 18~24 帧。修法就是补上这条能力通道。
+   *
+   * ## 为什么写 `scrollDOM.scrollTo` 而不是设 `scrollDOM.style.scrollBehavior`
+   *
+   * 后者是**全局持久**状态，会被同元素上的所有滚动（含 CM6 自己的
+   * `scrollIntoView` effect、用户拖动滚动条）继承 → 打字机以外的路径也被平滑化，
+   * 又要靠"用完记得改回去"的时序兜底，非常脆。
+   * `scrollTo({ behavior })` 是**单次**语义，作用域精确到这一次调用。
+   *
+   * @param px       目标位置。实现方自己钳制到 [0, max]：
+   *                 `scrollTo` 对越界值的行为在规范里是"克隆到允许范围"，
+   *                 但不同内核的钳位时机不一致，显式钳一次让"首帧就朝正确的方向动"。
+   * @param behavior 缺省 smooth；传 `"instant"` 时退化为即时写入。
+   */
+  setScrollTopSmooth(px: number, behavior: "smooth" | "instant" = "smooth"): void {
+    const view = this.view;
+    if (!view) return;
+    const el = view.scrollDOM;
+    if (behavior === "instant") {
+      el.scrollTop = px;
+      return;
+    }
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    const top = Math.max(0, Math.min(max, px));
+    try {
+      el.scrollTo({ top, behavior: "smooth" });
+    } catch {
+      // 老内核不支持 options 形式：退回即时写入（宁可不动画，也不能不滚）
+      el.scrollTop = top;
+    }
+  }
+
   captureViewportAnchor(): SourceAnchor | null {
-    if (!this.layoutAvailable) return null;
+    if (!this.ensureLayout()) return null;
     const view = this.view;
     if (!view) return null;
     try {
       const scroller = view.scrollDOM;
-      const centerY = view.documentTop + scroller.clientHeight / 2;
+      /**
+       * ## v0.17.0 第二轮修复：**坐标系混用**（`documentTop` 是屏幕坐标，不是内容坐标）
+       *
+       * 旧实现：
+       * ```ts
+       * const centerY = view.documentTop + scroller.clientHeight / 2;
+       * const block = view.lineBlockAtHeight(centerY);
+       * ```
+       * 但 `EditorView.documentTop` 的语义是**屏幕坐标**
+       * （CM6 源码：`contentDOM.getBoundingClientRect().top + paddingTop`）——
+       * **滚动后它是负值**。而 `lineBlockAtHeight(h)` 要的是**相对文档内容顶**的高度。
+       * 两者混用 ⇒ **滚动越深，算出的"视口中央"越靠文档开头**。
+       *
+       * 实测（`scripts/_tmp-anchor-test.mjs`，60 段文档，滚到 50%）：
+       * ```
+       * scrollTop=450  clientHeight=759  documentTop=-291
+       * lineBlockAtHeight(scrollTop   + ch/2 = 830) → from=545   ← 正确（文档中部）
+       * lineBlockAtHeight(documentTop + ch/2 = 88)  → from=5     ← 旧实现，文档开头
+       * ```
+       * 后果：切模式/撤销时"视口中央锚点"落在文档开头 →
+       * 恢复把视口送回顶部（实测 `scrollTop` 4019→0）。这是 #3 跳动的一个叠加源。
+       *
+       * 修法：改用 **`scrollTop + clientHeight/2`**（内容坐标系，与 `lineBlockAtHeight`
+       * 的期望一致）。
+       *
+       * ⚠️ 注意 `documentTop` 本身**没坏**，它只是"屏幕坐标"这个语义 ——
+       * 下面 `viewportY: coords.top - view.documentTop` 用它是对的
+       * （`coordsAtPos` 返回屏幕坐标，减屏幕坐标的 documentTop = 相对内容顶）。
+       * 所以本函数里 `documentTop` 只能用于**屏幕坐标之间的相减**，
+       * 绝不能喂给 `lineBlockAtHeight` 这类内容坐标 API。
+       */
+      const centerY = scroller.scrollTop + scroller.clientHeight / 2;
       // 视口中央对应的行 → line.from
       const block = view.lineBlockAtHeight(centerY);
       const line = view.state.doc.lineAt(block.from);
@@ -744,7 +1001,7 @@ export class CmSourceSurface implements SourceSurface {
    *（那正是换实现要消掉的东西：mirror 必须与控件排版逐像素对齐，是漂移温床）。
    */
   offsetToContentY(offset?: number): number | null {
-    if (!this.layoutAvailable) return null;
+    if (!this.ensureLayout()) return null;
     const view = this.view;
     if (!view) return null;
     try {
@@ -773,7 +1030,7 @@ export class CmSourceSurface implements SourceSurface {
    * 2. `coordsAtPos` 越界会抛 → clamp 到文档范围。
    */
   measureRangeContentY(start: number, end: number): { startY: number; endY: number } | null {
-    if (!this.layoutAvailable) return null;
+    if (!this.ensureLayout()) return null;
     const view = this.view;
     if (!view) return null;
     const docLen = view.state.doc.length;
@@ -797,7 +1054,7 @@ export class CmSourceSurface implements SourceSurface {
 
   /** 恢复锚点（`captureViewportAnchor` 的逆操作） */
   restoreViewportAnchor(anchor: SourceAnchor | null | undefined): void {
-    if (!anchor || !this.layoutAvailable) return;
+    if (!anchor || !this.ensureLayout()) return;
     const view = this.view;
     if (!view) return;
     const off = (anchor as unknown as { textOffset?: number }).textOffset;
@@ -816,7 +1073,7 @@ export class CmSourceSurface implements SourceSurface {
     const view = this.view;
     if (!view) return;
     const pos = Math.max(0, Math.min(view.state.doc.length, offset));
-    if (this.layoutAvailable) {
+    if (this.ensureLayout()) {
       try {
         view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: opts?.center ? "center" : "start" }) });
         return;
@@ -1077,7 +1334,7 @@ export class CmSourceSurface implements SourceSurface {
    * 真实视口位置，**不需要 mirror**，也不再受"mirror 排版必须与控件逐像素对齐"约束。
    */
   measureBlockTops(blockLines: number[]): number[] | null {
-    if (!this.layoutAvailable) return null;
+    if (!this.ensureLayout()) return null;
     const view = this.view;
     if (!view) return null;
     try {

@@ -28,9 +28,9 @@
  *
  * ## 已声明的出口差异（本文件如实登记，不断言"应该一致"）
  *
- * - **① PM 的 dd 内块仍被拍平**：`definition_description` content 是 `inline*`
- *   （v0.16.0 既有 schema）。设计稿 §6.3 方案乙要改 `block+`，属 A 线 schema/keymap
- *   写作用域，B 线不动。**这是 B 线与 PM 面的已知差距，不是 B 线的失败。**
+ * - ~~**① PM 的 dd 内块被拍平**~~ **已修复（v0.17.0 T4）**：`definition_description`
+ *   content 已由 `inline*` 改 `block+`（同 footnote_definition E15 先例），
+ *   dd 内块保留为块级子树。原"已知差距"条目翻转为一致性断言（见文末）。
  * - **① PM 的 image / math 节点不产出 textContent**：atom 节点语义，正常。
  * - **④ Block[] 的图片是文本占位、脚注容器摊平、文档级头尾空行不承载**：
  *   见 `BLOCKS_EXPORT_BOUNDARIES`（BE-01/05/07/08）。
@@ -165,14 +165,14 @@ function pmFacts(md: string) {
     headingLevels: headings,
     codeCount,
     maxQuote,
-    /** PM 侧 dd 内块是否保留为块级（已知为 false，见文件头） */
+    /** PM 侧 dd 内块是否保留为块级（T4 修复后为 true，见文件头） */
     ddInnerBlocksPreserved: pmDdInnerBlocks(doc),
     /** 可见文本（PM textContent 拼接） */
     fullText: normalizeText(doc.textContent || ""),
   };
 }
 
-/** PM 侧：dd 内是否还有独立 code_block（当前 schema 下应为 false） */
+/** PM 侧：dd 内是否保留独立 code_block/table/bullet_list（T4 修复后应为 true） */
 function pmDdInnerBlocks(doc: import("prosemirror-model").Node): boolean {
   let found = false;
   doc.descendants((n) => {
@@ -320,11 +320,11 @@ describe("出口②与③（预览 / 导出 HTML）必须逐字节相同", () =>
 });
 
 describe("已声明的出口差异（如实登记，不断言『应该一致』）", () => {
-  it("① PM 的 dd 内块仍被拍平（schema 限制，属 A 线写作用域）", () => {
+  it("① PM 的 dd 内块保留为块级（T4 修复后从『缺失』翻转为『保留』）", () => {
     const md = "Term\n: def\n\n    ```js\n    x\n    ```\n";
-    // 当前事实：PM 侧 dd 内没有独立 code_block
-    expect(pmFacts(md).ddInnerBlocksPreserved).toBe(false);
-    // 而 tree 侧有 —— 这是 B 线与 PM 面的已知差距
+    // T4 修复后：PM 侧 dd 内保留独立 code_block（definition_description = block+）
+    expect(pmFacts(md).ddInnerBlocksPreserved).toBe(true);
+    // tree 侧同样有 —— 两侧口径一致
     const flat: string[] = [];
     const walk = (ns: MdNode[]) => {
       for (const n of ns) {

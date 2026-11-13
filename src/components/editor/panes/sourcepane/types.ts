@@ -58,6 +58,8 @@ import type { HistoryEntry } from "../../EditorContainer";
   isMdFile: boolean;
   viewRef: MutableRefObject<EditorView | null>;
   historyScrollGuardUntilRef: MutableRefObject<number>;
+  /** v0.17.0 P1-2：历史桥接深度（>0 = 当前变更来自时间线落地，不得再提交新历史） */
+  historyBridgeDepthRef: MutableRefObject<number>;
   HISTORY_SCROLL_GUARD_MS: 400;
   sourceTextareaRef: RefObject<HTMLTextAreaElement>;
   pushUndoEntry: (entry: HistoryEntry) => void;
@@ -80,7 +82,23 @@ export interface SourcePaneResult {
    * 两者共用同一份核心逻辑（`applySourceInput`），不存在两套写入路径。
    */
   applySourceInput: MutableRefObject<
-    (newContent: string, cursorPos: number, opts?: { composing?: boolean }) => void
+    (
+      newContent: string,
+      cursorPos: number,
+      opts?: {
+        composing?: boolean;
+        /**
+         * 触发源（v0.17.0 P1-6）：`"programmatic"` 表示这是经 `setText`/`applyEdit`
+         * 落地的程序化替换，**不是**用户键入 —— 不得用它清除格式 ghost。
+         */
+        origin?: "dom" | "programmatic";
+        /**
+         * 本次是否真的改了文档文本（v0.17.0 P1-6）：`false` 表示只是选区/焦点变化。
+         * 缺省 `undefined` 按 `true` 处理（textarea 路径的 onChange 天然只在值变化时触发）。
+         */
+        docChanged?: boolean;
+      },
+    ) => void
   >;
   insertTextAtCursor: (text: string, cursorOffset?: number | undefined) => void;
   insertMarkdownIntoPM: (md: string) => void;

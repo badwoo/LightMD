@@ -350,21 +350,24 @@ function makeDataUrl(len = 600, mime = "image/png"): string {
 }
 
 describe("v0.6.6 问题4：maskBase64Images 短标记替换", () => {
-  it("超长 base64 → 短标记 image-1.png，tokens 记录映射", () => {
+  // v0.17.0 R4 T6：标记前缀从 `image-` 改为 `lmd-b64-`（与真实文件名解耦，见
+  // `base64ImageMask.ts` 文件头）。本组断言按新命名同步 —— 要验的契约没变，
+  // 只是字面值随协议改名。
+  it("超长 base64 → 短标记 lmd-b64-1.png，tokens 记录映射", () => {
     const tokens: Base64Tokens = new Map();
     const url = makeDataUrl();
     const { text, replacements } = maskBase64Images(`![图](${url})`, tokens);
-    expect(text).toBe("![图](image-1.png)");
+    expect(text).toBe("![图](lmd-b64-1.png)");
     expect(replacements).toHaveLength(1);
-    expect(tokens.get("image-1.png")).toBe(url);
+    expect(tokens.get("lmd-b64-1.png")).toBe(url);
   });
 
-  it("jpeg → image-1.jpg；未知 mime 回退 png", () => {
+  it("jpeg → lmd-b64-1.jpg；未知 mime 回退 png", () => {
     const tokens: Base64Tokens = new Map();
     const { text: t1 } = maskBase64Images(`![](${makeDataUrl(600, "image/jpeg")})`, tokens);
-    expect(t1).toBe("![](image-1.jpg)");
+    expect(t1).toBe("![](lmd-b64-1.jpg)");
     const { text: t2 } = maskBase64Images(`![](${makeDataUrl(600, "image/x-avif")})`, tokens);
-    expect(t2).toBe("![](image-2.png)");
+    expect(t2).toBe("![](lmd-b64-2.png)");
   });
 
   it("短于 512 的 data URL 不替换（小图标展开无收益）", () => {
@@ -381,17 +384,27 @@ describe("v0.6.6 问题4：maskBase64Images 短标记替换", () => {
     const a = makeDataUrl();
     const b = makeDataUrl(601);
     const { text } = maskBase64Images(`![](${a})\n\n![](${a})\n\n![](${b})`, tokens);
-    expect(text).toBe("![](image-1.png)\n\n![](image-1.png)\n\n![](image-2.png)");
+    expect(text).toBe("![](lmd-b64-1.png)\n\n![](lmd-b64-1.png)\n\n![](lmd-b64-2.png)");
     expect(tokens.size).toBe(2);
   });
 
-  it("多次调用：已有标记的文本不受影响，新 base64 序号接续", () => {
+  /**
+   * v0.17.0 R4 T6：**这个用例的语义被刻意收紧了**，不只是换字面值。
+   *
+   * 旧实现里 `![](image-1.png)` 这种"裸文件名真实引用"会被当成已有标记，
+   * 序号逻辑还会被它带着走。新实现下 `image-1.png` 是**普通文本**（可能是用户
+   * 真实文件），既不该被当标记，也不该影响新标记的序号。
+   *
+   * 所以断言从"`image-1.png` 原样 + 新标记接成 image-2"改成
+   * "`image-1.png` 原样 + 新标记从 lmd-b64-1 开始" —— 这正是 T6 的修复目标。
+   */
+  it("多次调用：真实文件名不被当标记，新 base64 序号从 1 开始", () => {
     const tokens: Base64Tokens = new Map();
     const a = makeDataUrl();
     maskBase64Images(`![](${a})`, tokens);
     const c = makeDataUrl(602);
     const { text } = maskBase64Images(`![](image-1.png)![](${c})`, tokens);
-    expect(text).toBe("![](image-1.png)![](image-2.png)");
+    expect(text).toBe("![](image-1.png)![](lmd-b64-2.png)");
   });
 
   it("纯文本不含 base64 时零开销原样返回", () => {
@@ -412,19 +425,19 @@ describe("v0.6.6 问题4：unmaskBase64Images 还原", () => {
   });
 
   it("tokens 为空 / 文本无标记时原样返回", () => {
-    expect(unmaskBase64Images("![](image-1.png)", new Map())).toBe("![](image-1.png)");
-    const tokens: Base64Tokens = new Map([["image-1.png", makeDataUrl()]]);
+    expect(unmaskBase64Images("![](lmd-b64-1.png)", new Map())).toBe("![](lmd-b64-1.png)");
+    const tokens: Base64Tokens = new Map([["lmd-b64-1.png", makeDataUrl()]]);
     expect(unmaskBase64Images("普通文本", tokens)).toBe("普通文本");
   });
 
   it("标记被用户改坏（无对应 token）→ 按普通文本保留", () => {
-    const tokens: Base64Tokens = new Map([["image-1.png", makeDataUrl()]]);
-    expect(unmaskBase64Images("![](image-9.png)", tokens)).toBe("![](image-9.png)");
+    const tokens: Base64Tokens = new Map([["lmd-b64-1.png", makeDataUrl()]]);
+    expect(unmaskBase64Images("![](lmd-b64-9.png)", tokens)).toBe("![](lmd-b64-9.png)");
   });
 
-  it("仅在 markdown URL 上下文还原（普通文本中的 image-1.png 不动）", () => {
-    const tokens: Base64Tokens = new Map([["image-1.png", makeDataUrl()]]);
-    expect(unmaskBase64Images("文件名是 image-1.png 的图", tokens)).toBe("文件名是 image-1.png 的图");
+  it("仅在 markdown URL 上下文还原（普通文本中的标记字样不动）", () => {
+    const tokens: Base64Tokens = new Map([["lmd-b64-1.png", makeDataUrl()]]);
+    expect(unmaskBase64Images("文件名是 lmd-b64-1.png 的图", tokens)).toBe("文件名是 lmd-b64-1.png 的图");
   });
 });
 

@@ -55,6 +55,50 @@ export const SOURCE_MARK_WRAPPERS: Record<string, [string, string]> = {
  *  v0.12.0 返修（问题5）：5 → 10（用户要求双击格式刷可连续应用 10 次） */
 export const FORMAT_PAINTER_MAX_USES = 10;
 
+/**
+ * 判断快照是否**采集失败**（空快照）—— v0.17.0 第四轮 · 用户第 7 项（D1 修复）
+ *
+ * ## 缺陷（端到端实测，`scripts/v0170-r4-painter-matrix.mjs`）
+ * 用户在源码面选中一段**普通文字**（无语法符号）后点格式刷：
+ * ```
+ * collectSourceSnapshot("普通文字", ...) → { marks: [], blockType: "paragraph", taskStyle: null }
+ * ```
+ * 这个快照**看起来非空**（`blockType` 是 "paragraph"），但**没有任何可复制的格式**。
+ * 而 `armFormatPainter` 只检查了「选区非空」（`start === end`），不检查快照是否为空 →
+ * 于是**仍然 arm 成功**（bodyClass=true、状态栏显示"单击目标应用"）→
+ * 点目标时 `applyFormatPainterToSource` 算出 `next === text` → 返回 false →
+ * **不 consume、不退出待刷态**。
+ *
+ * 用户视角：**"点了没反应，而且退不出去"**。
+ * 这正是用户说"格式刷功能不正常"最可能的机制 —— 用户不可能知道
+ * "要先选中**含格式符**的文字"（`**粗体**` 而不是"粗体"）。
+ *
+ * ## 判定口径（三处都要判，缺一不可）
+ * 1. `marks` 非空 → 有行内格式可刷
+ * 2. `blockType` 是**非 paragraph** 的块型（heading/list/quote）→ 有块级格式可刷
+ * 3. `taskStyle` 非空 → 有任务列表图标样式可刷（虽然它通常伴随 bullet_list）
+ *
+ * ⚠️ **`blockType === "paragraph"` 不算"有格式"**：段落是**默认态**，
+ * 把"段落"刷到标题上虽然是合法操作（降级为段落），但用户选普通文字时
+ * 脑子里想的是"复制这段的格式"，而普通文字**没有任何格式**。
+ * 若把 paragraph 也算作有效，D1 就修不掉（用户仍会 arm 成功然后点了没反应）。
+ *
+ * 阅读面同理：`collectPmSnapshot` 对无 mark 的普通段落也返回
+ * `{ marks: [], blockType: "paragraph" }`。
+ *
+ * @returns true = 该快照没有可施加的格式，调用方应**拒绝 arm** 并提示用户
+ */
+export function isSnapshotEmpty(snapshot: FormatSnapshot | null | undefined): boolean {
+  if (!snapshot) return true;
+  // 有行内 mark → 非空
+  if (snapshot.marks.length > 0) return false;
+  // 有任务列表样式 → 非空（图标样式也是"格式"）
+  if (snapshot.taskStyle) return false;
+  // 块级：只有**非 paragraph** 才算"有块格式"
+  if (snapshot.blockType && snapshot.blockType !== "paragraph") return false;
+  return true;
+}
+
 // ─── 采集（源侧） ────────────────────────────────────────
 
 /**
@@ -379,6 +423,148 @@ export function applyPmBlockSnapshot(
  * 源码侧行内应用：先剥离目标已有符号（任何同类），再按快照 marks 逆序包裹
  * （数组首个为最外层）。覆盖式，不叠加。无变化时返回 null。
  */
+/**
+ * 从行内文本中**全量剥离**已知 mark 符号对（v0.17.0 R4 · D2 修复）。
+ *
+ * ## 为什么不能再用「首尾夹逼」剥离（原实现的缺陷）
+ * 原实现（以及下面 `wrapRangeWithMarks` 的旧逻辑）是：
+ * ```ts
+ * while (body.startsWith(open) && body.endsWith(close)) body = body.slice(...)
+ * ```
+ * 它只认「**整段首尾**被同一对符号包裹」。
+ *
+ * 实测（`scripts/v0170-r4-painter-d2.mjs`）：
+ * | 目标行 | 实际结果 | 期望（覆盖式） |
+ * |---|---|---|
+ * | `*已斜体目标*。` | `***已斜体目标*。**` ← **畸形** | `**已斜体目标。**` |
+ * | `**已加粗目标**，` | `***已加粗目标**，*` ← **畸形** | `*已加粗目标，*` |
+ * | `~~已有删除线~~。` | `**~~已有删除线~~。**` ← **删除线没清** | `**已有删除线。**` |
+ *
+ * 根因：目标行尾是"。"不是符号 → `endsWith(close)` 为假 → 剥离失败 →
+ * 外层再包一层 → 产生 `***X*。**` 这种畸形 markdown。
+ *
+ * **而函数头注释明确承诺"覆盖式，先清后套，不叠加"** —— 实现没兑现自己的契约。
+ *
+ * ## 保守策略（5 条边界，全部有单测）
+ * 直接正则扫掉所有 `*`/`**`/`~~`/`==` 会**破坏字面内容**。所以：
+ *
+ * 1. **只剥离成对且内容非空**：`*x*` 剥，`*`（落单）不剥
+ * 2. **字面星号必须保留**：`2*3=6`、`a * b`、`C*` 里的 `*` 不是格式符号
+ * 3. **不跨行**：本函数是**行内**工具，绝不碰 `\n`
+ * 4. **不碰行内代码**：`` `*code*` `` 里的星号是字面内容 —— 先把 code span 挖出来保护
+ * 5. **不碰转义**：`\*` 是字面星号
+ *
+ * ## 实现思路
+ * ① 先把行内代码（`` `...` ``）**整体占位**保护起来（它们的内容不可改）；
+ * ② 剩下部分用**配对扫描**：从左找开符号、从右找配对的闭符号，
+ *    且**中间内容非空、不含换行**才算一对；
+ * ③ 反复剥离直到稳定（支持嵌套 `***X***`）；
+ * ④ 还原占位。
+ *
+ * @param body 单行文本（不含换行）
+ * @returns 剥离掉所有已知 mark 符号后的纯正文
+ */
+export function stripInlineMarkSymbols(body: string): string {
+  if (!body) return body;
+  /**
+   * ① 保护行内代码：把 `` `...` `` 换成一个不含任何符号的占位 token，
+   *    最后再换回来。这样 code 里的 `*` 绝不会被当成格式符号。
+   */
+  const codeSpans: string[] = [];
+  const CODE_TOKEN = "\u0000CODE\u0000"; // 用控制字符做占位，正常文本不会出现
+  let work = body.replace(/`[^`\n]*`/g, (m) => {
+    codeSpans.push(m);
+    return CODE_TOKEN + (codeSpans.length - 1) + "\u0000";
+  });
+
+  /** 符号对按**开符号长度降序**尝试（`**` 必须先于 `*`，否则 `**x**` 会被拆成 `*`+`*x*`+`*`） */
+  const pairs: Array<[string, string]> = [
+    ["<u>", "</u>"],
+    ["~~", "~~"],
+    ["==", "=="],
+    ["**", "**"],
+    ["*", "*"],
+  ];
+
+  /**
+   * 反复剥离直到稳定（每轮至少剥掉一对）。
+   * 一轮只剥**一对**（最外层那对），然后重新扫描 —— 这样嵌套形态
+   * `***X***`（= `*` + `**X**` + `*`）会逐层剥开。
+   */
+  let guard = 0;
+  while (guard++ < 200) {
+    let changed = false;
+    for (const [open, close] of pairs) {
+      // 必须从两端都是该符号才开始（但要允许后面还有其它符号，形成嵌套）
+      if (!work.startsWith(open)) continue;
+      if (!work.endsWith(close)) continue;
+      const inner = work.slice(open.length, work.length - close.length);
+      // 边界 1：内容必须非空（`**` 单独出现不是格式）
+      if (inner.length === 0) continue;
+      // 边界 3：不跨行（本函数是行内工具；防御性检查）
+      if (inner.includes("\n")) continue;
+      work = inner;
+      changed = true;
+      break;
+    }
+    if (!changed) break;
+  }
+
+  /**
+   * ② 处理**句中**符号对：形如 `*甲* 和 **乙** 混排。`
+   *    上面的首尾剥离处理不了（整段首尾不是符号），需要按"配对"逐个移除。
+   *
+   * ⚠️ 保守：只移除**成对且中间非空、不含空白边界歧义**的符号。
+   *    具体规则 —— 找到 `open` 后，必须在**同一行内**找到其后的 `close`，
+   *    且中间内容非空。找不到配对就**保留**（落单符号是字面内容）。
+   */
+  for (const [open, close] of pairs) {
+    let guard2 = 0;
+    while (guard2++ < 100) {
+      const i = work.indexOf(open);
+      if (i < 0) break;
+      const j = work.indexOf(close, i + open.length);
+      if (j < 0) break;
+      const inner = work.slice(i + open.length, j);
+      // 边界 1 + 3：内容非空、不跨行
+      if (inner.length === 0 || inner.includes("\n")) break;
+      /**
+       * 边界 2：**字面星号保护** —— `2*3=6` / `a * b`。
+       * 判据：单 `*` 的配对，若开符号**紧邻字母/数字**（前面是字母数字）或
+       * 闭符号**紧邻字母/数字**（后面是字母数字），说明它是乘号/字面符号，不剥。
+       * 真正的强调符号 `*x*` 通常两侧是中文/标点/空白边界。
+       *
+       * 说明：这是**启发式**，不追求 100% 正确（markdown 本身也有歧义），
+       * 但能挡住最常见误伤。宁可漏剥（用户能看到残留符号）也不能误删用户文字。
+       */
+      if (open === "*") {
+        const prevCh = i > 0 ? work[i - 1] : "";
+        const nextCh = j + close.length < work.length ? work[j + close.length] : "";
+        const isAlnum = (c: string) => !!c && /[A-Za-z0-9]/.test(c);
+        // 前面紧邻字母数字 且 后面紧邻字母数字 → 疑似算式（如 2*3=6）
+        if (isAlnum(prevCh) && /[0-9]/.test(prevCh) && isAlnum(nextCh)) break;
+        // 开/闭符号内侧紧邻空格 → 疑似字面（`a * b`）
+        if (/^\s/.test(inner) || /\s$/.test(inner)) break;
+      }
+      work = work.slice(0, i) + inner + work.slice(j + close.length);
+    }
+  }
+
+  // ③ 还原行内代码占位
+  work = work.replace(new RegExp(CODE_TOKEN + "(\\d+)\\u0000", "g"), (_m, idx) => codeSpans[Number(idx)] ?? "");
+  return work;
+}
+
+/**
+ * 源码侧行内应用：**先全量剥离**目标已有符号（任何同类、含句中），
+ * 再按快照 marks 逆序包裹（数组首个为最外层）。覆盖式，不叠加。
+ * 无变化时返回 null。
+ *
+ * ## v0.17.0 R4 · D2 修复：剥离从「首尾夹逼」改为「全量扫描」
+ * 旧实现见 `stripInlineMarkSymbols` 的注释（带标点的目标会剥离失败 → 畸形嵌套）。
+ * 现在剥离交给 `stripInlineMarkSymbols`，它守住了 5 条保守边界
+ * （落单符号/字面星号/不跨行/行内代码/嵌套）。
+ */
 export function wrapRangeWithMarks(
   text: string,
   start: number,
@@ -386,24 +572,10 @@ export function wrapRangeWithMarks(
   marks: string[],
 ): { text: string; start: number; end: number } | null {
   if (end <= start) return null;
-  let body = text.slice(start, end);
+  const rawBody = text.slice(start, end);
 
-  // 1) 剥离已有外层符号（循环直到稳定，支持叠加形态）
-  let stripped = true;
-  while (stripped) {
-    stripped = false;
-    for (const [, [open, close]] of Object.entries(SOURCE_MARK_WRAPPERS)) {
-      if (
-        body.length >= open.length + close.length &&
-        body.startsWith(open) &&
-        body.endsWith(close)
-      ) {
-        body = body.slice(open.length, body.length - close.length);
-        stripped = true;
-        break;
-      }
-    }
-  }
+  // 1) 全量剥离已有符号（含句中/带标点，见 stripInlineMarkSymbols）
+  let body = stripInlineMarkSymbols(rawBody);
 
   // 2) 按数组逆序包裹（首个为最外层，末个最内层贴近文本）
   for (let i = marks.length - 1; i >= 0; i--) {

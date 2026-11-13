@@ -80,11 +80,31 @@ describe("v0.8.3 需求7：滚动性能优化接线", () => {
     expect(schemaSrc).toContain('decoding: "async"');
   });
 
-  it("滚动监听声明 passive（阅读容器 + 源码 textarea）", () => {
+  it("滚动监听声明 passive（阅读容器 + 源码面）", () => {
     const passiveCount = (containerSrc.match(/\{ passive: true \}/g) ?? []).length;
     expect(passiveCount).toBeGreaterThanOrEqual(2);
     expect(containerSrc).toContain('container.addEventListener("scroll", handler, { passive: true })');
-    expect(containerSrc).toContain('textarea.addEventListener("scroll", handler, { passive: true })');
+    /**
+     * v0.17.0 P1-4 更新：源码侧滚动监听从 `ModeSync` 里的裸
+     * `textarea.addEventListener("scroll", handler, { passive: true })`
+     * 改为经 `SourceSurface.onDidScroll(...)`。
+     *
+     * **passive 语义没有丢，反而更可靠**：
+     * - textarea 实现绑真元素：`ta.addEventListener("scroll", handler, { passive: true })`
+     * - CM6 实现绑真实滚动元素 `.cm-scroller`：
+     *   `scroller.addEventListener("scroll", handler, { passive: true })`
+     *
+     * 旧写法在 CM6 下绑的是**不滚动的宿主 div**（`scrollHeight === clientHeight`），
+     * 监听器永不触发 —— 这条"passive 优化"在 CM6 下等于什么都没做。
+     * 因此断言改为：在**两个实现内部**校验 passive。
+     */
+    const textareaSurfaceSrc = readFileSync(resolve(__dirname, "../editor/surface/TextareaSourceSurface.ts"), "utf-8");
+    const cm6SurfaceSrc = readFileSync(resolve(__dirname, "../editor/cm6/CmSourceSurface.ts"), "utf-8");
+    expect(textareaSurfaceSrc).toContain('.addEventListener("scroll", handler, { passive: true })');
+    expect(cm6SurfaceSrc).toContain('.addEventListener("scroll", handler, { passive: true })');
+    // ModeSync 侧应已改为经 surface（不再自己绑裸元素）
+    const modeSyncSrc = readFileSync(resolve(__dirname, "../components/editor/panes/modesync/ModeSync.tsx"), "utf-8");
+    expect(modeSyncSrc).toContain("sourceSurface.onDidScroll(");
   });
 
   it("输入路径热点已消除：选区变化不再全文档序列化（WP2 需求3 getText 惰性）", () => {

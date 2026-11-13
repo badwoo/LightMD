@@ -351,8 +351,10 @@ describe("三条 oracle：可运行、可分类、tree 桩诚实标记", () => {
     expect(() => oracleDocRoundtripReserialized(samples[0]!)).not.toThrow();
     // Tier-1 对未编辑文档走 B6 快路径（原文逐字节返回）→ 必然 identical
     expect(oracleDocRoundtrip("Setext\n===\n")).toBe("Setext\n===\n");
-    // Tier-2 让 blockSourceMap 全 miss → 走规范序列化 → Setext 归一化为 ATX
-    expect(oracleDocRoundtripReserialized("Setext\n===\n")).toBe("# Setext\n");
+    // Tier-2 让 blockSourceMap 全 miss → 走规范序列化。
+    // v0.17.0 T4 起 Setext **不再归一化为 ATX**（headingToMarkdown 读 raw.setext
+    // 保写法），但下划线长度按新文字重算（G5-1 口径 max(3, len)）→ 仍输出 Setext。
+    expect(oracleDocRoundtripReserialized("Setext\n===\n")).toBe("Setext\n======\n");
   });
 
   it("md→Blocks→md 不 throw，且 Block[] 结构能重建出 markdown", () => {

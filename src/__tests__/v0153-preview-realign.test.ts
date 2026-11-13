@@ -181,14 +181,20 @@ describe("v0.15.3 · 缺陷 B 静态契约：用户主动滚动即退场", () =>
     // 口径与语义地图 §4-31 一致：浏览器因 scrollHeight 收缩而**自动钳位** scrollTop
     // 不是用户操作，用差值判定会把钳位误判成"用户滚了"从而放弃还原。
     // 三个事件覆盖鼠标滚轮 / 拖滚动条与点击 / 触屏，缺任一种就有用户场景被漏掉。
+    //
+    // v0.17.0 P1-3 更新：事件宿主从 `textarea` 改为显式 `sourceHostEl`。
+    // 语义不变 —— 真 textarea 下 `sourceHostEl` 就是 textarea 自己；
+    // CM6 下是中性宿主 div（滚轮/指针事件从 `.cm-scroller` / `.cm-content` 冒泡上来）。
+    // 改的理由：旧的 `textarea` 变量声明类型是 `HTMLTextAreaElement`，在 CM6 下是"类型谎言"，
+    // 绑上去"碰巧"生效；显式 `sourceHostEl` 让"绑宿主"是**有意为之**。
     const region = realignRegion();
-    expect(region).toMatch(/textarea\.addEventListener\("wheel",\s*markRealignUser/);
-    expect(region).toMatch(/textarea\.addEventListener\("pointerdown",\s*markRealignUser/);
-    expect(region).toMatch(/textarea\.addEventListener\("touchstart",\s*markRealignUser/);
+    expect(region).toMatch(/sourceHostEl\.addEventListener\("wheel",\s*markRealignUser/);
+    expect(region).toMatch(/sourceHostEl\.addEventListener\("pointerdown",\s*markRealignUser/);
+    expect(region).toMatch(/sourceHostEl\.addEventListener\("touchstart",\s*markRealignUser/);
     // 清理时必须解绑（否则 effect 重跑会重复叠加监听器）
-    expect(region).toMatch(/textarea\.removeEventListener\("wheel",\s*markRealignUser/);
-    expect(region).toMatch(/textarea\.removeEventListener\("pointerdown",\s*markRealignUser/);
-    expect(region).toMatch(/textarea\.removeEventListener\("touchstart",\s*markRealignUser/);
+    expect(region).toMatch(/sourceHostEl\.removeEventListener\("wheel",\s*markRealignUser/);
+    expect(region).toMatch(/sourceHostEl\.removeEventListener\("pointerdown",\s*markRealignUser/);
+    expect(region).toMatch(/sourceHostEl\.removeEventListener\("touchstart",\s*markRealignUser/);
   });
 
   it("用户滚动标记与取消判据**关联**进 shouldContinuePreviewRealign（不是只记不用）", () => {

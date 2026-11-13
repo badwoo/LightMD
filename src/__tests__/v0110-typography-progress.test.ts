@@ -93,8 +93,13 @@ describe("v0.11.0 B4-10 排版三项设置", () => {
     expect(sourceEditorIdx).toBeGreaterThan(-1);
     const block = editorCss.slice(sourceEditorIdx, editorCss.indexOf("}", sourceEditorIdx));
     // v0.12.1 需求3：正文列 = 旧版逐像素一致（(W-CM)/2 + 60，W≤CM 时退化为 60）
+    // ⚠️ v0.17.0 第二轮更新（2026-11-11）：兜底值 960 → **860**。
+    // 原因：`--editor-content-max-width` 未设置时，阅读面 `.ProseMirror` 走 860px 兜底，
+    // 而源码面此处走 960px → 两模式正文列宽差 100px（实测阅读 740 / 源码 806），
+    // 即用户报的「阅读模式和编辑模式文档没有对齐」。同一变量必须同一兜底值。
+    // 断言**意图**（正文列 = CM - 120，且 W≤CM 时退化为 60）完全不变。
     expect(block).toMatch(
-      /padding-inline:\s*max\(\s*60px,\s*calc\(\(100% - var\(--editor-content-max-width, 960px\)\) \/ 2 \+ 60px\)\s*\)/,
+      /padding-inline:\s*max\(\s*60px,\s*calc\(\(100% - var\(--editor-content-max-width, 860px\)\) \/ 2 \+ 60px\)\s*\)/,
     );
     // 旧实现在 textarea 上做 max-width 居中（滚动条停在正文右缘）→ 必须已移除
     expect(block).not.toMatch(/max-width:/);

@@ -220,21 +220,39 @@ export function removeLinePrefix(text: string, cursorPos: number): FormatResult 
 export const HEADING_GHOST_TEXTS = ["标题一", "标题二", "标题三", "标题四", "标题五", "标题六"] as const;
 
 /**
- * v0.13.2 需求2：源码模式「把当前行提升为任务项」。
+ * 源码模式「把当前行**原地**转换为任务项」（**v0.17.0 第四轮用户裁决口径 R4**）。
  *
- * ─── 缺陷背景（与阅读模式同源，用户报告的是阅读模式）───
- * 「在有序列表使用快捷键 Ctrl+T，想给这行加任务列表，结果任务列表没有自动加到
- *  有序列表前，而是回车换行了。」
+ * ─── 历史（四层口径，别再走回头路）───
+ * **① v0.13.2 之前**：`COMMAND_SYNTAX["insert.taskList"]` 只是 `"\n- [ ] "`，
+ * 在光标处插一行 → 列表项被劈成两半、任务项落在列表内部（视觉=回车换行）。
  *
- * 阅读模式根因在 `pmCommands.insert.taskList`（只认顶层段落）；源码模式的
- * `COMMAND_SYNTAX["insert.taskList"]` 是 `"\n- [ ] "` —— 它只是**在光标处插入**
- * 一个换行 + 空任务项，于是有序列表项被劈成两半、任务项落在列表内部。
+ * **② v0.13.2 需求2**：「提升为任务项」——从列表摘出来、任务列表插在原列表**之前**，
+ * 原序号作为**字面文本**写进任务项（`- [ ] 2. two`）。
+ * 缺陷：3 项列表转第 2 项后阅读顺序成了 `2. / 1. / 2.`。
  *
- * 现在两模式统一口径（用户确认）：当前行从原列表**摘出来**成为任务项，
- * 新任务列表放在原列表**之前**，列表其余项保留。
+ * **③ v0.17.0 R3（C2）**：任务项**不带**序号、列表断两段、后段续号为 `ownOrder`。
+ * → `1. one` / `☐ two` / `2. three`。
+ * 缺陷（用户 R4）：「会**把有序列表弄没**」。
  *
- * 只在「当前行是一个列表项的首行」时生效；其余情况返回 null，
- * 调用方仍走原来的语法插入（在普通段落里 Ctrl+T 依旧是"新建任务项"）。
+ * **④ v0.17.0 R4（现行，取代 C2）**：用户原话「正确例子如**在 2. 上加任务，
+ * 那么结果应该是 `- [ ] 2.`**」。任务项**带字面序号**，其余行序号**保持原值**。
+ *
+ * ### R4 在源码模式的两个硬点（与阅读模式同源，但源码是逐行文本、规则不同）
+ *
+ * 1. **任务行保留原序号**：`- [ ] 2. two`（C2 是刻意去掉的，R4 又恢复了）。
+ * 2. **后段列表起始号 = `ownOrder + 1`**（C2 是 `ownOrder`）。
+ *    R4 下待办项自己占了那个序号，后续项必须**接着它后面**数 ——
+ *    源码模式必须**显式写出**后段首行的序号（markdown 没有 `order` attr）。
+ *    写 `ownOrder`（C2 写法）→ `2. three` 里 2 重复；这才是"跳号"。
+ *
+ * ### 行分隔策略：段与段之间插入空行
+ *
+ * `ordered_list` → `task_list` → `ordered_list` 是**三个独立的块**。源码里不空行的话
+ * markdown-it 同样会切成三段（实测 `start` 编号也正确），但**空行更明确**：
+ * 不空行时"任务项是否被吸进相邻有序列表"依赖 parser 的具体实现细节；
+ * 空行则与「三种不同类型列表必须分开」的语义一一对应，且有单测锁死往返保真。
+ *
+ * 仅在「光标所在行是一个列表项行」时生效；其余返回 null，调用方仍走原有语法插入。
  *
  * @param text      整篇源码
  * @param cursorPos 光标偏移
@@ -251,33 +269,135 @@ export function liftListLineToTask(text: string, cursorPos: number): FormatResul
   }
   const line = lines[idx];
   // 有序/无序列表项：`1. ` / `1) ` / `- ` / `* ` / `+ `，允许 0~3 空格缩进。
-  // v0.13.2 返修（需求2）：**捕获列表标记本身**——有序列表的 `1.` 必须保留在
-  // 任务行里（用户明确要 `- [ ] 1. xxx`），否则"一加任务列表有序列表就消失了"。
   const m = /^(\s{0,3})(\d{1,9}[.)]|[-*+])(\s+)(.*)$/.exec(line);
   if (!m) return null;
-  // 已经是任务项 → 不接管（避免把 `- [ ]` 又提升一层）
+  // 已经是任务项 → 不接管（避免把 `- [ ]` 又转换一层）
   if (/^\[[ xX]\](\s|$)/.test(m[4])) return null;
+  const indent = m[1];
   const marker = m[2];
   const body = m[4];
 
-  // 向上找到该列表块的起始行（连续的列表项行）
+  const isOrderedMarker = /^\d/.test(marker);
+  // 本项的字面序号 + 分隔符（`2.` / `2)`）
+  const ownOrder = isOrderedMarker ? parseInt(marker, 10) : 0;
+  const ownDelim = marker.slice(-1);
+
+  // 向上/向下找到该列表块的边界（连续的列表项行）；
+  // v0.17.0 R3：C2 需要知道**前后两段各有哪些行**，所以要双向都扫。
   const isListLine = (s: string) => /^\s{0,3}(?:\d{1,9}[.)]|[-*+])\s+\S/.test(s);
   let blockStart = idx;
   while (blockStart > 0 && isListLine(lines[blockStart - 1])) blockStart--;
+  let blockEnd = idx;
+  while (blockEnd < lines.length - 1 && isListLine(lines[blockEnd + 1])) blockEnd++;
 
-  // 摘出当前行，把任务项插到列表块之前
-  const rest = [...lines.slice(0, idx), ...lines.slice(idx + 1)];
-  // 删除当前行后，块起点若在当前行之后则要左移一位
-  const insertAt = blockStart > idx ? blockStart - 1 : blockStart;
-  // 有序列表保留序号（`1.` / `1)`），无序列表不保留 bullet 符号（任务项自带 `- [ ]`）
-  const keepMarker = /^\d/.test(marker) ? `${marker} ` : "";
-  const taskLine = `- [ ] ${keepMarker}${body}`;
-  const next = [...rest.slice(0, insertAt), taskLine, ...rest.slice(insertAt)];
-  const newText = next.join("\n");
+  // ── 任务行：**带原序号**（R4 口径，取代 C2 的"不带序号"）──
+  //
+  // 用户 R4 原话：「正确例子如**在 2. 上加任务，那么结果应该是 `- [ ] 2.`**」
+  // 无序列表没有序号，`keepMarker` 为空串 → `- [ ] bb`（与历史一致）。
+  // 有序列表 → `- [ ] 2. bb`；分隔符 `1.` / `1)` 原样保留。
+  const keepMarker = isOrderedMarker ? `${ownOrder}${ownDelim} ` : "";
+  const taskLine = `${indent}- [ ] ${keepMarker}${body}`;
 
-  // 光标落到任务项文本末尾（与"插入后继续输入"的直觉一致）
+  const beforeLines = lines.slice(blockStart, idx);
+  const afterLines = lines.slice(idx + 1, blockEnd + 1);
+
+  /**
+   * 后段列表的序号处理 —— **R4 与 C2 的关键差异**。
+   *
+   * R4 下**待办项自己保留了字面序号**（`- [ ] 2. bb` 里的 `2.` 是文本），
+   * 所以后段不能"顶替"待办的位置，必须**接着它后面**继续数：
+   * 后段首行的字面序号 = `ownOrder + 1`。
+   *
+   * 示例（`1. one / 2. two / 3. three` 转第 2 项，`ownOrder=2`）：
+   * - ✅ R4（`ownOrder + 1` = 3）→ 后段 `3. three` —— **与原列表逐字节一致**
+   * - ❌ C2（`ownOrder` = 2）→ 后段 `2. three`（序号 2 出现两次，跳号）
+   *
+   * 后续行按"首行 + 逐行递推"改写，而不是整段重排：原列表中间可能被用户写了
+   * **非连续序号**（`1. a / 5. b / 9. c`，markdown 允许）。R4 的语义是
+   * "原地变一行 + 其余保持"，不是"重新编号整段"；按首行递推能保住用户原有的相对步长。
+   *
+   * 无序列表没有序号 → 原样返回（`- aa / - cc` 逐字节不变）。
+   */
+  const renumberAfter = (arr: string[]): string[] => {
+    if (!isOrderedMarker || arr.length === 0) return arr;
+    /**
+     * v0.17.0 R5（真机验证发现，V3 上报）：**重编号只作用于「与当前项同缩进」的行**。
+     *
+     * ## 缺陷（R4 引入，R4 的 8 种边界表没抓到）
+     *
+     * 输入（3 空格缩进的嵌套子列表）：
+     * ```
+     * 1. 外层
+     *    1. 内一
+     *    2. 内二
+     * ```
+     * 光标在外层项 → Ctrl+T，实测输出内层变成 `2. 内一 / 3. 内二`（**被 +1**）。
+     *
+     * ## 根因
+     *
+     * 上面的 `isListLine` 用 `/^\s{0,3}/` 允许 **0~3 空格**缩进 ——
+     * 于是 3 空格缩进的**嵌套子列表行也满足匹配** → 被 `blockEnd` 扫进 `afterLines`
+     * → 又被本函数当成"后段列表"一起重编号。
+     *
+     * ⚠️ 真机对照给出了铁证：**同一份代码、同一个操作，只因缩进差 1 个空格结果就不同**：
+     * | 嵌套缩进 | 输出 | 判定 |
+     * |---|---|---|
+     * | **3 空格** | 内层 `2./3.` | ❌ 被 +1 |
+     * | **4 空格** | 内层 `1./2.` | ✅ 保持原样（因为 `\s{0,3}` 不匹配 4 空格，没被扫进来）|
+     * 两种缩进行为不一致 → 只可能是这个正则边界造成的。
+     *
+     * ## 修法
+     *
+     * 嵌套子列表是**另一个层级的列表**，源码里明明写着 `1.` `2.`，用户期望保持原样；
+     * R4 的语义也是「原地变一行 + 其余保持」，不是"重新编号整段"。
+     * 所以这里用**当前行的缩进量**做同一性判定：不同缩进的行**原样返回**。
+     *
+     * `blockEnd` 的宽扫描**保留不动** —— 它只用于确定块范围（供 slice 拼装），
+     * 不决定"改哪几行序号"。两者职责分离后，缩进深的行仍会被原样放回输出。
+     */
+    const sameIndentOf = (raw: string): RegExpExecArray | null => {
+      // 这里改用 `\s*`（而不是 `\s{0,3}`）：必须能**识别出**任意深度的缩进量，
+      // 才能判定"是否同级"。若沿用 `{0,3}`，4 空格嵌套行会因不匹配而被当成
+      // "不是列表行"—— 虽然结果碰巧正确，但判据是靠"看不见"而非"比得出来"，
+      // 属于本项目反复出错的模式（看不见 ≠ 不存在）。
+      const mm = /^(\s*)(\d{1,9})([.)])(\s+)(.*)$/.exec(raw);
+      if (!mm) return null;
+      return mm[1].length === indent.length ? mm : null;
+    };
+    // 后段起始号 = 被转换项的字面序号 **+ 1**（待办项自己占了那个序号）
+    let nextNum = ownOrder;
+    return arr.map((raw) => {
+      const mm = sameIndentOf(raw);
+      if (!mm) return raw; // 嵌套子列表 / 非列表行 → 原样保留
+      nextNum += 1;
+      return `${mm[1]}${nextNum}${mm[3]}${mm[4]}${mm[5]}`;
+    });
+  };
+  const afterRenumbered = renumberAfter(afterLines);
+
+  // ── 组装：前段列表 + 空行 + 任务行 + 空行 + 后段列表 ──
+  // 空行是必需的：`ordered_list` / `task_list` / `ordered_list` 是三种块类型，
+  // 不空行时"任务项是否被吸进相邻有序列表"依赖 parser 细节，空行则语义明确。
+  const out: string[] = [];
+  out.push(...lines.slice(0, blockStart));
+  if (beforeLines.length > 0) {
+    out.push(...beforeLines);
+    out.push("");
+  }
+  out.push(taskLine);
+  if (afterRenumbered.length > 0) {
+    out.push("");
+    out.push(...afterRenumbered);
+  }
+  out.push(...lines.slice(blockEnd + 1));
+
+  const newText = out.join("\n");
+
+  // 光标落到任务行**末尾**（与阅读模式的"任务项首段文本末尾"对齐：
+  // 单段单行时两者是同一个位置）→ 用户可以直接接着打字。
+  const taskLineIdx = (beforeLines.length > 0 ? blockStart + beforeLines.length + 1 : blockStart);
   let caret = 0;
-  for (let i = 0; i < insertAt; i++) caret += next[i].length + 1;
+  for (let i = 0; i < taskLineIdx; i++) caret += out[i].length + 1;
   caret += taskLine.length;
   return { replacement: newText, cursorOffset: caret - cursorPos };
 }
@@ -471,40 +591,162 @@ export function parseShortcut(e: {
   return def ? SOURCE_ACTION_BY_ID[def.id] ?? null : null;
 }
 
-/** Mermaid 模板列表（按钮下拉菜单项） */
+/**
+ * Mermaid 模板（按钮下拉菜单项）。
+ *
+ * ## 字段职责（v0.17.0 R3 #10 起）
+ * - `id`：**稳定 ASCII 标识**，既做 React key 也做单测锚点。绝不随界面语言变化。
+ * - `labelKey`：**展示文案的 i18n key**，下拉菜单必须渲染 `t(labelKey)`。
+ *   —— 用户反馈「mermaid 图标文字又变成英文了」的根因就是这里此前是硬编码
+ *   `label: "Flowchart"` 之类的英文字符串，中文界面下直接穿帮。
+ * - `label`：**遗留字段，仅供单元测试做语义锚点**（`format-bar-completion.test.ts`
+ *   用 `find(t => t.label === "Flowchart")` 定位模板再断言其语法形态）。
+ *   ⚠️ **界面渲染严禁再用 `label`** —— 那会立刻退回"中文界面显示英文"的旧缺陷。
+ *   保留它而不是把 10 处测试改成按 syntax 找，是因为按 label 找的语义最直白、
+ *   误伤风险最低；改测试换来的只是"少一个字段"，不值得。
+ * - `syntax`：插入文档的完整围栏文本（含首尾换行）。
+ *
+ * ## 为什么模板是 20 种而不是"全加"
+ * 每个新增类型都在**本仓真实管线**上逐个实测过（mermaid 11.15.0 +
+ * `securityLevel:"strict"` + 预览 iframe 同一份 `public/vendor/mermaid/mermaid.min.js`），
+ * 渲染失败的**没有加**，理由逐条记在 `_plan/v0170-r3-t4-formatbar.md`：
+ * - `requirementDiagram` / `architecture-beta`：**中文内容会解析失败**
+ *   （中文用户一改文本就坏图，加了等于埋坑；ASCII 才能渲染）
+ * - `zenuml`：本仓 mermaid 包不含该图类型（`No diagram type detected`）
+ * - `C4Deployment`：模板必须带 `{}` 块，属 C4 家族变体；C4 家族只保留 `C4Context` 代表
+ * - `sankey-beta` / `xychart-beta`：**中文列名/坐标轴标签**会解析失败，模板内用 ASCII，
+ *   并保留 `title` 中文（实测 title 支持中文）
+ */
 export interface MermaidTemplate {
+  /** 稳定 ASCII 标识（React key / 单测锚点），不随语言变化 */
+  id: string;
+  /** 展示文案的 i18n key；渲染必须走 `t(labelKey)` */
+  labelKey: string;
+  /** @deprecated 仅供单测做语义锚点；界面渲染请用 `labelKey` */
   label: string;
   syntax: string;
 }
 
 export const MERMAID_TEMPLATES: MermaidTemplate[] = [
   {
+    id: "flowchart",
+    labelKey: "mermaid.type.flowchart",
     label: "Flowchart",
     syntax: "\n```mermaid\ngraph TD\n    A[开始] --> B[结束]\n```\n",
   },
   {
+    id: "sequence",
+    labelKey: "mermaid.type.sequence",
     label: "Sequence",
     syntax: "\n```mermaid\nsequenceDiagram\n    participant A\n    participant B\n    A->>B: 请求\n    B-->>A: 响应\n```\n",
   },
   {
+    id: "class",
+    labelKey: "mermaid.type.class",
+    label: "ClassDiagram",
+    syntax: "\n```mermaid\nclassDiagram\n    class 用户 {\n        +String 名字\n        +login()\n    }\n    用户 <|-- 管理员\n```\n",
+  },
+  {
+    id: "state",
+    labelKey: "mermaid.type.state",
     label: "State",
     syntax: "\n```mermaid\nstateDiagram-v2\n    [*] --> 待机\n    待机 --> 运行: 启动\n    运行 --> [*]: 停止\n```\n",
   },
   {
-    label: "Gantt",
-    syntax: "\n```mermaid\ngantt\n    title 项目计划\n    section 阶段一\n    任务1 :a1, 2024-01-01, 30d\n```\n",
-  },
-  {
-    label: "Pie",
-    syntax: "\n```mermaid\npie title 销售占比\n    \"产品A\" : 40\n    \"产品B\" : 60\n```\n",
-  },
-  {
+    id: "er",
+    labelKey: "mermaid.type.er",
     label: "ER图",
     syntax: "\n```mermaid\nerDiagram\n    CUSTOMER ||--o{ ORDER : places\n```\n",
   },
   {
+    id: "journey",
+    labelKey: "mermaid.type.journey",
+    label: "Journey",
+    syntax: "\n```mermaid\njourney\n    title 用户旅程\n    section 开始\n      打开应用: 5: 用户\n      浏览内容: 3: 用户\n```\n",
+  },
+  {
+    id: "gantt",
+    labelKey: "mermaid.type.gantt",
+    label: "Gantt",
+    syntax: "\n```mermaid\ngantt\n    title 项目计划\n    dateFormat YYYY-MM-DD\n    section 阶段一\n    任务一 :a1, 2024-01-01, 30d\n```\n",
+  },
+  {
+    id: "pie",
+    labelKey: "mermaid.type.pie",
+    label: "Pie",
+    syntax: "\n```mermaid\npie title 销售占比\n    \"产品A\" : 40\n    \"产品B\" : 60\n```\n",
+  },
+  {
+    id: "quadrant",
+    labelKey: "mermaid.type.quadrant",
+    label: "QuadrantChart",
+    syntax: "\n```mermaid\nquadrantChart\n    title 象限图\n    x-axis 低 --> 高\n    y-axis 低 --> 高\n    quadrant-1 优先做\n    quadrant-2 计划做\n    quadrant-3 暂时不做\n    quadrant-4 以后再说\n    项目A: [0.3, 0.6]\n    项目B: [0.7, 0.8]\n```\n",
+  },
+  {
+    id: "timeline",
+    labelKey: "mermaid.type.timeline",
+    label: "Timeline",
+    syntax: "\n```mermaid\ntimeline\n    title 发展时间线\n    section 早期\n        2020 : 立项\n        2021 : 首发\n```\n",
+  },
+  {
+    id: "mindmap",
+    labelKey: "mermaid.type.mindmap",
+    label: "Mindmap",
+    syntax: "\n```mermaid\nmindmap\n  root((中心))\n    分支一\n      叶子1\n    分支二\n```\n",
+  },
+  {
+    id: "gitgraph",
+    labelKey: "mermaid.type.gitgraph",
     label: "Gitgraph",
-    syntax: "\n```mermaid\ngitGraph\n    commit\n    branch develop\n    checkout develop\n    commit\n```\n",
+    syntax: "\n```mermaid\ngitGraph\n    commit id: \"初始\"\n    branch develop\n    checkout develop\n    commit id: \"开发\"\n    checkout main\n    merge develop\n```\n",
+  },
+  {
+    id: "c4",
+    labelKey: "mermaid.type.c4",
+    label: "C4Context",
+    syntax: "\n```mermaid\nC4Context\n    title 系统上下文\n    Person(user, \"用户\")\n    System(sys, \"LightMD\")\n    Rel(user, sys, \"使用\")\n```\n",
+  },
+  {
+    id: "block",
+    labelKey: "mermaid.type.block",
+    label: "BlockBeta",
+    syntax: "\n```mermaid\nblock-beta\n  columns 3\n  a b c\n  d e f\n```\n",
+  },
+  {
+    id: "packet",
+    labelKey: "mermaid.type.packet",
+    label: "PacketBeta",
+    syntax: "\n```mermaid\npacket-beta\n0-15: \"源端口\"\n16-31: \"目的端口\"\n```\n",
+  },
+  {
+    id: "kanban",
+    labelKey: "mermaid.type.kanban",
+    label: "Kanban",
+    syntax: "\n```mermaid\nkanban\n  todo[待办]\n    t1[任务一]\n  done[完成]\n    t2[任务二]\n```\n",
+  },
+  {
+    id: "xychart",
+    labelKey: "mermaid.type.xychart",
+    label: "XYChartBeta",
+    syntax: "\n```mermaid\nxychart-beta\n    title \"月度销售\"\n    x-axis [\"一月\", \"二月\", \"三月\"]\n    y-axis \"金额\" 0 --> 100\n    bar [30, 60, 90]\n    line [30, 60, 90]\n```\n",
+  },
+  {
+    id: "sankey",
+    labelKey: "mermaid.type.sankey",
+    label: "SankeyBeta",
+    syntax: "\n```mermaid\nsankey-beta\n\nSource,Target,10\nSource,Other,5\n```\n",
+  },
+  {
+    id: "radar",
+    labelKey: "mermaid.type.radar",
+    label: "RadarBeta",
+    syntax: "\n```mermaid\nradar-beta\n  axis A, B, C\n  curve c1{1,2,3}\n```\n",
+  },
+  {
+    id: "treemap",
+    labelKey: "mermaid.type.treemap",
+    label: "TreemapBeta",
+    syntax: "\n```mermaid\ntreemap-beta\n\"Root\"\n    \"A\"\n    \"B\"\n```\n",
   },
 ];
 

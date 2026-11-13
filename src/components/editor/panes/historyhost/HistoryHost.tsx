@@ -34,7 +34,7 @@ import { unmaskBase64Images, maskBase64Images } from "../../../../utils/base64Im
 import { readingFold } from "../.././readingFold";
 import { ContentAnchor, collectPmBlockGeometry, captureContentAnchor, blockGeometryFromLineAxis } from "../../../../utils/contentScrollMap";
 import { topLevelBlockStartLines } from "../../../../core/renderPipeline";
-import { measureLineAxis, textareaMeasureSource } from "../../../../editor/surface/sourceLineAxis";
+import { measureLineAxis, surfaceMeasureSource, textareaMeasureSource } from "../../../../editor/surface/sourceLineAxis";
 import { documentHistory } from "../../../../services/documentHistory";
 import { withTrailingParagraph } from "../../../../core/plugins/trailing-paragraph";
 import { markdownToDoc } from "../../../../core/markdown/parser";
@@ -253,6 +253,21 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
   const historyScrollGuardUntilRef = useRef(0);
 
   /**
+   * v0.17.0 P1-2：**撤销/恢复落地期间的历史桥接深度计数**。
+   *
+   * > 0 时表示"当前内容变化来自统一时间线的落地写入，不是用户编辑"。
+   * `SourcePane.applySourceInput` 据此**只同步展示文本、不提交新历史**
+   * （否则每按一次 Ctrl+Z 就多一条"撤销自身"的条目并 truncate redo 分支 →
+   * 交替 undo/redo 每两次只有一次生效，实测命中 3/6）。
+   *
+   * 用计数器而非布尔量：落地过程中可能嵌套触发多次上报（mask/unmask 的二次
+   * setSourceContent），布尔量会被中途复位导致守卫提前失效。
+   *
+   * 完整因果链见 `_plan/v0170-p1-2-undo-redo-alternating.md`。
+   */
+  const historyBridgeDepthRef = useRef(0);
+
+  /**
    * v0.15.4 需求10：撤销/恢复的滚动窗口长度。
    *
    * 必须覆盖 `restorePreviewScrollFromAnchor` 的三段校正（rAF / 60ms / 160ms）加上
@@ -456,12 +471,36 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     blocks: import("../../../../utils/contentScrollMap").BlockGeometry[];
     markdown: string;
   } | null => {
-    // TODO(v0.18): CM6 能力缺口 — 分屏对齐的块几何测量（`measureSourceLineAxis` 需真实 textarea）。当前 CM6 表现：退回**百分比映射**，软换行长行上可偏**约 4 倍** | 用户可感知度：中 | 建议优先级：P1
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return null;
-    // 不可见时高度/宽度为 0 → 量不出可信行轴
-    if (!(textarea.clientHeight > 0) || !(textarea.clientWidth > 0)) return null;
-    if (!(textarea.scrollHeight > 0)) return null;
+    /**
+     * ═══ v0.17.0 P1-3（同源点 ②）：源码块几何在 CM6 下曾经恒为空 ═══
+     *
+     * 旧写法：
+     * ```ts
+     * const textarea = sourceTextareaRef.current;   // CM6 下是 <div>（truthy，非 null）
+     * if (!textarea) return null;                    // 挡不住 div
+     * if (!(textarea.clientHeight > 0) || …) return null;  // div 的 clientHeight > 0 → 也过
+     * measureLineAxis(textareaMeasureSource(textarea), …)  // 读 div.value → undefined → null
+     * ```
+     * 于是 `measureSourceBlocks()` **永远返回 null** → `srcGeomCacheRef` 永远为空 →
+     * 编辑↔阅读切换的「源码块几何」路径恒不可用 → 退回百分比映射
+     * （源码 4 处 `TODO(v0.18)` 预警的「软换行长行上可偏约 4 倍」）。
+     *
+     * ## 修法：类型判定分派到 `surfaceMeasureSource`
+     * 真 textarea → mirror（v0.16.0 行为逐字节不变）；
+     * CM6 → `surface.measureBlockTops`（`lineBlockAt` 覆盖全文档，含视口外估算 —— R2 已说明）。
+     *
+     * ⚠️ 几何量（clientHeight/clientWidth/scrollHeight）也一并改经 `getMetrics()`：
+     * div 的 `scrollHeight === clientHeight`（它不滚），直接读会得出"无可滚动空间"。
+     */
+    const hostEl = sourceTextareaRef.current as unknown as HTMLElement | null;
+    const textarea =
+      hostEl && typeof (hostEl as unknown as { value?: unknown }).value === "string"
+        ? (hostEl as unknown as HTMLTextAreaElement)
+        : null;
+    // 不可见时高度/宽度为 0 → 量不出可信行轴（CM6 下从 scrollDOM 取，同样为 0）
+    const gm = sourceSurface.getMetrics();
+    if (!(gm.clientHeight > 0) || !(gm.clientWidth > 0)) return null;
+    if (!(gm.scrollHeight > 0)) return null;
     const markdown = unmaskBase64Images(sourceContentRef.current, base64TokensRef.current);
     if (!markdown) return null;
     try {
@@ -474,53 +513,61 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
        * 并且**降级可观测**（R2）：走 textarea 源时与 A3 之前行为完全一致；
        * 走 surface 源时 CM6 用 `lineBlockAt` 覆盖全文档（含视口外）。
        *
-       * 当前仍用 textarea 源 —— 因为本函数在 `previewShown` 分屏路径里，
-       * 而 CM6 的 `coordsAtPos` 需要真实布局；待 A3 第 4 项把分屏联动整体
-       * 切到 `getMetrics()` 后再换源（此处留好接口，换源只改一行）。
+       * **P1-3：这里才是"换源"真正发生的地方** —— 旧注释写着"待 A3 第 4 项……
+       * 换源只改一行"，但那一行写的是裸 `textareaMeasureSource(textarea)`，
+       * 根本没有 fallback，所以 CM6 下连降级都算不上（直接恒 null）。
        */
-      const measured = measureLineAxis(textareaMeasureSource(textarea), blockLines, (reason) => {
-        // 降级可观测：探针可据此判定"是测量失败"而非"对齐算法坏了"
-        if (typeof window !== "undefined") {
-          const w = window as unknown as { __LMD_AXIS_DEGRADE?: string[] };
-          if (Array.isArray(w.__LMD_AXIS_DEGRADE) && w.__LMD_AXIS_DEGRADE.length < 200) {
-            w.__LMD_AXIS_DEGRADE.push(reason);
+      const measured = measureLineAxis(
+        textarea ? textareaMeasureSource(textarea) : surfaceMeasureSource(sourceSurface),
+        blockLines,
+        (reason) => {
+          // 降级可观测：探针可据此判定"是测量失败"而非"对齐算法坏了"
+          if (typeof window !== "undefined") {
+            const w = window as unknown as { __LMD_AXIS?: { degrade?: string[] } };
+            const sink = w.__LMD_AXIS;
+            if (sink && typeof sink === "object") {
+              if (!Array.isArray(sink.degrade)) sink.degrade = [];
+              if (sink.degrade.length < 200) sink.degrade.push(reason);
+            }
           }
-        }
-      });
+        },
+      );
       if (!measured) return null;
       const blocks = blockGeometryFromLineAxis({
         totalLines: measured.totalLines,
         lineAxis: measured.axis,
         blockLines,
-        contentHeight: textarea.scrollHeight,
-        maxScroll: Math.max(0, textarea.scrollHeight - textarea.clientHeight),
+        contentHeight: gm.scrollHeight,
+        maxScroll: Math.max(0, gm.scrollHeight - gm.clientHeight),
       });
       return blocks ? { blocks, markdown } : null;
     } catch {
       return null;
     }
-  }, []);
+  }, [sourceSurface]);
 
 
   /**
-   * 采一次源码面块几何并写入缓存（**只在 textarea 可见时调用**）。
+   * 采一次源码面块几何并写入缓存（源码面可见时调用）。
    * 量不到（隐藏 / 空文档 / 只读）就保持旧缓存不动，绝不写 null 把缓存打坏。
+   *
+   * v0.17.0 P1-3：几何值改经 `sourceSurface.getMetrics()` —— 旧写法读
+   * `sourceTextareaRef.current.clientHeight` 等，CM6 下拿到的是**中性 div** 的盒子尺寸
+   * （`scrollHeight === clientHeight`，即"无可滚动空间"），缓存里存的会是错的口径。
    */
   const cacheSourceGeometry = useCallback(() => {
-    // TODO(v0.18): CM6 能力缺口 — 同 `measureSourceBlocks` 的缓存包装（无 textarea 即不缓存）。当前 CM6 表现：缓存为空 → 分屏对齐退回百分比映射，**软换行长行上可偏约 4 倍** | 用户可感知度：中 | 建议优先级：P1
-    const textarea = sourceTextareaRef.current;
-    if (!textarea) return;
     const measured = measureSourceBlocks();
     if (!measured) return;
+    const gm = sourceSurface.getMetrics();
     srcGeomCacheRef.current = {
       blocks: measured.blocks,
-      scrollTop: textarea.scrollTop,
-      clientHeight: textarea.clientHeight,
-      scrollHeight: textarea.scrollHeight,
-      clientWidth: textarea.clientWidth,
+      scrollTop: sourceSurface.getScrollTop(),
+      clientHeight: gm.clientHeight,
+      scrollHeight: gm.scrollHeight,
+      clientWidth: gm.clientWidth,
       textLength: measured.markdown.length,
     };
-  }, [measureSourceBlocks]);
+  }, [measureSourceBlocks, sourceSurface]);
 
 
   /**
@@ -536,34 +583,78 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
    * @returns null = 无可用几何（调用方退回百分比——与旧行为一致，不会更差）
    */
   const captureSourceContentAnchor = useCallback((): ContentAnchor | null => {
-    // TODO(v0.18): CM6 能力缺口 — 块几何需 `coordsAtPos`/`getMetrics` 语义。当前 CM6 表现：该处几何不参与计算 → 分屏对齐精度下降（退回百分比，偏约 4 倍量级） | 用户可感知度：中 | 建议优先级：P1
-    const textarea = sourceTextareaRef.current;
-    const canMeasureLive = !!(textarea && textarea.clientHeight > 0 && textarea.clientWidth > 0);
+    /**
+     * ## ═══ v0.17.0 第二轮（#8 反复切模式进度单向漂移）：几何必须经 `sourceSurface` ═══
+     *
+     * 本函数是本文件里**唯一**漏掉 P1-3 那次换源口径的地方（`measureSourceBlocks` /
+     * `cacheSourceGeometry` 都已改经 `getMetrics()`，只有这里还在直读
+     * `sourceTextareaRef.current` 的几何属性）。
+     *
+     * ### 缺陷（实机 trace 取证，浏览器探针 `v0170-r2-mode-roundtrip`）
+     *
+     * CM6 下 `sourceTextareaRef.current` 是**中性宿主 div**（非 null，`if (el)` 守卫无效 ——
+     * 见 `v0170-div-as-textarea-guard.test.ts` 守的就是这一类）。该 div 不滚动，于是：
+     * ```
+     * {"event":"cap-source","ok":false,"live":true,"fresh":true,"top":0,"h":759,"sh":759,"n":61}
+     * ```
+     * `scrollTop ≡ 0`、`scrollHeight === clientHeight === 759` → `captureContentAnchor` 内
+     * `maxScroll = sh - h = 0` → **"内容不足一屏"分支直接返回 null**。
+     * 结果：`modeSwitchAnchorRef` 在「编辑→阅读」方向**恒为空** → `applyScroll` 只能退回
+     * 百分比恢复。而两种排版的正文列宽/行高/块距不同（软换行数不同）→ 百分比在两侧不等价
+     * → **每往返一轮累积偏一点**，正是用户报的「多次切换阅读进度不断变化」。
+     *
+     * 实测签名：反向（阅读→编辑）每轮都精确跟住（`29→29`、`28→28`），只有
+     * 编辑→阅读在丢 —— "一侧有锚点、另一侧没有"的单向有损特征。
+     *
+     * ### 修法（与同文件既有口径一致，不是新设计）
+     * 真 textarea（`typeof el.value === "string"`）→ 原路径逐字节不变；
+     * 否则（CM6）→ 滚动/盒尺寸全部取 `sourceSurface.getScrollTop()` / `getMetrics()`。
+     * 块几何本来就是 `measureSourceBlocks()` 给的（已换源），这里只补齐**视口几何**。
+     */
+    const hostEl = sourceTextareaRef.current as unknown as HTMLElement | null;
+    // ⚠️ 必须用 `typeof .value === "string"`，**不能**用真值性判断：
+    // CM6 下这个 ref 是 truthy 的 div，`if (hostEl)` 恒成立 → 守卫失效（本项目踩过两次）。
+    const realTextarea =
+      hostEl && typeof (hostEl as unknown as { value?: unknown }).value === "string"
+        ? (hostEl as unknown as HTMLTextAreaElement)
+        : null;
+    /** 源码面视口几何（真 textarea 与 CM6 同一口径出口） */
+    const gm = sourceSurface.getMetrics();
+    const liveScrollTop = realTextarea
+      ? realTextarea.scrollTop
+      : gm.clientHeight > 0
+        ? sourceSurface.getScrollTop()
+        : 0;
+    const liveClientHeight = realTextarea ? realTextarea.clientHeight : gm.clientHeight;
+    const liveClientWidth = realTextarea ? realTextarea.clientWidth : gm.clientWidth;
+    const liveScrollHeight = realTextarea ? realTextarea.scrollHeight : gm.scrollHeight;
+    const canMeasureLive = liveClientHeight > 0 && liveClientWidth > 0;
     if (canMeasureLive) {
       const measured = measureSourceBlocks();
       if (measured) {
         // 顺手刷新缓存（下一次切换若量不到可直接用）
         srcGeomCacheRef.current = {
           blocks: measured.blocks,
-          scrollTop: textarea.scrollTop,
-          clientHeight: textarea.clientHeight,
-          scrollHeight: textarea.scrollHeight,
-          clientWidth: textarea.clientWidth,
+          scrollTop: liveScrollTop,
+          clientHeight: liveClientHeight,
+          scrollHeight: liveScrollHeight,
+          clientWidth: liveClientWidth,
           textLength: measured.markdown.length,
         };
         const anchor = captureContentAnchor(
           measured.blocks,
-          textarea.scrollTop,
-          textarea.clientHeight,
-          { contentHeight: textarea.scrollHeight },
+          liveScrollTop,
+          liveClientHeight,
+          { contentHeight: liveScrollHeight },
         );
         traceScroll("cap-source", {
           ok: !!anchor,
           live: true,
           fresh: true,
-          top: textarea.scrollTop,
-          h: textarea.clientHeight,
-          sh: textarea.scrollHeight,
+          impl: realTextarea ? "textarea" : "surface",
+          top: liveScrollTop,
+          h: liveClientHeight,
+          sh: liveScrollHeight,
           n: measured.blocks.length,
           idx: anchor?.blockIndex,
           ratio: anchor?.ratioWithinBlock,
@@ -596,19 +687,36 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
      * 第二轮切换就会以**上一轮校正前**的位置当基准 → 恢复值在新旧两个位置之间来回跳
      * （实测 3179 → 7958 → 3179 → 7958），用户感知就是"每切一次偏一点"。
      * 现在只从缓存取**块几何**（行轴与滚动位置无关），`scrollTop` / `clientHeight` 现读。
+     *
+     * v0.17.0 第二轮（#8）：这里的"现读"同样**必须经 surface**——CM6 下宿主 div 的
+     * `clientHeight` 恒 >0 但 `scrollTop` 恒 0（不滚动），旧写法会拿 0 当视口位置去
+     * 反推锚点 → 采到的锚点恒指向文档顶部（比 null 更坏：它会污染 `modeSwitchAnchorRef`，
+     * 让恢复侧拿到"看起来有效"的错锚点）。
      */
-    const liveScrollTop = textarea && textarea.clientHeight > 0 ? textarea.scrollTop : cache.scrollTop;
-    const liveClientHeight =
-      textarea && textarea.clientHeight > 0 ? textarea.clientHeight : cache.clientHeight;
-    const anchor = captureContentAnchor(cache.blocks, liveScrollTop, liveClientHeight, {
+    const liveAnchorScrollTop = realTextarea
+      ? realTextarea.clientHeight > 0
+        ? realTextarea.scrollTop
+        : cache.scrollTop
+      : gm.clientHeight > 0
+        ? sourceSurface.getScrollTop()
+        : cache.scrollTop;
+    const liveAnchorClientHeight = realTextarea
+      ? realTextarea.clientHeight > 0
+        ? realTextarea.clientHeight
+        : cache.clientHeight
+      : gm.clientHeight > 0
+        ? gm.clientHeight
+        : cache.clientHeight;
+    const anchor = captureContentAnchor(cache.blocks, liveAnchorScrollTop, liveAnchorClientHeight, {
       contentHeight: cache.scrollHeight,
     });
     traceScroll("cap-source", {
       ok: !!anchor,
-      live: !!(textarea && textarea.clientHeight > 0),
+      live: realTextarea ? realTextarea.clientHeight > 0 : gm.clientHeight > 0,
       fresh: false,
-      top: liveScrollTop,
-      h: liveClientHeight,
+      impl: realTextarea ? "textarea" : "surface",
+      top: liveAnchorScrollTop,
+      h: liveAnchorClientHeight,
       sh: cache.scrollHeight,
       n: cache.blocks.length,
       idx: anchor?.blockIndex,
@@ -618,7 +726,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
       atBottom: anchor?.atBottom,
     });
     return anchor;
-  }, [measureSourceBlocks]);
+  }, [measureSourceBlocks, sourceSurface]);
 
 
   /**
@@ -983,8 +1091,27 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     // 读 store 的实时值而非闭包：协调器长期存活，闭包会停在创建时
     currentMode: () => (useEditorStore.getState().viewMode === "preview" ? "pm" : "source"),
     applyText: (text, restore, meta) => {
-      // 落地实现体在下方 `applyHistoryText`（依赖阅读/源码两套既有写回链路）
-      applyHistoryTextRef.current?.(text, restore, meta);
+      /**
+       * ## v0.17.0 P1-2：撤销/恢复落地期间**禁止再写新历史**
+       *
+       * 实机 trace 证明：`applyText` → `setSourceContent` → CM6 `setText`
+       * → `onDidChange` → `applySourceInput` → `commitFromSource` →
+       * **时间线多出一条（entryId=2）且 redo 分支被 truncate** →
+       * 交替 undo/redo 每两次只有一次生效。
+       *
+       * 用**计数器**而不是布尔量：落地过程中可能嵌套触发多次上报
+       * （mask/unmask 的二次 setSourceContent），布尔量会被中途复位。
+       *
+       * 计数期间 `SourcePane.applySourceInput` 只同步展示文本，不提交历史；
+       * 时间线游标由协调器 ④ 消费、knownText 由 ④b `syncAdapterBaseline` 维护。
+       */
+      historyBridgeDepthRef.current += 1;
+      try {
+        // 落地实现体在下方 `applyHistoryText`（依赖阅读/源码两套既有写回链路）
+        applyHistoryTextRef.current?.(text, restore, meta);
+      } finally {
+        historyBridgeDepthRef.current = Math.max(0, historyBridgeDepthRef.current - 1);
+      }
     },
     notifyBoundary: (kind) => {
       if (kind === "undo") {
@@ -1162,6 +1289,7 @@ export function useHistoryHost(p: HistoryHostParams): HistoryHostResult {
     prevViewModeRef,
     isRestoringScrollRef,
     historyScrollGuardUntilRef,
+    historyBridgeDepthRef,
     HISTORY_SCROLL_GUARD_MS,
     inHistoryScrollGuard,
     scrollRestoreGenRef,

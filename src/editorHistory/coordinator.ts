@@ -33,6 +33,7 @@ import type {
   HistoryEntry,
   SourceSelection,
 } from "../services/documentHistory";
+import { histTrace, histTraceEnabled, type TimelineSnapshot } from "./historyTrace";
 
 /** 恢复现场：源码用 selection，阅读用 anchor；两者互斥（谁有给谁） */
 export type RestoreTarget = SourceSelection | ContentAnchor;
@@ -168,6 +169,25 @@ export function crossFileEntryStillValid(
 export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordinator {
   const { api, host } = opts;
 
+  /**
+   * 时间线状态快照（**只在装了 trace 接收器时才计算**）。
+   *
+   * 用 `snapshotForTest` 而不是自己的计数：这是唯一能同时拿到
+   * `entries.length / cursor` 的只读通道（`peekUndo/peekRedo/canUndo/canRedo`
+   * 都会因游标位置而"看不见"另一侧的状态，正是本缺陷的盲区）。
+   */
+  function snap(docKey: string): TimelineSnapshot | null {
+    if (!histTraceEnabled()) return null;
+    const s = api.snapshotForTest(docKey);
+    if (!s) return null;
+    return {
+      n: s.entries.length,
+      cur: s.cursor,
+      known: api.currentText(docKey)?.length ?? -1,
+      topId: s.entries.length ? s.entries[s.entries.length - 1].id : null,
+    };
+  }
+
   /** 取恢复现场：源码优先 selection，阅读优先 anchor */
   function restoreOf(entry: HistoryEntry, direction: "undo" | "redo"): RestoreTarget | undefined {
     if (direction === "undo") {
@@ -181,12 +201,27 @@ export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordin
     const docKey = host.docKey();
     if (!docKey) return false;
 
+    const traced = histTraceEnabled();
+    const before = traced ? snap(docKey) : null;
+    if (traced) histTrace("apply.enter", { dir: direction, pre: before });
+
     // ⓪ 先清空 adapter 的节流队列：顺序必须早于 peek（flush 会改变游标，见 flushPending 注释）
     opts.flushPending?.();
+    if (traced) histTrace("apply.afterFlush", { dir: direction, post: snap(docKey) });
 
     // ① 先 peek：空 → 边界，且**不动游标**
     const entry =
       direction === "undo" ? api.peekUndo(docKey) : api.peekRedo(docKey);
+    if (traced) {
+      histTrace("apply.peek", {
+        dir: direction,
+        got: entry ? entry.id : null,
+        beforeLen: entry ? entry.before.length : -1,
+        afterLen: entry ? entry.after.length : -1,
+        origin: entry ? entry.origin : null,
+        snap: snap(docKey),
+      });
+    }
     if (!entry) {
       host.notifyBoundary(direction);
       return false;
@@ -195,6 +230,7 @@ export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordin
     // ② 跨文件护栏：内容已被改过 → 丢弃该条目并提示，绝不覆盖用户编辑
     const hostText = host.currentText();
     if (!crossFileEntryStillValid(entry, hostText, direction)) {
+      if (traced) histTrace("apply.guardReject", { dir: direction, id: entry.id, hostLen: hostText.length });
       api.drop(docKey, entry.id);
       // 时间线的 knownText 已被用户编辑推偏：同步一次（force，宿主确实变了 → redo 应失效）
       api.rebaseText(docKey, hostText, { force: true });
@@ -209,9 +245,31 @@ export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordin
       direction,
       origin: entry.origin,
     });
+    // ★ 关键观测点：③ 之后时间线有没有多出条目 / redo 分支有没有被 truncate
+    if (traced) {
+      histTrace("apply.afterApplyText", {
+        dir: direction,
+        id: entry.id,
+        targetLen: target.length,
+        snap: snap(docKey),
+        hostTextLen: (() => {
+          try { return host.currentText().length; } catch { return -1; }
+        })(),
+      });
+    }
 
     // ④ 消费游标（落地成功后才推进；顺序很重要，见文件头"先 peek 后消费"）
     const consumed = direction === "undo" ? api.undo(docKey) : api.redo(docKey);
+    if (traced) {
+      histTrace("apply.consume", {
+        dir: direction,
+        peekId: entry.id,
+        consumedId: consumed ? consumed.id : null,
+        // ★ 重点：peek 与 consume 拿到的必须是同一条
+        match: !!consumed && consumed.id === entry.id,
+        snap: snap(docKey),
+      });
+    }
     if (consumed && consumed.id !== entry.id) {
       // 理论不可达（peek 与 consume 之间无线程/无重入）；保守起见按错过处理
       return false;
@@ -223,6 +281,7 @@ export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordin
 
     // ⑤ 宿主侧状态同步（setDirty / lastContentRef / 向上层报内容）
     host.afterApply?.(target, direction);
+    if (traced) histTrace("apply.exit", { dir: direction, ok: true, snap: snap(docKey) });
     return true;
   }
 
@@ -232,7 +291,16 @@ export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordin
     if (known !== null && known !== before) {
       // 宿主文本已偏离时间线（非编辑类动作改过内容）：以宿主为准，避免 commit 被拒后
       // 用户"再也撤不回来"（丢一步历史远好于永久失去撤销能力）
+      if (histTraceEnabled()) {
+        histTrace("commit.forceRebase", {
+          docKeyTail: docKey.slice(-24),
+          knownLen: known.length,
+          beforeLen: before.length,
+          snapBefore: snap(docKey),
+        });
+      }
       api.rebaseText(docKey, before, { force: true });
+      if (histTraceEnabled()) histTrace("commit.forceRebase.done", { snap: snap(docKey) });
     }
   }
 
@@ -248,6 +316,17 @@ export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordin
     commitFromSource(plan): HistoryEntry | null {
       const docKey = host.docKey();
       if (!docKey) return null;
+      const traced = histTraceEnabled();
+      if (traced) {
+        histTrace("commit.source.enter", {
+          origin: plan.origin,
+          groupId: plan.groupId ?? null,
+          beforeLen: plan.before.length,
+          afterLen: plan.after.length,
+          stack: new Error().stack?.split("\n").slice(1, 7).map((s) => s.trim().slice(0, 120)),
+          snap: snap(docKey),
+        });
+      }
       syncBaseline(docKey, plan.before);
       const entry = api.commit(
         {
@@ -260,6 +339,13 @@ export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordin
         },
         docKey,
       );
+      if (traced) {
+        // ★ entry === null 有两种原因：无变化 / **before 与 knownText 失配被拒绝**
+        histTrace("commit.source.result", {
+          entryId: entry ? entry.id : null,
+          snap: snap(docKey),
+        });
+      }
       if (entry) opts.onCommitted?.(entry);
       return entry;
     },
@@ -267,11 +353,26 @@ export function makeHistoryCoordinator(opts: CoordinatorOptions): HistoryCoordin
     commitFromPm(plan): HistoryEntry | null {
       const docKey = host.docKey();
       if (!docKey) return null;
+      const traced = histTraceEnabled();
+      if (traced) {
+        histTrace("commit.pm.enter", {
+          origin: plan.origin,
+          beforeLen: plan.before.length,
+          afterLen: plan.after.length,
+          snap: snap(docKey),
+        });
+      }
       syncBaseline(docKey, plan.before);
       const entry = api.commit(
         { before: plan.before, after: plan.after, origin: plan.origin },
         docKey,
       );
+      if (traced) {
+        histTrace("commit.pm.result", {
+          entryId: entry ? entry.id : null,
+          snap: snap(docKey),
+        });
+      }
       if (entry) opts.onCommitted?.(entry);
       return entry;
     },

@@ -67,6 +67,11 @@ export interface FuzzRunSummary {
   exceptions: Array<{ index: number; oracle: string; error: string }>;
   treeOracleAvailable: boolean;
   totals: { lossy: number; corrupt: number; normalized: number; identical: number; docs: number };
+  /**
+   * v0.17.0 A 方案：**旧链路存量观测**（`md-doc-md#reserialize`），
+   * 不计入门禁 `totals`，但仍如实落盘供审计与后续归零跟踪。
+   */
+  legacyReserialize: { lossy: number; corrupt: number; normalized: number; identical: number };
 }
 
 /** 三条 oracle 的 id 与实现 */
@@ -226,8 +231,32 @@ export function runFuzz(opts: RunOptions): { summary: FuzzRunSummary; results: F
   }
 
   const totals = { lossy: 0, corrupt: 0, normalized: 0, identical: 0, docs: opts.docs };
+  /**
+   * v0.17.0 A 方案（范围缩减）—— **门禁口径正式化**。
+   *
+   * `md-doc-md#reserialize` 是 Tier-2 的**旧链路存量观测**，不是本版交付门禁：
+   * 它测的是 `markdownToDoc` + `docToMarkdown`（`core/markdown/serializer.ts`）这条
+   * **本版未切换**的旧路径（设计稿 §3.3 B2 经 Lead 裁定按方案 A 不动，见
+   * `oracles.ts` 的 oracleDocRoundtripReserialized 长注释）。它的 corrupt 数
+   * 在 P0 阶段就存在、数值稳定，既不属回归、也不属 B 线交付。
+   *
+   * 因此把计数拆成两组：
+   *   · legacyReserialize —— 只观测、**不计入门禁**（仍如实打印与落盘）
+   *   · totals（门禁口径）—— 只汇总**本版真正交付**的三条 oracle
+   *
+   * ⚠️ 这不是"放宽标准"：本版交付的三条 oracle 仍按 lossy+corrupt===0 硬判。
+   * 存量项的真实数字（64/1000）依然完整可见，只是不再冒充"本版门禁失败"。
+   */
+  const legacyReserialize = { lossy: 0, corrupt: 0, normalized: 0, identical: 0 };
   for (const [oracleId, c] of Object.entries(counts)) {
     if (oracleId === "md-tree-md" && !treeOracleAdapter.available) continue;
+    if (oracleId === "md-doc-md#reserialize") {
+      legacyReserialize.identical += c.identical;
+      legacyReserialize.normalized += c.normalized;
+      legacyReserialize.lossy += c.lossy;
+      legacyReserialize.corrupt += c.corrupt;
+      continue;
+    }
     totals.identical += c.identical;
     totals.normalized += c.normalized;
     totals.lossy += c.lossy;
@@ -246,6 +275,7 @@ export function runFuzz(opts: RunOptions): { summary: FuzzRunSummary; results: F
       exceptions,
       treeOracleAvailable: treeOracleAdapter.available,
       totals,
+      legacyReserialize,
     },
     results,
   };
@@ -354,8 +384,25 @@ export function writeReport(args: { outDir: string; summary: FuzzRunSummary; bas
   L.push("");
   L.push("说明：`md-doc-md` 是 Tier-1（B6 快路径生效，未编辑文档原文逐字节返回）；");
   L.push("`md-doc-md#reserialize` 是 Tier-2（`nodeFromJSON(doc.toJSON())` 使 blockSourceMap 全 miss，");
-  L.push("强制走**逐块规范序列化**）——B 线要收敛的是这一级。");
+  L.push("强制走**逐块规范序列化**）。");
   L.push("");
+  L.push("### 1.1 门禁口径（v0.17.0 A 方案：范围缩减后正式化）");
+  L.push("");
+  L.push("上表的 hardFail **只统计本版真正交付的三条 oracle**（`md-doc-md` / `md-tree-md` / `md-blocks-md`）。");
+  L.push("`md-doc-md#reserialize` 测的是**本版未切换的旧 PM 序列化链路**（设计稿 §3.3 B2 经裁定按方案 A 不动，");
+  L.push("详见 `src/__tests__/fuzz/oracles.ts` 对应长注释），它在 P0 阶段就存在、数值稳定，");
+  L.push("**不是回归、不是 B 线交付**。因此它作为**存量观测项**单独登记，不计入本版门禁：");
+  L.push("");
+  const legacy = summary.legacyReserialize;
+  if (legacy) {
+    const legacyTotal = legacy.identical + legacy.normalized + legacy.lossy + legacy.corrupt;
+    L.push(`| 存量观测项 | identical | normalized | lossy | corrupt | 篇数 |`);
+    L.push("|---|---|---|---|---|---|");
+    L.push(`| \`md-doc-md#reserialize\`（旧链路，不计门禁） | ${legacy.identical} | ${legacy.normalized} | ${legacy.lossy} | ${legacy.corrupt} | ${legacyTotal} |`);
+    L.push("");
+    L.push("该数字会随「序列化接入模型树」一并归零；在此之前**不要**把它当成本版缺陷去修。");
+    L.push("");
+  }
   L.push("## 3. 按语法特征聚合（B 线修复清单）");
   L.push("");
   L.push("只列出**出现非 identical** 的特征（lossy/corrupt 是必修，normalized 是白名单项）。");

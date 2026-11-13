@@ -89,8 +89,27 @@ describe("v0.14.0 第六/七批 · 组件：预览开合期间的滚动冻结窗
 
   it("非底部必须捕获视口中央内容锚点（不是像素）", () => {
     // 核心契约：宽度变化后按"眼前中间那行字"还原，否则 3.1 会跳到 3.3
-    expect(tsx).toMatch(/captureTextAnchor\(textarea, textarea\.clientHeight \/ 2\)/);
-    expect(tsx).toMatch(/restoreTextAnchor\(ta, cur\.anchor\)/);
+    //
+    // v0.17.0 P1-3 更新：源码面几何改经 `sourceGeometry`（CM6 下没有可度量的 textarea）。
+    // 契约不变 —— 中央锚点仍必须是**内容锚**（`captureTextAnchor` / `captureAt`），
+    // 只是两条实现路径分开：真 textarea 走 mirror，CM6 走 `coordsAtPos` + 行轴。
+    expect(tsx).toMatch(/ta\s*\n?\s*\?\s*captureTextAnchor\(ta, ta\.clientHeight \/ 2\)\s*\n?\s*:\s*sourceGeometry\.captureAt\(/);
+    /**
+     * v0.17.0 R3 第三轮（用户第 12 项）更新：还原动作从「直接调 `restoreTextAnchor(ta, cur.anchor)`」
+     * 改为「先算后写」—— 经 `sourceGeometry.scrollTopForAnchor(cur.anchor)` 只**算**目标像素，
+     * 与当前值比较后偏离超阈值才写一次。
+     *
+     * 为什么要改：实测预览开合窗口内 `setScrollTop`（我们）与 `measure`（CM6）交替写 7 次、
+     * 含同方向反拉（4471→4442→4558），产生 4 次方向反转。**写一次就产生一次可见位移**，
+     * 哪怕随后拉回用户也看到那一帧的抖。改成"先算后写 + 每帧至多一写"后反转 4→2。
+     * 详见 `_plan/v0170-r3-t2-scroll-jitter.md` §5。
+     *
+     * **契约不变**：还原依据仍是**内容锚**（`cur.anchor` → `scrollTopForAnchor`），不是裸像素。
+     * textarea 真元素路径仍直连 `restoreTextAnchor`（见下方断言）。
+     */
+    expect(tsx).toMatch(/sourceGeometry\.scrollTopForAnchor\(cur\.anchor\)/);
+    // textarea（真元素）路径的既有直连实现必须保留，不得被"先算后写"顺手删掉
+    expect(tsx).toMatch(/restoreTextAnchor\(ta, anchor\)/);
     // 贴顶/贴底两端不取中央锚点（否则会把文档从顶部拉下来）
     expect(tsx).toMatch(/const atTop = frozenTop <= 2;/);
     expect(tsx).toMatch(/const anchor = atBottom \|\| atTop/);
@@ -121,8 +140,12 @@ describe("v0.14.0 第六/七批 · 组件：预览开合期间的滚动冻结窗
   it("窗口内用户主动滚动/输入优先（用输入事件判断，不把布局钳位误判成用户滚动）", () => {
     // 旧实现用 programTop 差值判断，宽度收缩导致浏览器自动钳位时会被误判 → 中央内容跳走
     expect(tsx).toMatch(/const abort = \(\) => \{/);
-    expect(tsx).toMatch(/textarea\.addEventListener\("wheel", abort/);
-    expect(tsx).toMatch(/textarea\.addEventListener\("keydown", onKeyDown\)/);
+    // v0.17.0 P1-3 更新：事件宿主从 `textarea` 改为 `host`（= `sourceGeometry.host()`）。
+    // 语义不变且更正确 —— 真 textarea 下 host 就是 textarea 本身；
+    // CM6 下 host 是 `.cm-content` 的宿主 div，滚轮/按键都从这里冒泡上来
+    //（绑 textarea 在 CM6 下等于**什么都没绑**）。
+    expect(tsx).toMatch(/host\.addEventListener\("wheel", abort/);
+    expect(tsx).toMatch(/host\.addEventListener\("keydown", onKeyDown\)/);
     // 双击 Shift 的第二次按键不能取消还原（否则又变回"关一次跳一次"）
     expect(tsx).toMatch(/k === "Shift" \|\| k === "Control"/);
     expect(tsx).toMatch(/let abortedByUser = false;/);
@@ -149,8 +172,21 @@ describe("v0.14.0 第六/七批 · 组件：预览开合期间的滚动冻结窗
   });
 
   it("还原动作要打标记，避免其派发的 scroll 事件被当成用户滚动去推右屏", () => {
+    /**
+     * v0.17.0 R3 第三轮更新：标记的**置真/复位**从"线性两句"改为 `try { … } finally { … }`。
+     *
+     * 为什么更好：`restore()` 现在内部有多条 `return`（贴底 / 有锚 / 兜底三路，
+     * 见 `_plan/v0170-r3-t2-scroll-jitter.md` §5.3）。若仍用线性写法，
+     * 每条 `return` 前都必须手动复位 —— 漏一处就会让标记**永久为真**，
+     * 之后所有 scroll 事件都被当成"还原派发的"而忽略联动（右屏再也不跟随）。
+     * `finally` 保证任一路径退出都复位。
+     *
+     * **契约不变**：置真期间派发的 scroll 事件仍被忽略（`isFrozenRestoreRef` 的用途未变）。
+     */
     expect(tsx).toMatch(/isFrozenRestoreRef\.current = true;/);
+    expect(tsx).toMatch(/isFrozenRestoreRef\.current = false;/);
+    // 复位必须在 finally 里（保证所有 return 路径都复位），而不是可能被 return 跳过的线性语句
     const setIdx = tsx.indexOf("isFrozenRestoreRef.current = true;");
-    expect(tsx.slice(setIdx, setIdx + 900)).toContain("isFrozenRestoreRef.current = false;");
+    expect(tsx.slice(setIdx, setIdx + 1800)).toMatch(/finally\s*\{\s*isFrozenRestoreRef\.current = false;/);
   });
 });

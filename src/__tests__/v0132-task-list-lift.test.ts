@@ -1,33 +1,52 @@
 // @vitest-environment jsdom
 /**
- * v0.13.2 需求2：Ctrl+T 在有序列表里要「把当前行提升为任务项」。
+ * Ctrl+T 在有序列表上「把当前行变成待办」—— **v0.17.0 第四轮用户裁决口径（R4）**。
  *
- * ## 用户原话
- * 「在阅读模式下，我在有序列表使用快捷键 ctrl+t，想给这行加任务列表，
- *  结果任务列表没有自动加到有序列表前，而是回车换行了。」
- * 选定方案：「把当前行『提升』为任务项」。
+ * ## 口径演进（四层，别再搞混）
  *
- * ## 旧实现的两个根因（本文件用真实实现锁住新契约）
- * - 阅读模式：`insert.taskList` 只认「当前块是顶层段落/标题」，列表项里的光标其
- *   `parent` 仍是 paragraph → 任务列表被塞进**列表项内部**（视觉上=回车换行）。
- * - 源码模式：`COMMAND_SYNTAX["insert.taskList"] = "\n- [ ] "`，只是在光标处插一行，
- *   同样把列表项劈成两半。
+ * ### 1️⃣ v0.13.2 之前：回车换行（缺陷）
+ * 阅读模式 `insert.taskList` 只认「当前块是顶层段落/标题」，列表项里的光标其
+ * `parent` 仍是 paragraph → 任务列表被塞进**列表项内部**（视觉上=回车换行）。
  *
- * 新口径：当前行从原列表**摘出来**成为任务项，新任务列表放在原列表**之前**，
- * 列表其余项保留；整表只有一项时整表被任务列表替换。
+ * ### 2️⃣ v0.13.2 需求2：「提升到列表之前」+ 序号写成字面文本
+ * 用户当时原话：「任务列表没有自动加到有序列表前，而是回车换行了」+
+ * 「一加有序列表就消失了，我需要的效果是 `- [ ] 1. xxx`」。
+ * 于是：摘出来 → 新任务列表插在原列表**之前** → 序号作为**字面文本**写进任务项。
+ * 缺陷：3 项列表转第 2 项后阅读视图是 `☐ 2. bb` → `1. aa` → `2. cc`，序号视觉 **2/1/2**。
  *
- * ─── v0.13.2 返修（用户第二批复测）───
- * 用户原话：「给有序列表加任务列表没有实现，一加有序列表就消失了，我需要的效果是：
- * `- [ ] 1. xxx`。」因此**有序列表的序号要作为字面文本保留在任务项里**：
- * 第 2 项提升后源码是 `- [ ] 2. bb`，阅读模式渲染为 ☐ 2. bb。
- * 无序列表没有序号，行为不变（`- [ ] bb`）。
+ * ### 3️⃣ v0.17.0 R3（C2 就地转换）
+ * 任务项**不带**序号、列表断成两段、后段 `order` 续号 →
+ * `1. aa` / `☐ bb` / `2. cc`（视觉序号 1、2 连续）。
+ * 缺陷（用户 R4 复测原话）：「在有序列表上加任务待办会**把有序列表弄没**」——
+ * 视觉上任务项夹在列表中间把列表"劈开"，用户认为列表消失了。
  *
- * 说明：阅读模式走真实 `runPreviewCommand` + 真实 ProseMirror schema/序列化器。
- * 源码模式的完整路径需要 textarea 事件 + 撤销栈（jsdom 无法可靠建模），
- * 因此纯函数 `liftListLineToTask` 做行为级测试，接线只做一条源码契约锁（见文末）。
+ * ### 4️⃣ v0.17.0 R4（**现行**，用户 2026-11-12 17:07 裁决，取代 C2）
+ * 用户原话：「正确例子如**在 2. 上加任务，那么结果应该是 `- [ ] 2.`**」
+ * ```
+ * 1. aa          ← 原样保留，逐字节不变
+ * - [ ] 2. bb    ← 原地变待办，带字面序号 `2.`
+ * 3. cc          ← 原样保留，逐字节不变
+ * ```
+ *
+ * ## R4 的三个硬点（回归价值最高，别删）
+ *
+ * 1. **任务项带字面序号**（写进首段文本开头；任务项自己没有序号 attr）。
+ *    `2. ` 后有空格 —— 否则变 `- [ ] 2.bb`。
+ * 2. **后段列表 `order` = `startOrder + itemIndex + 1`**。
+ *    R4 下待办项**自己保留了序号**，后续项不能顶替它的位置，必须接着它后面数。
+ *    写 `+0`（= C2 的写法）→ `2. cc`（序号 2 出现两次，跳号）；
+ *    不设 → `1. cc`（复位）。
+ * 3. **前段列表 `order` 沿用原值**（`1. aa` 逐字节不变，用户明确要求不重编号）。
+ *
+ * ## 为什么这个形态在 markdown 里是稳的
+ *
+ * `1. aa / - [ ] 2. bb / 3. cc` 解析出 **3 个独立块**
+ * （`ordered_list(order=1)` / `task_list` / `ordered_list(order=3)`），
+ * 序列化回来逐字节一致、重新打开视觉不变。**不是权宜之计。**
  */
 import { describe, it, expect } from "vitest";
 import { EditorState, TextSelection, Transaction } from "prosemirror-state";
+import { history, undo, redo } from "prosemirror-history";
 import type { EditorView } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
 import { readFileSync } from "node:fs";
@@ -59,16 +78,13 @@ function makeState(doc: PMNode, pos: number): EditorState {
   return EditorState.create({ doc, selection: TextSelection.create(doc, pos) });
 }
 
-/**
- * 定位第 `listIndex` 个**顶层列表**（ordered/bullet/task）里第 `itemIndex` 项的
- * 段落文本起点（光标可直接落进去）。
- */
+/** 定位第 `listIndex` 个**顶层列表**里第 `itemIndex` 项的段落文本起点 */
 function itemTextPos(doc: PMNode, listIndex: number, itemIndex: number): number {
   let seen = 0;
   let listPos = -1;
   doc.forEach((node, offset) => {
     if (listPos >= 0) return;
-    if (node.type.name === "ordered_list" || node.type.name === "bullet_list" || node.type.name === "task_list") {
+    if (["ordered_list", "bullet_list", "task_list"].includes(node.type.name)) {
       if (seen === listIndex) listPos = offset;
       seen++;
     }
@@ -87,192 +103,372 @@ function topLevelTypes(doc: PMNode): string[] {
   return types;
 }
 
+/** 顶层块的结构快照：类型 + 有序列表的 order/delim + 文本 */
+function structureOf(doc: PMNode): string[] {
+  const out: string[] = [];
+  doc.forEach((n) => {
+    const order = n.attrs?.order;
+    const delim = n.attrs?.delim === ")" ? ")" : ".";
+    if (n.type.name === "ordered_list") out.push(`ol(${order}${delim})[${n.textContent}]`);
+    else if (n.type.name === "task_list") out.push(`task[${n.textContent}]`);
+    else if (n.type.name === "bullet_list") out.push(`ul[${n.textContent}]`);
+    else out.push(`${n.type.name}[${n.textContent}]`);
+  });
+  return out;
+}
+
 function liftAt(doc: PMNode, pos: number) {
   const state = makeState(doc, pos);
   const { view, get } = stubView(state);
   const handled = runPreviewCommand("insert.taskList", view);
-  return { handled, doc: get().doc };
+  return { handled, doc: get().doc, state: get() };
 }
 
-// ═══════════════════════ 阅读模式：列表项 → 任务项 ═══════════════════════
+// ═══════════════════════ 阅读模式：R4 真值表 ═══════════════════════
 
-describe("需求2 · 阅读模式：有序列表中间项被提升到列表之前", () => {
-  it("3 项有序列表、光标在第 2 项 → 顶层变成 [task_list, ordered_list]", () => {
-    const doc = markdownToDoc("1. aa\n2. bb\n3. cc\n");
-    const { handled, doc: next } = liftAt(doc, itemTextPos(doc, 0, 1));
+describe("R4 · 阅读模式：有序列表项原地变待办，其余项原样保留", () => {
+  /** 真值表：输入 → 光标项 → 期望块结构 + 期望序列化文本 */
+  const TABLE: Array<{
+    name: string;
+    md: string;
+    itemIndex: number;
+    want: string[];
+    wantMd: string;
+  }> = [
+    {
+      name: "3 项列表，转第 1 项（首项）",
+      md: "1. aa\n2. bb\n3. cc\n",
+      itemIndex: 0,
+      want: ["task[1. aa]", "ol(2.)[bbcc]"],
+      wantMd: "- [ ] 1. aa\n\n2. bb\n3. cc\n",
+    },
+    {
+      name: "3 项列表，转第 2 项（中间项）—— 用户主诉场景",
+      md: "1. aa\n2. bb\n3. cc\n",
+      itemIndex: 1,
+      want: ["ol(1.)[aa]", "task[2. bb]", "ol(3.)[cc]"],
+      wantMd: "1. aa\n\n- [ ] 2. bb\n\n3. cc\n",
+    },
+    {
+      name: "3 项列表，转第 3 项（末项）",
+      md: "1. aa\n2. bb\n3. cc\n",
+      itemIndex: 2,
+      want: ["ol(1.)[aabb]", "task[3. cc]"],
+      wantMd: "1. aa\n2. bb\n\n- [ ] 3. cc\n",
+    },
+    {
+      name: "唯一一项 → 整表被待办替换（列表消失正确，因为没有其他项）",
+      md: "1. only\n",
+      itemIndex: 0,
+      want: ["task[1. only]"],
+      wantMd: "- [ ] 1. only\n",
+    },
+    {
+      name: "起始非 1（3./4./5.）转第 2 项 → 前段保持 3.，后段保持 5.",
+      md: "3. aa\n4. bb\n5. cc\n",
+      itemIndex: 1,
+      want: ["ol(3.)[aa]", "task[4. bb]", "ol(5.)[cc]"],
+      wantMd: "3. aa\n\n- [ ] 4. bb\n\n5. cc\n",
+    },
+    {
+      name: "`)` 分隔符风格 → 序号前缀与前后两段都保留 `)`",
+      md: "1) aa\n2) bb\n3) cc\n",
+      itemIndex: 1,
+      want: ["ol(1))[aa]", "task[2) bb]", "ol(3))[cc]"],
+      wantMd: "1) aa\n\n- [ ] 2) bb\n\n3) cc\n",
+    },
+    {
+      name: "无序列表 → 任务项不带序号（无序列表本来就没有序号）",
+      md: "- aa\n- bb\n- cc\n",
+      itemIndex: 1,
+      want: ["ul[aa]", "task[bb]", "ul[cc]"],
+      wantMd: "- aa\n\n- [ ] bb\n\n- cc\n",
+    },
+  ];
 
-    expect(handled).toBe(true);
-    // 顶层顺序：任务列表在**前**（用户原话「任务列表没有自动加到有序列表前」）
-    expect(topLevelTypes(next)).toEqual(["task_list", "ordered_list"]);
+  for (const c of TABLE) {
+    it(c.name, () => {
+      const doc = markdownToDoc(c.md);
+      const { handled, doc: next } = liftAt(doc, itemTextPos(doc, 0, c.itemIndex));
+      expect(handled).toBe(true);
+      expect(structureOf(next)).toEqual(c.want);
+      expect(docToMarkdown(next)).toBe(c.wantMd);
+    });
+  }
 
-    const taskList = next.child(0);
-    expect(taskList.childCount).toBe(1);
-    const taskItem = taskList.child(0);
-    expect(taskItem.type.name).toBe("task_item");
-    // v0.13.2 返修：原序号（第 2 项 = `2.`）作为字面文本保留
-    expect(taskItem.textContent).toBe("2. bb");
-    expect(taskItem.attrs.checked).toBe(false);
-
-    // 列表其余项原样保留（顺序不变）
-    const rest = next.child(1);
-    expect(rest.childCount).toBe(2);
-    expect(rest.textContent).toBe("aacc");
-  });
-
-  it("序列化 markdown：`- [ ] 2. bb` 出现在 `1. aa` 之前（序号保留、不是列表项内部）", () => {
+  it("★ 用户验收原话：`1. aa / 2. bb / 3. cc` 在 `2. bb` 上 Ctrl+T → `- [ ] 2. bb` 且列表三行都在", () => {
     const doc = markdownToDoc("1. aa\n2. bb\n3. cc\n");
     const { doc: next } = liftAt(doc, itemTextPos(doc, 0, 1));
     const md = docToMarkdown(next);
 
-    // 用户要的形态：复选框 + 原序号 + 正文
-    const taskAt = md.indexOf("- [ ] 2. bb");
-    const listAt = md.indexOf("1. aa");
-    expect(taskAt).toBeGreaterThanOrEqual(0);
-    expect(listAt).toBeGreaterThanOrEqual(0);
-    expect(taskAt).toBeLessThan(listAt);
-    // 旧缺陷的形态：任务项被缩进进列表项内部
-    expect(md).not.toMatch(/^ {2,}- \[ \] /m);
-    expect(md).toContain("2. cc");
-    expect(md).not.toContain("bb\n1.");
+    // 用户原话「正确例子如在 2. 上加任务，那么结果应该是 `- [ ] 2.`」
+    expect(md).toContain("- [ ] 2. bb");
+    // 「把有序列表弄没」的反面：`1. aa` 与 `3. cc` 必须原样在
+    expect(md).toContain("1. aa");
+    expect(md).toContain("3. cc");
+    // 逐字节不变的严格口径：三行按顺序出现
+    expect(md).toBe("1. aa\n\n- [ ] 2. bb\n\n3. cc\n");
   });
 
-  it("光标落在第 3 项 → 提升的是第 3 项，前两项留在列表里", () => {
+  it("反例：C2 口径的产物形态必须不再出现（任务项**不带**序号）", () => {
     const doc = markdownToDoc("1. aa\n2. bb\n3. cc\n");
-    const { doc: next } = liftAt(doc, itemTextPos(doc, 0, 2));
-    expect(next.child(0).textContent).toBe("3. cc");
-    expect(next.child(1).textContent).toBe("aabb");
-  });
-
-  it("无序列表同样适用（`- x` / `* x` 都走同一条路径）", () => {
-    const doc = markdownToDoc("- aa\n- bb\n- cc\n");
-    const { handled, doc: next } = liftAt(doc, itemTextPos(doc, 0, 1));
-    expect(handled).toBe(true);
-    expect(topLevelTypes(next)).toEqual(["task_list", "bullet_list"]);
-    expect(next.child(0).textContent).toBe("bb");
-    expect(next.child(1).childCount).toBe(2);
-  });
-
-  it("单元素有序列表 → 整表被任务列表替换，顶层只剩 1 个节点", () => {
-    const doc = markdownToDoc("1. only\n");
-    const { handled, doc: next } = liftAt(doc, itemTextPos(doc, 0, 0));
-    expect(handled).toBe(true);
-    expect(next.childCount).toBe(1);
-    expect(next.child(0).type.name).toBe("task_list");
-    // 这就是用户要的 `- [ ] 1. xxx` 形态
-    expect(next.child(0).textContent).toBe("1. only");
-    expect(docToMarkdown(next)).toBe("- [ ] 1. only\n");
+    const { doc: next } = liftAt(doc, itemTextPos(doc, 0, 1));
+    // C2 产物是 `- [ ] bb`（无序号）；R4 必须是 `- [ ] 2. bb`
+    expect(docToMarkdown(next)).not.toMatch(/^- \[ \] bb$/m);
+    expect(docToMarkdown(next)).not.toMatch(/^- \[ \] bb\b(?!\.)/m);
   });
 });
 
-describe("需求2 · 阅读模式：任务列表里的项（重复触发）", () => {
-  it("已勾选的两项任务列表、提升第 2 项 → 结构完整，新任务项重置为未勾选", () => {
-    const doc = markdownToDoc("- [ ] a\n- [x] b\n");
-    const { handled, doc: next } = liftAt(doc, itemTextPos(doc, 0, 1));
+describe("R4 · 序号「不跳号 / 不重复 / 不复位」的机器校验", () => {
+  /** 抽出 markdown 里所有有序列表编号，按段返回 */
+  function collectOrderedNumbers(md: string): Array<{ start: number; items: number[] }> {
+    const blocks: Array<{ start: number; items: number[] }> = [];
+    let cur: { start: number; items: number[] } | null = null;
+    for (const line of md.split("\n")) {
+      const m = /^(\d+)[.)] /.exec(line);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (!cur) {
+          cur = { start: n, items: [n] };
+          blocks.push(cur);
+        } else {
+          cur.items.push(n);
+        }
+      } else if (line.trim() === "") {
+        cur = null;
+      }
+    }
+    return blocks;
+  }
 
-    expect(handled).toBe(true);
-    // 实现契约（list_item / task_item 同一套 LIST_ITEM_TYPES）：
-    // 提升的是「当前行」，与原节点是否为任务项无关。结构不被破坏：
-    // 顶层两个 task_list，互不嵌套，文本不丢失。
-    expect(topLevelTypes(next)).toEqual(["task_list", "task_list"]);
-    expect(next.child(0).textContent).toBe("b");
-    expect(next.child(1).textContent).toBe("a");
-    // 实际契约：提升产生的是**新的未勾选**任务项（勾选状态不随提升保留）
-    expect(next.child(0).child(0).attrs.checked).toBe(false);
-    expect(next.child(1).child(0).attrs.checked).toBe(false);
+  it("每段内部连号 + 段间序号严格递增（R4：后段接着待办项后面数）", () => {
+    for (const itemIndex of [0, 1, 2]) {
+      const doc = markdownToDoc("1. aa\n2. bb\n3. cc\n");
+      const { doc: next } = liftAt(doc, itemTextPos(doc, 0, itemIndex));
+      const blocks = collectOrderedNumbers(docToMarkdown(next));
 
+      // 每段内部必须严格 +1
+      for (const b of blocks) {
+        for (let i = 1; i < b.items.length; i++) {
+          expect(b.items[i], `itemIndex=${itemIndex} 段内不连号：${JSON.stringify(b)}`).toBe(
+            b.items[i - 1] + 1,
+          );
+        }
+      }
+      // R4 的段间关系：后段起始号 = 前段末号 + 2
+      // （中间隔着**带序号**的待办项，它占掉了一个序号位置）
+      if (blocks.length === 2) {
+        const lastOfFirst = blocks[0].items[blocks[0].items.length - 1];
+        expect(
+          blocks[1].start,
+          `itemIndex=${itemIndex} 段间跳号/复位：${JSON.stringify(blocks)}`,
+        ).toBe(lastOfFirst + 2);
+      }
+    }
+  });
+
+  it("起始非 1 时同样成立：3./4./5. 转第 2 项 → 段 [3] 段 [5]", () => {
+    const doc = markdownToDoc("3. aa\n4. bb\n5. cc\n");
+    const { doc: next } = liftAt(doc, itemTextPos(doc, 0, 1));
+    const blocks = collectOrderedNumbers(docToMarkdown(next));
+    expect(blocks.map((b) => b.items)).toEqual([[3], [5]]);
+  });
+
+  it("任务项的字面序号 = 该项在原列表中的字面序号（含起始非 1）", () => {
+    const cases: Array<[string, number, string]> = [
+      ["1. aa\n2. bb\n3. cc\n", 0, "- [ ] 1. aa"],
+      ["1. aa\n2. bb\n3. cc\n", 1, "- [ ] 2. bb"],
+      ["1. aa\n2. bb\n3. cc\n", 2, "- [ ] 3. cc"],
+      ["3. aa\n4. bb\n5. cc\n", 0, "- [ ] 3. aa"],
+      ["3. aa\n4. bb\n5. cc\n", 1, "- [ ] 4. bb"],
+      ["3. aa\n4. bb\n5. cc\n", 2, "- [ ] 5. cc"],
+      ["10. aa\n11. bb\n", 1, "- [ ] 11. bb"],
+    ];
+    for (const [md, idx, wantTask] of cases) {
+      const doc = markdownToDoc(md);
+      const { doc: next } = liftAt(doc, itemTextPos(doc, 0, idx));
+      const taskLine = docToMarkdown(next).split("\n").find((l) => l.startsWith("- [ ] "));
+      expect(taskLine, `${md} item#${idx}`).toBe(wantTask);
+    }
+  });
+});
+
+describe("R4 · 序号前缀的格式细节（空格 / 分隔符）", () => {
+  it("`2. ` 后必须有空格（否则视觉上序号与正文粘连成 `2.bb`）", () => {
+    const doc = markdownToDoc("1. aa\n2. bb\n3. cc\n");
+    const { doc: next } = liftAt(doc, itemTextPos(doc, 0, 1));
+    expect(docToMarkdown(next)).not.toMatch(/- \[ \] \d+[.)][^\s]/);
+  });
+
+  it("`)` 分隔符不被改写成 `.`", () => {
+    const doc = markdownToDoc("1) aa\n2) bb\n3) cc\n");
+    const { doc: next } = liftAt(doc, itemTextPos(doc, 0, 1));
     const md = docToMarkdown(next);
-    // 旧缺陷形态「回车换行」= 把 `- [ ]` 塞进原列表项内部（2 空格缩进）
-    expect(md).not.toMatch(/^ {2,}- \[ \]/m);
-    expect(md.indexOf("- [ ] b")).toBeLessThan(md.indexOf("- [ ] a"));
-  });
-
-  it("单项任务列表上重复触发 → 仍是单个 task_list（幂等结构，勾选态被重置）", () => {
-    const doc = markdownToDoc("- [x] done\n");
-    const { handled, doc: next } = liftAt(doc, itemTextPos(doc, 0, 0));
-    expect(handled).toBe(true);
-    expect(next.childCount).toBe(1);
-    expect(next.child(0).type.name).toBe("task_list");
-    expect(next.child(0).childCount).toBe(1);
-    expect(next.child(0).textContent).toBe("done");
-    // 契约：整表替换成**新的**未勾选任务项（不是原地保留 attrs）
-    expect(next.child(0).child(0).attrs.checked).toBe(false);
+    expect(md).toContain("- [ ] 2) bb");
+    expect(md).not.toContain("- [ ] 2. bb");
   });
 });
 
-describe("需求2 · 阅读模式：退化路径与边界", () => {
-  it("顶层普通段落 → 仍退化为普通 task_list 插入（不崩，文本不丢）", () => {
-    const doc = markdownToDoc("todo item\n");
-    const { handled, doc: next } = liftAt(doc, 2);
-    expect(handled).toBe(true);
-    expect(topLevelTypes(next)).toEqual(["task_list"]);
-    expect(next.textContent).toBe("todo item");
-  });
-
-  it("嵌套列表：光标在内层项 → 只提升内层项，外层结构不变", () => {
-    const doc = markdownToDoc("1. outer\n   1. inner1\n   2. inner2\n");
-    // 找到内层列表的位置：descendants 里第二个 ordered_list
-    const listPositions: number[] = [];
-    doc.descendants((node, pos) => {
-      if (node.type.name === "ordered_list") listPositions.push(pos);
-    });
-    expect(listPositions.length).toBe(2);
-    const innerPos = listPositions[1];
-    const inner = doc.nodeAt(innerPos)!;
-    const innerItem2 = innerPos + 1 + inner.child(0).nodeSize;
-    const { handled, doc: next } = liftAt(doc, innerItem2 + 2);
-
-    expect(handled).toBe(true);
-    // 外层只有一个有序列表；其内容 = 段落 + （任务列表 + 内层列表）
-    expect(next.childCount).toBe(1);
-    expect(next.child(0).type.name).toBe("ordered_list");
-    const childTypes: string[] = [];
-    next.child(0).child(0).forEach((c) => childTypes.push(c.type.name));
-    expect(childTypes).toEqual(["paragraph", "task_list", "ordered_list"]);
-    expect(next.child(0).child(0).child(1).textContent).toBe("2. inner2");
-    expect(next.child(0).child(0).child(2).textContent).toBe("inner1");
-  });
-
-  it("列表项含多个段落时**整项内容**一起提升（不得丢块）", () => {
-    // 手工构造，保证节点结构确定（parser 对 `1. a\n\n   b` 的切分随缩进而变）
-    const p = (t: string) => schema.nodes.paragraph.create(null, schema.text(t));
-    const item = schema.nodes.list_item.create(null, [p("bb1"), p("bb2")]);
-    const list = schema.nodes.ordered_list.create({ order: 1 }, [item]);
-    const tail = schema.nodes.paragraph.create(null, schema.text("tail"));
-    const doc = schema.topNodeType.create(null, [list, tail]);
-    const { handled, doc: next } = liftAt(doc, 4); // 第一段文本内
-
-    expect(handled).toBe(true);
-    expect(topLevelTypes(next)).toEqual(["task_list", "paragraph"]);
-    // 任务项内容模型与 list_item 相同（`paragraph block*`）→ 两段都要搬过去。
-    // （v0.13.2 复审修复的数据丢失缺陷：旧实现只取 firstParagraphOf，bb2 凭空消失）
-    expect(next.child(0).child(0).childCount).toBe(2);
-    // 序号作为字面文本保留在首段开头
-    expect(next.child(0).textContent).toBe("1. bb1bb2");
-  });
-
-  it("真实源码 `1. a` + 缩进续段解析出的多块列表项：提升后一个字符都不丢", () => {
+describe("R4 · 内容零丢失与结构合法（v0.13.2 修过「第二段静默丢失」，别回退）", () => {
+  it("列表项含多个段落：整项内容一起搬入任务项", () => {
     const doc = markdownToDoc("1. bb1\n\n   bb2\n\n2. cc\n");
-    const list = doc.child(0);
-    const firstItem = list.child(0);
-    // parser 把缩进续段解析为同一列表项的第二个段落 → 这确实是真实可达的结构
-    expect(firstItem.childCount).toBe(2);
-    expect(firstItem.textContent).toBe("bb1bb2");
-
+    expect(doc.child(0).child(0).childCount).toBe(2); // 前提：parser 确实切成两段
     const { doc: next } = liftAt(doc, 4);
-    // 提升后任务项必须含**两段**；bb2 不得丢失（阅读模式 Ctrl+T 的数据丢失路径）
-    expect(next.child(0).type.name).toBe("task_list");
-    expect(next.child(0).textContent).toBe("1. bb1bb2");
+    const taskList = next.child(0);
+    expect(taskList.type.name).toBe("task_list");
+    expect(taskList.child(0).childCount).toBe(2);
     expect(next.textContent).toContain("bb2");
-    // 原列表剩下的 `2. cc` 仍在（提升只摘走当前项）
-    const residual = next.child(1);
-    expect(residual.type.name).toBe("ordered_list");
-    expect(residual.textContent).toBe("cc");
+    expect(next.child(1).type.name).toBe("ordered_list");
+  });
+
+  it("嵌套子列表随列表项一起搬（不丢）", () => {
+    const doc = markdownToDoc("1. 父项\n   - 子A\n   - 子B\n\n2. 下一项\n");
+    const { doc: next } = liftAt(doc, 4);
+    expect(next.textContent).toContain("子A");
+    expect(next.textContent).toContain("子B");
+  });
+
+  it("输出文档满足 schema（构造过程不抛错）", () => {
+    for (const [md, idx] of [
+      ["1. aa\n2. bb\n3. cc\n", 1],
+      ["1. only\n", 0],
+      ["1. a\n2. b\n3. c\n4. d\n", 3],
+    ] as Array<[string, number]>) {
+      const doc = markdownToDoc(md);
+      expect(() => liftAt(doc, itemTextPos(doc, 0, idx))).not.toThrow();
+    }
+  });
+
+  it("★ 序列化往返：修复后 → 再解析 → 再序列化，逐字节不变", () => {
+    const cases: Array<[string, number]> = [
+      ["1. aa\n2. bb\n3. cc\n", 0],
+      ["1. aa\n2. bb\n3. cc\n", 1],
+      ["1. aa\n2. bb\n3. cc\n", 2],
+      ["1. only\n", 0],
+      ["3. aa\n4. bb\n5. cc\n", 1],
+      ["1) aa\n2) bb\n3) cc\n", 1],
+      ["- aa\n- bb\n- cc\n", 1],
+      ["1. bb1\n\n   bb2\n\n2. cc\n", 0],
+      ["1. outer\n   1. inner1\n   2. inner2\n", 0],
+    ];
+    for (const [md, idx] of cases) {
+      const doc = markdownToDoc(md);
+      const { doc: next } = liftAt(doc, itemTextPos(doc, 0, idx));
+      const once = docToMarkdown(next);
+      const twice = docToMarkdown(markdownToDoc(once));
+      expect(twice, `往返不一致：${md} item#${idx}`).toBe(once);
+    }
+  });
+
+  it("★ 重新解析后的块结构 = 修复后文档的结构（视觉不变）", () => {
+    for (const [md, idx] of [
+      ["1. aa\n2. bb\n3. cc\n", 1],
+      ["3. aa\n4. bb\n5. cc\n", 1],
+      ["1) aa\n2) bb\n3) cc\n", 1],
+    ] as Array<[string, number]>) {
+      const doc = markdownToDoc(md);
+      const { doc: next } = liftAt(doc, itemTextPos(doc, 0, idx));
+      const reparsed = markdownToDoc(docToMarkdown(next));
+      expect(structureOf(reparsed)).toEqual(structureOf(next));
+    }
+  });
+});
+
+describe("R4 · 光标落点（两轮踩过同一处坑，别再错）", () => {
+  it("★ 光标落在任务项**正文末尾**：接着键入得到 `- [ ] 2. bbX`（不是 `- [ ] X2. bb`）", () => {
+    for (const [md, idx, wantLine] of [
+      ["1. aa\n2. bb\n3. cc\n", 0, "- [ ] 1. aaX"],
+      ["1. aa\n2. bb\n3. cc\n", 1, "- [ ] 2. bbX"],
+      ["1. aa\n2. bb\n3. cc\n", 2, "- [ ] 3. ccX"],
+      ["3. aa\n4. bb\n5. cc\n", 1, "- [ ] 4. bbX"],
+      ["1) aa\n2) bb\n3) cc\n", 1, "- [ ] 2) bbX"],
+    ] as Array<[string, number, string]>) {
+      const doc = markdownToDoc(md);
+      const { state } = liftAt(doc, itemTextPos(doc, 0, idx));
+      // 不做任何重新定位，直接键入（模拟用户"转换完立刻接着打字"）
+      const typed = state.apply(state.tr.insertText("X", state.selection.from));
+      const taskLine = docToMarkdown(typed.doc).split("\n").find((l) => l.startsWith("- [ ] "));
+      expect(taskLine, `${md} item#${idx}`).toBe(wantLine);
+    }
+  });
+});
+
+describe("R4 · 一次 Ctrl+Z 能整体撤销（不留半截事务）", () => {
+  /**
+   * 任务卡判据之一：「一次 Ctrl+Z 能整体撤销」。
+   *
+   * 为什么要单独测：R4 的实现是**一个事务里 `replaceWith` 三个节点**
+   * （前段列表 + 待办 + 后段列表）。如果实现拆成多次 dispatch（例如先删项再插任务列表），
+   * 用户按一次 Ctrl+Z 只会撤销一半，得到"列表被吃掉一项但任务项没出来"的中间态。
+   * 这里用**真实 history 插件**验证：一次 undo 必须完全回到原文，一次 redo 必须完全回到修复后。
+   */
+  function stateWithHistory(md: string, pos: number) {
+    const doc = markdownToDoc(md);
+    return EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, pos),
+      plugins: [history()],
+    });
+  }
+
+  it("★ 中间项：undo 一次 → 逐字节回到原文；redo 一次 → 逐字节回到修复后", () => {
+    const md = "1. aa\n2. bb\n3. cc\n";
+    const doc = markdownToDoc(md);
+    let cur = stateWithHistory(md, itemTextPos(doc, 0, 1));
+    const view = {
+      get state() {
+        return cur;
+      },
+      dispatch: (tr: Transaction) => {
+        cur = cur.apply(tr);
+      },
+      focus: () => {},
+    } as unknown as EditorView;
+
+    const before = docToMarkdown(cur.doc);
+    expect(runPreviewCommand("insert.taskList", view)).toBe(true);
+    const after = docToMarkdown(cur.doc);
+    expect(after).toBe("1. aa\n\n- [ ] 2. bb\n\n3. cc\n");
+
+    // 一次撤销
+    expect(undo(cur, (tr) => { cur = cur.apply(tr); })).toBe(true);
+    expect(docToMarkdown(cur.doc), "一次 Ctrl+Z 未完全回到原文").toBe(before);
+
+    // 一次重做
+    expect(redo(cur, (tr) => { cur = cur.apply(tr); })).toBe(true);
+    expect(docToMarkdown(cur.doc), "一次 Ctrl+Y 未回到修复后").toBe(after);
+  });
+
+  it("★ 首项 / 无序列表同样一次撤销到位", () => {
+    for (const [md, idx, wantAfter] of [
+      ["1. aa\n2. bb\n3. cc\n", 0, "- [ ] 1. aa\n\n2. bb\n3. cc\n"],
+      ["- aa\n- bb\n- cc\n", 1, "- aa\n\n- [ ] bb\n\n- cc\n"],
+    ] as Array<[string, number, string]>) {
+      const doc = markdownToDoc(md);
+      let cur = stateWithHistory(md, itemTextPos(doc, 0, idx));
+      const view = {
+        get state() {
+          return cur;
+        },
+        dispatch: (tr: Transaction) => {
+          cur = cur.apply(tr);
+        },
+        focus: () => {},
+      } as unknown as EditorView;
+
+      const before = docToMarkdown(cur.doc);
+      runPreviewCommand("insert.taskList", view);
+      expect(docToMarkdown(cur.doc)).toBe(wantAfter);
+
+      expect(undo(cur, (tr) => { cur = cur.apply(tr); })).toBe(true);
+      expect(docToMarkdown(cur.doc), `${md} item#${idx} 一次撤销未回到原文`).toBe(before);
+    }
   });
 });
 
 // ═══════════════════════ 源码模式：liftListLineToTask 纯函数 ═══════════════════════
 
-/** 光标偏移 → 落在第 `lineIdx` 行中间（用于构造不依赖绝对偏移的光标） */
+/** 光标偏移 → 落在第 `lineIdx` 行中间 */
 function caretInLine(text: string, lineIdx: number, offsetInLine = 3): number {
   const lines = text.split("\n");
   let pos = 0;
@@ -280,73 +476,70 @@ function caretInLine(text: string, lineIdx: number, offsetInLine = 3): number {
   return pos + Math.min(offsetInLine, lines[lineIdx].length);
 }
 
-/** 把 `replacement` 按行切开，便于断言行序 */
 const linesOf = (s: string) => s.split("\n");
+/** 归一化：把连续空行压成一个（两模式唯一允许的差异就是空行策略） */
+const norm = (s: string) => s.replace(/\n+/g, "\n").trim();
 
-describe("需求2 · 源码模式：liftListLineToTask", () => {
-  it("有序列表中间行 → 任务行被插到列表块之前，序号 `2.` 保留", () => {
+describe("R4 · 源码模式 liftListLineToTask：与阅读模式语义一致", () => {
+  it("有序列表中间行 → 原地变 `- [ ] 2. two`，前后两段序号保持原值", () => {
     const text = ["intro", "", "1. one", "2. two", "3. three", "", "tail"].join("\n");
     const res = liftListLineToTask(text, caretInLine(text, 3));
     expect(res).not.toBeNull();
     expect(linesOf(res!.replacement)).toEqual([
       "intro",
       "",
-      "- [ ] 2. two",
       "1. one",
+      "",
+      "- [ ] 2. two",
+      "",
       "3. three",
       "",
       "tail",
     ]);
   });
 
-  it("无序列表中间行 → 同样提升；列表标记保持原样", () => {
-    const text = ["- aa", "* bb", "+ cc"].join("\n");
-    const res = liftListLineToTask(text, caretInLine(text, 1));
-    expect(res).not.toBeNull();
-    expect(linesOf(res!.replacement)).toEqual(["- [ ] bb", "- aa", "+ cc"]);
+  it("首项 → 后段从 2 开始（原第 2 项的字面序号）", () => {
+    const text = ["1. one", "2. two", "3. three"].join("\n");
+    const res = liftListLineToTask(text, caretInLine(text, 0))!;
+    expect(linesOf(res.replacement)).toEqual(["- [ ] 1. one", "", "2. two", "3. three"]);
   });
 
-  it("列表位于文本开头 → 任务行在最前面", () => {
-    const text = ["1. aa", "2. bb"].join("\n");
-    const res = liftListLineToTask(text, caretInLine(text, 0));
-    expect(res).not.toBeNull();
-    expect(linesOf(res!.replacement)).toEqual(["- [ ] 1. aa", "2. bb"]);
+  it("末项 → 前段保留，任务行在最后", () => {
+    const text = ["1. one", "2. two", "3. three"].join("\n");
+    const res = liftListLineToTask(text, caretInLine(text, 2))!;
+    expect(linesOf(res.replacement)).toEqual(["1. one", "2. two", "", "- [ ] 3. three"]);
   });
 
-  it("光标在行首 / 行尾 → 仍按「光标所在行」处理", () => {
-    const text = ["1. aa", "2. bb", "3. cc"].join("\n");
-    const lineStart = caretInLine(text, 1, 0);
-    const lineEnd = caretInLine(text, 1, 1000);
-    for (const pos of [lineStart, lineEnd]) {
-      const res = liftListLineToTask(text, pos);
-      expect(res, `caret=${pos}`).not.toBeNull();
-      expect(linesOf(res!.replacement)[0]).toBe("- [ ] 2. bb");
-    }
+  it("唯一一项 → 只剩 `- [ ] 1. only`", () => {
+    const res = liftListLineToTask("1. only", 3)!;
+    expect(linesOf(res.replacement)).toEqual(["- [ ] 1. only"]);
+  });
+
+  it("起始非 1（3./4./5.）→ 任务项 4.，后段保持 5.", () => {
+    const text = ["3. a", "4. b", "5. c"].join("\n");
+    const res = liftListLineToTask(text, caretInLine(text, 1))!;
+    expect(linesOf(res.replacement)).toEqual(["3. a", "", "- [ ] 4. b", "", "5. c"]);
+  });
+
+  it("`)` 分隔符保留", () => {
+    const text = ["1) a", "2) b", "3) c"].join("\n");
+    const res = liftListLineToTask(text, caretInLine(text, 1))!;
+    expect(linesOf(res.replacement)).toEqual(["1) a", "", "- [ ] 2) b", "", "3) c"]);
+  });
+
+  it("无序列表：断成两段，任务行不带序号", () => {
+    const text = ["- aa", "- bb", "- cc"].join("\n");
+    const res = liftListLineToTask(text, caretInLine(text, 1))!;
+    expect(linesOf(res.replacement)).toEqual(["- aa", "", "- [ ] bb", "", "- cc"]);
   });
 
   it("caretPos 精确落在任务行末尾（可直接继续输入）", () => {
     const text = ["intro", "1. one", "2. two", "3. three"].join("\n");
     const cursorPos = caretInLine(text, 2);
     const res = liftListLineToTask(text, cursorPos)!;
-    expect(res).not.toBeNull();
     const after = cursorPos + res.cursorOffset;
     expect(res.replacement.slice(0, after).endsWith("- [ ] 2. two")).toBe(true);
-    // 后面紧跟的必须是换行（不是半个单词）
     expect(res.replacement[after]).toBe("\n");
-  });
-
-  it("空行分隔的列表块：任务行插在该列表块之前，不跑到文档最前面", () => {
-    const text = ["intro", "", "1. aa", "2. bb", "", "tail"].join("\n");
-    const res = liftListLineToTask(text, caretInLine(text, 3))!;
-    expect(res).not.toBeNull();
-    expect(linesOf(res.replacement)).toEqual([
-      "intro",
-      "",
-      "- [ ] 2. bb",
-      "1. aa",
-      "",
-      "tail",
-    ]);
   });
 
   it("非列表行 → null（调用方回退到既有的「插入空任务项」）", () => {
@@ -355,55 +548,60 @@ describe("需求2 · 源码模式：liftListLineToTask", () => {
     }
   });
 
-  it("已经是任务项（`- [ ]` / `- [x]` / `* [X]`）→ null（不回退成嵌套提升）", () => {
+  it("已经是任务项（`- [ ]` / `- [x]` / `* [X]`）→ null（不重复转换）", () => {
     for (const text of ["- [ ] done", "- [x] done", "* [X] done"]) {
       expect(liftListLineToTask(text, 3)).toBeNull();
     }
   });
 
-  it("0~3 空格缩进的列表行也被识别（提升后按任务项顶层书写）", () => {
+  it("0~3 空格缩进的列表行也被识别，任务行沿用原缩进", () => {
     const text = ["   1. aa", "   2. bb"].join("\n");
-    const res = liftListLineToTask(text, caretInLine(text, 1));
-    expect(res).not.toBeNull();
-    expect(linesOf(res!.replacement)).toEqual(["- [ ] 2. bb", "   1. aa"]);
-  });
-
-  it("嵌套列表项：源码模式把任务行提到**整个列表块**之前（与阅读模式的内层提升不同）", () => {
-    // 已知的行为不一致（任务 output 已记录，低严重度）：
-    // 阅读模式找的是**最内层**列表，任务列表留在父项内部（见上方嵌套用例）；
-    // 源码模式把连续列表行视为一个块，块起点是最外层行 → 任务行被提到最外层之前。
-    const text = ["1. outer", "   1. inner1", "   2. inner2"].join("\n");
     const res = liftListLineToTask(text, caretInLine(text, 1))!;
-    expect(res).not.toBeNull();
-    expect(linesOf(res.replacement)).toEqual([
-      "- [ ] 1. inner1",
-      "1. outer",
-      "   2. inner2",
-    ]);
+    expect(linesOf(res.replacement)).toEqual(["   1. aa", "", "   - [ ] 2. bb"]);
   });
 
-  it("多行文本只改动目标行（其余行逐字节不变）", () => {
-    const text = ["a", "1. one", "2. two", "3. three", "b"].join("\n");
-    const res = liftListLineToTask(text, caretInLine(text, 2))!;
-    const before = new Set(linesOf(text));
-    for (const line of linesOf(res.replacement)) {
-      if (line === "- [ ] 2. two") continue;
-      expect(before.has(line), `多余行: ${line}`).toBe(true);
+  it("输出是合法 markdown：解析后再序列化必须原样往返", () => {
+    const cases: Array<[string, number]> = [
+      ["1. one\n2. two\n3. three", 1],
+      ["1. one\n2. two\n3. three", 0],
+      ["3. a\n4. b\n5. c", 1],
+      ["1) a\n2) b\n3) c", 1],
+      ["- aa\n- bb\n- cc", 1],
+    ];
+    for (const [text, line] of cases) {
+      const res = liftListLineToTask(text, caretInLine(text, line))!;
+      const back = docToMarkdown(markdownToDoc(res.replacement + "\n")).replace(/\n+$/, "");
+      expect(back, `往返不一致：${text}`).toBe(res.replacement.replace(/\n+$/, ""));
     }
-    // 行数不变：目标行被摘出、任务行插入，净增 0
-    expect(linesOf(res.replacement).length).toBe(linesOf(text).length);
+  });
+});
+
+describe("R4 · 跨模式一致性：同一输入 → 阅读模式与源码模式语义相同", () => {
+  it("7 种边界：两模式归一化后文本完全相同", () => {
+    const cases: Array<{ md: string; pmIndex: number; srcLine: number }> = [
+      { md: "1. aa\n2. bb\n3. cc\n", pmIndex: 0, srcLine: 0 },
+      { md: "1. aa\n2. bb\n3. cc\n", pmIndex: 1, srcLine: 1 },
+      { md: "1. aa\n2. bb\n3. cc\n", pmIndex: 2, srcLine: 2 },
+      { md: "1. only\n", pmIndex: 0, srcLine: 0 },
+      { md: "3. aa\n4. bb\n5. cc\n", pmIndex: 1, srcLine: 1 },
+      { md: "1) aa\n2) bb\n3) cc\n", pmIndex: 1, srcLine: 1 },
+      { md: "- aa\n- bb\n- cc\n", pmIndex: 1, srcLine: 1 },
+    ];
+    for (const c of cases) {
+      const doc = markdownToDoc(c.md);
+      const { doc: pmNext } = liftAt(doc, itemTextPos(doc, 0, c.pmIndex));
+      const pmText = docToMarkdown(pmNext);
+      const stripped = c.md.replace(/\n$/, "");
+      const res = liftListLineToTask(stripped, caretInLine(stripped, c.srcLine));
+      expect(res, `源码模式未处理：${c.md}`).not.toBeNull();
+      expect(norm(res!.replacement), `跨模式不一致：${c.md}`).toBe(norm(pmText));
+    }
   });
 });
 
 // ═══════════════════════ 接线（源码契约锁） ═══════════════════════
 
-/**
- * jsdom 里跑不通完整源码模式路径：`lightmd:command` → EditorContainer 的
- * `handleFormatAction("taskListLift")` 需要真实 textarea 选区、撤销栈与 ghost 层，
- * 直接渲染 EditorContainer 会连带 iframe/预览渲染。因此这里只锁**接线**：
- * 三处必须存在（App 放行 → EditorContainer 监听 → 纯函数 + 回退）。
- */
-describe("需求2 · 接线契约（jsdom 无法跑完整源码模式链路，故锁源码）", () => {
+describe("接线契约（jsdom 无法跑完整源码模式链路，故锁源码）", () => {
   const containerSrc = readFileSync("src/components/editor/EditorContainerSource.ts.txt", "utf-8");
   const appSrc = readFileSync("src/App.tsx", "utf-8");
 

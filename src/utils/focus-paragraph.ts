@@ -135,6 +135,221 @@ export function findFocusRowRange(text: string, cursorPos: number, radius = 1): 
   return { start, end, rows: countNewlines(text.substring(start, end)) + 1 };
 }
 
+/** `resolveFocusMeasureRange` 的结果：真正该喂给 `measureRangeContentY` 的区间 */
+export interface FocusMeasureSpec {
+  /** 测量区间起点（喂 `measureRangeContentY(start, end)` 的 start） */
+  start: number;
+  /** 测量区间终点（喂 `measureRangeContentY(start, end)` 的 end） */
+  end: number;
+  /**
+   * 是否需要在测量结果上**再补一行高**。
+   *
+   * 仅在「窗口末行是**文档末尾**的空行」时为 true —— 那种情况没有"下一个字符"可借位，
+   * 测量函数拿不到该空行的字形矩形（空行没有任何字符），只能事后补一行高。
+   */
+  extendEndByLineHeight: boolean;
+  /** 诊断用：窗口末行是否为空行（= 命中了本次要修的缺陷形态） */
+  lastLineEmpty: boolean;
+}
+
+/**
+ * v0.17.0 第三轮缺陷 #7：把「专注 3 行窗」的字符区间翻译成**测量区间**。
+ *
+ * ## 为什么需要这道翻译（用户："空白行情况下只高亮了两行"）
+ *
+ * `findFocusRowRange` 返回的 `[start, end)` 语义是「**完整行**」：`end` 是
+ * 「窗口末行之后那个 `\n` 的**下标**」（不含）。所以区间 `[start, end)` 里的
+ * 内容形如 `"第1行\n第2行\n第3行"`，**不含**末行之后的换行符。
+ *
+ * 而 `SourceSurface.measureRangeContentY(start, end)` 的契约是
+ * 「字符**字形矩形**」，实现里用 `coordsAtPos(end - 1)` 取「区间最后一个字符」的 bottom。
+ *
+ * 两个契约单独看都对，**组合起来在一种排版上就错**：窗口末行是**空行**时，
+ * 该行没有任何字符，`end - 1` 落到了**上一行末尾的那个 `\n`** 上 →
+ * `coordsAtPos` 给出的是**上一行的行尾 bottom** → 空行的行盒完全没被覆盖。
+ *
+ * ```
+ * 文档:  正文A ␤ ␤ 正文B
+ *             ↑  ↑
+ *           end-1 end        ← 光标在 正文A 时，窗口末行是那个空行
+ * 旧: measureRangeContentY(start, end)      → endY = 正文A 行底  ❌ 空行不亮
+ * 新: measureRangeContentY(start, end + 1)  → endY = 空行行底    ✅
+ * ```
+ *
+ * ## 为什么这个缺陷是**主路径**而不是边角情况
+ *
+ * markdown 用空行分隔段落，所以「窗口末行是空行」在正常文档里**极其常见**
+ * （段落之间、标题与正文之间都有空行）。实测：光标在普通段落中间时，
+ * 因为下一行恰好是空行，亮区只盖住 2 行 —— 用户几乎在任何位置都会看到"只亮两行"。
+ *
+ * ## 借位（`end + 1`）为什么能修好
+ *
+ * `end + 1` 之后 `measureRangeContentY` 内部的 `end - 1` 变成 `end`，
+ * 而 `end` 正是那个**充当空行行界的 `\n`**。`coordsAtPos(该 `\n`)` 返回的是
+ * 空行自身的行盒（该位置既是空行行首、也是空行行尾）→ bottom 就是空行行底。
+ *
+ * ⚠️ **必须有上界护栏**：`end + 1` 不能超过 `text.length`（越界会让
+ * `coordsAtPos` 抛错 / 被 clamp 成错误位置）。文档以 `\n` 结尾时窗口末行是
+ * 「末尾空行」，它后面没有字符可借位 → 只能退化成 `extendEndByLineHeight`
+ * （由调用方补一行高）。
+ *
+ * @param text 文档全文
+ * @param range `findFocusRowRange` 给出的完整行区间
+ */
+export function resolveFocusMeasureRange(text: string, range: FocusRowRange): FocusMeasureSpec {
+  const len = text.length;
+  const start = Math.max(0, Math.min(range.start, len));
+  const end = Math.max(start, Math.min(range.end, len));
+
+  // 窗口末行是否为空行：`end` 是「末行之后那个 \n 的下标」，若它前一个字符就是 `\n`，
+  // 说明末行自身长度为 0（空行）。等价判据 `lineStart === end`，这里用字符形状更直观。
+  const lastLineEmpty = end > start && text[end - 1] === "\n";
+  if (!lastLineEmpty) {
+    return { start, end, extendEndByLineHeight: false, lastLineEmpty: false };
+  }
+  // 末尾空行（后面没有字符可借位）→ 保持区间，让调用方补一行高
+  if (end >= len) {
+    return { start, end, extendEndByLineHeight: true, lastLineEmpty: true };
+  }
+  // 正常空行：借位到「下一个字符」，使 `end - 1` 恰好落在那个 `\n` 上
+  return { start, end: end + 1, extendEndByLineHeight: false, lastLineEmpty: true };
+}
+
+/**
+ * v0.17.0 第三轮缺陷 #7（续）：文档边界处把窗口**补齐**到目标行数。
+ *
+ * ## 为什么需要这一步（用户："上下行一共3行进行高亮"）
+ *
+ * `findFocusRowRange` 的既有语义是「光标行 ±radius，**文档边界自动收缩**」——
+ * 首行只能向下取 1 行 → 共 2 行；末行只能向上取 1 行 → 共 2 行。
+ * 这个收缩在 v0.12.0 就写进了注释与单测（`v0120-focus-row-range.test.ts`），
+ * 当年按"上下各扩 radius 行，不够就不扩"实现。
+ *
+ * 但用户这次的表述是「以编辑符所在行为中心进行**上下行一共 3 行**」——
+ * 强调的是**总共 3 行**，而不是"上下各 1 行"。两者在文档中部等价，在首/末行不等价：
+ *
+ * ```
+ * 光标在末行（文档共 44 行，物理上完全够 3 行）
+ *   既有：  [行42, 行43]                    = 2 行   ← 用户看到"只亮两行"
+ *   期望：  [行41, 行42, 行43]              = 3 行   ← 向【有空间的一侧】补齐
+ * ```
+ *
+ * ## 实测证明这不是"视口裁剪"（否则不该修）
+ *
+ * 末行场景实测（`_verify-out/t1-eof.log`）：
+ * ```
+ * scrollTop=564  maxScroll=608   → 还有 44px 可滚，第 3 行【物理上可达】
+ * overlayH=759.41  窗 end=753.80 → 窗底离 overlay 底还有 5.6px，【没有被钳位】
+ * 窗高=49.8（1.73 个字形行高）而正常 3 行窗=78.6 → 窗本身就算成了 2 行
+ * bandTouchesOverlayBottom = false
+ * ```
+ * 所以是**窗口算错**，不是裁剪。
+ *
+ * ## 语义变更的边界（必须说清，别悄悄改）
+ *
+ * 本函数**不修改** `findFocusRowRange`（既有单测与语义原样保留），而是**新增**一步
+ * 「不够就向有空位的一侧补」。调用方（专注遮罩）显式传 `targetRows=3` 才生效，
+ * 其它既有调用点完全不受影响。文档本身不足 3 行时（单行/双行文档）补不满，
+ * 那是**文档物理限制**，不是缺陷。
+ *
+ * @param text 文档全文
+ * @param range `findFocusRowRange` 的结果
+ * @param targetRows 目标总行数（专注遮罩传 3）
+ */
+export function expandFocusRangeToRows(
+  text: string,
+  range: FocusRowRange,
+  targetRows: number,
+): FocusRowRange {
+  // `NaN`/`Infinity` 一类非法值一律退回 1（最小合法窗口），避免把 NaN 传播到 coordsAtPos
+  const target = Number.isFinite(targetRows) ? Math.max(1, Math.floor(targetRows)) : 1;
+  const start0 = Math.max(0, Math.min(range.start, text.length));
+  const end0 = Math.max(start0, Math.min(range.end, text.length));
+  const rows0 = countNewlines(text.substring(start0, end0)) + 1;
+  if (rows0 === target) return { start: start0, end: end0, rows: rows0 };
+  /**
+   * 窗口**已经比目标宽**时也要收窄（`targetRows=1` 的调用者期望单行）。
+   *
+   * 为什么不能只在 `rows0 < target` 时才动手：`findFocusRowRange(..., radius=1)`
+   * 恒返回 ≥2 行（只要文档够长）。若调用方传 `targetRows=1`，只判"不够就补"
+   * 会让它原样返回 2 行 —— 那是**静默忽略入参**，比报错更糟。
+   * 这里按「以光标行所在位置为基准收窄」处理：保留 `range` 起点那一段。
+   */
+  const truncate = rows0 > target;
+
+  // 拆成「行号」计算：在字符上反复找 \n 极容易 off-by-one，行号模型一目了然
+  const lineStarts = buildLineStartIndex(text);
+  const totalLines = lineStarts.length;
+  const firstLine = countNewlines(text.substring(0, start0));
+  const lastLine = countNewlines(text.substring(0, end0));
+
+  if (truncate) {
+    // 收窄：从起首行开始只保留 target 行
+    const newFirst = firstLine;
+    const newLast = Math.min(totalLines - 1, firstLine + target - 1);
+    const start = lineStarts[newFirst];
+    const end = newLast + 1 < totalLines ? lineStarts[newLast + 1] - 1 : text.length;
+    const clampedEnd = Math.max(start, Math.min(end, text.length));
+    return { start, end: clampedEnd, rows: countNewlines(text.substring(start, clampedEnd)) + 1 };
+  }
+
+  const need = target - rows0;
+
+  /**
+   * 补齐策略：**优先向上补**，上方没有余量再全部转给下方。
+   *
+   * 为什么优先上方：光标在末行时，上方内容已在视口内（是"已读过的上下文"），
+   * 向下补会触发滚动把光标推离中心；反之在首行时下方还有空间、补下方不引起滚动。
+   *
+   * ⚠️ 实测确认（`_verify-out/t1-diag-sideeffects.log`）：首行向下补 1 行后
+   * **光标屏幕 Y 位移 = 0px、scrollTop 变化 = 0** —— 因为 overlay 只是**绘制**，
+   * 不调用 `scrollIntoView`，"补出来的那一行"落在哪都不改变滚动位置。
+   */
+  const upAvail = firstLine;                              // 上方还有几行
+  const downAvail = totalLines - 1 - lastLine;            // 下方还有几行
+  const up = Math.min(upAvail, need);
+  const down = Math.min(downAvail, need - up);
+  let newFirst = firstLine - up;
+  let newLast = lastLine + down;
+  // 两侧都到边界仍有缺口（文档总行数 < target）→ 文档物理限制，补不满即止
+  const leftover = need - up - down;
+  if (leftover > 0) {
+    const extraUp = Math.min(newFirst, leftover);
+    newFirst -= extraUp;
+    const extraDown = Math.min(totalLines - 1 - newLast, leftover - extraUp);
+    newLast += extraDown;
+  }
+
+  const start = lineStarts[newFirst];
+  // end 语义与 findFocusRowRange 一致：指向「末行之后那个 \n」的下标（不含）；
+  // 末行是文档最后一行（没有后续 \n）→ text.length。
+  const end = newLast + 1 < totalLines ? lineStarts[newLast + 1] - 1 : text.length;
+  const clampedEnd = Math.max(start, Math.min(end, text.length));
+  return {
+    start,
+    end: clampedEnd,
+    rows: countNewlines(text.substring(start, clampedEnd)) + 1,
+  };
+}
+
+/**
+ * 建「行号 → 行首字符下标」索引。长度 = **行数**（不额外塞哨兵）。
+ *
+ * 末尾带 `\n` 时最后一项恰为 `text.length`，那是文本语义上的"最后一个空行"，
+ * 所以不需要再 push 一次 `text.length` 当哨兵 —— 加了会让行数多算 1
+ *（第一版就是这么错的，`"aaa\n"` 的补齐结果少了一行）。
+ *
+ * 为什么不用 `text.split("\n")` 累加长度：那会为每行建子串，长文档下是 O(n) 内存抖动；
+ * 本函数只扫一遍、只存行首下标（O(行数)）。
+ */
+function buildLineStartIndex(text: string): number[] {
+  const starts: number[] = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) starts.push(i + 1);
+  }
+  return starts;
+}
+
 /**
  * 计算段落起止行号（基于 0 的行号）
  *

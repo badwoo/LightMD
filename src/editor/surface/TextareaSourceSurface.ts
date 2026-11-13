@@ -159,6 +159,18 @@ export class TextareaSourceSurface implements SourceSurface {
     ta.addEventListener("compositionstart", this.onCompositionStart);
     ta.addEventListener("compositionend", this.onCompositionEnd);
     this.buildOverlay();
+    /**
+     * ## v0.17.0 P1-6：`mount()` 必须**重放**已有 ghost（与 CM6 实现对齐）
+     *
+     * `this.ghost` 是实例字段，但 `mount()` 会 `buildOverlay()` 新建 overlay 容器
+     * （`destroy()` 里已经 `ghostEl.remove()` 置空）→ 重挂载后 overlay 是空的，
+     * 而 `this.ghost` 还在。不重放就等于"实例记得、DOM 忘了"。
+     *
+     * 说明：旧注释曾把本文件 `report()` 末尾那句 `if (this.ghost) this.showGhost(...)`
+     * 误当成"mount 恢复"。那不是 —— 那句是**输入变化后重绘 overlay**。
+     * textarea 路径从不因内容变化重挂载，所以这个缺口一直没暴露；但契约上它真实存在。
+     */
+    if (this.ghost) this.showGhost(this.ghost);
   }
 
   destroy(): void {
@@ -229,8 +241,42 @@ export class TextareaSourceSurface implements SourceSurface {
     return this.ta?.scrollTop ?? 0;
   }
 
+  /**
+   * 即时写入滚动位置（语义与 CM6 实现保持一致：写完即到位）。
+   * 恢复类路径全部走这里；需要动画请用 `setScrollTopSmooth`。
+   */
   setScrollTop(px: number): void {
     if (this.ta) this.ta.scrollTop = px;
+  }
+
+  /**
+   * **平滑**写入滚动位置（v0.17.0 第三轮 · 用户第 8 项「打字机要平滑」）。
+   *
+   * 与 `CmSourceSurface.setScrollTopSmooth` **逐语义对齐**（两个实现必须同观感，
+   * 否则"阅读面平滑、编辑面瞬移"这个缺陷只是换了个实现继续存在）。
+   *
+   * 为什么 textarea 也要显式实现而不是让调用方退回 `setScrollTop`：
+   * `PreviewPane.writeScrollTop` 的分派规则是"有 smooth 能力就用"，
+   * 若 textarea 不实现，那条分支永远走不到 textarea → 一旦 run-time 回退到
+   * textarea 实现（`createSourceSurface` 的降级路径），平滑又丢了。
+   *
+   * 注：textarea 的 `scrollTo({behavior})` 在 Chromium/WebView2 上有效；
+   * 老内核会忽略 options → 退化为即时跳变（不出错，只是不动画）。
+   */
+  setScrollTopSmooth(px: number, behavior: "smooth" | "instant" = "smooth"): void {
+    const ta = this.ta;
+    if (!ta) return;
+    if (behavior === "instant") {
+      ta.scrollTop = px;
+      return;
+    }
+    const max = Math.max(0, ta.scrollHeight - ta.clientHeight);
+    const top = Math.max(0, Math.min(max, px));
+    try {
+      ta.scrollTo({ top, behavior: "smooth" });
+    } catch {
+      ta.scrollTop = top;
+    }
   }
 
   /**
@@ -513,6 +559,13 @@ export class TextareaSourceSurface implements SourceSurface {
       kind,
       compositionGroupId: groupId,
       origin: "dom",
+      /**
+       * 只用 `origin` 区分不够（v0.17.0 P1-6）：本实现的所有上报都来自原生
+       * `input` / `compositionend`，两者都**只在值真的变化时**触发，所以这里恒为 `true`。
+       * 但仍要显式给出，与 CM6 实现保持同一份语义契约
+       * （宿主用 `origin !== "programmatic" && docChanged !== false` 判定"真实键入"）。
+       */
+      docChanged: true,
     };
     this.lastReportedText = text;
     this.emit(ev);

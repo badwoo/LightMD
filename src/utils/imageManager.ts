@@ -716,8 +716,63 @@ export interface DataUrlParts {
   isBase64: boolean;
 }
 
-/** ⑩ 解析 data URL（拿 mime 与载荷，供转 assets / 转 base64 双向使用） */
-export function parseDataUrl(src: string): DataUrlParts | null {
+/**
+ * 面板里 src 文本的展示上限（字符）。
+ *
+ * ## 为什么必须有这个东西（v0.17.0 第三轮 #9-A 的**真正根因**）
+ *
+ * 用户报「图片管理里面的功能都失效了」。实测（`scripts/v0170-r3-images.mjs`，
+ * 4,182,172 字节的真实文档）：
+ * ```
+ * DOM HTML 体积 = 8170 KB      ← 面板把 3 条 base64（合计 418 万字符）原样渲染进 DOM
+ * title 属性总长 = 4,181,923 字符
+ * 单帧最长间隔   = 214 ms      ← 打开面板瞬间主线程卡死
+ * ```
+ * 表现就是"点了图标之后面板几秒钟不响应 / 窗口像冻住" —— 用户感知成
+ * **"里面的功能都失效了"**。功能其实没坏，是渲染成本把它掩盖了。
+ *
+ * 所以面板一律用本函数产出的**短标签**，绝不把整条 data URL 送进 DOM。
+ */
+export const IMAGE_SRC_LABEL_MAX = 180;
+
+/** 中间省略：保留头尾，便于用户仍能认出是哪个文件/哪种 data URL */
+function ellipsisMiddle(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const head = Math.ceil((max - 1) / 2);
+  const tail = Math.floor((max - 1) / 2);
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
+}
+
+/** 人类可读的体积（面板展示 base64 载荷有多大，比展示载荷本身有用得多） */
+export function humanSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * 面板展示用的 **安全** 引用标签（绝不含整条 base64）。
+ *
+ * - data URL → `data:image/png;base64,…(2.6 MB)`（mime + 载荷体积）
+ * - 其它（本地/远程）→ 中间省略到 `IMAGE_SRC_LABEL_MAX`
+ *
+ * ⚠️ 这是**展示层唯一允许**把 src 送进 DOM 的入口。任何 `title={img.src}`、
+ * `{img.src}`、`title={absPath}` 都会在 4MB 文档上重现本轮的假死。
+ */
+export function imageSrcLabel(src: string): string {
+  if (!src) return "";
+  const parsed = parseDataUrl(src);
+  if (parsed) {
+    const bytes = parsed.isBase64
+      ? Math.floor((parsed.payload.length * 3) / 4)
+      : parsed.payload.length;
+    return `data:${parsed.mime};base64,…(${humanSize(bytes)})`;
+  }
+  return ellipsisMiddle(src, IMAGE_SRC_LABEL_MAX);
+}
+
+/** ⑩ 解析 data URL（拿 mime 与载荷，供转 assets / 转 base64 双向使用） */export function parseDataUrl(src: string): DataUrlParts | null {
   if (!DATA_URL_RE.test(src)) return null;
   const comma = src.indexOf(",");
   if (comma < 0) return null;

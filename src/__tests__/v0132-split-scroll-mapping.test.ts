@@ -328,8 +328,16 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
   it("syncToPreview 与 syncToSource 都从同一份 collectAnchors 取锚点", () => {
     const previewFn = fnBody("const syncToPreview = (force = false) =>", "const syncToSource = () =>");
     const sourceFn = fnBody("const syncToSource = () =>", "const offSourceScroll = sourceSurface.onDidScroll(");
-    expect(previewFn).toContain("collectAnchors()");
+    /**
+     * v0.17.0 R4（用户第 1 项，T2）：左→右方向把"算目标"抽成 `computePreviewTarget(preview)`
+     * （为了在写之前做物理约束校验、避免 188px 错跳），`collectAnchors()` 移到了
+     * 该函数内部 —— **两方向共用的契约不变**，只是左→右多了一层间接。
+     * 因此这里断言：左→右调用 `computePreviewTarget`、右→左仍直调 `collectAnchors()`，
+     * 且 `computePreviewTarget` 内部确实用 `collectAnchors()`（同一份锚点表）。
+     */
+    expect(previewFn).toContain("computePreviewTarget(preview)");
     expect(sourceFn).toContain("collectAnchors()");
+    expect(src).toMatch(/const computePreviewTarget = \([^)]*\)[^{]*\{[\s\S]{0,400}?collectAnchors\(\)/);
     // 采集函数把视口坐标换算回内容坐标（scrollTop 也在内容坐标系）。
     // 注意：根元素 rect.top 恒等于 -scrollTop，**不能**再减它，否则锚点虚高。
     expect(src).toContain("tops.push(rect.top + preview.scrollTop);");
@@ -354,7 +362,8 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
       expect(fn).toContain("isSyncingScrollRef.current = false;");
     }
     // 两个方向写的是各自的容器，不共用滚动条
-    expect(previewFn).toContain("preview.scrollTop = next;");
+    // v0.17.0 R4（T2）：左→右写入变量由 `next` 改名 `target`（新增物理约束校验），语义不变
+    expect(previewFn).toContain("preview.scrollTop = target;");
     // A3：左屏写入改经 surface（等价语义，仍写自己的容器）
     expect(sourceFn).toMatch(/sourceSurface\.setScrollTop\(/);
   });

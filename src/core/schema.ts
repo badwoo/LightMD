@@ -299,6 +299,19 @@ const nodeSpecs: Record<string, NodeSpec> = {
       //
       // 默认空串：旧文档/无标题文本时为空，toDOM 据此不输出 id 属性。
       id: { default: "" },
+      /**
+       * v0.17.0 T4：原文写法标记（镜像统一树 `MdNode.raw` 的 `MdRaw`）。
+       *
+       * 缺陷背景：`headingToMarkdown` 此前一律输出 ATX（`# Title`），
+       * 源码写下划线式（Setext）的标题**被编辑过一次**后就被归一化成 ATX
+       * （未编辑的走 B6 原文切片保真，编辑过的走规范序列化 → 写法丢失）。
+       *
+       * `raw.setext: true` 由 parser 从 heading_open 的 markup（`=` / `-`）写入，
+       * serializer 据此在编辑后仍输出下划线式（下划线长度按新文字重算）。
+       * 新建标题（无 raw）仍输出 ATX。toDOM/parseDOM 不承载该标记（DOM 往返
+       * 不需要保写法，与 ordered_list.delim 同口径：只服务 Markdown 往返）。
+       */
+      raw: { default: null },
     },
     defining: true,
     parseDOM: [
@@ -537,8 +550,10 @@ const nodeSpecs: Record<string, NodeSpec> = {
   },
 
   // 定义列表项 - 描述
+  // v0.17.0 T4：内容模型 inline* → block+（同 footnote_definition E15 先例），
+  // dd 内的代码块/表格/列表/多段落保留为**块级子树**，不再拍平成 inline 文本。
   definition_description: {
-    content: "inline*",
+    content: "block+",
     defining: true,
     parseDOM: [{ tag: "dd" }],
     toDOM(): DOMOutputSpec {

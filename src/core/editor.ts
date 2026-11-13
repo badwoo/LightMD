@@ -203,8 +203,18 @@ let serializationCache: { doc: PMNode; markdown: string } | null = null;
 /**
  * 获取文档的 Markdown 字符串，优先使用缓存
  * 缓存命中条件：传入的 doc 与缓存中的 doc 是同一个对象引用
+ *
+ * v0.17.0 R4 #6：`opts.normalizeOrderedLists` 透传给 `docToMarkdown`，
+ * 用于「阅读 → 编辑」把 PM doc 落回源码面那一刻把 `1. 甲 / 1. 乙` 归一化成
+ * `1. 甲 / 2. 乙`（用户 2026-11-12 裁决：要求改写磁盘文本）。
+ *
+ * ⚠️ 带该选项时**不读也不写缓存**：缓存键只有 doc 引用，若把归一化结果写进缓存，
+ * 之后保存/导出走默认路径会拿到被改写的文本 —— 影响面会扩散到所有调用点。
  */
-export function getMarkdownFromDoc(doc: PMNode): string {
+export function getMarkdownFromDoc(doc: PMNode, opts?: { normalizeOrderedLists?: boolean }): string {
+  if (opts?.normalizeOrderedLists) {
+    return docToMarkdown(doc, opts);
+  }
   if (serializationCache && serializationCache.doc === doc) {
     return serializationCache.markdown;
   }

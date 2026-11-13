@@ -227,8 +227,13 @@ describe("buildFormatReplacement - 原有 action 兼容", () => {
 
 // ─── MERMAID_TEMPLATES ────────────────────────────
 describe("MERMAID_TEMPLATES - Mermaid 模板下拉", () => {
-  it("应包含 7 个模板", () => {
-    expect(MERMAID_TEMPLATES).toHaveLength(7);
+  // v0.17.0 R3 #10：用户要求「检查下还有没有遗漏的类型图表请进行补全」。
+  // 原断言写死 `toHaveLength(7)`，补全后必然红 —— 语义从「恰好 7 个」改为
+  // 「覆盖原有 7 个（下限）+ 每个都有 i18n key」。**不放宽到无下限**：
+  // 7 是用户上一版实际可见的数目，少于 7 就是功能回退。
+  // 新增类型的渲染可用性由 scripts/v0170-r3-formatbar.mjs 逐类型实测（浏览器内 svg 断言）。
+  it("应包含至少 7 个模板（原有 7 个为下限，v0.17.0 R3 已补全）", () => {
+    expect(MERMAID_TEMPLATES.length).toBeGreaterThanOrEqual(7);
   });
 
   it("应包含 Flowchart/Sequence/State/Gantt/Pie/ER图/Gitgraph", () => {

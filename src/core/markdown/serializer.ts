@@ -67,8 +67,18 @@ export function nodeToMarkdown(node: Node): string {
  *   程序化构造）走规范序列化，块间按规范规则补空行
  * - v0.9.0 D2：删除「表格前不加块间空行」特判——列表块后的 "|" 行会被
  *   lazy continuation 吸进列表项导致表格丢失，统一走块间空行逻辑
+ *
+ * v0.17.0 R4 #6：新增可选参数 `opts.normalizeOrderedLists`
+ * - 默认（不传）→ **行为与历史完全一致**（B6 原文快路径生效，未编辑文档保存零 diff）。
+ * - `true` 时**跳过 B6 快路径**，强制走逐块规范序列化，使有序列表按 `attrs.order`
+ *   逐项递增输出。用于「阅读 → 编辑」把 PM doc 落回源码面那一刻，
+ *   把用户写的 `1. 甲 / 1. 乙` 归一化成 `1. 甲 / 2. 乙`（用户 2026-11-12 裁决：
+ *   **要求改写磁盘文本**）。
+ * - 为什么用参数而不是改默认：`serializer` 是**所有路径的公共出口**（保存、导出、
+ *   撤销时间线、滚动内容锚、AI 翻译…）。改默认会把"保存零 diff"这个既有契约
+ *   连根拔掉，并可能影响 T2 刚修好的滚动类问题。参数化后影响面精确可控。
  */
-export function docToMarkdown(doc: Node): string {
+export function docToMarkdown(doc: Node, opts?: { normalizeOrderedLists?: boolean }): string {
   const blocks: Node[] = [];
   doc.forEach((node) => {
     // v0.13.2 需求9：**跳过自动补位的垫底段落**。
@@ -86,7 +96,29 @@ export function docToMarkdown(doc: Node): string {
   });
 
   // ── B6 快路径：全部块命中且行号连续覆盖 → 原文逐字节返回 ──
-  if (blocks.length > 0) {
+  //
+  // ⚠️ v0.17.0 R4 #6：这条快路径是"用户写的 `1. 甲 / 1. 乙` 切回编辑后仍是两个 1."
+  // 的**真正根因**（不是 `listToMarkdown` 的 idx 不递增 —— 那条路径是对的）。
+  //
+  // 机制：B6 的设计目的是"未编辑文档保存零 diff"，它把解析输入原文**逐字节**返回。
+  // 用户逐行敲 `1. 甲` ↵ `1. 乙` 时，PM doc 里是**一个** ordered_list（两项，
+  // markdown-it 的 `1.` 起始号规则不把第二个 `1.` 当新列表），
+  // 而原文里确实写着两个 `1.`。走 B6 快路径 → 返回原文 → 两个 `1.` 保持不变，
+  // `listToMarkdown` 的递增逻辑**根本没被执行**。
+  //
+  // 修法（按 Lead 要求做成"只在明确需要时启用"）：`normalizeOrderedLists` 为 true 时
+  // **跳过 B6 快路径**，强制走逐块路径 → 有序列表按 attrs.order 递增输出 → `1. 2.`。
+  // 默认 false，因此其它所有调用点（保存/导出/滚动对齐/撤销时间线…）行为零变化。
+  //
+  // ⚠️ v0.17.0 P0 数据保真（范围收窄）：跳过条件**不是**"只要带选项就跳过"，
+  // 而是"带选项**且**存在顶层有序列表"才跳过。初版一刀切跳过导致整篇快路径失效，
+  // **所有**块（含未编辑的段落/公式/Setext/代码块…）走规范序列化被改写 —— 实测
+  // `\sum_{i=1}^{n}` 被改写为 `\\sum\_{i=1}^{n}`（落盘 +7 字节，公式语义被破坏）。
+  // 归一化只关心有序列表编号：没有顶层有序列表时快路径照常生效，
+  // `normalizeOrderedLists: true` 的结果与不传选项**逐字节一致**。
+  const needNormalize =
+    !!opts?.normalizeOrderedLists && blocks.some((n) => n.type.name === "ordered_list");
+  if (!needNormalize && blocks.length > 0) {
     const infos = blocks.map(getBlockSource);
     if (infos.every(Boolean)) {
       const typed = infos as BlockSourceInfo[];
@@ -118,7 +150,25 @@ export function docToMarkdown(doc: Node): string {
   };
 
   blocks.forEach((node, index) => {
-    const info = getBlockSource(node);
+    /**
+     * v0.17.0 R4 #6：归一化模式下**连块级原文切片也要跳过**。
+     *
+     * 第一版只跳过"整篇快路径"是不够的：逐块路径里每个命中 `getBlockSource` 的块
+     * 仍会输出**原文切片** → 有序列表块照样返回 `1. 甲\n1. 乙`，递增逻辑还是没执行。
+     * 实测（本次）：只加整篇快路径开关时 `1. 甲 / 1. 乙` 归一化后仍是两个 `1.`。
+     *
+     * 因此归一化模式下把**列表块**的 `info` 视为**未命中**，强制列表走规范序列化
+     * （`blockToMarkdown` → `listToMarkdown` → `idx++` 递增）。
+     *
+     * ⚠️ v0.17.0 P0 数据保真（范围收窄）：初版把**所有**块的 `info` 一律视为未命中，
+     * 连未编辑块也被规范序列化改写（公式 `\sum` → `\\sum\_{...}`、Setext → ATX、
+     * 反斜杠/下划线被转义），违背"未编辑内容逐字节不变"。收窄为**仅 `ordered_list`**：
+     * 只有列表块需要递增重编号；其余块（段落/标题/代码块/表格/引用/定义列表/公式…）
+     * 继续 `getBlockSource` 原文切片保真。列表重编号是用户明确要求的改写，可接受；
+     * 其余块零 diff。
+     */
+    const skipSource = !!opts?.normalizeOrderedLists && node.type.name === "ordered_list";
+    const info = skipSource ? undefined : getBlockSource(node);
     if (info) {
       // 命中：输出原文行区间切片（含块间原有空行），不加规范间隔
       let end = info.end;
@@ -243,11 +293,44 @@ function footnoteDefinitionToMarkdown(node: Node): string {
 
 function definitionListToMarkdown(node: Node): string {
   const lines: string[] = [];
-  node.forEach((child) => {
+  node.forEach((child, _offset, index) => {
     if (child.type.name === "definition_term") {
+      // 组边界（上一项是 dd）插空行分隔**组**：紧排形式 "…: def\n下一术语" 里的
+      // 下一术语会被解析端当作 dd 段落的 lazy 续行吸收（实测 dl(4) 变 dl(3)），
+      // 组间空行是 markdown-it-deflist 认可的分组形式（往返 childCount 不变）。
+      // 连续多个 dt（多术语共享一 dd）之间不插空行，保持原组形态。
+      if (index > 0 && node.child(index - 1).type.name === "definition_description") {
+        lines.push("");
+      }
       lines.push(inlineToMarkdown(child));
     } else if (child.type.name === "definition_description") {
-      lines.push(`: ${inlineToMarkdown(child)}`);
+      // v0.17.0 T4：dd 内容为 block+（同 footnote_definition E15 先例）——
+      // 首段与 `: ` 同行，其余块级子节点输出为 4 空格缩进续行（段落前空行），
+      // markdown-it-deflist 解析端认可该形式，往返保持块级结构。
+      let headerDone = false;
+      child.forEach((block) => {
+        const childMd = blockToMarkdown(block);
+        if (!childMd) return;
+        if (!headerDone && block.type.name === "paragraph") {
+          lines.push(`: ${inlineToMarkdown(block)}`);
+          headerDone = true;
+        } else {
+          if (!headerDone) {
+            // 首块非段落：先输出 `:` 头行，内容走缩进续行
+            lines.push(":");
+            headerDone = true;
+          } else if (block.type.name === "paragraph") {
+            // 后续段落前插空行，避免缩进续行被当作同段软换行
+            lines.push("");
+          }
+          const trimmed = childMd.trimEnd();
+          trimmed.split("\n").forEach((line) => {
+            lines.push(line ? `    ${line}` : "");
+          });
+        }
+      });
+      // 空 dd 占位（block+ 至少一个块，空内容时 parser 给空段落）
+      if (!headerDone) lines.push(": ");
     }
   });
   return lines.join("\n") + "\n";
@@ -257,8 +340,18 @@ function definitionListToMarkdown(node: Node): string {
 
 function headingToMarkdown(node: Node): string {
   const level = node.attrs.level;
-  const prefix = "#".repeat(level);
   const content = inlineToMarkdown(node);
+  // v0.17.0 T4：Setext 保真——源码写下划线式标题（`raw.setext`，parser 从
+  // heading_open.markup 记入）的，**编辑后仍输出下划线式**，不归一化成 ATX
+  // （与 unified/serialize.ts G5-1 同口径：下划线长度按新文字重算）。
+  // 新建标题（无 raw）仍输出 ATX；Setext 只能表达 H1/H2，改级到 3+ 时回退 ATX。
+  const raw = node.attrs.raw as { setext?: boolean } | null | undefined;
+  if (raw && raw.setext === true && (level === 1 || level === 2)) {
+    const underlineChar = level === 1 ? "=" : "-";
+    const underline = underlineChar.repeat(Math.max(3, content.length));
+    return `${content}\n${underline}\n`;
+  }
+  const prefix = "#".repeat(level);
   return `${prefix} ${content}\n`;
 }
 

@@ -37,11 +37,19 @@ import { translateService, TranslateServiceError, parseTranslateError } from "..
 import { useFullTranslateStore } from "../../../../stores/fullTranslateStore";
 import { extractFromSelection, getTextareaSelectionAnchor, extractFromIframe, applyTranslation, buildSourceRewrite } from "../../../../services/translateBridge";
 import { getMarkdownFromDoc } from "../../../../core/editor";
-import { unmaskBase64Images } from "../../../../utils/base64ImageMask";
+import { unmaskBase64Images, sameBase64Markers } from "../../../../utils/base64ImageMask";
 import { AiTask, aiAssistService } from "../../../../services/aiAssistService";
 import { AiAssistSourceMode, useAiAssistStore } from "../../../../stores/aiAssistStore";
 import { setAiGhost, aiGhostKey, clearAiGhost } from "../../../../core/plugins/ai-ghost";
 import { syncTextareaMetrics, buildSourceGhostHtml } from "../../../../utils/focus-paragraph";
+/**
+ * v0.17.0 R3 · 用户第 4 项：格式 ghost 退格删除改走**最小 diff 事务**。
+ *
+ * 从 `SourcePane` 引入这个纯函数（它本来就 export 在那里，有独立单测
+ * `v0170-r2-scroll-jump.test.ts`）。不复制一份实现的理由：最小化算法的边界条件
+ *（公共前后缀夹逼 + diff 预算兜底）已经有测试覆盖，复制会引入两套会漂移的逻辑。
+ */
+import { computeMinimalEdit } from "../sourcepane/SourcePane";
 import { shouldClearFormatGhost } from "../.././sourceFormat";
 import type { EditorView as EditorView } from "prosemirror-view";
 import {
@@ -442,6 +450,29 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     const ctx = translateCtxRef.current;
     if (!ctx || !translated.trim()) return;
 
+    /**
+     * ## v0.17.0 第三轮 #9-C：**选区翻译同样必须有图片标记闸门**
+     *
+     * 任务卡点名了这个最危险的失败模式：「若翻译把 `image-1.png` 当成普通文本
+     * 翻译走了（例如译成中文"图片-1.png"），unmask 就匹配不上 → 图片丢失」。
+     *
+     * 选区翻译的 payload 来自 `sourceContent.slice()` / `extractFromSelection()`，
+     * 本身已是 masked 坐标（不会把 base64 送出去，这部分本来就对）。但**模型仍可能
+     * 把短标记当正文改掉**——那时回写的译文里就没有 `image-1.png` 了，
+     * `unmask` 在整篇上找不到它 → 用户保存后磁盘 base64 永久丢失。
+     *
+     * 判据与全文翻译同源（`sameBase64Markers`）：**原文选区里的标记多重集
+     * 必须在译文里原样保留**，否则整次回写拒绝（气泡保留，用户可复制/重试）。
+     *
+     * ⚠️ 只对 source 通道校验：pm 通道的 `applyTranslation` 操作的是 PM 结构，
+     * 图片是独立的 image 节点（不在文本里），结构上不可能被"译掉"。
+     */
+    if (ctx.sourceMode === "source" && !sameBase64Markers(ctx.text, translated)) {
+      console.warn("[translate] 译文丢失/改动了图片短标记 → 拒绝回写（原文保留）");
+      notifyWarning(translate("translate.markerLostNotify"));
+      return;
+    }
+
     if (ctx.sourceMode === "pm") {
       const view = viewRef.current;
       if (!view) return;
@@ -813,6 +844,51 @@ export function useAiAssistPane(p: AiAssistPaneParams): AiAssistPaneResult {
     onContentChangeRef.current?.(newContent);
     setDirtyRef.current(true);
     lastContentRef.current = unmaskBase64Images(newContent, base64TokensRef.current);
+    /**
+     * ## v0.17.0 R3 · 用户第 4 项：最小 diff 落地（★ 这就是用户报的那条路径）
+     *
+     * ### 缺陷
+     * 「点格式栏/语法栏插入格式 → 不输入直接 Backspace → 页面抖动或重置」。
+     * 原本这里只 `setSourceContent(newContent)` → 受控写入 effect → CM6 `setText(整篇)`。
+     *
+     * ### 实测（`scripts/v0170-r3-format-backspace.mjs`，60 段文档滚到 45%）
+     * ```
+     * 点「粗体」后 scrollHeight  8785 → 7114  (Δ-1671px ← 整篇替换的指纹)
+     * 退格时 scrollTop 单帧最大跳变            192px
+     * 点「标题一」时                           557px
+     * 负对照（点后先输入再退格，ghost 已失效）  0px  ← 只在"ghost 活跃 + 整段删"这条路径上
+     * 退格阶段 scrollTop 写入 0 次             ← 那一跳是 CM6 钳位，不是我们写的
+     * ```
+     *
+     * ### 修法
+     * 与 R2 #3「撤销抖动」**完全同源**（那里实测 Δ0px）：算最小 diff，
+     * 经 `applyEdit` 走**单事务最小 changes** → heightMap 只增量更新 →
+     * CM6 不会把 `scrollTop` 钳到新坐标系。
+     *
+     * ⚠️ 必须在 `setSourceContent` **之后**（与撤销路径同款）：先让受控 state 指向新文本，
+     * effect 才会认为"已是目标值"而跳过整篇 `setText`；顺序反了会再写一次整篇，前功尽弃。
+     *
+     * ⚠️ diff 过大（`computeMinimalEdit` 返回 null，例如整段替换）时退回整篇路径，
+     * 此时内容锚恢复仍然兜底 —— 不静默失败。
+     */
+    if (sourceSurface.impl === "cm6") {
+      const minimal = computeMinimalEdit(current, newContent);
+      if (minimal) {
+        try {
+          sourceSurface.applyEdit({
+            kind: "edit",
+            edit: {
+              from: minimal.from,
+              to: minimal.to,
+              text: minimal.text,
+              caret: Math.max(0, Math.min(newContent.length, ghost.start)),
+            },
+          });
+        } catch {
+          /* 最小化失败：下面的 restore 仍会兜底 */
+        }
+      }
+    }
     formatGhostRef.current = null;
     if (!sourceGhostActiveRef.current) {
       const overlay = sourceGhostOverlayRef.current;

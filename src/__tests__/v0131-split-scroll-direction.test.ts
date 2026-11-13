@@ -58,8 +58,11 @@ describe("v0.13.2 需求8：分屏滚动方向契约（双向映射）", () => {
   });
 
   it("左右两侧**不共用滚动条**：各自写自己的 scrollTop，不互相赋值同一个值", () => {
-    // 左→右只写 preview.scrollTop；右→左只写 textarea.scrollTop
-    expect(containerSrc).toContain("preview.scrollTop = next;");
+    // 左→右只写 preview.scrollTop；右→左只写左屏自己的容器。
+    // v0.17.0 R4（用户第 1 项，T2）：左→右的写入变量从 `next` 改名为 `target`
+    // （因为新增了物理约束校验 computePreviewTarget），**语义不变**：
+    // 仍是"只写 preview 自己的 scrollTop"。
+    expect(containerSrc).toContain("preview.scrollTop = target;");
     // A3：左屏写入改经 surface（等价语义），不再直写 textarea.scrollTop
     expect(containerSrc, "左屏写入必须经 surface 且仍写自己的容器").toMatch(
       /sourceSurface\.setScrollTop\(/,
