@@ -94,6 +94,11 @@ export interface SourceSurfaceOptions {
   readOnly?: boolean;
   /** 独立撤销栈由宿主管理（Surface 不内置 undo 语义，只负责报告变更） */
   disableNativeUndo?: boolean;
+  /**
+   * 空文档占位提示（v0.17.1 E4）：文档为空时显示的灰字提示，首个输入即消失。
+   * CM6 走 `placeholder()` 扩展；textarea 回退走原生 `placeholder` 属性。
+   */
+  placeholderText?: string;
 }
 
 // ────────────────────────────────────────────────────────────────

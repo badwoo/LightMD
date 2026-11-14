@@ -690,6 +690,15 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
    */
   const contentRef = useRef(content);
   contentRef.current = content;
+  /**
+   * v0.17.1 E4：占位提示文案的稳定读取口。
+   * `t` 不能进下方 callback ref 的依赖数组（语言切换会让 callback ref 重跑 →
+   * React 用 null/el 各调一次 → 整个编辑器 destroy + remount，不可接受，
+   * 与"⛔ 绝对不要把 content 加回依赖数组"同理）。ref 捕获、挂载瞬间读一次：
+   * 语言切换后 placeholder 文案不随之更新，可接受（空文档 + 切语言是极低频组合）。
+   */
+  const sourceTRef = useRef(t);
+  sourceTRef.current = t;
   const sourceHostRef = useCallback(
     (el: HTMLTextAreaElement | null) => {
       sourceHostElRef.current = el;
@@ -705,7 +714,10 @@ export function EditorContainer({ content = "", filePath, forceUpdateKey, onEdit
          * 下可能出现），退回 prop 的实时快照。走 ref 而非直接捕获 `content`，
          * 是为了不给下面的依赖数组引入内容值 —— 原因见函数末尾的 ⚠️ 注释。
          */
-        sourceSurface.mount(el, { initialText: sourceContentRef.current ?? contentRef.current });
+        sourceSurface.mount(el, {
+          initialText: sourceContentRef.current ?? contentRef.current,
+          placeholderText: sourceTRef.current("editor.source.placeholder"),
+        });
       } else sourceSurface.destroy();
     },
     /**

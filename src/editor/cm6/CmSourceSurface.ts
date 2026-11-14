@@ -52,12 +52,15 @@ import {
   WidgetType,
   crosshairCursor,
   drawSelection,
+  dropCursor,
   highlightActiveLine,
   highlightActiveLineGutter,
   highlightSpecialChars,
   keymap,
   lineNumbers,
+  placeholder,
   rectangularSelection,
+  scrollPastEnd,
   type DecorationSet,
 } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -69,7 +72,20 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import {
+  deleteMarkupBackward,
+  insertNewlineContinueMarkup,
+  markdown,
+  markdownLanguage,
+} from "@codemirror/lang-markdown";
+// v0.17.1 A2：围栏代码块内嵌语言高亮（```js / ```python 等按语言上色）。
+// `languages` 是 LanguageDescription[]，语言**按需懒加载**（未加载时先跳过
+// 该代码块的嵌套解析，加载完成后 CM6 自然重解析），不会一次性把全部
+// 语言打进主包。
+import { languages } from "@codemirror/language-data";
+// v0.17.1 C1/C2：选中词高亮 + Mod-d 选中下一处（都来自 @codemirror/search；
+// **只取这两个能力**——官方 searchKeymap 含 Mod-f 会与宿主搜索冲突，不引入）。
+import { highlightSelectionMatches, selectNextOccurrence } from "@codemirror/search";
 
 import type {
   SourceAnchor,
@@ -261,6 +277,11 @@ const markdownHighlightStyle = HighlightStyle.define([
 const HOST_OWNED_KEYS: ReadonlySet<string> = new Set([
   // 宿主 `format.italic`（Ctrl+I）—— CM6 的 selectParentSyntax 会抢走它
   "Mod-i",
+  // v0.17.1 C2：defaultKeymap 的 `Ctrl-d` 是 emacs 习惯的 `deleteCharForward`
+  //（删光标前字符），在 Win/Linux 上与 `Mod-d`（Mod=Ctrl）**同键冲突**。
+  // 过滤它，把 Ctrl/Cmd+D 让给 `selectNextOccurrence`（VS Code 语义：
+  // 选中下一处相同文本、多光标累加）。Mac 上物理 Ctrl+D 随之解绑，无碍。
+  "Ctrl-d",
 ]);
 
 /**
@@ -518,6 +539,30 @@ export class CmSourceSurface implements SourceSurface {
       rectangularSelection(),
       crosshairCursor(),
       highlightActiveLine(),
+      /**
+       * v0.17.1 P0 视图小件包：
+       *
+       * - C1 `highlightSelectionMatches`：**选中文本即高亮全文相同文本**
+       *   （双击一个词 → 全文同词亮起；点别处即消失）。与自研搜索面板互补：
+       *   面板管"主动检索/替换"，这里管"边读边看这个词还出现在哪"。
+       *   `minSelectionLength: 2` —— 单字符选中就全文点亮同字符在中文写作里
+       *   太吵，2 字起与"词"的直觉一致（英文双击选词天然 ≥2 字符）。
+       * - E5 `dropCursor`：拖拽文本/文件时在插入位置画竖线光标（落点可视）。
+       * - E6 `scrollPastEnd`：底部留白 ≈ 一视口高，**每行都能滚到视口顶部**
+       *   —— 打字机模式"末行居中"的前置条件（此前写到文末时 scrollTop 已到
+       *   max，最后一行永远贴底）。进度口径影响已核：留白量 = 视口高 - 一行，
+       *   "末行到顶"恰好 ≈ maxScroll，滚动进度 100% 仍对应文档末行，反而更准。
+       */
+      highlightSelectionMatches({ minSelectionLength: 2 }),
+      dropCursor(),
+      scrollPastEnd(),
+      /**
+       * E4 空文档占位提示（v0.17.1）：文档为空时显示灰字提示（不入文档、
+       * 不入撤销栈，首个输入即消失）。CM6 的 .cm-content 是 contenteditable，
+       * 没有 textarea 的原生 placeholder —— 这个扩展是 CM6 路径下该能力的
+       * 唯一实现方式；textarea 回退路径走原生 `placeholder` 属性。
+       */
+      ...(opts.placeholderText ? [placeholder(opts.placeholderText)] : []),
       // 语法高亮：Markdown 语言支持 + lezer tag → 既有 CSS 类映射。
       //
       // ⚠️ 这里**必须**经 @codemirror/lang-markdown 的 `markdown()`，不能直接把
@@ -527,7 +572,13 @@ export class CmSourceSurface implements SourceSurface {
       // 已由 Lead 校准并装上 @codemirror/lang-markdown 6.5.2。
       // `addKeymap: false`：Markdown 自带的键位（如 `Mod-Enter`）不接管 ——
       // 源码面的键位由本文件的 keymap 与宿主统一时间线负责。
-      markdown({ base: markdownLanguage, addKeymap: false }),
+      //
+      // v0.17.1 A2：`codeLanguages: languages` —— 围栏代码块**内嵌语言高亮**
+      //（```js / ```python 等按语言逐 token 上色，此前整块只有 cm-md-code 一色）。
+      // 语言懒加载（LanguageDescription.load()），未就绪时该代码块暂按普通
+      // 代码块渲染、就绪后自动重解析。风险面：大文档代码块多时解析成本上升，
+      // 诊断开关 `__LMD_DISABLE_HIGHLIGHT__` 仍可整体关高亮用于隔离排查。
+      markdown({ base: markdownLanguage, addKeymap: false, codeLanguages: languages }),
       // 诊断开关（`scripts/v0170-diag-5mb-complex.mjs` 用于隔离"高亮 vs 卡死"的因果关系）。
       // 生产环境该全局变量恒为 undefined → 高亮始终开启。
       ...(typeof window !== "undefined" && (window as unknown as { __LMD_DISABLE_HIGHLIGHT__?: boolean }).__LMD_DISABLE_HIGHLIGHT__
@@ -535,7 +586,46 @@ export class CmSourceSurface implements SourceSurface {
         : [syntaxHighlighting(markdownHighlightStyle)]),
       // ⚠️ 硬约束 1：**不装 history()**，撤销归统一时间线
       // 只保留基础编辑键位，但**必须剔除与宿主快捷键冲突的条目**（见下方过滤说明）
-      keymap.of([...defaultKeymap].filter((b) => !HOST_OWNED_KEYS.has(b.key ?? ""))),
+      //
+      // v0.17.1 P0：以下三条绑定**前置**于 defaultKeymap 的同键绑定 ——
+      // 同一 keymap 数组内先注册者先匹配，未命中（返回 false）自然落到
+      // defaultKeymap 的 insertNewline / deleteCharBackward 兜底。
+      // 更外层的优先级约束（从高到低）不变：
+      //   捕获监听（Slash 确认 / Tab / ghost-Backspace）→ 宿主 domEventHandlers
+      //   → 本数组 → 浏览器默认；智能回车不与任何捕获层手势抢键。
+      keymap.of([
+        /**
+         * A1 智能回车（`insertNewlineContinueMarkup`）：
+         * - 列表 / 任务项 / 引用内按 Enter 自动续行（`- ` / `- [ ] ` / `> `）；
+         * - 有序列表自动递增编号；
+         * - **空项按 Enter 自动退标记、退出列表/引用**；
+         * - 普通段落返回 false → 落给 defaultKeymap 的 insertNewline。
+         *
+         * 撤销口径（硬约束 1）：该命令直接 dispatch 事务，不配 history ——
+         * 变更经 updateListener → onDocsChanged 归类 `typing` 进统一时间线，
+         * 一次回车 = 一步撤销，与手敲换行同粒度。
+         *
+         * IME 守卫：组合期 Enter 是候选确认，交输入法，不续行。
+         */
+        {
+          key: "Enter",
+          run: (view) => (v.composing ? false : insertNewlineContinueMarkup(view)),
+        },
+        /**
+         * A1 标记退格（`deleteMarkupBackward`）：光标在行首且该行是列表/引用
+         * 标记时，一次 Backspace 删掉整段标记（"取消这个列表项"→ 普通段落），
+         * 而不是 defaultKeymap 的"粘连上一行"。非标记行返回 false → 落给
+         * deleteCharBackward 正常删字。
+         */
+        {
+          key: "Backspace",
+          run: (view) => (v.composing ? false : deleteMarkupBackward(view)),
+        },
+        // C2 Mod-d：选中下一处相同文本（每次按压累加一个选区 → 多处同改）。
+        // Ctrl-d 冲突键已从 defaultKeymap 过滤（见 HOST_OWNED_KEYS）。
+        { key: "Mod-d", run: selectNextOccurrence },
+        ...[...defaultKeymap].filter((b) => !HOST_OWNED_KEYS.has(b.key ?? "")),
+      ]),
       // ⚠️ 硬约束 1 的第二道保险：把撤销/恢复键显式拦下并返回 false
       /**
        * ⚠️ `Prec.highest` 是必须的（实机探针 `v0170-probe-cm6` 判定项 3 实证）：

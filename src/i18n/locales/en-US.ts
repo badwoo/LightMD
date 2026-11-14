@@ -520,6 +520,8 @@ export const enUS: Record<string, string> = {
   // ─── Editor ───────────────────────────────────
   "editor.renderFailed": "Render failed",
   "editor.emptyHint": "Open a file or drag a .md file to start editing",
+  // v0.17.1 E4: source-pane empty-document placeholder (disappears on first input)
+  "editor.source.placeholder": "Start writing Markdown… (type / for commands)",
   "editor.preview": "Preview",
   // E12(v0.9.4): undo reached the boundary of this mode
   "editor.undoBoundary": "Reached the undo boundary of this mode",

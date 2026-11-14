@@ -2458,6 +2458,45 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       //  左右滚动对不齐"的直接原因）。
       // 现在等到 body 真的就绪再贴；三种触发都留着（同步/load/rAF/兜底定时器），
       // 贴标本身幂等（先清旧标签再贴），重复调用无副作用。
+      /**
+       * ⚠️ v0.17.1 修复（用户问题1）：**`init` 必须等 body 真的就绪才提交**。
+       *
+       * ## 缺陷（真机复现，`scripts/v0171-lead-i1-cause.mjs`）
+       * ```
+       * 错误：TypeError: Cannot set properties of null (setting 'innerHTML')
+       * 触发：打开含 mermaid / 数学公式的文档 → 双击 Ctrl 进编辑模式
+       * ```
+       * 实测时序（逐帧采样）：
+       * ```
+       * t=106ms  iframe 出现，contentDocument.readyState = "loading"
+       * t=129ms  doc.body === null   ← 解析器停在 <head> 等 mermaid/katex 脚本
+       * t=196ms  doc.body === null
+       * t≈210ms  body 就绪
+       * ```
+       * 旧代码在 `doc.close()` **之后立刻**写 `previewIframeInitRef.current`（原先在
+       * 本函数末尾无条件赋值），于是造出一个 **「init 已更新、body 仍为 null」** 的窗口。
+       * 该窗口内只要跑第二次本 effect（依赖项任一变化），`needFullRewrite` 就会算出
+       * `false` → 走**增量分支** → `doc.body.innerHTML = previewHtml` 对 null 赋值 → 抛错。
+       *
+       * ## 为什么只有「含 mermaid / 公式」的文档会崩
+       * `needFullRewrite` 的首项是 `!init.mermaid && !init.math`：
+       * 纯文本文档的 init 恒为 `{mermaid:false, math:false}` → 该式恒真 →
+       * **每次都整篇重写**，结构上永远进不了增量分支。
+       * 破坏性对照已验：同一操作换纯文本文档 `body===null` 帧数 = 0、不报错。
+       *
+       * ## 修法
+       * 1. **把 init 提交推迟到 body 就绪那一刻**（找回来了也不会重复触发，幂等）——
+       *    窗口内任何二次运行都会重新走整篇重写分支（安全路径）；
+       * 2. 增量分支再加一道 body 守卫兜底（见下方 else 分支），保证即便未来
+       *    有别的路径把 init 提前写脏，也不会对 null 赋值。
+       *
+       * 为什么不用"等 body 就绪再整篇重写"：那要重新 `doc.open()/write()` 一遍，
+       * 会把刚加载的 mermaid/katex 脚本全部作废，代价远大于收益。
+       */
+      const commitIframeInit = () => {
+        previewIframeInitRef.current = { mermaid: hasMermaid, math: hasMath, theme };
+      };
+
       const tagWhenBodyReady = () => {
         const b = doc.body;
         if (b) {
@@ -2472,6 +2511,8 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
           // 异步渲染撑高，存在竞态（实测同一台机器两次跑出 Δ89.81 / Δ0.29 两种结果）。
           // 由内容就绪这一刻主动触发一次对齐，才不受调度抖动影响。
           requestPreviewRealignRef.current?.();
+          // ★ v0.17.1：body 就绪即视为本轮整篇重写**真正完成**，此时才允许后续走增量
+          commitIframeInit();
         }
       };
       if (doc.body) {
@@ -2482,9 +2523,10 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         } catch { /* 跨源/已卸载：忽略，后面还有 rAF 与定时器兜底 */ }
         requestAnimationFrame(tagWhenBodyReady);
         setTimeout(tagWhenBodyReady, 120);
+        // 兜底：某些环境下 load 与 rAF 都拿不到就绪信号（如脚本被沙箱拦截），
+        // 用一个宽松的轮询保证 init 最终仍会提交，不会让预览永远停在"每次整篇重写"。
+        setTimeout(tagWhenBodyReady, 1000);
       }
-      // 记录已加载的脚本状态与主题（供下次增量更新比对是否需重写）
-      previewIframeInitRef.current = { mermaid: hasMermaid, math: hasMath, theme };
     } else if (typoChanged && !htmlChanged) {
       // v0.12.1 需求9：**纯排版预览**（设置里拖字号/行高滑条）——只换 iframe 的样式表。
       // 正文未变，重排 body 既浪费又会打断 mermaid/katex 渲染，故这里只刷新 head 里的
@@ -2501,6 +2543,46 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       if (scroller) restoreAnchor(scroller, anchor);
       return;
     } else {
+      /**
+       * v0.17.1 修复（用户问题1）——**增量分支的 null 守卫**。
+       *
+       * 走到这里说明 `needFullRewrite` 为假（init 认为"脚本该有的都有了"）。
+       * 但如果 `doc.body` 仍为 null，就意味着这份 iframe 文档**还没解析到 body**
+       * （正常情况已被上面的「init 推迟提交」拦住；这里是第二道兜底）。
+       *
+       * 对 null 赋 `innerHTML` 会抛
+       * `TypeError: Cannot set properties of null (setting 'innerHTML')`，
+       * 而该 effect 在**渲染期**抛错 → ErrorBoundary 接管整棵树 →
+       * 用户看到「界面渲染出错」整屏（文档内容本身没坏，这正是提示语的由来）。
+       *
+       * 为什么要"把 init 打回未初始化 + 重新整篇重写"而不是直接 return：
+       * 直接 return 会让预览停在**旧内容**上（body 就绪后也不会再被写），
+       * 用户看到的是"右侧预览不更新"，比崩一下更难察觉。
+       * 打回 init 后本次同步走整篇重写分支，语义正确且不再依赖时序。
+       */
+      if (!doc.body) {
+        previewIframeInitRef.current = { mermaid: false, math: false, theme: "" };
+        // 不再自己重画：把"这次增量写入"推迟到 body 就绪，然后原地补写一次。
+        // 三种触发与整篇分支同款（load / rAF / 兜底定时器），幂等（重复写入同内容无害）。
+        const doIncremental = () => {
+          const d = iframe.contentDocument;
+          if (!d || d !== doc || !d.body) return;
+          if (!previewShown) return;
+          d.documentElement?.style.setProperty("--doc-zoom", cv.docZoom);
+          d.body.innerHTML = previewHtml;
+          tagPreviewSourceLines(d.body, previewSourceMarkdown);
+          bindPreviewLightbox(iframe);
+          foldBridge.apply();
+          requestPreviewRealignRef.current?.();
+        };
+        try {
+          doc.defaultView?.addEventListener("load", () => requestAnimationFrame(doIncremental), { once: true });
+        } catch { /* 跨源/已卸载：忽略，rAF 与定时器兜底 */ }
+        requestAnimationFrame(doIncremental);
+        setTimeout(doIncremental, 120);
+        setTimeout(doIncremental, 1000);
+        return;
+      }
       // 增量更新：只替换 body 内容，不重新加载脚本
       // 替换 body 内容（样式通过 :root 变量自动更新）
       // v0.12.0 需求5：缩放变化也走增量分支 —— 刷新 :root 的 --doc-zoom（body zoom 引用它）

@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror (reading surface) + CodeMirror 6 (source surface).
 
-**Current Version: v0.17.0** (CodeMirror 6 source surface + unified document model foundation)
+**Current Version: v0.17.1** (CM6 capability batch 1: smart Enter, code-block highlighting, selection highlight, and more)
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -354,10 +354,10 @@ To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal
 
 ### Windows (Recommended)
 
-Visit the [Releases](../../releases) page to download the 0.17.0 installers:
+Visit the [Releases](../../releases) page to download the 0.17.1 installers:
 
-- **`LightMD_0.17.0_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.17.0_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+- **`LightMD_0.17.1_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
+- **`LightMD_0.17.1_x64-setup.exe`** — Self-extracting installer, single file, no admin required
 
 ### System Requirements
 
@@ -408,6 +408,28 @@ npm run tauri build
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
+
+### v0.17.1 (2026-11-14) — CM6 capability batch 1 (P0)
+
+Follow-up to the v0.17.0 CodeMirror 6 source-surface migration, closing the most
+user-visible capability gaps:
+
+- **Smart Enter**: Enter inside lists / task items / blockquotes continues the markup
+  (`- `, `- [ ] `, `> `) automatically, ordered-list numbers auto-increment; Enter on an
+  empty item exits the list; Backspace at line start removes the whole list/quote marker
+  at once (no more joining with the previous line). Undo stays on the unified timeline
+  (one Enter = one undo step).
+- **Code-block language highlighting**: fenced code blocks (```js, ```python, etc.) are
+  token-colored per language (previously a single color), with lazy-loaded languages.
+- **Selection match highlight**: double-click a word and every occurrence lights up;
+  new **Ctrl+D** selects the next occurrence — accumulate multi-cursors and edit all
+  places at once.
+- **Empty-document placeholder**: blank documents show "Start writing Markdown…
+  (type / for commands)", which disappears on first input.
+- **Drop cursor**: dragging text / files shows a vertical insertion marker at the
+  drop position.
+- **Scroll past end**: every line can scroll to the top of the viewport, so typewriter
+  mode can center the last line (previously it stuck to the bottom edge).
 
 ### v0.17.0 (2026-11-11) — CodeMirror 6 source surface + unified document model (foundation)
 

@@ -154,6 +154,9 @@ export class TextareaSourceSurface implements SourceSurface {
     if (ta.value !== opts.initialText) ta.value = opts.initialText;
     this.lastReportedText = opts.initialText ?? ta.value ?? "";
     if (opts.readOnly) ta.readOnly = true;
+    // v0.17.1 E4：空文档占位提示（与 CM6 的 placeholder() 扩展语义对齐：
+    // 文档为空时显示灰字提示，打字即消失、不入文档）。
+    if (opts.placeholderText !== undefined) ta.placeholder = opts.placeholderText;
     // 用原生 DOM 监听而非 React props：接口要对"实现"负责，不能靠容器传 onChange
     ta.addEventListener("input", this.onInput);
     ta.addEventListener("compositionstart", this.onCompositionStart);

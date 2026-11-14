@@ -527,6 +527,8 @@ export const zhCN: Record<string, string> = {
   // ─── 编辑器 ────────────────────────────────────
   "editor.renderFailed": "渲染失败",
   "editor.emptyHint": "打开文件或拖拽 .md 文件开始编辑",
+  // v0.17.1 E4：源码面空文档占位提示（打字即消失）
+  "editor.source.placeholder": "开始输入 Markdown…（/ 唤起命令）",
   "editor.preview": "预览",
   // E12(v0.9.4)：源码模式撤销到边界时的提示
   "editor.undoBoundary": "已到本模式撤销边界",
