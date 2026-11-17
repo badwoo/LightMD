@@ -1,16 +1,17 @@
 # LightMD v0.17.1 发布说明
 
-> 发布日期：2026-11-17（重新打包）｜ 基线：v0.17.0 ｜ 定位：**用户问题修复 + CM6 能力适配第一批（P0）**
+> 发布日期：2026-11-18（第三轮重新打包）｜ 基线：v0.17.0 ｜ 定位：**用户问题修复 + CM6 能力适配第一批（P0）**
 >
-> **一句话**：修复用户反馈的三个问题（切模式阅读进度丢失、格式刷无法做"去格式"、
-> 格式刷只能整段应用），并承接 v0.17.0 源码面 CodeMirror 6 迁移，把 CM6 特色能力里
+> **一句话**：修复用户反馈的四个问题（切模式阅读进度丢失、格式刷无法做"去格式"、
+> 格式刷只能整段应用、双击 Shift 开/关预览后两屏不对齐），并承接 v0.17.0 源码面 CodeMirror 6 迁移，把 CM6 特色能力里
 > **用户可感知度最高**的六个缺口补齐 —— 智能回车、代码块语言高亮、选中词高亮、
 > Ctrl+D 多点同改、空文档占位、拖拽落点与文末留白；另修复一个真机崩溃
 > （含 mermaid/公式的文档进编辑模式）。
 >
 > **本版为第二轮修复后的重新打包产物**：
 > 首版（2026-11-14，提交 `4c96cc5`）只含「mermaid 崩溃 + CM6 六项」；
-> 本轮在此基础上补入 **§三 的三个用户问题修复**，并用当前源码重出全部安装包。
+> 第二轮补入切模式进度/格式刷两项修复；**第三轮再补入「双击 Shift 开/关预览后两屏不对齐」**，
+> 并用当前源码重出全部安装包。
 
 ---
 
@@ -18,21 +19,21 @@
 
 | 文件 | 说明 | 大小（字节） |
 |---|---|---:|
-| `LightMD_0.17.1_x64-setup.exe` | NSIS 安装包（推荐，免管理员权限） | 8,577,324 |
+| `LightMD_0.17.1_x64-setup.exe` | NSIS 安装包（推荐，免管理员权限） | 8,578,874 |
 | `LightMD_0.17.1_x64_en-US.msi` | MSI 安装包（企业分发） | 12,075,008 |
 | `lightmd.exe` | 免安装单文件，可直接双击 | 25,165,824 |
 
 ```
-b42d17f92a50a31610af78ef20bc240d8362e88d793fd0729c34b0de88162117  LightMD_0.17.1_x64_en-US.msi
-d52252906b26091498e473383b3d9107a01916b41c82388610f9c703d73e229e  LightMD_0.17.1_x64-setup.exe
-f9b4542a6fb9c690c51ed1759cb5f3502799c339330c0aec4c34c1eb80c73d6a  lightmd.exe
+41268c4695b88c5ff51c2af4a88bddf24802bccb911d01ffebef23b6c705b9af  LightMD_0.17.1_x64_en-US.msi
+74427eb548039eb4a428558ca216af104ceafa22e74a517671300f7799524424  LightMD_0.17.1_x64-setup.exe
+97772f988117f97465cf2b9a57a67f091c45f7fc16d789067ab74dd13d9902b8  lightmd.exe
 ```
 
 > 版本号四处一致：`package.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock` /
 > `src-tauri/tauri.conf.json` 均为 `0.17.1`。
 > `lightmd.exe` 的 `FileVersion` / `ProductVersion` 实测均为 `0.17.1`；
-> 前端 dist 入口 **`index-De88zXCn.js`** 在 exe 字节流中实测命中
-> （首版为 `index-g5QxCwL3.js`，本次构建中**已不存在**，可据此区分两版）；
+> 前端 dist 入口 **`index-HjdkTgW4.js`** 在 exe 字节流中实测命中
+> （首版 `index-g5QxCwL3.js` / 第二轮 `index-De88zXCn.js`，本次构建中**均已不存在**）；
 > `release/` 副本与 `src-tauri/target/release/` 产物 SHA256 完全一致。
 
 ---
@@ -54,7 +55,7 @@ f9b4542a6fb9c690c51ed1759cb5f3502799c339330c0aec4c34c1eb80c73d6a  lightmd.exe
 
 ---
 
-## 三、本轮三个用户问题修复（第二轮）
+## 三、本轮四个用户问题修复
 
 ### 3.1 双击 Ctrl 来回切换后阅读进度丢失、跳回文档顶部
 
@@ -134,6 +135,45 @@ f9b4542a6fb9c690c51ed1759cb5f3502799c339330c0aec4c34c1eb80c73d6a  lightmd.exe
   | 阅读面（PM）选中 `DELTA` | `<strong>` 只含 `DELTA`，整段**不泄漏** |
   | 仅光标（无选区） | 仍刷整行 —— 旧语义无回归 |
 
+### 3.4 双击 Shift 开/关预览后两屏不对齐
+
+- **现象**（用户原话）：
+  > 「双击 shift 开关，右屏会比左屏超前好几段内容，**但通过鼠标滚动文档，
+  >  左右屏文档又慢慢对齐了**」
+- **根因**（trace 取证，`scripts/_lead-p4k-inputs.mjs` + `_tmp-q1.mjs`）：
+  开合预览后的"主动重新对齐"走 `syncPreviewAfterToggle()` / `realignLayoutNow()`，
+  它们最终调用 `syncToPreview(force=true)`——`force` 只跳过了**方向锁**，
+  但**没跳过"每帧最多走 16px"的逐帧钳制**（`clampPreviewTarget`）。实测：
+  ```
+  next    = 21826   ← 映射算出的正确目标
+  clamped = 23918 → 23902 → ... → 23424 → 23408 → 23392 → 23376
+            ↑ 每帧只前进 16px（因为左屏已跳完，dLeft=0 → allowed=ALLOW_ABS=16）
+  ```
+  要跨 2090px 需 131 帧 ≈ **2.2 秒**，而 realign 链末点是 1600ms、窗口上限 2500ms
+  ⇒ **追不上就永久停在错的位置**（实测停 23376，差 1550px ≈ 2 屏）。
+- **"滚一下就对齐"的解释**：用户滚动时 `dLeft` 变大 → `allowed = dLeft × 3` 变大
+  → 单帧走得更多 → 若干帧后追上。**不是自愈，只是把 allowed 变大了。**
+- **修法**（`scrollSyncPolicy.ts` + `PreviewPane.tsx`）：
+  `clampPreviewTarget` 新增 `force` 参数。**开合预览后的程序主动对齐**传 true，
+  跳过逐帧钳制直接写目标值（仍保留"非有限值不写垃圾"护栏）；
+  **用户滚动路径不传**，逐帧平滑跟随语义一字未变。
+  这与既有设计一致：`syncToPreview(force)` 早就用 `force` 跳过方向锁，
+  本次只是把"跳过物理钳制"这层语义补齐。
+- **验证**（同一探针、同一份用户文档，A/B 对照）：
+
+  | 判据 | 基线（修复前） | 修复后 |
+  |---|---|---|
+  | 左屏中央那段内容离右屏中央的距离 | **-1242.6px** | **-27.6px** |
+  | 判定 | FAIL | **PASS** |
+  | 右屏 scrollTop 收敛值 | 23376（目标 21826，差 1550px） | **21826（精确命中）** |
+  | realign 链结束时位置 | 每帧 16px 爬不完 | 480ms 即到位 |
+
+- **配套护栏**（`utils/previewGeometry.ts`，纯函数 + 13 条契约测试）：
+  关闭预览时预览壳宽度过渡到 0，iframe 内部每字单独折行 → `scrollHeight`
+  从 6130 暴涨到 **175405**（29 倍）。原有闸门只查"贴标>0 且可滚动"，
+  这种情况下**照样放行** → 用畸形几何算位置。新增几何健全性判据
+  （宽度 > 80px 且高宽比 ≤ 500），不满足则跳过本次写入。
+
 ---
 
 ## 四、CM6 能力适配第一批（P0 六项）
@@ -182,7 +222,33 @@ f9b4542a6fb9c690c51ed1759cb5f3502799c339330c0aec4c34c1eb80c73d6a  lightmd.exe
 
 ## 五、验证记录
 
-### 5.1 本轮（第二轮 · 重新打包）
+### 5.1 第三轮（2026-11-18 · 双击 Shift 开/关预览对齐）
+
+- **tsc**：干净。
+- **全量测试**：411 文件 / **7458 passed + 1 skipped**（新增 13 条契约测试
+  `src/__tests__/v0172-toggle-align.test.ts`）。
+  > 如实说明：全量并发跑时 `v0150-image-lightbox.test.tsx` 仍偶发超时，
+  > 单跑 3 次全过；该 flaky 在基线（`git stash` 清掉本轮改动）同样复现 ⇒ 既有不稳定。
+- **A/B 破坏性对照**（同一探针 `scripts/_lead-p4o-clean.mjs`、同一份用户文档）：
+
+  | 构建 | 左屏中央内容离右屏中央 | 判定 |
+  |---|---|---|
+  | 基线（`git stash` 后 build） | **-1242.6px** | FAIL |
+  | 本轮修复后 | **-27.6px** | PASS |
+
+  误差缩小 **45 倍**，证明"修复真实有效"，而非探针放宽判据。
+- **链内实测**（`scripts/_lead-p4k-inputs.mjs`，hook `scrollTop` setter 抓写入栈）：
+  修复前 `next=21826` 被 `bounded-chase` 逐帧 16px 钳制，停 23376（差 1550px）；
+  修复后 480ms 即精确到 21826。
+- **契约测试** `v0172-toggle-align.test.ts`（13 条）：`clampPreviewTarget` 的
+  force 旁路（含"旧行为在窗口内追不上"的回归证据）、`previewGeometry.isPreviewGeometrySane`
+  真值表（关闭态畸形几何 / 宽度边界 / 高宽比上限 / 未就绪）。
+- **既有契约同步**：`v0132-split-scroll-mapping.test.ts` 里锁定
+  `computePreviewTarget(preview)` 调用形式的断言，因新增 `force` 实参而更新为
+  `computePreviewTarget(preview[,)]` —— **其契约目的（两方向共用同一份 collectAnchors）
+  一字未改**，只放宽实参列表。
+
+### 5.2 第二轮（2026-11-17 · 格式刷 + 切模式进度）
 
 - **tsc**：干净（`tsc --noEmit` 无错误）。
 - **全量测试**：410 文件 / **7445 passed + 1 skipped**（新增 21 条契约测试）。
@@ -204,7 +270,7 @@ f9b4542a6fb9c690c51ed1759cb5f3502799c339330c0aec4c34c1eb80c73d6a  lightmd.exe
   IME 守卫）全部成立。2 条 KNOWN 是探针能力边界（语言懒加载时序判据退化、
   真实 IME 不可触及），**不是功能缺陷**。
 
-### 5.2 首轮（2026-11-14）
+### 5.3 首轮（2026-11-14）
 
 - **全量测试**：409 文件 / 7425 passed + 1 skipped / **0 failed**（基线 v0.17.0：
   408 文件 / 7399 passed + 1 skipped）。
@@ -221,7 +287,7 @@ f9b4542a6fb9c690c51ed1759cb5f3502799c339330c0aec4c34c1eb80c73d6a  lightmd.exe
 - **产物核验**：FileVersion/ProductVersion = 0.17.1；dist 入口在 exe 内命中；
   release 副本与构建产物一致。
 
-### 5.3 浏览器探针覆盖不到、需 WebView2 真机复验
+### 5.4 浏览器探针覆盖不到、需 WebView2 真机复验
 
 1. **问题1 的最终确认**：全部验证在浏览器（dist）完成。WebView2 的跨文档 scroll 事件
    延迟可能比 Chrome 更极端 —— 建议在打包后的 exe 上用同一份文档实测"来回切 10 次"。
@@ -229,7 +295,7 @@ f9b4542a6fb9c690c51ed1759cb5f3502799c339330c0aec4c34c1eb80c73d6a  lightmd.exe
 3. **CRLF 文档下的智能回车**：本轮夹具为 LF；文件编码/BOM/换行符差异会影响行解析。
 4. **5MB 级大文档**：A2 语言解析成本与整体滚动性能未在本轮复测。
 
-### 5.4 打包产物真机冒烟（本轮新增）
+### 5.5 打包产物真机冒烟
 
 在**打包后的 `lightmd.exe`**（WebView2 + CDP 驱动，`http://tauri.localhost/`）上跑
 `scripts/real-machine-smoke.mjs`：**21/21 全部通过**。

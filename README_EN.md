@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror (reading surface) + CodeMirror 6 (source surface).
 
-**Current Version: v0.17.1** (CM6 capability batch 1: smart Enter, code-block highlighting, selection highlight, and more; plus fixes for mode-switch scroll position and Format Painter)
+**Current Version: v0.17.1** (CM6 capability batch 1: smart Enter, code-block highlighting, selection highlight, and more; plus fixes for mode-switch scroll position, Format Painter, and split-preview toggle alignment)
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -448,6 +448,12 @@ Plus three user-reported fixes:
   only that range gets the inline formats (bold / italic / strike / inline code /
   underline / highlight) instead of the whole block; line prefixes (`## `, `- `, `> `) are
   left untouched. With no selection (caret only) the previous whole-block behaviour is kept.
+- **Split-preview toggle now stays aligned**: toggling the right-hand preview inside edit
+  mode used to leave the preview pane several blocks ahead of the source pane (it only
+  caught up after you scrolled). The programmatic re-align after a toggle was being held to
+  a 16px-per-frame anti-jitter clamp — it needed ~2.2 s to cover the ~2000px gap while the
+  re-align chain ends at 1.6 s. Programmatic alignment now bypasses that clamp; measured
+  error dropped from 1242px to 28px.
 
 ### v0.17.0 (2026-11-11) — CodeMirror 6 source surface + unified document model (foundation)
 

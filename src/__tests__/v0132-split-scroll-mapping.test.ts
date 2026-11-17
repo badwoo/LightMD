@@ -329,15 +329,23 @@ describe("需求8 · 接线契约：两方向共用 collectAnchors 且各自写�
     const previewFn = fnBody("const syncToPreview = (force = false) =>", "const syncToSource = () =>");
     const sourceFn = fnBody("const syncToSource = () =>", "const offSourceScroll = sourceSurface.onDidScroll(");
     /**
-     * v0.17.0 R4（用户第 1 项，T2）：左→右方向把"算目标"抽成 `computePreviewTarget(preview)`
+     * v0.17.0 R4（用户第 1 项，T2）：左→右方向把"算目标"抽成 `computePreviewTarget`
      * （为了在写之前做物理约束校验、避免 188px 错跳），`collectAnchors()` 移到了
      * 该函数内部 —— **两方向共用的契约不变**，只是左→右多了一层间接。
      * 因此这里断言：左→右调用 `computePreviewTarget`、右→左仍直调 `collectAnchors()`，
      * 且 `computePreviewTarget` 内部确实用 `collectAnchors()`（同一份锚点表）。
+     *
+     * ## v0.17.1 第三轮：调用形式加了 `force` 实参（用户问题：开合预览后不对齐）
+     *
+     * `computePreviewTarget(preview)` → `computePreviewTarget(preview, force)`。
+     * `force` 用于**跳过逐帧钳制**：开合预览后右屏停在过期位置（实测差 2090px），
+     * 每帧 16px 需 2.2s 才追上、而 realign 链 1600ms 就结束 ⇒ 永远错着。
+     * **本契约的目的（两方向共用同一份 collectAnchors）一字未改**，
+     * 只是实参列表多了一项，所以断言放宽为匹配"以 computePreviewTarget(preview 开头"。
      */
-    expect(previewFn).toContain("computePreviewTarget(preview)");
+    expect(previewFn).toMatch(/computePreviewTarget\(preview[,)]/);
     expect(sourceFn).toContain("collectAnchors()");
-    expect(src).toMatch(/const computePreviewTarget = \([^)]*\)[^{]*\{[\s\S]{0,400}?collectAnchors\(\)/);
+    expect(src).toMatch(/const computePreviewTarget = \([^)]*\)[^{]*\{[\s\S]{0,900}?collectAnchors\(\)/);
     // 采集函数把视口坐标换算回内容坐标（scrollTop 也在内容坐标系）。
     // 注意：根元素 rect.top 恒等于 -scrollTop，**不能**再减它，否则锚点虚高。
     expect(src).toContain("tops.push(rect.top + preview.scrollTop);");

@@ -12624,6 +12624,10 @@ import { topLevelBlockStartLines } from "../../../../core/renderPipeline";
 import { createIframeFoldBridge, readingFold } from "../.././readingFold";
 import { bindPreviewLightbox } from "../../../../core/plugins/image-lightbox";
 import { createScrollDirectionLock, shouldAcceptScroll, markScrollSource, resetScrollDirectionLock } from "../../../../utils/splitScrollSync";
+import {
+  isPreviewGeometrySane as isPreviewGeometrySaneFn,
+  previewGeometryOf,
+} from "../../../../utils/previewGeometry";
 import { previewAllowedMove, clampPreviewTarget } from "../../../../utils/scrollSyncPolicy";
 import { shouldContinuePreviewRealign, PREVIEW_REALIGN_DELAYS } from "../../../../utils/textOffsetRemap";
 import type { EditorView as EditorView } from "prosemirror-view";
@@ -15625,13 +15629,43 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     let lastProgrammaticPreviewTop: number | null = null;
 
     /**
+     * 布局可信性判据改用**共享纯函数**（`utils/previewGeometry.ts`）。
+     * 详见该模块文件头：关闭预览时宽度→0 会让 scrollHeight 涨 29 倍，
+     * 而旧的"贴标>0 且可滚动"闸门在这种情况下**照样放行**，
+     * 于是用畸形几何映射 → 重开预览后右屏停在顶部。
+     */
+    const isPreviewGeometrySane = (el: HTMLElement | null): boolean =>
+      isPreviewGeometrySaneFn(previewGeometryOf(el));
+
+    /**
      * 计算"当前左屏位置应指挥右屏到哪"（**纯计算，不写 DOM**）。
      *
-     * @returns 目标 scrollTop（物理约束已按"每帧 ≤ allowed"有界连续钳制）；
-     * **测不出映射时返回 null**（调用方跳过本次写入，绝不写 0）
+     * @param preview 右屏滚动容器
+     * @param force   true = **程序强制对齐**（开合预览后的主动重新对齐），
+     *                跳过"每帧最多走 allowed"的逐帧钳制。
+     *                详见 `clampPreviewTarget` 的 `force` 注释：
+     *                开合瞬间右屏停在一个**完全过期**的位置（相差可达 2000px），
+     *                逐帧 16px 需要 2.2 秒才追上，而 realign 链 1600ms 就结束了
+     *                ⇒ 永远停在错的位置（这就是用户报的"两屏没对齐"）。
+     *                用户滚动路径**不传** force，逐帧平滑跟随语义一字未变。
+     * @returns 目标 scrollTop；**测不出映射时返回 null**（调用方跳过本次写入，绝不写 0）
      */
-    const computePreviewTarget = (preview: HTMLElement): number | null => {
+    const computePreviewTarget = (preview: HTMLElement, force = false): number | null => {
       const sourceTop = sourceSurface.getScrollTop();
+      /**
+       * v0.17.1 第三轮：**布局不可信时绝不计算目标**。
+       * 详见 `isPreviewGeometrySane` 的注释（关闭预览时宽度 0 →
+       * scrollHeight 暴涨 29 倍 → 任何映射都是错基数）。
+       */
+      if (!isPreviewGeometrySane(preview)) {
+        traceScroll("preview-geom-unreliable", {
+          w: preview.clientWidth,
+          h: preview.clientHeight,
+          sh: preview.scrollHeight,
+          where: "computePreviewTarget",
+        });
+        return null;
+      }
       try {
         const anchors = collectAnchors();
         if (anchors) {
@@ -15670,7 +15704,7 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
              */
             const dLeft = Math.abs(sourceTop - lastAcceptedSourceTop);
             const allowed = previewAllowedMove(dLeft);
-            const clamped = clampPreviewTarget(lastAcceptedPreviewTarget, next, allowed);
+            const clamped = clampPreviewTarget(lastAcceptedPreviewTarget, next, allowed, force);
             if (lastAcceptedPreviewTarget !== null && clamped !== next) {
               // 被钳制的帧（有界追帧进行中）留痕，便于真机探针确认"逐帧追上"形态
               traceScroll("preview-sync-clamp", {
@@ -15769,7 +15803,13 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
       if (isSyncingScrollRef.current) return;
       isSyncingScrollRef.current = true;
       try {
-        const target = computePreviewTarget(preview);
+        /**
+         * v0.17.1 第三轮：`force` 同时用于**跳过逐帧钳制**。
+         * 开合预览后右屏停在一个完全过期的位置（实测差 2090px），
+         * 逐帧 16px 需要 2.2s 才追上，而 realign 链 1600ms 就结束 ⇒ 永远错着。
+         * 详见 `clampPreviewTarget` 的 force 注释。
+         */
+        const target = computePreviewTarget(preview, force);
         if (target !== null) {
           preview.scrollTop = target;
           /**
@@ -16125,6 +16165,28 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
             reason: "not-scrollable",
             sh: preview.scrollHeight,
             ch: preview.clientHeight,
+          });
+          scheduleSkipRetry();
+          return;
+        }
+        /**
+         * ## v0.17.1 第三轮（用户问题：双击 Shift 开/关预览后不对齐）：几何健全性闸门
+         *
+         * 上面两条只查"贴标 > 0"和"可滚动"，但**关闭预览时两者都成立**：
+         * 宽度被压成 0，每个字单独折行 → `scrollHeight` 从 6130 涨到 175405
+         * （实测 `scripts/_lead-p4d-iframe-layout.mjs`）。
+         * 于是"就绪闸门"照样放行，用畸形几何做映射 → 重开预览后右屏停在顶部。
+         *
+         * 这里用与 `computePreviewTarget` **同一套**判据（单一事实源），
+         * 保证两条路径不会一个放行一个拒绝。
+         */
+        if (!isPreviewGeometrySane(preview)) {
+          traceScroll("preview-realign-skip", {
+            gen: realignGen,
+            reason: "geom-unreliable",
+            w: preview.clientWidth,
+            h: preview.clientHeight,
+            sh: preview.scrollHeight,
           });
           scheduleSkipRetry();
           return;

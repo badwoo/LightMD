@@ -76,22 +76,50 @@ export function previewAllowedMove(dLeft: number): number {
 }
 
 /**
- * 有界连续钳制：返回本帧右屏应写入的目标值。
+ * ## ═══ v0.17.1 第三轮 · 用户问题：双击 Shift 开/关预览后两屏没对齐 ═══
  *
- * - `lastAccepted === null`（首帧）→ 原值放行；
- * - `|next - lastAccepted| <= allowed` → 原值放行（正常跟随零损失）；
- * - 超出 → 沿 `next` 方向最多走 `allowed`（平滑追上，不是拒写）；
- * - `next` / `allowed` 非有限 → **原地不动**（映射算坏时绝不写入垃圾值）。
+ * ### 缺陷（trace 取证，`scripts/_tmp-q1.mjs`，用户真实文档）
+ * 双击 Shift **打开**预览后，右屏停在离正确位置 **1550px** 的地方：
+ * ```
+ * next=21826（映射算出的正确目标）
+ * clamped: 23918 → 23902 → ... → 23424 → 23408 → 23392 → 23376   ← 每帧只走 16px
+ * realign 链在 1600ms 结束 → 停在 23376，永远到不了 21826
+ * ```
+ * 也就是说 `bounded-chase` 逐帧只允许 16px（因为 `dLeft=0` → `allowed=ALLOW_ABS=16`），
+ * 而需要走 2090px ⇒ 要 **131 帧 ≈ 2.2 秒**；但 `PREVIEW_REALIGN_DELAYS` 的末点是
+ * 1600ms 且窗口上限 2500ms，**追不上就永久停在错的位置**。
+ *
+ * ### 为什么这条"钳制"对开合场景是错的
+ * `ALLOW_ABS/ALLOW_RATIO` 的推导前提是「**用户在滚动左屏**，右屏应当平滑跟随」——
+ * 那时候"每帧最多走 N px"是对的（防抖）。但**开合预览是程序主动对齐**：
+ * - 左屏在开合瞬间就跳到了新布局位置（`dLeft` 可能是 0，因为已经跳完了）；
+ * - 右屏此刻还在一个**完全过期的位置**（旧的 iframe 布局/旧的滚动值）；
+ * - 此时"平滑跟随"没有意义 —— 用户看到的是"右屏慢半拍地爬"，而爬不到就永远错着。
+ *
+ * ### 判据：这次写入是"程序强制对齐"还是"跟随用户滚动"
+ * 由调用方显式声明（`force: true`）：`realignLayoutNow` / `syncPreviewAfterToggle`
+ * 这两条"开合后的主动对齐"路径传 true；用户滚动的 `syncToPreview()` 保持默认 false。
+ *
+ * 强制模式下**不做逐帧钳制**（直接写目标值），但仍保留：
+ * - 非有限值 → 原地不动（映射算坏时绝不写入垃圾）；
+ * - 目标夹到 `[0, max]`（由调用方钳）。
+ *
+ * 这也与项目既有的"两条路径分开"原则一致：`syncToPreview(force)` 早就用
+ * `force` 跳过方向锁，本参数只是把"跳过物理钳制"这层语义补齐。
  *
  * @param lastAccepted 上一帧已接受（写入）的右屏目标值；首帧为 null
  * @param next         本帧映射出的原始目标值
  * @param allowed      本帧允许的位移上限（`previewAllowedMove` 给出）
+ * @param force        true = 程序强制对齐（开合预览后的重新对齐），跳过逐帧钳制
  */
 export function clampPreviewTarget(
   lastAccepted: number | null,
   next: number,
   allowed: number,
+  force = false,
 ): number {
+  if (!Number.isFinite(next)) return lastAccepted ?? 0;
+  if (force) return next;
   if (lastAccepted === null) return next;
   const delta = next - lastAccepted;
   if (!Number.isFinite(delta) || !Number.isFinite(allowed) || allowed < 0) {
