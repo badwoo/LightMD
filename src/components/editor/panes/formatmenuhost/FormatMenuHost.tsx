@@ -30,8 +30,13 @@ import {
   applyPmBlockSnapshot,
   applyBlockTypeToLine,
   wrapRangeWithMarks,
-  // v0.17.0 R4 · 用户第 7 项 D1：空快照判定（arm 前拒绝 + 提示）
-  isSnapshotEmpty,
+  // v0.17.2 问题2：只有"真的没采到快照"才拒绝 arm ——
+  // 无格式纯文本是**合法**的源格式（把有格式刷成无格式），不能再拒绝。
+  isSnapshotMissing,
+  // v0.17.2 问题3：选区级应用（只刷选中文字，不动整段）
+  resolvePainterApplyScope,
+  buildPmInlineOnlyTr,
+  applyMarksToSourceRange,
   type FormatSnapshot,
 } from "../../../../utils/formatPainter";
 import { getLineRange, MERMAID_TEMPLATES } from "../.././sourceFormat";
@@ -54,6 +59,7 @@ import type { ViewMode as ViewMode } from "../../../../stores/useEditorStore";
 import {
   applyHeadingLevelToView,
   PM_MARK_BY_ACTION,
+  traceScroll,
 } from "../../EditorContainer";
 import type { FormatMenuHostParams, FormatMenuHostResult } from "./types";
 
@@ -386,10 +392,20 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
      *
      * 复用既有 toast（`notifyWarning`，与块剪贴板失败同一通道），
      * 不新造提示体系 —— 本项目已经因为"两套提示并存"踩过坑。
+     *
+     * ## v0.17.2 问题2：判据从"有没有格式"改成"有没有采到快照"
+     *
+     * 旧实现用 `isSnapshotEmpty` —— 它把「源是**无格式纯文本**」也判成失败并拒绝，
+     * 提示「所选内容没有可复制的格式」。用户明确否掉了这个口径：
+     * > 「我希望将没格式的文本应用到有格式的文本，是有格式文本变没格式。
+     * >  所以基于这个场景，对没格式文本进行格式刷应该是要生效的。」
+     *
+     * 现在只拦"真的没采到"（null）。**无格式快照可以正常 arm**，
+     * 应用侧的 `removeMark` / 剥离逻辑天然会把目标刷成无格式 —— 正是用户要的效果。
      */
-    const rejectIfEmpty = (snapshot: FormatSnapshot): boolean => {
-      if (!isSnapshotEmpty(snapshot)) return false;
-      notifyWarning(t("formatPainter.emptySelection"));
+    const rejectIfMissing = (snapshot: FormatSnapshot): boolean => {
+      if (!isSnapshotMissing(snapshot)) return false;
+      notifyWarning(t("formatPainter.missingSelection"));
       return true;
     };
     // 阅读模式：PM 选区采集（文本选区或 NodeSelection 块范围）
@@ -402,7 +418,9 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
         return;
       }
       const snapshot = collectPmSnapshot(state, from, to);
-      if (rejectIfEmpty(snapshot)) return;
+      if (rejectIfMissing(snapshot)) return;
+      // v0.17.2 问题3（返修）：记下源选区，供目标侧 mousedown 判定"这是不是残留"
+      armSelectionRef.current = { from, to };
       if (persistent) store.armPersistent(snapshot);
       else store.armOnce(snapshot);
       return;
@@ -416,7 +434,9 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       return;
     }
     const snapshot = collectSourceSnapshot(sourceContentRef.current, start, end);
-    if (rejectIfEmpty(snapshot)) return;
+    if (rejectIfMissing(snapshot)) return;
+    // v0.17.2 问题3（返修）：同上
+    armSelectionRef.current = { from: start, to: end };
     if (persistent) store.armPersistent(snapshot);
     else store.armOnce(snapshot);
   }, [viewMode, sourceSurface]);
@@ -428,26 +448,96 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
   armFormatPainterRef.current = armFormatPainter;
 
 
-  /** 应用格式刷到 PM 点击处所在段落（覆盖式：先清后套；块级 setBlockType 一并处理） */
+  /**
+   * ## v0.17.2 问题3：应用格式刷**前**捕获目标侧选区
+   *
+   * ### 为什么必须提前捕获（这是本项实现的难点）
+   * 用户的操作是「先在目标处选中几个字 → 再落笔」。
+   * 但我们的应用入口挂在 `click` 上，而**编辑器的 `mousedown` 处理器会先跑**
+   * 并把选区塌缩到点击点（PM 与 CM6 都是这个行为）。
+   * 等到 `click` 时读 `state.selection` 只能拿到一个**光标**，
+   * 于是永远退化回"整段"——这正是旧实现做不到选区级应用的原因。
+   *
+   * 所以在 `mousedown` 的**捕获阶段**（早于编辑器自己的处理器）记下当时的选区，
+   * `click` 时优先用它。若那一刻本来就没有选区，则回退"整段"语义（旧行为不变）。
+   *
+   * ### 为什么用 ref 而不是 state
+   * 它在事件处理器里读写、且必须在同一次手势内可见；走 React state 会晚一帧，
+   * `click` 时读到的还是旧值。
+   */
+  const pendingTargetSelectionRef = useRef<{ from: number; to: number } | null>(null);
+  /**
+   * ## v0.17.2 问题3（返修）：arm 那一刻的**源选区**
+   *
+   * ### 缺陷（端到端实测，`scripts/_lead-i23-painter.mjs` P2-2）
+   * 只用"mousedown 捕获"会踩到一个反向陷阱：
+   * ```
+   * ① 用户选中无格式源 ALPHA → 点格式刷（arm）
+   * ② 直接去点目标行「**已加粗目标**」
+   * ③ mousedown 捕获阶段读到的选区**还是 ALPHA**（源选区尚未被编辑器塌缩）
+   *    → 程序把格式刷回到了 ALPHA 自己，目标行纹丝不动
+   * ```
+   * 实测症状：`命中清除=false`，目标行仍是 `**已加粗目标**`。
+   *
+   * ### 修法
+   * arm 时把源选区记下来。mousedown 捕获到的选区**若与它相同**，说明
+   * 这压根不是"用户在目标处选中的那段"，而是源选区的残留 → 忽略，走整段语义。
+   *
+   * 用户真的在目标处重新选择过时，选区必然与源选区不同 → 正常走选区级。
+   */
+  const armSelectionRef = useRef<{ from: number; to: number } | null>(null);
+
+  /** 应用格式刷到 PM 目标（有选区 → 只刷选区行内格式；无选区 → 整段，覆盖式） */
   const applyFormatPainterToPm = useCallback((clientX: number, clientY: number) => {
     const view = viewRef.current;
     const snapshot = useFormatPainterStore.getState().snapshot;
     if (!view || !snapshot) return false;
-    const coords = view.posAtCoords({ left: clientX, top: clientY });
-    if (!coords) return false;
-    const $pos = view.state.doc.resolve(coords.pos);
-    if ($pos.depth < 1) return false;
-    const from = $pos.start($pos.depth);
-    const to = $pos.end($pos.depth);
+   /**
+     * v0.17.2 问题3：优先用「mousedown 捕获的选区」→ 只刷行内格式，不动块级。
+     * 见 `pendingTargetSelectionRef` 的注释（为什么不能在 click 时读）。
+     */
+    const captured = pendingTargetSelectionRef.current;
+    pendingTargetSelectionRef.current = null;
+    const maxPos = view.state.doc.content.size - 1;
+    let from: number;
+    let to: number;
+    let inlineOnly: boolean;
+    if (captured && captured.to > captured.from) {
+      from = Math.max(1, Math.min(captured.from, maxPos));
+      to = Math.max(from, Math.min(captured.to, maxPos));
+      inlineOnly = true;
+    } else {
+      const coords = view.posAtCoords({ left: clientX, top: clientY });
+      if (!coords) return false;
+      const $pos = view.state.doc.resolve(coords.pos);
+      if ($pos.depth < 1) return false;
+      const scope = resolvePainterApplyScope(0, 0, $pos.start($pos.depth), $pos.end($pos.depth));
+      from = Math.max(1, Math.min(scope.from, maxPos));
+      to = Math.max(from, Math.min(scope.to, maxPos));
+      inlineOnly = scope.inlineOnly;
+    }
     let applied = false;
-    // 行内 marks + 段落/标题块级（事务构造）
-    const tr = buildPmSnapshotTr(view.state, from, to, snapshot);
+    /**
+     * v0.17.2 诊断埋点：确认 PM 侧走的是选区级还是整段级。
+     * 与源码侧 `painter-apply-source` 同通道，零开销。
+     */
+    traceScroll("painter-apply-pm", {
+      from,
+      to,
+      inlineOnly,
+      captured: captured ? `${captured.from}-${captured.to}` : null,
+      docLen: view.state.doc.content.size,
+    });
+    // 行内 marks：选区级只做行内；整段级连块级（段落/标题）一起处理
+    const tr = inlineOnly
+      ? buildPmInlineOnlyTr(view.state, from, to, snapshot)
+      : buildPmSnapshotTr(view.state, from, to, snapshot);
     if (tr) {
       view.dispatch(tr);
       applied = true;
     }
-    // v0.12.0 需求2 返修：列表/序号/引用块级管线（命令按序执行，目标已一致时为 no-op）
-    if (applyPmBlockSnapshot(view, from, to, snapshot)) {
+    // 块级管线只在**整段**语义下执行 —— 选区级不能把整段变成标题/列表
+    if (!inlineOnly && applyPmBlockSnapshot(view, from, to, snapshot)) {
       applied = true;
     }
     if (applied) view.focus();
@@ -455,8 +545,25 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
   }, []);
 
 
-  /** 应用格式刷到源码点击处所在行（块级前缀替换 + 行内容包裹，覆盖式） */
-  const applyFormatPainterToSource = useCallback((cursorPos: number) => {
+  /**
+   * 应用格式刷到源码目标（有选区 → 只刷选中文字的行内格式；无选区 → 整行，覆盖式）
+   *
+   * ## v0.17.2 问题3：选区级应用
+   * 旧实现无条件走 `getLineRange(cursorPos)` → 整行（含块级前缀）。用户要求
+   * 「格式刷要支持对选中的文本进行应用，而不是整个段落去应用，例如加粗、下划线」。
+   *
+   * 现在的分派：
+   * - **选区非空** → `applyMarksToSourceRange`：只对选区剥离+重包**行内**符号，
+   *   块级前缀（`#`/`-`/`>`/`1.`）**一律不动**（不存在"半个标题"）；
+   * - **仅光标** → 旧语义逐字节不变（块级前缀 + 整行行内）。
+   *
+   * @param cursorPos 落点（无选区时作为"目标行"定位）
+   * @param selection 可选的显式选区（来自 mousedown 捕获；`to > from` 时生效）
+   */
+  const applyFormatPainterToSource = useCallback((
+    cursorPos: number,
+    selection?: { from: number; to: number } | null,
+  ) => {
     const snapshot = useFormatPainterStore.getState().snapshot;
     if (!snapshot) return false;
     const text = sourceContentRef.current;
@@ -464,6 +571,30 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     const scrollTop = sourceSurface.getScrollTop();
     const { start: lineStart, end: lineEnd } = getLineRange(text, cursorPos);
 
+    // ─── 选区级：只刷行内格式，不动块级（v0.17.2 问题3）───
+    const selFrom = selection && selection.to > selection.from ? selection.from : null;
+    if (selFrom !== null && selection) {
+      const wrapped = applyMarksToSourceRange(text, selection.from, selection.to, snapshot.marks);
+      if (!wrapped) return false;
+      const next = wrapped.text;
+      recordDiscreteSourceEdit(text, next, wrapped.start, scrollTop);
+      setSourceContent(next);
+      sourceContentRef.current = next;
+      onContentChangeRef.current?.(next);
+      setDirtyRef.current(true);
+      lastContentRef.current = unmaskBase64Images(next, base64TokensRef.current);
+      // 选区边界随包裹变化，落笔后仍是"选中刚刷的那段"，方便连续刷
+      const keepFrom = wrapped.start;
+      const keepTo = wrapped.end;
+      requestAnimationFrame(() => {
+        sourceSurface.focus();
+        sourceSurface.setSelection(keepFrom, keepTo);
+        sourceSurface.setScrollTop(scrollTop);
+      });
+      return true;
+    }
+
+    // ─── 整行级（旧语义，逐字节不变）───
     // 1) 块级：替换行首前缀
     let next = text;
     let nextLineStart = lineStart;
@@ -478,7 +609,9 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
       }
     }
     // 2) 行内：对行内容（掐掉前缀）包裹（先剥后包，不叠加）
-    if (snapshot.marks.length > 0) {
+    //    v0.17.2 问题2：marks 为空（无格式源）时也必须进入 ——
+    //    `wrapRangeWithMarks` 在空 marks 下只做**剥离**，正是"把有格式刷成无格式"。
+    if (snapshot.marks.length > 0 || snapshot.blockType !== null) {
       const line = next.slice(nextLineStart, nextLineEnd);
       // 前置前缀（含任务项 `- [ ] ` 形态）都要掐掉，行内符号只包裹正文
       const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/.exec(line);
@@ -517,6 +650,30 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     if (viewMode !== "preview") return;
     const container = editorRef.current;
     if (!container) return;
+    /**
+     * v0.17.2 问题3：**捕获阶段**记下 mousedown 那一刻的 PM 选区。
+     *
+     * 为什么必须在这里（详见 `pendingTargetSelectionRef` 的注释）：
+     * PM 自己的 mousedown 处理器会把选区塌缩到点击点，等到 `click` 已经读不到了。
+     * 捕获阶段早于 target 上的处理器 → 这一帧的 `state.selection` 还是用户的选区。
+     */
+    const onMouseDownCapture = () => {
+      if (useFormatPainterStore.getState().mode === "idle") return;
+      const v = viewRef.current;
+      if (!v) return;
+      const { from, to } = v.state.selection;
+      if (!(to > from)) {
+        pendingTargetSelectionRef.current = null;
+        return;
+      }
+      // v0.17.2 问题3（返修）：与 arm 时的源选区完全一致 → 是残留，不是"用户在目标处选中"
+      const arm = armSelectionRef.current;
+      if (arm && arm.from === from && arm.to === to) {
+        pendingTargetSelectionRef.current = null;
+        return;
+      }
+      pendingTargetSelectionRef.current = { from, to };
+    };
     const onClick = (e: MouseEvent) => {
       if (useFormatPainterStore.getState().mode === "idle") return;
       if (applyFormatPainterToPm(e.clientX, e.clientY)) {
@@ -543,8 +700,12 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
         if (st.mode === "once") st.exit();
       }
     };
+    container.addEventListener("mousedown", onMouseDownCapture, true);
     container.addEventListener("click", onClick);
-    return () => container.removeEventListener("click", onClick);
+    return () => {
+      container.removeEventListener("mousedown", onMouseDownCapture, true);
+      container.removeEventListener("click", onClick);
+    };
   }, [viewMode, applyFormatPainterToPm]);
 
 
@@ -559,11 +720,60 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
      */
     // TODO(v0.18): CM6 能力缺口 — 格式刷的点击落点绑定（CM6 应用 `domEventHandlers`）。当前 CM6 表现：格式刷仍可从菜单/快捷键进入并使用，仅缺"点击正文直接应用"这一手势 | 用户可感知度：低 | 建议优先级：P2
     const ta = sourceTextareaRef.current;
+    /** v0.17.2 问题3：捕获阶段记下 mousedown 那一刻的源码选区（理由同 PM 侧） */
+    const onMouseDownCapture = () => {
+      if (useFormatPainterStore.getState().mode === "idle") return;
+      const sel = sourceSurface.getSelection();
+      if (!(sel.end > sel.start)) {
+        pendingTargetSelectionRef.current = null;
+        return;
+      }
+      // 与 arm 时的源选区完全一致 → 残留（详见 armSelectionRef 的注释）
+      const arm = armSelectionRef.current;
+      if (arm && arm.from === sel.start && arm.to === sel.end) {
+        pendingTargetSelectionRef.current = null;
+        return;
+      }
+      pendingTargetSelectionRef.current = { from: sel.start, to: sel.end };
+    };
+    /**
+     * v0.17.2：**重入保护**。
+     *
+     * 一次应用会写回源文本 → 触发 React 更新 → effect 重绑监听。
+     * 若同一次手势里 `click` 被派发两次（合成事件测试、或某些辅助技术），
+     * 第二次会拿"已经刷过"的文本再刷一遍 → 畸形嵌套
+     * `## **标题前缀 **正文部分** GAMMA。**`（探针实测过）。
+     * 用一次性令牌把同一手势内的第二次调用挡掉。
+     */
+    const applyTokenRef = { current: 0 };
     const onClick = () => {
       if (useFormatPainterStore.getState().mode === "idle") return;
-      const pos = sourceSurface.getSelection().start;
-      if (applyFormatPainterToSource(pos)) {
+      const token = ++applyTokenRef.current;
+      const sel = sourceSurface.getSelection();
+      const captured = pendingTargetSelectionRef.current;
+      pendingTargetSelectionRef.current = null;
+      // 选区级：优先用捕获到的（mousedown 前用户已选中）；否则回退"当前位置为整行"
+      const arm = armSelectionRef.current;
+      const stillSourceSel = arm && arm.from === sel.start && arm.to === sel.end;
+      const range = captured ?? (sel.end > sel.start && !stillSourceSel ? { from: sel.start, to: sel.end } : null);
+      const pos = sel.start;
+      /**
+       * v0.17.2 诊断埋点：让探针能确认"这一跳到底走了选区级还是整行级"。
+       * 与 `traceScroll` 同一通道（`window.__LMD_SCROLL_TRACE`），零开销（数组不存在时即返回）。
+       */
+      traceScroll("painter-apply-source", {
+        pos,
+        selStart: sel.start,
+        selEnd: sel.end,
+        captured: captured ? `${captured.from}-${captured.to}` : null,
+        armSel: arm ? `${arm.from}-${arm.to}` : null,
+        stillSourceSel: !!stillSourceSel,
+        range: range ? `${range.from}-${range.to}` : null,
+        scope: range ? "selection" : "line",
+      });
+      if (applyFormatPainterToSource(pos, range)) {
         useFormatPainterStore.getState().consume();
+        if (applyTokenRef.current !== token) return;
       } else {
         /**
          * 与 PM 侧完全同源的修法 B（理由见 PM 侧 onClick 的长注释）：
@@ -582,8 +792,16 @@ export function useFormatMenuHost(p: FormatMenuHostParams): FormatMenuHostResult
     // 取值已全走 surface；这里只缺"点击落点事件"——CM6 下由 domEventHandlers 提供（A3 后能力）。
     // 没有元素时功能不绑点击，但格式刷本身仍可通过其它入口（菜单/快捷键）使用，
     // 不会静默消失。
-    if (ta) ta.addEventListener("click", onClick);
-    return () => { if (ta) ta.removeEventListener("click", onClick); };
+    if (ta) {
+      ta.addEventListener("mousedown", onMouseDownCapture, true);
+      ta.addEventListener("click", onClick);
+    }
+    return () => {
+      if (ta) {
+        ta.removeEventListener("mousedown", onMouseDownCapture, true);
+        ta.removeEventListener("click", onClick);
+      }
+    };
   }, [isSourceMode, viewMode, applyFormatPainterToSource]);
 
 

@@ -1094,6 +1094,15 @@ export const zhCN: Record<string, string> = {
   "formatPainter.emptySelection": "所选内容没有可复制的格式（请选中带格式的文字，如加粗、标题、列表）",
   "formatPainter.needSelection": "请先选中要复制格式的文字，再点格式刷",
   "formatPainter.hintPersistent": "格式刷：持续应用中（剩余 {count} 次），按 Esc 退出",
+  /* ═══ v0.17.2 问题2 / 问题3 的文案 ═══
+     问题2：无格式源现在**是合法的**（把有格式刷成无格式）。
+     只有"真的没采到快照"才提示，不再拦"无格式纯文本"。 */
+  "formatPainter.missingSelection": "没有采集到格式，请重新选中再试",
+  "formatPainter.plainSource": "已复制「无格式」，刷到目标上会清除其格式",
+  /* 问题3：选区级应用（只刷选中文字，不动整段）。状态栏据此说明作用范围，
+     否则用户不知道这次刷的是"整段"还是"选中的几个字"。 */
+  "formatPainter.hintOnceRange": "格式刷：选区格式，单击/选中目标应用（仅行内）",
+  "formatPainter.hintPersistentRange": "格式刷：选区格式持续应用（剩余 {count} 次），按 Esc 退出",
   // ─── SlashCommand 命令菜单 ────────────────────────────────────
   "command.group.basic": "基本块",
   "command.group.list": "列表",

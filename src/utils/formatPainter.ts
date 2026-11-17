@@ -56,37 +56,56 @@ export const SOURCE_MARK_WRAPPERS: Record<string, [string, string]> = {
 export const FORMAT_PAINTER_MAX_USES = 10;
 
 /**
- * 判断快照是否**采集失败**（空快照）—— v0.17.0 第四轮 · 用户第 7 项（D1 修复）
+ * 判断快照是否**采集失败**（根本没有快照）—— v0.17.2 问题2 重新定义
  *
- * ## 缺陷（端到端实测，`scripts/v0170-r4-painter-matrix.mjs`）
- * 用户在源码面选中一段**普通文字**（无语法符号）后点格式刷：
- * ```
- * collectSourceSnapshot("普通文字", ...) → { marks: [], blockType: "paragraph", taskStyle: null }
- * ```
- * 这个快照**看起来非空**（`blockType` 是 "paragraph"），但**没有任何可复制的格式**。
- * 而 `armFormatPainter` 只检查了「选区非空」（`start === end`），不检查快照是否为空 →
- * 于是**仍然 arm 成功**（bodyClass=true、状态栏显示"单击目标应用"）→
- * 点目标时 `applyFormatPainterToSource` 算出 `next === text` → 返回 false →
- * **不 consume、不退出待刷态**。
+ * ## 语义变更（v0.17.2，用户裁决）
  *
- * 用户视角：**"点了没反应，而且退不出去"**。
- * 这正是用户说"格式刷功能不正常"最可能的机制 —— 用户不可能知道
- * "要先选中**含格式符**的文字"（`**粗体**` 而不是"粗体"）。
+ * v0.17.0 第四轮曾把「源内容是**无格式纯文本**」也判成"空快照"并拒绝 arm，
+ * 提示「所选内容没有可复制的格式（请选中带格式的文字…）」。
  *
- * ## 判定口径（三处都要判，缺一不可）
- * 1. `marks` 非空 → 有行内格式可刷
- * 2. `blockType` 是**非 paragraph** 的块型（heading/list/quote）→ 有块级格式可刷
- * 3. `taskStyle` 非空 → 有任务列表图标样式可刷（虽然它通常伴随 bullet_list）
+ * 用户明确否掉了这个口径：
+ * > 「有种情形是，我希望将没格式的文本应用到有格式的文本，是有格式文本变没格式。
+ * >  所以基于这个场景，对没格式文本进行格式刷应该是要生效的。」
  *
- * ⚠️ **`blockType === "paragraph"` 不算"有格式"**：段落是**默认态**，
- * 把"段落"刷到标题上虽然是合法操作（降级为段落），但用户选普通文字时
- * 脑子里想的是"复制这段的格式"，而普通文字**没有任何格式**。
- * 若把 paragraph 也算作有效，D1 就修不掉（用户仍会 arm 成功然后点了没反应）。
+ * 这是**正确且必要的**：格式刷的语义是"把这处的格式搬到那处"，
+ * 而"无格式"本身就是一种合法的格式值（Word 里叫「清除格式」/「默认段落字体」）。
+ * 拒绝它等于让用户无法用格式刷做「去格式」这件事。
  *
- * 阅读面同理：`collectPmSnapshot` 对无 mark 的普通段落也返回
- * `{ marks: [], blockType: "paragraph" }`。
+ * ## 现在只有"真的没采集到"才算失败
+ * - `null` / `undefined`（采集异常、没有选区）→ true，调用方应拒绝 arm 并提示；
+ * - 任何**采集成功**的快照（含 `{ marks: [], blockType: "paragraph" }` 这种
+ *   "无格式"快照）→ false，可以正常 arm 并应用。
  *
- * @returns true = 该快照没有可施加的格式，调用方应**拒绝 arm** 并提示用户
+ * 应用侧已经能正确处理"无格式"快照：
+ * - PM：`buildPmSnapshotTr` 的 `want=false && any=true` 分支会 `removeMark`，
+ *   `blockType === "paragraph"` 分支会把标题降级为段落；
+ * - 源码：`wrapRangeWithMarks` 在 marks 为空时只做剥离（去掉 `**`/`*`/`~~` 等）。
+ *
+ * @returns true = 没有快照可用，调用方应**拒绝 arm** 并提示用户
+ */
+export function isSnapshotMissing(snapshot: FormatSnapshot | null | undefined): boolean {
+  return !snapshot;
+}
+
+/**
+ * 快照是否表示"**无格式**"（纯文本 / 默认段落）。
+ *
+ * 用于给用户更准确的提示语（例如状态栏区分"复制了「无格式」"与"复制了标题"），
+ * **不用于拒绝 arm** —— 见 `isSnapshotMissing` 的说明。
+ */
+export function isSnapshotPlain(snapshot: FormatSnapshot | null | undefined): boolean {
+  if (!snapshot) return false;
+  if (snapshot.marks.length > 0) return false;
+  if (snapshot.taskStyle) return false;
+  if (snapshot.blockType && snapshot.blockType !== "paragraph") return false;
+  return true;
+}
+
+/**
+ * @deprecated v0.17.2：语义已被 `isSnapshotMissing` + `isSnapshotPlain` 取代。
+ *
+ * 保留仅为兼容既有调用点/存档测试；**新代码不要用** ——
+ * 它把"无格式"当成"采集失败"，与用户裁决的格式刷语义冲突。
  */
 export function isSnapshotEmpty(snapshot: FormatSnapshot | null | undefined): boolean {
   if (!snapshot) return true;
@@ -196,6 +215,136 @@ export function collectPmSnapshot(state: EditorState, from: number, to: number):
     blockType = null;
   }
   return { marks, blockType, taskStyle };
+}
+
+// ─── v0.17.2 问题3：**选区级**应用（只刷选中的那一段文字，不动整个段落）────────
+
+/**
+ * 格式刷的**应用范围**决策结果。
+ *
+ * ## 为什么需要这一层（v0.17.2 问题3，用户裁决）
+ * 用户原话：
+ * > 「格式刷要支持对选中的文本进行应用，而不是整个段落去应用，
+ * >  例如加粗、下划线这些格式。」
+ *
+ * 旧实现的两个应用入口都把范围写死成"整段"：
+ * - 阅读面 `applyFormatPainterToPm`：`$pos.start(depth) … $pos.end(depth)`；
+ * - 源码面 `applyFormatPainterToSource`：`getLineRange(text, cursorPos)`。
+ *
+ * 于是"只想把这几个字加粗"做不到 —— 整段一起变。这是真实的可用性缺陷。
+ *
+ * ## 口径（Lead 裁定）
+ * - **目标侧有非空文本选区** → 只对这个选区套**行内格式**（加粗/斜体/删除线/
+ *   行内代码/下划线/高亮），**不动块级**（标题/列表/引用）。
+ *   理由：块级格式在 Markdown 里是**行级/块级**概念，不存在"半个标题"，
+ *   强行应用到选区只能是"整段变标题"，与用户意图相反。
+ * - **目标侧无选区（仅光标/单击落点）** → 沿用旧语义：整段（行内 + 块级）。
+ *   这样"点一下刷整段格式"的既有用法一字未变。
+ *
+ * 返回值同时给出要给用户看的提示种类，让 UI 能区分"刷了选区"与"刷了整段"。
+ */
+export interface PainterApplyScope {
+  /** 应用起点（含） */
+  from: number;
+  /** 应用终点（不含） */
+  to: number;
+  /** 是否只刷行内格式（true = 选区级，跳过块级） */
+  inlineOnly: boolean;
+}
+
+/**
+ * 决定"这次格式刷应该作用在哪一段"（纯函数，便于单测）。
+ *
+ * @param selectionFrom 目标侧选区起点
+ * @param selectionTo   目标侧选区终点
+ * @param blockFrom     目标所在段的起点（无选区时用）
+ * @param blockTo       目标所在段的终点（无选区时用）
+ * @returns 应用范围；`from === to` 表示没有可应用的范围（调用方应视为无效）
+ */
+export function resolvePainterApplyScope(
+  selectionFrom: number,
+  selectionTo: number,
+  blockFrom: number,
+  blockTo: number,
+): PainterApplyScope {
+  const hasSelection = Number.isFinite(selectionFrom)
+    && Number.isFinite(selectionTo)
+    && selectionTo > selectionFrom;
+  if (hasSelection) {
+    // 选区级：只刷行内格式，绝不改块结构
+    return { from: selectionFrom, to: selectionTo, inlineOnly: true };
+  }
+  // 无选区：整段（沿用 v0.12.x 语义）
+  const f = Number.isFinite(blockFrom) ? blockFrom : 0;
+  const t = Number.isFinite(blockTo) ? blockTo : f;
+  return { from: Math.min(f, t), to: Math.max(f, t), inlineOnly: false };
+}
+
+/**
+ * PM 侧**选区级**应用：只对 `[from, to)` 套快照的**行内 mark**，不动块级。
+ *
+ * 与 `buildPmSnapshotTr` 的差异：
+ * - 复用同一套"差异式覆盖"算法（先算 want/all/any，再 add/remove）；
+ * - **跳过块级** —— 选区级应用不该把整段变成标题/列表。
+ *
+ * @returns 是否产生变更（无变更 = 目标本来就是该格式，调用方据此提示/退出）
+ */
+export function buildPmInlineOnlyTr(
+  state: EditorState,
+  from: number,
+  to: number,
+  snapshot: FormatSnapshot,
+): Transaction | null {
+  if (!(to > from)) return null;
+  const schema = state.schema;
+  const tr = state.tr;
+  const doc = state.doc;
+  for (const name of PAINTER_MARKS) {
+    const mtype = schema.marks[name];
+    if (!mtype) continue;
+    let textCount = 0;
+    let markCount = 0;
+    doc.nodesBetween(from, to, (node) => {
+      if (node.isText) {
+        textCount++;
+        if (mtype.isInSet(node.marks)) markCount++;
+      }
+    });
+    const any = markCount > 0;
+    const all = textCount > 0 && markCount === textCount;
+    const want = snapshot.marks.includes(name);
+    if (want && !all) tr.addMark(from, to, mtype.create());
+    else if (!want && any) tr.removeMark(from, to, mtype);
+  }
+  return tr.docChanged ? tr : null;
+}
+
+/**
+ * 源码侧**选区级**应用：只对 `[start, end)` 剥离已有符号并按快照 marks 重包。
+ *
+ * ⚠️ 必须**掐掉行首前缀**再判断选区是否落在正文内 —— 选区若整体落在
+ * `## ` / `- ` / `> ` 这类前缀上，没有可包裹的正文，应返回 null（调用方提示无效）。
+ *
+ * @returns 新文本与新的选区边界；无变化 / 选区只覆盖前缀 → null
+ */
+export function applyMarksToSourceRange(
+  text: string,
+  start: number,
+  end: number,
+  marks: string[],
+): { text: string; start: number; end: number } | null {
+  if (!(end > start)) return null;
+  const lineStart = text.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  const nl = text.indexOf("\n", start);
+  const lineEnd = nl === -1 ? text.length : nl;
+  // 本行行首前缀（含任务项形态）—— 选区若只压在前缀上则无正文可刷
+  const line = text.slice(lineStart, lineEnd);
+  const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/.exec(line);
+  const contentStart = lineStart + (prefixMatch ? prefixMatch[0].length : 0);
+  const effStart = Math.max(start, contentStart);
+  const effEnd = Math.min(end, lineEnd);
+  if (!(effEnd > effStart)) return null;
+  return wrapRangeWithMarks(text, effStart, effEnd, marks);
 }
 
 // ─── 应用（目标侧） ──────────────────────────────────────

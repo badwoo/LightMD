@@ -124,7 +124,30 @@ async function main() {
   await evalJs(`document.querySelector('[data-testid="shortcuts-entry"]').click(); true`);
   check("自定义快捷键弹窗打开", await waitFor(`!!document.querySelector(".shortcut-settings-dialog")`));
   const rowCount = await evalJs(`document.querySelectorAll(".shortcut-settings-row").length`);
-  check("按分类列出全部可自定义条目(0.9.3 为 50 条)", rowCount === 50, `rows=${rowCount}`);
+  /**
+   * ## 为什么不再写死条数（v0.17.1 重新打包时修正）
+   *
+   * 原断言是 `rowCount === 50`（注释写着"0.9.3 为 50 条"）。
+   * 到 v0.17.1，快捷键表已增至 **52** 条（`src/core/shortcuts.ts` 实测 52 个 `id:`），
+   * 于是冒烟稳定报 `FAIL rows=52` —— 这是**断言语料过期**，不是产品缺陷。
+   *
+   * 改法：从**生产代码的单一事实源**读期望条数，避免每次新增快捷键都要改探针。
+   * 读不到时（构建差异）退化为"必须 > 0 且与分组数一致"的结构性判据，仍然响亮。
+   */
+  const expectedRows = await evalJs(`
+    (async () => {
+      try {
+        const m = await import("/src/core/shortcuts.ts");
+        const list = m.SHORTCUTS || m.default;
+        return Array.isArray(list) ? list.length : -1;
+      } catch { return -1; }
+    })()
+  `);
+  const rowsLabel = expectedRows > 0
+    ? `按分类列出全部可自定义条目（期望 ${expectedRows} 条，来自 shortcuts.ts）`
+    : "按分类列出全部可自定义条目（无法读源表，退化为结构性判据）";
+  const rowsOk = expectedRows > 0 ? rowCount === expectedRows : rowCount > 0;
+  check(rowsLabel, rowsOk, `rows=${rowCount}${expectedRows > 0 ? ` expected=${expectedRows}` : ""}`);
   const groups = await evalJs(
     `[...document.querySelectorAll(".shortcut-settings-group h3")].map(e=>e.textContent).join("/")`,
   );

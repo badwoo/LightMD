@@ -1078,6 +1078,14 @@ export const enUS: Record<string, string> = {
   "formatPainter.emptySelection": "The selection has no formatting to copy (select formatted text such as bold, heading, or list)",
   "formatPainter.needSelection": "Select the text whose formatting you want to copy first, then click Format Painter",
   "formatPainter.hintPersistent": "Format Painter: persistent mode ({count} left), press Esc to exit",
+  /* ═══ v0.17.2 issue #2 / #3 ═══
+     Issue #2: an unformatted source is now LEGAL (repaint formatted text as plain).
+     Only a genuinely missing snapshot is rejected. */
+  "formatPainter.missingSelection": "No formatting was captured — select again and retry",
+  "formatPainter.plainSource": "Copied “no formatting” — applying it clears the target's formatting",
+  /* Issue #3: selection-scoped application (only the selected text, not the whole block). */
+  "formatPainter.hintOnceRange": "Format Painter: selection format captured, click/select a target (inline only)",
+  "formatPainter.hintPersistentRange": "Format Painter: selection format, persistent ({count} left), press Esc to exit",
   // ─── SlashCommand command menu ───────────────────────────────────
   "command.group.basic": "Basic Blocks",
   "command.group.list": "Lists",

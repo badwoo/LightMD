@@ -2,7 +2,7 @@
 
 > A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror (reading surface) + CodeMirror 6 (source surface).
 
-**Current Version: v0.17.1** (CM6 capability batch 1: smart Enter, code-block highlighting, selection highlight, and more)
+**Current Version: v0.17.1** (CM6 capability batch 1: smart Enter, code-block highlighting, selection highlight, and more; plus fixes for mode-switch scroll position and Format Painter)
 
 [中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
 
@@ -409,7 +409,7 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 
 ## 📋 Changelog
 
-### v0.17.1 (2026-11-14) — CM6 capability batch 1 (P0)
+### v0.17.1 (2026-11-17, repackaged) — CM6 capability batch 1 (P0) + three user-reported fixes
 
 Follow-up to the v0.17.0 CodeMirror 6 source-surface migration, closing the most
 user-visible capability gaps:
@@ -430,6 +430,24 @@ user-visible capability gaps:
   drop position.
 - **Scroll past end**: every line can scroll to the top of the viewport, so typewriter
   mode can center the last line (previously it stuck to the bottom edge).
+
+Plus three user-reported fixes:
+
+- **Reading position lost after double-Ctrl mode toggles**: after switching back and forth
+  a few times the viewport jumped to the top of the document. Root cause: the split-preview
+  "preview → source" reverse sync treated the preview iframe's *programmatic* writes as
+  user scrolling (the iframe's scroll event arrives via the cross-document queue ~450 ms
+  late, well past the direction-lock window), so it reverse-mapped from a preview that was
+  still settling and wrote the source pane back to line 0. Now the sync **identifies its
+  own writes by value**: if the preview's current scrollTop equals what this program last
+  wrote, it is an echo and is ignored.
+- **Format Painter can "strip" formatting**: selecting unformatted text and clicking Format
+  Painter no longer reports "nothing to copy"; painting it onto formatted text clears that
+  formatting (`**bold**` → `bold`).
+- **Format Painter can apply to a selection**: select the target text first, then paint —
+  only that range gets the inline formats (bold / italic / strike / inline code /
+  underline / highlight) instead of the whole block; line prefixes (`## `, `- `, `> `) are
+  left untouched. With no selection (caret only) the previous whole-block behaviour is kept.
 
 ### v0.17.0 (2026-11-11) — CodeMirror 6 source surface + unified document model (foundation)
 

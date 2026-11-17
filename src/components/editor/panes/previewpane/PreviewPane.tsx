@@ -493,6 +493,16 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     typewriterSmoothUntilRef.current = performance.now() + TYPEWRITER_SMOOTH_WINDOW_MS;
   }, [TYPEWRITER_SMOOTH_WINDOW_MS]);
 
+  /**
+   * v0.17.2 问题1：判断"右屏当前 scrollTop 是否就是我刚写下去的值"的取整容差（px）。
+   *
+   * `scrollTop` 在 DPR≠1 与亚像素布局下会被浏览器取整到 1/64 或 0.5 的倍数，
+   * 读回来与写进去可能差不到 1px。取 2px：
+   * - 足够吸收取整/亚像素误差；
+   * - 远小于用户滚一格滚轮的位移（默认 ≥ 40px），不会把真实滚动误判成回声。
+   */
+  const PROGRAMMATIC_ECHO_EPSILON_PX = 2;
+
 
   // ─── v0.12.1 需求9（二轮）：排版变化时保持阅读焦点 ────────────────
   //
@@ -2986,6 +2996,51 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
     let lastAcceptedSourceTop = 0;
 
     /**
+     * ## ═══ v0.17.2 问题1：**右屏程序写入的"回声"必须被识别出来** ═══
+     *
+     * ### 缺陷（真机 trace 取证，`scripts/_lead-i1d-writestack.mjs`）
+     * 用户文档（含大表格）「阅读 50% → 双击 Ctrl 进编辑」后，左屏被写回文档顶部：
+     * ```
+     * t=13284 cm   5 → 8127.3   ← res-source（模式切换恢复，**正确**）
+     * t=13317 cm 8127 → 8103.9  ← CM6 measure（-23px，正常）
+     * t=13754 cm 8104 → 3.9     ← HTMLDocument.Ne ★★★ 罪魁祸首
+     * t=14290 cm    4 → 5       ← 再被写成 5
+     * ```
+     * 栈里的 `HTMLDocument.Ne` 经符号核对就是本文件的 `syncToSource`（绑在
+     * iframe 的 `contentDocument` 上，捕获阶段）。也就是说：
+     *
+     * 1. 我们恢复左屏 → 左屏 scroll → `syncToPreview` 写右屏；
+     * 2. 右屏（iframe 内部文档）的 scroll 事件**经跨文档队列晚 ~437ms 才到**
+     *    （本文件 `syncToPreview` 的注释里早已记录过这个延迟，实测 140~440ms）；
+     * 3. 到达时方向锁 `SPLIT_SCROLL_LOCK_MS = 250ms` **早已过期** →
+     *    `shouldAcceptScroll` 判成"用户滚了右屏" → `syncToSource` 反算源码行；
+     * 4. 而此刻右屏刚被建出来、`scrollTop` 还在 0~80 附近（`preview-realign`
+     *    的 bounded-chase 正在从 0 往 11651 爬）→ 反算出**源码第 0 行**
+     *    → 把左屏写成 ~4px。
+     *
+     * ⇒ 用户感知正是「来回几次切换，阅读进度丢失，直接跳到文档顶部」。
+     * 而且这不是"偏一点"：一旦左屏被写成 0，下一轮切换的锚点就是顶部，
+     * 于是**永久丢失**（i1 探针 6/6 轮全部 top=0，且 localStorage 进度被冲成 0.0002）。
+     *
+     * ### 为什么不能只靠"加大方向锁窗口"
+     * 那条路会被否掉（见 `syncToPreview` 注释里"试过但否掉的修法②"）：
+     * 锁是**全局共享语义**，调大会把"用户真的切去滚右屏"也判成回声 →
+     * 双向联动出现最长 N 百毫秒死区。而且跨文档延迟本身随内容/机器浮动，
+     * 任何固定窗口都只是把概率往后推。
+     *
+     * ### 修法：不猜时间，**按值识别自己的写入**
+     * 右屏的所有程序写入都收敛在 `syncToPreview` 的 `preview.scrollTop = target`
+     * 这一行（`realignLayoutNow` 也走同一个入口）。把"我们最后写下的值"记下来，
+     * `syncToSource` 见到右屏当前值与它一致 → **这就是回声，不是用户滚动**，直接忽略。
+     *
+     * 判据强度：只认"值相等"（±{@link PROGRAMMATIC_ECHO_EPSILON_PX} px 取整误差），
+     * 用户真去滚右屏几乎不可能正好停在我们写下的同一像素上；
+     * 即使偶然撞上，下一次滚动事件就会正常接管 —— 失败方向是"少同步一次"，
+     * 而不是"把阅读进度清成 0"。
+     */
+    let lastProgrammaticPreviewTop: number | null = null;
+
+    /**
      * 计算"当前左屏位置应指挥右屏到哪"（**纯计算，不写 DOM**）。
      *
      * @returns 目标 scrollTop（物理约束已按"每帧 ≤ allowed"有界连续钳制）；
@@ -3134,6 +3189,15 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
         if (target !== null) {
           preview.scrollTop = target;
           /**
+           * v0.17.2 问题1：记下"我们刚写下的右屏值"。
+           *
+           * `syncToSource` 据此识别"这是我自己写入的回声，不是用户滚动"。
+           * 必须在这里记（`realignLayoutNow` 也走同一个写入点），否则
+           * 模式切换后的 bounded-chase 追帧会产生一串回声，逐个把左屏反算回顶部。
+           * 详见 `lastProgrammaticPreviewTop` 的注释。
+           */
+          lastProgrammaticPreviewTop = preview.scrollTop;
+          /**
            * ### 关键：窗口必须从**每一次动画期写入**续期（不是只在动画发起时开一次）
            *
            * 实测时序（`scripts/v0170-r4-enter-rightcause.mjs`）：
@@ -3209,6 +3273,53 @@ export function usePreviewPane(p: PreviewPaneParams): PreviewPaneResult {
        */
       if (performance.now() < typewriterSmoothUntilRef.current) return;
       const now = performance.now();
+      /**
+       * ## ═══ v0.17.2 问题1：按**值**识别"我自己写入的回声"（这是主修复） ═══
+       *
+       * 上面的时间窗（320ms）与方向锁（250ms）都是**时间**判据，而 iframe 内部文档的
+       * scroll 事件经跨文档队列派发，实测延迟 **140~440ms 且随内容浮动** ——
+       * 任何固定窗口都只能把概率往后推，不能根治。
+       *
+       * 实测证据（`scripts/_lead-i1d-writestack.mjs`，hook 了 `Element.prototype.scrollTop`）：
+       * ```
+       * t=13284 cm   5 → 8127.3   ← res-source（模式切换恢复，正确）
+       * t=13317 cm 8127 → 8103.9  ← CM6 measure
+       * t=13754 cm 8104 → 3.9     ← HTMLDocument.Ne = 本函数 ★ 把左屏写回顶部
+       * ```
+       * 从我们写下右屏（t≈13295）到回声到达（t=13754）相隔 **459ms**，
+       * 方向锁（250ms）与打字机窗（320ms）**双双已过期** → 被当成用户滚动。
+       *
+       * 而此刻右屏还处在"刚建出来、bounded-chase 正从 0 往 11651 爬"的阶段
+       * （`preview-realign-layout` 记录 previewTop 16/32/48/64/78），
+       * 于是反算出的源码行是**第 0 行** → 左屏被写成 4px。
+       *
+       * ### 判据
+       * 右屏的所有程序写入都收敛在 `syncToPreview` 的 `preview.scrollTop = target`，
+       * 那里把写下的值记进 `lastProgrammaticPreviewTop`。这里若读到右屏当前值
+       * 与它相等（±取整容差），就**确定这是回声** → 直接返回，不动左屏。
+       *
+       * ### 失败方向（为什么这样是安全的）
+       * - 误判成回声 → 少同步一次，用户再滚一下右屏立刻恢复接管（可自愈）；
+       * - 漏判 → 左屏被清到顶部、**阅读进度永久丢失**（不可自愈，就是用户报的缺陷）。
+       * 两者代价不对称，所以宁可偏保守。
+       * 用户真去滚右屏时几乎不可能正好停在我们写下的同一像素上；
+       * 且用户一旦滚动，`preview.scrollTop` 立刻偏离该值 → 下一次事件正常接管。
+       */
+      {
+        const p = getPreviewScroller();
+        if (
+          p &&
+          lastProgrammaticPreviewTop !== null &&
+          Math.abs(p.scrollTop - lastProgrammaticPreviewTop) <= PROGRAMMATIC_ECHO_EPSILON_PX
+        ) {
+          // 回声：这是我自己刚写下去的右屏位置，不是用户滚动 → 绝不反算写左屏
+          traceScroll("sync-to-source-echo-skip", {
+            previewTop: Math.round(p.scrollTop * 10) / 10,
+            wrote: Math.round(lastProgrammaticPreviewTop * 10) / 10,
+          });
+          return;
+        }
+      }
       if (!shouldAcceptScroll(lock, "preview", now)) return;
       markScrollSource(lock, "preview", now);
       const preview = getPreviewScroller();
