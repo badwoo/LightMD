@@ -1,1474 +1,197 @@
 # LightMD
 
-> A **lightweight**, **high-performance**, **WYSIWYG** Markdown editor for Windows, built with Tauri v2 + React + ProseMirror (reading surface) + CodeMirror 6 (source surface).
-
-**Current Version: v0.17.1** (CM6 capability batch 1: smart Enter, code-block highlighting, selection highlight, and more; plus fixes for mode-switch scroll position, Format Painter, and split-preview toggle alignment)
-
-[中文](./README.md) | English | [User Guide](./USER_GUIDE.md)
-
-## ✨ About LightMD
-
-LightMD is a **lightweight Markdown editor** purpose-built for Windows, combining the simplicity of traditional Markdown with the intuitiveness of modern WYSIWYG editors. With a tiny ~9MB installer and millisecond-fast startup, it delivers a deeply integrated Windows desktop experience.
-
-## 🎯 Core Features
-
-### 📝 Two Editing Modes (v0.14.0: three merged into two)
-
-- **Preview Mode** — WYSIWYG with Markdown syntax hints on the cursor line
-- **Edit Mode** — Source on the left, live preview on the right (this **is** the old Split view,
-  now the default when you click Edit). The preview can be collapsed into a pure source view and
-  slid back in from the vertical "Open preview" rail at the editor's right edge.
-  - Double-tap `Ctrl`: toggle Preview ↔ Edit; double-tap `Shift`: toggle the preview pane
-  - **Reading position is preserved**: when toggling between the two modes, and even after closing and reopening a tab (0.14.0 batch 2)
-  - **Undo spans mode switches** (0.15.0): each document has **one logical timeline** shared by Preview, Edit and the right-hand preview pane; `Ctrl+Z` can walk back through edits made in another mode instead of losing the stack or jumping to unrelated content
-  - **Content-anchored alignment** (0.15.0): the two panes align by **content anchor** (top-level block + ratio inside it) instead of scroll percentage, so the same paragraph lands at the same spot on both sides; long soft-wrapped lines, code blocks, tables, images and nested lists use measured line axes, and collapsed heading ranges are skipped
-  - Hover the divider centre for the vertical, breathing "Close preview / Open preview" label
-
-### 📊 Rich Content Support
-
-- ✅ Standard Markdown (headings, lists, quotes, code blocks, tables, links, images)
-- ✅ **GFM Task Lists** (`- [x]` / `- [ ]`)
-- ✅ **Mermaid Diagrams** (flowchart, sequence, gantt, class, state, and 20+ more; 7 built-in templates in the toolbar for one-click insertion)
-- ✅ **KaTeX Math** (inline `$...$` and block `$$...$$`; live preview for block math while editing, 0.5.0)
-- ✅ **Syntax Highlighting** (PrismJS, 200+ languages; 0.2.0 adds PHP/Swift/Kotlin/Dart/Lua/Ruby/R/Scala/Perl/PowerShell; 0.5.0 adds automatic language detection for unlabeled code blocks)
-- ✅ **Highlight** `==text==` (0.2.0)
-- ✅ **Superscript / Subscript** `^text^` / `~text~` (0.2.0)
-- ✅ **Emoji** `:smile:` auto-completion (0.2.0)
-- ✅ **Footnotes** `[^1]` + `[^1]: note` (0.2.0)
-- ✅ **Definition Lists** `term\n: definition` (0.2.0)
-- ✅ **Auto Table of Contents** `[toc]` or `[[toc]]` (0.2.0)
-- ✅ **Anchor Links** — headings auto-generate ids, supports `[link](#heading)` jump (0.2.0)
-
-### ⚡ Productivity Boosters
-
-- 🗂 **Multi-Tab** with file tree sync (`Ctrl+W` to close, `Ctrl+Tab` to switch; right-click a tab/file/recent item to "Open file location", 0.5.0)
-- 🔍 **Global Search & Replace** (`Ctrl+F` / `Ctrl+H`) — with **whole word / match case / in selection / regex** checkboxes (default off) and a **"Find in open files"** results banner listing file name + matched line with highlighted hits; works in both Preview and Edit mode (0.14.0). With the banner open, "Replace all" replaces **every matched file**, and switching documents makes the search follow (0.14.0 batch 2); **replacements are undoable** (including cross-file replaces — switch to the changed file and `Ctrl+Z` / `Ctrl+Y`), and replacing in Read mode takes effect **immediately** (0.14.0 batch 3)
-- ⚡ **Quick file switcher** (`Ctrl+P`) — open tabs / recent files / workspace files in groups, subsequence fuzzy matching with highlighted hits (0.13.0)
-- 📑 **Document Outline** with click-to-jump navigation and drag-to-reorder; collapsible headings (0.13.0) and per-document scroll memory (0.13.2)
-- 📁 **File Tree** + drag-and-drop open
-- 📋 **Recent Files** quick access
-- 💾 **Auto-save** — periodically saves to disk, configurable interval or disable
-- 🔄 **Check for updates** (0.14.0) — the last section of Settings: query the latest GitHub release, read its notes, download and launch the installer (with a progress bar)
-- ⚡ **Slash Commands** — type `/` at line start to trigger the quick-insert menu (headings/lists/code blocks/tables/Mermaid/math, etc.) (0.2.0)
-- 🖱 **Editor Context Menu** — undo/cut/copy/paste/quick insert (0.2.0)
-- ⌨️ **Auto-Pair Completion** — brackets/quotes/asterisks auto-close as you type, toggleable in settings (0.5.0)
-- 🔗 **Smart URL Paste** — pasting a URL creates `[link](URL)`, or turns selected text into a hyperlink (0.5.0)
-- 🖱 **Table Context Menu** — right-click a table in preview mode to insert/delete rows and columns (0.2.0)
-
-### 🚰 Unified Render Pipeline & Export Fidelity
-
-- Split preview and all export formats (HTML / PDF / PNG / DOCX / LaTeX / ePub) share a single markdown-it configuration source: straight quotes are no longer rewritten to curly quotes, and `javascript:` and other dangerous links are blocked on every export path
-- Formulas render as KaTeX typesetting (native MathML in ePub) and Mermaid diagrams as vector graphics in exports — no more blank placeholders or raw source
-- Regex search & replace with `$1` / `$&` capture-group references; invalid patterns are flagged in red without crashing
-- Outline limit raised to 1000 so long documents are no longer truncated
-
-### 🖱 Editing Experience Upgrades
-
-- Document-wide zoom via `Ctrl+wheel` or the bottom-right slider (click a tick to jump, draggable), working in all three modes at 50%–200%, remembered across restarts
-- Format painter: click to apply once, double-click for continuous application (remaining count in the status bar, `Esc` to exit); works on block-level and inline formats
-- Click a code block / formula / Mermaid diagram / table cell to start editing immediately — no more "click once to activate, click again to edit"; blocks with no caret target (divider, `[toc]`) stay block-selected and can be deleted or dragged
-- Clicking "Bold" / "Heading" without a selection inserts only syntax markers; the placeholder is a grey ghost hint replaced as soon as you type, never written to disk
-- Reading focus preserved: collapsing the sidebar, resizing the window, dragging the split divider, or toggling the outline keeps the first visible paragraph in place
-- Focus mode highlight expands to "previous / current / next" lines
-- Heading level badges: an `H1`–`H6` dropdown changes the level with the outline following
-- Auto-pairing: skips when the closing symbol already follows, wraps selections, one Backspace deletes an empty pair, `Tab` jumps out; scope configurable per brackets / quotes / CJK punctuation
-- Enter = line break in reading mode (N presses = N line breaks), `Shift+Enter` = new paragraph; behavior inside lists / quotes / headings / tables / code blocks is unchanged
-- Line height / paragraph spacing / content width settings apply in all three modes
-- Multi-line comment toggle `Ctrl+/`: selected lines (across blocks) turn grey and struck through; with no selection the current block is toggled (Obsidian semantics); saved as `<!--comment-->` and omitted from all six export formats
-- Also: `→` exits code blocks, a book button in editing mode, square / round task icons, an editor scrollbar flush right, creation time for open files, and "About LightMD" in Settings
-
-### 🧱 Block-level Interaction
-
-- Clicking a code block / block formula / Mermaid diagram / table cell enters editing directly; leaf blocks with no caret target (divider, `[toc]`) keep whole-block selection (`Delete`, draggable)
-- Hovering a block, placing the caret inside it, or selecting it shows the left `⋮⋮` drag handle and the top-right `⋮` menu together; ordinary paragraphs / headings / lists / quotes never sprout handles
-- The `⋮` menu has 8 entries: cut / copy / paste / delete block / format painter / select block / move up / move down — disabled automatically for an empty clipboard and for first / last blocks
-- Block copy writes three formats: Markdown source (pastes into other editors), rendered HTML (pastes into web pages / Word), and LightMD-private data (pastes back into reading mode with the block structure and untouched bytes restored)
-- Cut / delete / move are one transaction each, so a single `Ctrl+Z` restores everything; deleting every block re-adds an empty paragraph
-
-### 📖 Reading Experience Enhancements
-
-- **Image lightbox** (reworked in 0.15.0; **double-click** to open since 0.15.1): double-click an image to view it over the app viewport with **25%–800% zoom** (buttons / wheel / double-click toggles fit ↔ 100%), **drag to pan when zoomed**, **`←`/`→` to step through images** (hidden for a single image), `Home` to reset, and `Esc` / overlay / ✕ to close (clicking the image itself does not close it). Works from Preview mode and the right-hand preview pane, each portal-ing into its own `document.body`; multiple windows stay independent
-- **Heading folding in reading areas** (0.15.0, smooth animation in 0.15.1): a fold button appears before headings and collapses everything down to the next heading of the same or higher level; **display-only** — it never changes the Markdown, never writes to the file and never creates an undo step
-- Typography settings (content width / line height / paragraph spacing) really applied, with reading progress as a percentage in the status bar
-- Heading anchors jump correctly; `[toc]` updates live; emoji short codes render as graphics (source text preserved on save)
-- Zero-shift heading symbols — no more jitter when the cursor enters or leaves headings / quotes / code blocks
-
-### 🛡 Data Safety & Stability
-
-- `Shift+Enter` inside code / math blocks no longer splits the block; "delete row" on a table header no longer loses data
-- Image sizing `![alt|300](src)` works in split preview and all export formats, and the width is no longer erased by the export pipeline
-- Line-break round-trip fidelity: breaks at paragraph starts, adjacent hard breaks, and inside tables / lists / quotes are saved as `<br>`, with 21 dangerous line-leading constructs auto-escaped
-- Exported HTML is self-contained offline (KaTeX inlined, mermaid side-loaded to `_assets/`)
-- PDF headers/footers appear on every page without leaking internal temp paths
-- DOCX no longer silently drops task lists / definition lists / images / list numbering / formulas / table alignment
-- Documents containing Emoji short codes no longer white-screen; `$`, `==`, `~`, `^` are only escaped when a pair can actually form
-- Auto-save reads the disk first and compares three paths; if a third party changed the file it abandons the write and warns, so external edits are never silently overwritten
-- Three policies for externally modified files (notify only / choose between take-latest, keep-local, save-as / ask every time); single files outside any opened folder now receive change events too
-- The filler paragraph after a trailing table / code block / formula / Mermaid block is never written to the `.md`, so saved files stay byte-identical
-- Undo / redo is strictly per document: history is saved when you switch away and restored only when the content still matches
-
-### ⌨️ Typewriter-Style Input
-
-- Six input rules — inline formulas, block formulas, links, images, footnotes, and auto table of contents — convert as you type
-- Emoji short-code completion: typing `:` plus letters opens ~1900 candidates; `↑↓` to select, `Enter` inserts the short code (still stored as a short code); times and ratios such as `3:1` / `12:30` never trigger it
-- Minimal HTML whitelist: `<u>` `<br>` `<sub>` `<sup>` `<mark>` parse into the corresponding formats
-- Underline via `Ctrl+U`, insert link via `Ctrl+Shift+K`
-
-### 🖍 Inline Markers, Paste & Undo
-
-- Markdown source symbols appear instantly when the cursor enters a bold / italic / inline code / link range, and hide on leave
-- Markdown-aware paste restores real structure from Markdown text or web rich text
-- Undo history is **unified across modes** — since 0.15.0 every document has a **single logical timeline** (see "Two Editing Modes"): Preview, Edit and the right-hand pane share one undo stack, and switching modes itself is not a step
-
-### 🧹 Editing Consistency
-
-- Reading-mode format commands share the same source as keyboard shortcuts — no more literal-text "fake commands"
-- Typing `---` or `` ``` `` inside nested blocks (list items / quotes) no longer mis-converts; header rows no longer offer "delete row"
-- The command palette gains the missing format commands; `Ctrl+Shift+8/9/.` really work in source mode
-- `Alt+↑/↓` is a true block move (old merge / lift semantics moved to `Alt+Shift+↑/↓`)
-
-### 🖼 Images & Code Blocks
-
-- Image sizing `![alt|300](src)`, alt text, and drop-point insertion for dragged-in images
-- **Image interaction**: clicking an image selects it (the reading-mode lightbox still works), the small handle at the top-right opens the editor, and dragging any edge / corner resizes it — width only, height follows the aspect ratio, one drag = one undo
-- **Image left/center/right alignment** (persisted as an `![alt|center](src)` suffix) and an **image manager panel** (one row per occurrence in document order, base64 ↔ assets conversion, rename updating every reference, unreferenced cleanup through the Recycle Bin, current document only)
-- The image manager dialog scales out of its icon, can be dragged around and shrinks back on close; with no images the icon fades out and the "译" button slides up into place
-- Code block language dropdown with instant re-highlighting; 34 built-in highlighting languages; **one-click copy in the top-right corner** — the clipboard receives a complete fenced block, so pasting into another document renders immediately
-- In-paragraph line-break semantics selectable (GFM immediate break / CommonMark two spaces)
-
-### 📋 Tables
-
-- The insert dialog has a live Markdown preview and supports slash headers
-- Column-width / row-height dragging, whole-column alignment, row/column add and delete, and a header row that cannot be deleted (so data never impersonates a header)
-- `Enter` inside a cell moves to the cell below in the same column (appending a row at the bottom), `Shift+Enter` inserts a line break
-- **Cell merge / split** (drag across cells → 🔗/✂️; both colspan and rowspan, structure survives reopening; ordinary tables round-trip with zero diff)
-- **Cross-editor notice for merged cells** (0.15.0): on the first merge, LightMD explains that Markdown/GFM has **no** standard merged-cell syntax and that it stores merges as inline `<td colspan/rowspan>` HTML; other editors may show the raw tags, ignore the merge or misalign the table, while **LightMD always renders it faithfully** and the notice never modifies the source file. Shown once; re-openable any time from the table menu ("Compatibility note")
-
-### ⚡ Navigation & Performance
-
-- In-document link navigation: relative paths open the target document, `#anchor` smooth-scrolls, external links go to the system browser
-- Split view sync is a **top-level block mapping** in both directions (no shared scrollbar): scrolling either side aligns the corresponding block to the top of the other, with a 250 ms direction lock to stop echo pushes
-- **Content-anchored Preview ↔ Edit alignment** (0.15.0): alignment is based on the top-level block at the viewport centre plus the ratio inside it, so both panes land on the same block; top/bottom edges have dedicated branches, and injected Mermaid / KaTeX nodes plus trailing padding paragraphs never skew the anchor
-- Focus mode and Mermaid rendering caches keep hundred-thousand-character documents smooth
-- Task items and footnotes keep a lossless content model, directly editable including nested lists and paragraphs
-
-### 🔎 Workspace Full-Text Search (0.15.0, read-only)
-
-- A new **Workspace** scope next to "Find in open files": searches the body text of every file under all workspace roots open in this window (roots are de-duplicated; a nested root wins over its ancestor)
-- Results are grouped per file and streamed with live progress (files scanned / skipped / hits) and can be cancelled at any time; clicking a hit jumps straight to that file and position
-- Searches `.md` / `.markdown` / `.mdown` / `.mkd` / `.txt` by default; skips `.git`, `node_modules`, hidden directories, symlink cycles and binary files, and skips single files larger than 2 MiB (counting them as skipped)
-- **Read-only**: no workspace-wide replace, no index database, no wiki-link / tag / frontmatter parsing
-- Files that are open but unsaved are re-validated against their **in-memory** content, so stale disk content can never produce phantom hits
-- Regex is **not** supported in the workspace scope in this first release (Rust and JS regex semantics are not equivalent) — ticking Regex shows an explicit notice instead of silently changing semantics
-
-### 🪟 Immersive Fullscreen & Shortcut Experience
-
-- `F11` immersive fullscreen collapses all four bars, `Esc` restores
-- `Ctrl+,` is reclaimed by a Rust-level native hotkey so Chinese IMEs can no longer swallow it
-- Settings dialog fades in/out; the custom shortcut dialog uses a 3×3 card layout with every shortcut visible in one screen
-
-### 🪟 Multi-Window (added in 0.9.0)
-
-- 🪟 **Peer multi-window** — `Ctrl+Shift+N` or the title-bar "Window" menu opens an auxiliary window (max 8); each window has its **own tabs, editor state, reading progress and AI chat window**
-- 🔁 **Live global sync** — theme, font, sidebar width, AI settings, recent files and favourites sync instantly across windows
-- 📂 **Many ways into a new window** — file-tree / open-files context menus, tab context menu "Move to new window" (scratch tabs carry their content), **dragging a tab out of the tab bar**, and `Ctrl+Alt+O` to pick a file and open it in a new window
-- 🗂 **Title-bar "Window" menu** — lists every window and its tabs (with unsaved dots); clicking a window activates it, clicking a tab activates that window and switches to the tab; also offers "Merge into main window" (you can also drag an auxiliary window's tab onto the main tab bar and confirm the merge)
-- 🪟 **Drag-to-merge** — hold an auxiliary window over the main window's tab bar and confirm "Merge back into the main window?" to move every tab over and close it (0.9.0 round 3)
-- ⚔️ **File conflict detection** — if a file is already open in another window with unsaved changes, an in-app dialog offers read-only / force edit / switch to that window / cancel; read-only tabs show `[read-only]`
-- 👀 **External change and delete handling** — clean tabs reload with a notice, dirty tabs are marked pending; deleting a file closes its tabs; **the app's own writes are never mistaken for external changes**
-- 🤖 **AI task isolation** — translation / continue / polish / summary / chat in window A no longer cancels the task in window B (inside one window a new task still cancels the old one)
-- 💾 **Session restore** — a "restore other windows at startup" switch (default off, main window only) plus "Quit LightMD" (`Ctrl+Q`, records only the **main** window so nothing else revives); windows merged into the main window do not duplicate
-- ✅ **Smart close confirmation** — closing a window or quitting only prompts for **files already on disk with unsaved changes**; scratch (untitled) tabs are remembered and restored instead
-- 🧹 **Backward compatible** — behaviour is identical to 0.8.5 when you never use multi-window; the main window keeps the old data file with zero migration
-
-### 🗂 Tabs & File Management (strengthened throughout 0.8.0 ~ 0.8.5)
-
-- 🆕 **Untitled scratch tabs** — create with `Ctrl+N` or by double-clicking the empty tab-bar area; nothing is written to disk until the first save, and unsaved scratch tabs are restored on restart
-- 📌 **Tab bar upgrades** — left/right scroll buttons plus smooth wheel scrolling when tabs overflow; pin a tab (pin icon shown); 9-item context menu (Rename / Pin / Print / Save As / Close Others / Close Others Except Pinned / Close to the Left / Close to the Right / Close Unmodified)
-- 📋 **File tree copy / cut / paste / drag** — copy or cut from the context menu or with `Ctrl+C` / `Ctrl+V`; drag onto a folder to copy, hold `Shift` to move (tab paths follow automatically); name clashes get a " - Copy" suffix
-- 🗑 **Delete closes its tabs** — removing a file or folder also closes the matching open tabs
-- 🧭 **Open containing folder as workspace** — from the tab/file/recent-item context menu; **since 0.15.0 it no longer re-mounts**: if the file already lives inside an open workspace root (with nested roots, the **deepest** one containing it wins), LightMD only expands to it and highlights it, reusing the existing workspace — no extra sidebar section and no duplicate folder watcher. The toast distinguishes "located in current workspace" from "opened in sidebar"
-- 🖱 **Redesigned sidebar layout** — drag a section header to resize (neighbouring sections trade height, and the last one can be dragged all the way down); floating scroll arrows and a slimmer, subtler scrollbar
-- 🖱 **File tree drag & ordering upgrades (0.8.4)** — drag a file/folder onto a folder to copy, hold `Shift` to move (cross-drive supported); drag within the same folder to reorder (manual order survives restart); copy/cut in the node context menu, and new file / new folder / refresh / paste on the empty-area menu; per-folder sort button in the folder header (name / modified / created × ascending / descending, remembered per folder); external changes sync into the tree automatically (`Ctrl+R` as a fallback refresh)
-- 🗑 **Delete goes to the Recycle Bin (0.8.5)** — deleting files / folders no longer removes them permanently; they land in the system Recycle Bin and can be restored anytime
-- 🕐 **"Recent" upgrades (0.8.3 / 0.8.5)** — shows the full list (capped at 66 entries) with in-panel scrolling, files and folders interleaved by time; hovering reveals the full path and the open date; kept as a **pure history** that is only flagged ⚠ when a path goes stale, never deleted automatically
-- 🪟 **Window size & position memory (0.8.3)** — maximized on first install; afterwards the app opens with the size and position it was closed in, including on a second monitor
-- 📍 **Reading position survives restarts (0.8.3)** — a document restored at startup returns to where you stopped reading, unsaved scratch documents included
-- 📐 **Cursor position in the status bar (0.8.3)** — shows `Line N, Col M` live, plus `N selected` while text is selected
-
-### 🪟 Window & Motion (0.8.1 ~ 0.8.5)
-
-- 🪟 **Frameless window (0.8.1)** — the native title bar is gone; minimize / maximize / close moved next to the settings button (macOS traffic-light colors, symbols on hover)
-- 🗔 **Everything in-app (0.8.1 / 0.8.4)** — file properties and the New File / New Folder dialogs no longer use native system popups: no system beep, and paths can be selected and copied
-- 🎞 **Transitions (0.8.2 ~ 0.8.5)** — folder panels and "Open Files" rows open by sliding in and close with a strictly serial three-beat (slide out → pause → collapse height); file-tree nodes expand/collapse; the search box, sort dropdown, new-item dialog and the status-bar search panel (grows out of / retracts into its button) are all animated
-- 🌿 **Reduced-motion support** — all motion degrades to a plain show/hide when the system "reduce motion" preference is on, and uses only compositor properties (transform / opacity)
-- 📏 **Slimmer scrollbars, wider default panels (0.8.1)** — both sidebars use a 2px scrollbar (transparent at rest, visible on hover), and each default sidebar is 0.5cm wider
-
-### ✍️ Editing Experience (strengthened in 0.8.0)
-
-- ↩️ **Line-break fidelity** — `Shift+Enter` inside table cells, multi-paragraph list items, nested lists and indented code blocks survive saving intact
-- 🔤 **CJK punctuation pairing** — `「」『』《》【】（）` and friends auto-close, `Backspace` deletes in pairs, and typing a closing mark next to an existing one just moves the caret (no more quadruple quotes)
-- 🎯 **Typewriter mode centers immediately** when switched on
-- 🧭 **Mode-switch anchor** — switching between preview/source/split keeps you at the same editing position instead of jumping
-
-### ✨ AI Translation
-
-- **Selection & Full-Document Translation** — select text and translate it from the context menu or the "Translate" button; with no selection the whole document is translated (`Shift+F6`, the floating button, or the command palette)
-- **Result Modes** — "Replace in place" or "Bilingual comparison"
-- **Translation Bubble** — streaming results with cancel (`Esc`) and one-click restore of the original (0.6.1)
-- **Efficiency** — symbol-only / URL / email / image-only paragraphs are skipped; links, inline code, and images are protected as placeholders so they are never mistranslated (0.6.2/0.6.4/0.6.5); full-document translation runs 3-way concurrent (0.7.3)
-- **API Key Security** — stored in Windows Credential Manager and removed on uninstall (0.6.1); warnings for non-local URL endpoints (0.6.3); stored per provider (0.7.2)
-- **Fully decoupled from the AI assistant** (0.15.0): translation keeps its own settings, while the AI assistant / chat / custom instructions use the **AI connection profiles** below — changing one never affects the other
-
-### 🔌 AI Connection Profiles & Deep Configuration (0.15.0)
-
-- **Independent connection profiles** — Settings → "AI Connections": create any number of profiles (add / duplicate / rename / delete / reorder / set default). Each profile bundles protocol, endpoint, model, token budgets, request policy, system prompt and its own key; switching profile switches the whole set at once
-- **Two protocols** — one UI for both **OpenAI Chat Completions** (`POST {base}/chat/completions`, `Authorization` header) and **Anthropic Messages** (`POST {base}/v1/messages`, `x-api-key` + `anthropic-version`, `system` as a top-level field)
-- **Custom System Prompt** — per profile, **appended after** the built-in behavioural constraints (never overriding them) and sent in the system position rather than mixed into your messages
-- **Instruction library** — add / edit / duplicate / reorder custom instructions with `{{selection}}` and `{{document}}` variables; built-in templates are read-only and can be copied for editing
-- **Ollama local preset** — picking "Ollama (local)" pre-fills `http://127.0.0.1:11434/v1` with `authMode=none`: no key field, no fake key ever written
-- **Context / output budgets** — each profile sets a context window and max output, validated so output < context; the output limit field can be `max_tokens` or `max_completion_tokens`, and temperature / reasoning effort that are left blank are **not sent at all**
-- **Real token usage** — shows actual input / output tokens when the endpoint reports usage, and "not reported" (never a fake 0) when it does not
-- **Key safety** — keys are stored per profile in Windows Credential Manager, never echoed in the UI and never written to settings files
-- **No guessing** — presets only fill endpoint and protocol, the **model ID is left for you** to enter from your account docs; capabilities are never inferred from the model name
-- **Volcengine acceptance samples** — Anthropic protocol `https://ark.cn-beijing.volces.com/api/plan`, OpenAI-compatible `https://ark.cn-beijing.volces.com/api/plan/v3`
-
-### 🤖 AI Assistant & AI Chat
-
-- **Selection AI Bubbles** — selecting text shows one floating row of \[译\]\[续\]\[润\]\[摘\]\[问] bubbles (added in 0.7.4, extended in 0.7.5): continue writing (ghost preview at the caret, `Tab` to accept / `Esc` to discard), polish (replaces the selection), summarize (draggable floating window), and chat
-- **AI Chat Floating Window** (0.7.5, `Ctrl+K`) — free-form multi-turn chat with a one-click `Selection / Document / No context` scope chip, six quick templates (Diagram / Formula / Summary / Title & tags / Rewrite all / Analyze), and a draggable, resizable window that remembers its position
-- **Result Action Bar** — each answer can be inserted at the cursor, replace the selection, replace the whole document, copied, or regenerated; replacing the whole document first verifies the document was not edited, so your changes are never overwritten
-- **What You Insert Is What You See** — \`\`\`mermaid fences and `$$` formulas produced by the model render immediately as diagrams and formulas once inserted
-- **Per-Bubble Visibility & Colors** — the four AI bubbles can be hidden and restored individually and colored individually; the "译" bubble color is configurable too (0.7.5)
-
-### 🛠 Advanced Features
-
-- 🎨 **6 Themes** — light / dark / GitHub / newsprint / night / solarized (cycle with `Ctrl+Shift+T`)
-- 🔤 **Custom Font** and Size
-- 🖼 **Image Paste** — paste image and choose insertion method via dialog, with option to save to `assets/` folder
-- 📤 **Export HTML** (preserves Mermaid / KaTeX rendering)
-- 📤 **Export PDF** — printed in-app through WebView2 (**since 0.15.0 with no Edge / Chrome subprocess**: no local browser needed, immune to browser paths and versions, and the export runs in a separate hidden WebView so the editor is untouched)
-- 📤 **Export ePub** — chapters split by heading, bundled images, code-block styling (0.8.0)
-- 📤 **Export LaTeX** — generates a `.tex` source (ctexart + XeLaTeX, Chinese-ready) (0.8.0)
-- 🎯 **Focus Mode** (toggle with `F8`, dims inactive paragraphs)
-- ⌨️ **Typewriter Mode** (toggle with `F9`, cursor always centered)
-- 🔗 **Link Insert Dialog** — text/URL/title inputs with live preview (0.2.0)
-- 📊 **Table Visual Editing** — add/delete rows & columns, column alignment, draggable column width/row height, floating toolbar (0.3.0; 0.4.5 perfects column resizing: inner borders resize adjacent columns keeping total width unchanged, outermost border changes total width; 0.5.0 fixes unresponsive dragging in preview mode and supports the first column's left edge); **column widths / row heights persist with the document** (0.14.0, stored in a comment directive after the table — tables you never resized stay byte-identical)
-- 📊 **Table Insert Dialog** — custom rows/columns + header toggle (0.2.0)
-- 🖼 **Image-from-File Dialog** — file picker + Base64 / assets insertion modes (0.2.0)
-- 🧩 **Mermaid Template Dropdown** — Flowchart / Sequence / State / Gantt / Pie / ER / Gitgraph one-click insertion (0.2.0)
-- 🧰 **Format Bar Buttons** — H4/H5/H6, strikethrough, bold-italic buttons (0.2.0)
-- 🧰 **Syntax Helper Code Block Templates** — TypeScript/Go/Rust/Java/C++/SQL/JSON/YAML/Bash/Markdown/PHP one-click insertion (0.2.0)
-
-### ⚡ Performance
-
-- **Tauri 2** Rust backend — fast startup, low memory, tiny installer
-- **ProseMirror** editor core — smooth editing of large documents
-- **CodeMirror 6 source surface** (v0.17.0) — syntax highlighting, line numbers, code folding,
-  bracket matching, multi-cursor, search highlight, soft wrap. 5MB docs: load 19.3s → **3.3s**,
-  input latency 274.1ms → **16.4ms**
-  > Known limitations: **paired-enhancement gestures** (auto-close brackets / Tab-jump-out /
-  > paired deletion) are not active on the source surface; **Tab indentation, undo, typewriter
-  > and focus mode all work normally**.
-- **iframe-isolated preview** — preview DOM isolated from main document, significantly reducing GC pressure
-- **Incremental diff undo stack** — stores only diffs instead of full snapshots, greatly saving memory
-
-
-## ⚠️ Not Supported (Do Not Assume These Work)
-
-To avoid confusion, here is what LightMD genuinely does **not** do yet. The goal is "Typora's editing experience + lightweight file management", not a full Obsidian replacement (encryption / sync / plugin ecosystem).
-
-**Knowledge organisation**
-
-- Cross-file full-text search (`Ctrl+F` is limited to the current document; since 0.15.0 **workspace full-text search** covers the body text of open workspace folders, but there is no workspace-wide replace, no index and no frontmatter parsing)
-- Tag system (`#tag` parsing / tag panel / filtering by tag)
-- YAML frontmatter property panel (note: full-document translation skips the YAML header)
-- Wiki links `[[wiki-link]]` / backlinks / unlinked mentions
-- Graph view / bookmarks / Dataview-style inline queries
-
-**Editing**
-
-- Toggle a code block between editable and read-only
-- Snippets / abbreviation expansion
-- Setext headings (`===`) — parsed and displayed correctly, but normalised to ATX form after editing
-
-**Extensions & misc**
-
-- Third-party plugin system / theme marketplace
-- Git integration
-- Batch export of a whole folder
-- Sidebar search inside folders that have not been expanded yet (expand the tree first)
-
-> Some of these are on the roadmap; see "📋 Changelog" and the issue list.
-
-## ⌨️ Keyboard Shortcuts
-
-| Category                                | Shortcut                    | Action                                                                                |
-| --------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------- |
-| **File**                                | `Ctrl+N`                    | New scratch (untitled) tab — writes to disk only on first save                        |
-|                                         | `Ctrl+O`                    | Open file                                                                             |
-|                                         | `Ctrl+S`                    | Save                                                                                  |
-|                                         | `Ctrl+Shift+S`              | Save as                                                                               |
-|                                         | `Ctrl+Shift+E`              | Open the export dialog                                                                |
-| **Edit**                                | `Ctrl+Z` / `Ctrl+Y`         | Undo / Redo                                                                           |
-|                                         | `Ctrl+F`                    | Search                                                                                |
-|                                         | `Ctrl+H`                    | Find & Replace                                                                        |
-|                                         | `Ctrl+K`                    | Open the AI chat window (0.7.5)                                                       |
-| **Format (Source Mode)**                | `Ctrl+B`                    | Bold `**text**` (0.2.0)                                                               |
-|                                         | `Ctrl+I`                    | Italic `*text*` (0.2.0)                                                               |
-|                                         | `` Ctrl+` ``                | Inline code `` `code` `` (0.2.0)                                                      |
-|                                         | `Ctrl+Alt+S`                | Strikethrough `~~text~~` (0.2.0)                                                      |
-|                                         | `Ctrl+Shift+M`              | Block math `$$...$$` (0.2.0)                                                          |
-|                                         | `Ctrl+1` ~ `Ctrl+6`         | Set heading level H1 ~ H6 (0.2.0)                                                     |
-|                                         | `Ctrl+0`                    | Remove heading (to paragraph) (0.2.0)                                                 |
-| **Format (Preview Mode / ProseMirror)** | `Ctrl+Alt+S`                | Strikethrough (unified with source mode in 0.9.0; the old `Ctrl+Shift+S` is gone)     |
-|                                         | `Ctrl+/`                    | Toggle multi-line comment (`<!-- -->`); with no selection, toggle the current block (0.13.0) |
-| **Lists**                               | `Tab`                       | Increase indent (**list items only**; the first item does not nest)                    |
-|                                         | `Shift+Tab`                 | Decrease indent                                                                       |
-|                                         | `Ctrl+Shift+8`              | Bullet list                                                                           |
-|                                         | `Ctrl+Shift+9`              | Ordered list                                                                          |
-|                                         | `Ctrl+Shift+.`              | Blockquote                                                                            |
-| **Quick Insert**                        | `/` at line start           | Trigger Slash command menu (0.2.0)                                                    |
-| **Tabs**                                | `Ctrl+W`                    | Close current tab                                                                     |
-|                                         | `Ctrl+Tab`                  | Switch to next tab                                                                    |
-|                                         | `Ctrl+Shift+Tab`            | Switch to previous tab                                                                |
-|                                         | `Ctrl+Alt+V`                | Open the version snapshot window (0.8.0, was `Ctrl+Shift+V`)                          |
-| **Sidebar file tree**                   | `Ctrl+C` / `Ctrl+V`         | Copy / paste (or move after cut) the selected file, when focus is in the sidebar      |
-|                                         | `Ctrl+R`                    | Refresh the file tree (fallback when external changes are not synced, added in 0.8.4) |
-| **View**                                | `Ctrl+Shift+T`              | Toggle theme                                                                          |
-|                                         | `Ctrl+Shift+O`              | Toggle outline / syntax helper                                                        |
-|                                         | `Ctrl+Shift+P`              | Command palette                                                                       |
-|                                         | `Ctrl+P`                    | Quick file switcher (open tabs / recent / workspace, 0.13.0)                          |
-|                                         | `Ctrl+Alt+←` / `Ctrl+Alt+→` | Collapse / expand the sidebar / outline (0.9.0)                                       |
-|                                         | `Ctrl+Shift+B`              | Collapse / expand the tab bar (0.9.0)                                                 |
-|                                         | `F11`                       | Full screen (0.9.0; the command palette entry is the mouse path)                      |
-|                                         | `F8`                        | Focus mode                                                                            |
-|                                         | `F9`                        | Typewriter mode                                                                       |
-|                                         | `Ctrl+,`                    | Open settings                                                                         |
-| **Mode**                                | Double `Ctrl`               | Toggle preview / edit (double-press threshold 220 ms as of 0.9.0)                     |
-|                                         | Double `Shift`              | Toggle split mode                                                                     |
-
-> **Custom shortcuts (0.9.0)**: every customizable shortcut listed above is shown by category (File / Edit / Format / View / Tabs / Window / Insert) under **Settings → Editor → Customize Shortcuts**. Click an entry and press the new combination; conflicts report the current owner and are not written. Per-entry and global reset are supported, and the shortcut labels in the command palette, context menu and toolbar tooltips follow your changes (synced across windows). Reserved keys such as `F11`, the file-tree keys and editor behaviour keys are not customizable.
-
-## 📥 Installation
-
-### Windows (Recommended)
-
-Visit the [Releases](../../releases) page to download the 0.17.1 installers:
-
-- **`LightMD_0.17.1_x64_en-US.msi`** — MSI installer, for regular users, supports uninstall
-- **`LightMD_0.17.1_x64-setup.exe`** — Self-extracting installer, single file, no admin required
+> A lightweight, high-performance, WYSIWYG Markdown editor for Windows, built with Tauri v2 + React + ProseMirror (reading surface) + CodeMirror 6 (source surface).
+
+**Current version: v0.17.1**
+
+[中文](./README.md) | English | [User Guide](./USER_GUIDE.md) | [Changelog](./CHANGELOG_EN.md)
+
+## Overview
+
+LightMD for Windows combines the simplicity of Markdown with the immediacy of a rich-text editor: reading shows a typeset document, editing shows source and live preview side by side. The installer is about 9MB, starts in milliseconds, and needs no extra runtime.
+
+- **Two modes**: Read mode (WYSIWYG, syntax markers shown on the cursor line) and Edit mode (source on the left, live preview on the right)
+- **One timeline per document**: read, edit and preview share a single undo history, so undo keeps working across modes
+- **Content-anchored alignment**: read ↔ edit and source ↔ preview align by content anchors, so the same paragraph stays in the same place
+- **Local first**: documents, images and snapshots stay on your machine; nothing is uploaded
+
+## Interface and Modes
+
+- **Read mode**: typeset view where headings, lists, tables, diagrams and formulas look final; the line holding the cursor reveals its Markdown syntax.
+- **Edit mode**: source editor on the left with live preview on the right; the preview can collapse to plain source and slide back from the right edge.
+- **Switching**: double `Ctrl` toggles read / edit; double `Shift` toggles the preview inside edit mode; the title bar and status bar offer the same actions.
+- **Position kept**: switching modes, closing and reopening a tab, or restarting the app keeps your reading position.
+- **Synced panes**: scrolling either pane aligns the matching content at the top of the other pane.
+
+## Features
+
+### Editing and Input
+
+- **Source editor**: syntax highlighting, line numbers, code folding, bracket matching, active-line highlight, rectangular selection, multi-cursor, search highlights and soft wrap.
+- **Smart Enter**: lists, task items and quotes continue their markup; ordered-list numbers increment; an empty item exits the list; `Backspace` at line start removes the marker in one step.
+- **Code-block language highlighting**: fenced blocks are colored per language, common languages built in and others loaded on demand.
+- **Selection and multi-cursor editing**: double-clicking a word highlights every occurrence; `Ctrl+D` adds a cursor per occurrence to edit them all at once.
+- **Auto pairing**: brackets, quotes and Chinese punctuation are paired automatically, with selection wrapping, `Tab` jump-out and paired deletion; each category can be toggled.
+- **Type-as-you-get**: inline math, block math, links, images, footnotes and tables of contents convert as you type; emoji shortcodes such as `:smile:` complete inline.
+- **Markdown-aware paste**: pasted Markdown text or rich HTML is restored to real structure; a pasted URL becomes a link.
+- **Format Painter**: click once for a single application, double-click to stay armed; works on inline formatting for a selection, and can strip formatting as well as apply it.
+- **Block operations**: code blocks, formulas, diagrams, tables and image paragraphs can be dragged, copied, cut and deleted, each as one undo step.
+- **Batch comments**: `Ctrl+/` comments the selected lines or the current block; comments are dropped from exports.
+- **Document zoom**: `Ctrl+wheel` or the zoom ruler, 50%–200%, applied across all three surfaces.
+
+### Reading and Preview
+
+- **Heading folding**: collapse everything under a heading; display only, never modifies the file.
+- **Heading level badges**: click the `H1`–`H6` badge to change a heading level.
+- **Image lightbox**: double-click an image for full-screen viewing with zoom, pan and previous / next navigation.
+- **Outline panel**: live in sync with the document, click to jump, foldable, drag-sortable and searchable on hover.
+- **In-document links**: relative paths open the target file, `#anchors` scroll smoothly, external links go to the system browser.
+- **Typography settings**: content width, line height, paragraph spacing, font size and family take effect immediately.
+
+### Rich Content and Insertion
+
+- **Tables**: visual row / column editing, draggable column widths and row heights, column alignment, cell merge and split; sizes are saved with the document.
+- **Images**: paste, insert from file or drop in place; alt text, width and left / center / right alignment; an image manager converts inline and file-backed images, renames with reference updates, and cleans up unreferenced files.
+- **Mermaid**: 20+ diagram types with built-in templates for one-click insertion.
+- **Math**: inline `$...$` and block `$$...$$`, previewed live while editing.
+- **Code blocks**: language picker, one-click copy, automatic language detection when unlabeled.
+- **Other syntax**: task lists, highlight, superscript / subscript, footnotes, definition lists, `[toc]`, anchor links and emoji.
+
+### Files and Workspace
+
+- **Tabs**: multiple tabs, pinning, and a context menu (rename / print / save as / close others); untitled documents are not written to disk until saved.
+- **File tree**: several folders open at once, each with its own pane; create, rename, delete to the recycle bin, drag to copy / move, reorder within a folder, and live sync with external changes.
+- **Quick switcher**: `Ctrl+P` fuzzy-matches open tabs, recent files and workspace files.
+- **Favorites and recent**: favorites live in the sidebar with multi-select batch add; recent keeps both files and folders.
+- **Multiple windows**: up to 8 peer windows with independent tabs and state; open in a new window, drag to merge, restore sessions and detect file conflicts.
+- **Session restore**: reopens the tabs, folders and reading positions from the last session.
+
+### Search
+
+- **Current document**: `Ctrl+F` / `Ctrl+H` floating search with whole-word, match-case, selection-only and regex modes plus `$1` capture groups.
+- **All open files**: a result bar grouped by file with replace-all, and replacements can be undone.
+- **Workspace search**: full-text search across all open folders with streamed, cancellable results and jump-to-match.
+
+### Export and Print
+
+- **HTML**: self-contained styles with formulas and diagrams rendered inline; works offline.
+- **PDF**: printed in-app without an external browser, with complete per-page headers and footers.
+- **PNG**: the whole document as a long image with formulas and diagrams rendered as vectors.
+- **Word / ePub / LaTeX**: formulas, diagrams and images exported with layout preserved; ePub splits chapters by heading.
+- **Print**: prints the document with its current styling.
+
+### AI
+
+- **Translation**: translate a selection or the whole document, replacing text directly or showing bilingual output; streamed, cancellable and reversible.
+- **Assistant**: continue, polish, summarize and chat; floating buttons beside a selection and a multi-turn chat window with quick commands.
+- **Connections**: independent connection profiles supporting OpenAI-compatible and Anthropic protocols plus local deployments such as Ollama; live model lists and configurable context / output budgets.
+- **Instruction library**: custom instructions with `{{selection}}` and `{{document}}` variables.
+- **Key safety**: API keys live in Windows Credential Manager, stored per provider and per profile.
+
+### Appearance and Efficiency
+
+- **Themes**: six themes cycled with `Ctrl+Shift+T`.
+- **Focus mode** (`F8`) and **typewriter mode** (`F9`), available in all three surfaces.
+- **Immersive full screen** (`F11`): all surrounding panes collapse, leaving only the document.
+- **Custom shortcuts**: rebind by category with conflict warnings, per-item reset and restore-all, synced across windows.
+- **Update check**: check, download and install new versions from Settings.
+
+### Data Safety
+
+- **Auto save**: compares the file on disk before writing; if another program changed it, saving is skipped with a notice.
+- **External changes**: choose notify-only, ask each time, or pick between taking the newest version, keeping local edits or saving as.
+- **Independent undo**: undo / redo is scoped strictly per document.
+- **Version snapshots**: up to 5 versions per document with diff view and one-click restore.
+- **Recycle bin**: deleted files go to the system recycle bin and can be restored.
+
+## Known Limitations
+
+- Paired-input gestures in the source surface (`Tab` jump-out, paired deletion) are not wired up yet; `Tab` indentation, undo and focus mode work normally.
+- Typewriter mode does not apply to the source surface; reading and preview are unaffected.
+- Multi-cursor editing supports creating cursors and typing, but formatting, replace and AI actions apply only to the primary selection.
+- Files larger than 5MB open in edit mode only (source surface).
+- Split-view alignment outside the viewport is estimated, so long wrapped paragraphs may show small offsets.
+- Workspace search is read-only and does not replace across the workspace; it does not parse wikilinks, tags or frontmatter.
+- Not supported: tag system, wikilinks / backlinks, graph view, plugin system, Git integration, folder-wide export.
+
+## Keyboard Shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Toggle read / edit | Double `Ctrl` |
+| Toggle preview | Double `Shift` |
+| Save / Save as | `Ctrl+S` / `Ctrl+Shift+S` |
+| New / close tab | `Ctrl+N` / `Ctrl+W` |
+| Switch tab | `Ctrl+Tab` |
+| Quick file switcher | `Ctrl+P` |
+| Command palette | `Ctrl+Shift+P` |
+| Find / replace | `Ctrl+F` / `Ctrl+H` |
+| Undo / redo | `Ctrl+Z` / `Ctrl+Y` |
+| Focus / typewriter mode | `F8` / `F9` |
+| Immersive full screen | `F11` |
+| Settings | `Ctrl+,` |
+| New window | `Ctrl+Shift+N` |
+| Cycle theme | `Ctrl+Shift+T` |
+| Version snapshots | `Ctrl+Alt+V` |
+
+> The complete list lives in the [User Guide](./USER_GUIDE.md) and under **Settings → Editor → Custom shortcuts**, where bindings can be changed.
+
+## Installation
+
+### Windows
+
+Download the latest build from the [Releases](../../releases) page:
+
+- **`LightMD_0.17.1_x64-setup.exe`** — installer, no admin rights required, recommended
+- **`LightMD_0.17.1_x64_en-US.msi`** — MSI package, suited to enterprise distribution
+- **`lightmd.exe`** — portable single executable, run directly
 
 ### System Requirements
 
 - Windows 10 / 11 (64-bit)
 - No additional runtime required
 
-## 🚀 Quick Start
+## Quick Start
 
-1. **Download and install** LightMD
-2. **Create or open** a Markdown file
-3. Start typing — Markdown syntax renders on the cursor line automatically
-4. Type `/` at line start to invoke **Slash Commands** for quick insertion of headings/lists/code blocks/tables/Mermaid diagrams, etc.
-5. **Double-tap Ctrl** to switch modes, **F8** for focus mode, **F9** for typewriter mode
-6. See the [User Guide](USER_GUIDE.md) for full usage
+1. Download and install LightMD
+2. Create or open a Markdown file
+3. Read in read mode, then double `Ctrl` to edit
+4. Type `/` at the start of a line for the quick-insert menu (headings, lists, code blocks, tables, diagrams, formulas)
+5. `F8` for focus, `F9` for typewriter mode, `F11` for full screen
+6. See the [User Guide](./USER_GUIDE.md) for details
 
-## 🏗 Tech Stack
+## Tech Stack
 
-| Layer             | Technology            |
-| ----------------- | --------------------- |
-| Desktop Framework | Tauri v2              |
-| Backend           | Rust (Edition 2021)   |
-| Frontend          | React 18 + TypeScript |
-| Build Tool        | Vite 5                |
-| Editor Core       | ProseMirror           |
-| Markdown Parser   | markdown-it           |
-| Diagrams          | Mermaid 11            |
-| Math              | KaTeX 0.17            |
-| Code Highlighting | PrismJS               |
-| State Management  | Zustand               |
+| Layer | Technology |
+|---|---|
+| Desktop framework | Tauri v2 |
+| Backend | Rust |
+| Frontend | React 18 + TypeScript |
+| Build tool | Vite 5 |
+| Reading editor | ProseMirror |
+| Source editor | CodeMirror 6 |
+| Markdown parsing | markdown-it |
+| Diagrams | Mermaid 11 |
+| Math | KaTeX |
+| Code highlighting | PrismJS / CodeMirror Language |
+| State management | Zustand |
 
-## 🛠 Building from Source
+## Build from Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/badwoo/LightMD.git
 cd LightMD
-
-# Install dependencies
 npm install
-
-# Development mode
-npm run tauri dev
-
-# Build release version
-npm run tauri build
+npm run tauri dev      # development
+npm run tauri build    # release build
 ```
 
 Build artifacts are located in `src-tauri/target/release/bundle/`.
 
-## 📋 Changelog
+## Contributing
 
-### v0.17.1 (2026-11-17, repackaged) — CM6 capability batch 1 (P0) + three user-reported fixes
+Issues and pull requests are welcome. See the [changelog](./CHANGELOG_EN.md) for release contents.
 
-Follow-up to the v0.17.0 CodeMirror 6 source-surface migration, closing the most
-user-visible capability gaps:
+## License
 
-- **Smart Enter**: Enter inside lists / task items / blockquotes continues the markup
-  (`- `, `- [ ] `, `> `) automatically, ordered-list numbers auto-increment; Enter on an
-  empty item exits the list; Backspace at line start removes the whole list/quote marker
-  at once (no more joining with the previous line). Undo stays on the unified timeline
-  (one Enter = one undo step).
-- **Code-block language highlighting**: fenced code blocks (```js, ```python, etc.) are
-  token-colored per language (previously a single color), with lazy-loaded languages.
-- **Selection match highlight**: double-click a word and every occurrence lights up;
-  new **Ctrl+D** selects the next occurrence — accumulate multi-cursors and edit all
-  places at once.
-- **Empty-document placeholder**: blank documents show "Start writing Markdown…
-  (type / for commands)", which disappears on first input.
-- **Drop cursor**: dragging text / files shows a vertical insertion marker at the
-  drop position.
-- **Scroll past end**: every line can scroll to the top of the viewport, so typewriter
-  mode can center the last line (previously it stuck to the bottom edge).
-
-Plus three user-reported fixes:
-
-- **Reading position lost after double-Ctrl mode toggles**: after switching back and forth
-  a few times the viewport jumped to the top of the document. Root cause: the split-preview
-  "preview → source" reverse sync treated the preview iframe's *programmatic* writes as
-  user scrolling (the iframe's scroll event arrives via the cross-document queue ~450 ms
-  late, well past the direction-lock window), so it reverse-mapped from a preview that was
-  still settling and wrote the source pane back to line 0. Now the sync **identifies its
-  own writes by value**: if the preview's current scrollTop equals what this program last
-  wrote, it is an echo and is ignored.
-- **Format Painter can "strip" formatting**: selecting unformatted text and clicking Format
-  Painter no longer reports "nothing to copy"; painting it onto formatted text clears that
-  formatting (`**bold**` → `bold`).
-- **Format Painter can apply to a selection**: select the target text first, then paint —
-  only that range gets the inline formats (bold / italic / strike / inline code /
-  underline / highlight) instead of the whole block; line prefixes (`## `, `- `, `> `) are
-  left untouched. With no selection (caret only) the previous whole-block behaviour is kept.
-- **Split-preview toggle now stays aligned**: toggling the right-hand preview inside edit
-  mode used to leave the preview pane several blocks ahead of the source pane (it only
-  caught up after you scrolled). The programmatic re-align after a toggle was being held to
-  a 16px-per-frame anti-jitter clamp — it needed ~2.2 s to cover the ~2000px gap while the
-  re-align chain ends at 1.6 s. Programmatic alignment now bypasses that clamp; measured
-  error dropped from 1242px to 28px.
-
-### v0.17.0 (2026-11-11) — CodeMirror 6 source surface + unified document model (foundation)
-
-> The scope of this release was **formally reduced** after review (see
-> `_plan/lightmd-0.17.0-current-state-assessment.md` §4): what ships for the unified
-> document model (UnifiedDoc) is the **model foundation plus one export exit (Block[]) as a pilot**.
-> "Edit / read / preview / export all sharing a single AST" is **not yet complete** and has been
-> formally deferred. What this release genuinely completes and verifies is the
-> **CodeMirror 6 source-surface replacement**.
-
-**In one line**: the editor source surface moves from `<textarea>` to CodeMirror 6; in
-addition the parse tree, source-position map (SPM), serializer and fuzz infrastructure of the
-unified document model land, and the **Word / LaTeX / ePub export exit** is switched onto it.
-
-**Accurate statement about the "unified model" (important, to avoid misunderstanding)**:
-
-| Exit | Status in this release |
-|---|---|
-| Word / LaTeX / ePub export (Block[]) | ✅ switched to the UnifiedDoc tree (`parseUnified → treeToBlocks`) |
-| Top-level block line tagging (split-scroll alignment) | ✅ consolidated onto the model's SPM |
-| Image size / alignment suffix parsing | ✅ single-sourced (shared by PM and renderer) |
-| Reading surface (ProseMirror) parsing | ⬜ still uses the existing markdown-it path |
-| Preview / HTML export | ⬜ still uses the markdown-it render path |
-| Reading → source serialization | ⬜ still uses the existing PM block serializer (not yet on the model tree) |
-
-In other words: this release delivers **"model + one exit wired + two shared logic paths
-consolidated"**, **not "all four exits unified"**. Full unification requires writing a model-based
-exit for preview and for reading, and first establishing an HTML byte/visual equivalence baseline
-(see `_plan/lightmd-0.17.0-unified-completion-feasibility.md`).
-
-#### User-visible changes
-
-- **CodeMirror 6 source surface**: syntax highlighting, line numbers, code folding, bracket
-  matching, active-line highlight, rectangular selection, multi-cursor (`Ctrl+Alt+↑/↓`),
-  real search-highlight ranges (no longer pixel-aligned), and soft wrap for long lines.
-- **Large-file throughput**: 5MB document load **19.3s → 3.3s**, input latency
-  **274.1ms → 16.4ms** (**16.7×** improvement), long tasks **301 → 1**.
-  > Note: the originally specified gate `p95 < 16ms` was **not strictly met** (measured 16.4ms).
-  > A controlled experiment showed the floor of this metric is dominated by the 60 Hz refresh
-  > phase (an empty-callback floor measured 16.5–18.2ms); the product sits at that floor, and the
-  > real JS processing cost is ~0.4ms. It is recommended to change the gate to
-  > "processing cost p95 < 4ms + dropped-frame rate < 5%" in a later release.
-  > See `_plan/lightmd-0.17.0-final-acceptance.md` §4.1.
-- **Files above 5MB are edit-mode only** (source surface) — previously the mode was switched
-  but ProseMirror was still created, freezing the UI.
-- **Two crash-level defects fixed** (both introduced by the migration; invisible to jsdom):
-  typing a single character in the search box crashed the whole UI (`setSelectionRange` used on
-  a non-textarea), and **`Ctrl+Z` did nothing** (`textarea.value` was `undefined`).
-
-#### Defects found and fixed in the second verification round
-
-| # | Defect (user-visible) | Before | After |
-|---|---|---|---|
-| P0 | **The editor was fully rebuilt on every keystroke** → focus lost; typing 10 chars landed only 1 | 1/10 landed, focus fell to `<body>` | **10/10** landed, **0** rebuilds |
-| P1 | **Format ghost placeholder was completely invisible** (no grey "bold text" hint after pressing Bold) | visible 0/211 frames | visible **210/211** frames, alive 3.5s |
-| P1 | **Split view showed different content on the two panes** | 31-line offset (72 lines on long lines) | 6-line offset (4 lines on long lines) |
-| P1 | **Scroll position lost when switching edit ↔ read**; edit-mode progress never persisted | jumped back to top; 0 writes | stays on the same block; writes normally |
-| P1 | **Alternating Ctrl+Z / Ctrl+Y only worked every other press** | 3/6 hits | **6/6** hits |
-| P1 | **Typewriter mode had no effect on the source surface** | caret stuck 425px off centre | **44px** off centre, really scrolls |
-
-Root causes were concrete: a content value inside a `callback ref` dependency array,
-`applySourceInput` unconditionally clearing the ghost, `layoutAvailable` probed only once at
-mount time, a scroll listener bound to a non-scrolling host div, and undo landing writing a
-new history entry of its own. Full evidence chains in `_plan/v0170-fix-summary.md`.
-
-#### Known limitations
-
-- **Paired-enhancement gestures** (auto-close brackets / Tab-jump-out / paired deletion) are not
-  active on the source surface; **Tab indentation, undo, typewriter and focus mode all work**.
-- **Split-view alignment still has a small estimation drift on soft-wrapped long lines**
-  (CM6 estimates line heights outside the viewport; measured max ≈ 6 source lines).
-  Regular documents align well.
-- **The format ghost placeholder only appears when the caret sits at an empty position** —
-  this is existing intended behaviour, not a defect.
-- **IME candidate-window following needs manual verification**: the candidate window is rendered
-  by the OS and is unreachable by automation. Caret geometry (rectangle, vertical/horizontal
-  movement, wrapped-line following) has been measured correct, but a real-device check is
-  still recommended.
-
-#### Behaviour difference (not a defect)
-
-- **`Home` on a wrapped line** moves to the visual line start first, then to the logical line
-  start on a second press. This matches VS Code / Sublime / JetBrains and is the mature
-  behaviour; the old `<textarea>` only had the logical line start.
-
-#### Engineering
-
-- `EditorContainer.tsx` split from **10083 → 1896 lines** (8 panes); 272 of 275 statements moved
-  byte-for-byte.
-- Round-trip fuzz infrastructure (1000 random documents; three official oracles, each covering one path):
-  - `md→tree→md` (UnifiedDoc model path): **1000/1000 byte-identical**;
-  - `md→blocks→md` (export exit): **lossy = 0 / corrupt = 0**;
-  - `md→doc→md` (reading-surface path, unedited): **lossy = 0 / corrupt = 0**.
-- The four-outlet consistency matrix (**118 cases**) covers **semantic-fact-level** consistency
-  (heading level, code blocks, quote depth, structural fidelity) — it is **not** HTML byte/visual
-  equivalence. The latter has no baseline yet, so it cannot be cited as proof that preview and
-  export HTML are identical.
-- Known pre-existing item (**not introduced by this release, not a regression**):
-  `md-doc-md#reserialize` (forced per-block re-serialization) still shows 64 corrupt documents out
-  of 1000. It measures pre-existing loss in the **legacy PM block serializer**, which is outside
-  this release's scope; it is registered as a tracked debt item and will go to zero together with
-  "wire serialization onto the model tree".
-
-### v0.16.0 (2026-11-05 ~ 11-08)
-
-**Tab and indentation system — one single source for tab width, a configurable indent unit, and documentation aligned with the implementation**
-
-In v0.15.6 the Tab key was a **chain of commands** (`pairTabOut → tableTab → codeBlockIndent → sinkListItem`), and when every link returned `false` the event fell through to the browser's native Tab and **focus escaped the editor** — the root cause was not a missing scenario but the chain having no fallback. This release adds the first-class `indent` / `outdent` commands in `core/indentCommands.ts`, which dispatch by block type and, **apart from the table branch, never return `false`**, turning focus escape from "fix it once per scenario" into something structurally impossible; the Tab chain is now `chainCommands(pairTabOut, tableTab, indent)`. The table below lists the 16 defects fixed in this release by severity.
-
-| Level / # | Issue | Fix |
-| --- | --- | --- |
-| P0 / D1 | **Pressing Tab with a selection inside a code block corrupted the code**: the old single-point `insertText(unit, $from.pos)` turned `"line1\nline2\nline3"` with `line2..line3` selected into `"line1\nl  ine2\nline3"` | Indent now applies **once to every line the selection covers** (back to front, single transaction) |
-| P0 / D2 | **Tab did not indent at all in source mode** | New pure planner `utils/sourceIndent.ts` wired through `handleSourceKeyDown`; the key is swallowed whether or not there is anything to indent (otherwise the "nothing left to remove" case still let focus escape) |
-| P1 / D3 | Paragraph / heading / quote blocks leaked **focus** on Tab | The `indent` dispatch takes over (paragraphs get an indent, headings swallow the key) |
-| P1 / D4 | **`math_block` was missing from `inCodeLikeBlock`**, so Tab threw focus to the ⋮ menu | Added to the `inCodeLikeBlock` check; focus stays in the editor |
-| P1 / D5 | On the **first** list / task-list item `sinkListItem` always fails, so Tab leaked focus | Shows "cannot indent the first list item" and swallows the key |
-| P1 / D6 | **`pairTabOut` stole Tab inside table cells** (with paired brackets `()` in the cell, Tab moved one character right instead of changing cell) | `PAIR_TAB_DISABLED_NODES` (including `table_cell` / `table_header`) is split out and kept **separate from `DISABLED_NODES`** so in-cell autocompletion still works |
-| P1 / D7 | **`mermaid_block` was absent from `DISABLED_NODES`**, conflicting with the code-block indent behaviour | Merged into `DISABLED_NODES`, giving one behaviour shared with code blocks |
-| P1 / D8 | Code-block Shift+Tab **ate spaces in the middle of a line** (`"a b"` → `"ab"`) | Now only removes indentation when everything from the caret back to the line start is whitespace |
-| P2 / D9 | **Real `\t` indentation was not recognised**: `outdentLen` always counted one `\t` as one unit | `outdentLen` recognises real `\t` and counts one unit by its actual width |
-| P2 / D10 | **Shift+Tab with a selection did not work line by line** | Shares `lineStartsInRange` with D1 and outdents each line the selection covers |
-| P2 / D11 | **A bare Tab in a `NodeSelection` state hit the raw key** | The key is swallowed instead of escaping |
-| P2 / D12 | **The same file containing `\t` showed different indent widths in Preview and Edit** (`code-theme.css` set 2 for `code[class*=language-]`, which only matched code blocks **that carried a language tag**, while `editor.css` hard-coded 4 for `.code-block-wrapper code` and `.source-editor`) | All three `tab-size` sites now read the global CSS variable `--lm-tab-size` (falling back to 2), driven by the `indentUnit` setting — code blocks with and without a language tag, and the source textarea, finally use one width. The variable is also injected into the preview iframe and exported documents, since a standalone document does not inherit the parent's variables |
-| P2 / D13 | **Documentation did not match the implementation** | `USER_GUIDE.md` gains a "Tab and indentation behaviour (unified as of 0.16.0)" section — a per-scenario table covering tables / code blocks / math blocks / diagram blocks / lists / task lists / quote blocks / plain paragraphs / headings / paired symbols / AI ghost text / all three modes; the list shortcut table now says indentation applies **inside list items only** and that the **first list item cannot be indented**. Also, what this README previously described as "`pairTabOut` stealing Tab inside tables is the expected behaviour" is rewritten as a **confirmed defect fixed in v0.16.0** (see D6) |
-| P2 / D14 | **There was no indent-unit setting** | **Settings → Editor → Indent unit** dropdown (`Tab` / `2 spaces` / `4 spaces`, default 2 spaces); changes apply **immediately** and update code blocks and the editor area together |
-| P2 / D15 | **Undo granularity was unpredictable** | Indent transactions carry `closeHistory` so that **within the ProseMirror undo stack** each indent is its own step (verified: two Tabs produce two `closeHistory` boundaries). However, the real `Ctrl+Z` path routes through `hostUndoCommand` to the **unified timeline**, which only observes the `pmAdapter` debounce window (`DEBOUNCE_MS=350` / `MAX_WAIT_MS=900`) and never reads `closeHistoryKey` — so **indents less than ~350ms apart are merged into a single undo step** (measured: merged at 150/250ms, separate at 400/500/700ms). Known limitation; it does not affect data correctness. |
-| P2 / D16 | **`decidePairTabOut` did not check `isComposing`** | Added (unreachable through ProseMirror; the real defect was on the source side) |
-
-> The 0.16.0 Tab rule: whatever block type the caret sits in, `Tab` / `Shift+Tab` never move focus out of the editor (the focus-escape problems of v0.15.6 and earlier are fixed in this release).
-
-**Sidebar UI rebuilt — a title-bar sidebar button, Favorites and Recent as mutually exclusive full-height views, and multi-select batch adding for Favorites**
-
-| Point | Implementation |
-| --- | --- |
-| File-section header (v0.16.0 second-round adjustment: restored) | The large "＋ New" button is removed and the original single-row form — **"Files" heading + six function icons** — is restored: the new-file icon is back as the first icon and still uses the `file.new` command. On very narrow sidebars (header content ≤232px, i.e. sidebar <~266px) the heading hides and the whole row is given to the icons, so even the 180px minimum never overflows horizontally |
-| Title-bar sidebar button | A sidebar button is added to the left of the LightMD title: in the file-manager view it **collapses / expands** the sidebar; in the Favorites or Recent view it **closes the current panel and returns to the file manager** |
-| Favorites / Recent as full-height views | Both become **mutually exclusive** full-height panels (only one visible at a time) with the sidebar toolbar kept; opening **slides in from the left**, closing **slides out to the right** |
-| The file tree is hidden, not unmounted | Switching to Favorites or Recent only **hides** the file tree, so scroll position and expanded folders survive the round trip |
-| Success paths return to the file manager | Opening a workspace from "Recent folders" or a shared-folder entry automatically switches back to the file-manager view, so the changed workspace is immediately visible |
-| Multi-select batch adding for Favorites | The Favorites panel gains "Add favorites": supports circular multi-select, deselecting, closing with `Esc`, and staying in sync when a tab is closed; submission goes through the new atomic batch action `addFavorites`, which accepts up to a **50-entry** capacity and returns the actual `added` / `skipped` counts — **existing favorites are never evicted to make room for new ones**; files sharing a name include their full path in the accessible name so they remain distinguishable |
-| Favorite candidate scope (v0.16.0 third-round adjustment: widened) | Clicking "＋" now offers **two groups**: ① "Open files" — the current window's already-saved open tabs (unsaved scratch tabs have no persistable path and are not listed); ② "Workspace files" — **every openable file in all opened workspace folders, including any depth of subdirectory**, read recursively while skipping dot-entries and `node_modules` / `target` / `dist` / `build` / `.git`. Both groups are de-duplicated by full path, so an open file appears only in the first group. The old implementation only listed open tabs |
-| Large-workspace safeguards | Hard cap of **20000** workspace files (exceeding it reports "only the first 20000 were read"); each group renders at most **400** entries with a hint to narrow the search, so the sidebar cannot stall. If the workspace read fails it **silently degrades to open files only**, with an inline notice inside the picker — no error dialog, no stuck loading state |
-| Favorite picker opening / cancelling animation (v0.16.0 third-round adjustment) | Expanding the "＋" picker **slides its content in from under the header** and fades it in (240ms, entries entering with a slight staggered delay) while the "＋" icon rotates into a "×"; cancelling via "Cancel" / `Esc` / confirming **slides the content back out and fades it out** (180ms) and only then unmounts it, so the favorites list refills smoothly. A filter box matches **file name or path** case-insensitively without clearing the current selection. With the system "reduce motion" preference on, these transitions are disabled and cancelling takes effect immediately |
-| Search-file animation (v0.16.0 second-round adjustment: smoother) | Expanding animates the panel height with `grid-template-rows` **0fr→1fr**, so the file list below is **pushed down smoothly**; the search box simultaneously slides in from beyond the left edge (visually moving out to the right). Collapsing slides the box **out to the left** and retracts the panel height, so the file list **moves back up smoothly**. The old implementation only animated `max-width` while the panel was already at full height — content jumped down instantly on click and jumped back up when the collapse finished, which was the root cause of the "not smooth" animation |
-| Reduced motion and width restore | The "reduce motion" preference is honoured, weakening the slide transitions accordingly; the sidebar restores its original width after being collapsed |
-| Chinese and English copy | All new labels — the button, the selected count, the capacity-limit notice — ship in both languages |
-
-Verification: `npx tsc --noEmit` passes (exit 0); the full Vitest suite run sequentially with
-`--no-file-parallelism` totals **364 files / 6614 cases passing** (1 pre-existing skip, **0 failures**);
-the real-machine WebView2 probes `scripts/v0160-probe-sidebar-ui.mjs` reports **21/21 PASS**
-(including the second-round header restore and frame-by-frame search-panel animation checks),
-`scripts/v0160-probe-favorites-picker.mjs` reports **27/27 PASS** (third-round adjustment: recursive
-candidate scope, hidden/excluded-directory/non-text files kept out, frame-by-frame open and cancel
-animation, delayed unmount, reduced motion, empty-workspace degradation) and
-`scripts/v0160-probe-tab-indent.mjs` reports **11 PASS / 1 FAIL** (the FAIL is the undo-coalescing
-window for consecutive indents described above, now documented as measured and listed as a known
-limitation); `npx tauri build` produces NSIS + MSI, `lightmd.exe` reports
-`FileVersion` / `ProductVersion` `0.16.0`, and the frontend dist entry `index-Bs50u8Cg.js` is found
-in the exe byte stream.
-
-### v0.15.6 (2026-11-03)
-
-**Configuration interaction rebuilt — the Providers and Custom tabs now share one "entry list" model: click to expand/collapse, a per-entry toggle, and a green dot for the enabled one**
-
-| Point | Implementation |
-| --- | --- |
-| One config = one entry | Both tabs are lists now: each row shows name + Provider ID + endpoint summary, replacing the old dropdown |
-| Click the entry = expand/collapse | Clicking the entry body only toggles whether its configuration is shown (`aria-expanded`), one entry at a time (accordion); it never enables the entry as a side effect |
-| Per-entry enable/disable button | An independent switch (`aria-pressed`): clicking a disabled entry enables it; clicking the enabled entry disables it (all entries may be off, in which case the summary shows "no connection configured yet") |
-| Green dot marks the enabled entry | The enabled entry shows a green dot to the **right** of the toggle (with `role="img"` + `aria-label`, not colour alone) |
-| Providers tab lists only configured entries | The list shows only providers you have already configured; the "Add provider" dropdown above it lists only **not-yet-configured** presets (grouped local / Chinese / international), and picking one adds an entry and expands it |
-| The expanded entry edits itself | The Providers tab form now binds to the **expanded entry** instead of a hard-coded "currently enabled profile" — editing A changes A regardless of which entry is enabled |
-
-**One key trade-off (draft safety)**: the Custom tab keeps its draft + save model. Before collapsing or switching entries it performs a best-effort commit —
-if validation passes it writes the draft back silently (**without changing the enabled state**); if validation fails it **refuses to switch and shows a warning**,
-so edits are neither silently discarded nor written as invalid data.
-
-Verification: `tsc --noEmit` exit 0; **355 frontend files / 6456 cases pass** (1 pre-existing skip);
-the new real-machine probe `scripts/v0156-probe-profile-accordion.mjs` reports **25/25 PASS**
-(entry expand/collapse, accordion, toggle decoupled from expansion, dot position, all-off, providers list only configured,
-add dropdown only offering unconfigured presets, expanded-entry edit ownership without touching the enabled profile);
-the v0.15.4 acceptance probe (which includes the 11 v0.15.5 checks) reports **52/52 PASS** with no regression.
-
-### v0.15.5 (2026-11-01)
-
-**Three experience fixes — custom profiles become visible and manageable, quick text selection stops failing, and the active-model summary moves under the AI master switch**
-
-| # | Issue | Fix |
-| --- | --- | --- |
-| 1 | A custom model configuration had no effect and the record disappeared after saving | Root cause: "is this a custom profile?" was decided solely by whether the Provider ID collides with a preset id. A user who just picked DeepSeek on the Providers tab naturally types `deepseek` as the custom Provider ID too — the profile saves, but it appears neither in the custom list nor in the provider dropdown (which only lists presets), so **it is invisible in every entry point**. Profiles now carry an optional `source: "preset" \| "custom"` marker used as the authority (older profiles fall back to compatible inference, no data migration needed). The custom tab is now a **list of entries**: each row shows name + Provider ID + endpoint, clicking loads it for editing, each row has a delete button, the enabled entry gets a **green dot**, and deleting the enabled entry safely falls back |
-| 2 | Quickly selecting text often failed to show the selection in the chip | Root cause: the guard added in v0.15.4 to ignore "selecting AI answers" inspected the **DOM selection** — when the user selects body text and then **clicks the input box** (the most common action), the DOM selection lands inside the chat window, the callback returns early, and the text that was just selected is never applied. Now only the **editor's own selection signature** is consulted (PM `state.selection` / textarea `selectionStart/End`), fully decoupled from focus; and the 250ms debounce became "120ms coalescing while dragging + immediate flush on release", so the chip follows as soon as you let go |
-| 3 | The enabled-model text should sit under the "Enable AI" button | The active-model summary moved out of the model tabs to **directly below the AI master switch** as a globally visible row (`provider - model name - reasoning level`). It stays **visible even when the master switch is off**, since it describes which model is enabled regardless of the switch. The computation was extracted into the pure function `describeActiveProfile()` so both call sites share one definition |
-
-Verification: `tsc --noEmit` exit 0; **354 frontend files / 6429 cases pass** (1 pre-existing skip); the real-machine probe
-`scripts/v0154-probe-acceptance.mjs` now reports **52/52 PASS**; the dedicated probe
-`scripts/v0155-probe-quick-selection.mjs` runs 7 quick-selection scenarios plus 20 round-trip drags with a
-**0% failure rate** (scenarios M3/M6/M7 failed 100% of the time before the fix).
-
-### v0.15.4 (2026-11-01)
-
-**Fix release — the ten issues you reported; AI configuration went from "configurable" to "usable and broad enough", and the per-keystroke / per-undo document jitter is finally gone**
-
-| # | Issue | Fix |
-| --- | --- | --- |
-| 1 | Custom configuration must support Ollama and other local deployments | The custom tab gains a **local deployment kind** selector (Ollama / LM Studio / vLLM / llama.cpp / LocalAI; Text Generation WebUI / Jan / Xinference / SGLang ship as provider presets). Selecting one prefills the official default endpoint, protocol and no-auth mode. Profiles gain an optional `localKind` field the backend uses to detect Ollama's native API |
-| 2 | Ollama "fetch models" must list **every** model installed locally | The old code only enriched context metadata and silently dropped models missing from `/v1/models`. Now `/v1/models` and native `/api/tags` are **union'd by id**, merging `details.context_length`; if `/v1/models` fails entirely but native succeeds, the native result is returned |
-| 3 | Custom models leak into the "Providers" dropdown (bug) | The dropdown only renders built-in presets; activating a custom profile auto-switches to the custom tab with a hint |
-| 4 | Custom configuration needs the same model configuration as providers | The custom tab now has a model-name field, fetch-models, test-connection (draft profile + temporary credential slot, unsaved key stored first), a context slider and current-model selection |
-| 5 | Move both buttons to the right of the model-name field | "Fetch models" and "Test connection" now sit on the same row as the model-name input on both tabs |
-| 6 | Show the currently enabled model below the model configuration | New `provider - model name - reasoning level` line; for custom profiles the provider part is the display name |
-| 7 | The AI instruction library could be configured but had no entry point (the feature was incomplete) | A **second row of custom instruction chips** under "Quick instructions"; typing `/` in the input opens an instruction picker (↑↓ / Enter / Esc, never during IME composition); selecting one expands `{{selection}}` / `{{document}}` into the input (prefill only, never auto-send) and syncs the context chip. An empty library renders no extra row |
-| 8 | Verify provider/custom coverage reaches 95%+ of the market | Presets **26 → 54** (13 international / 7 Chinese / 8 local). Vendors that need a compatibility layer (Cohere / DeepInfra / Novita / Groq / Perplexity) document the endpoint transformation in comments; presets that would only ever fail are deliberately **not** added (Hyperbolic decommissioned, Skywork continuous 503, 01.AI shut down). The dropdown groups entries as local / Chinese / international |
-| 9 | The AI chat context is always the full document and selecting text had no effect | Root cause: context refresh was skipped whenever focus sat inside the chat window, and once the scope was "document" it never followed. Now the editor's own selection is read, decoupled from focus; an explicit auto-follow / manual-lock state was added: a usable selection switches to "selection N chars", losing it falls back to the full document, clicking the chip locks it, and only a **real** selection change unlocks it. Sending re-evaluates the selection at that moment, so it never shows "document" while sending a selection |
-| 10 | The document still flickers on every keystroke and every Ctrl+Z | Two writers were caught by real-machine measurement: ① the undo-landing transaction still saved/restored `scrollTop` using the pre-replacement pixel value, which the browser clamped to the new bottom once the document got shorter, and the content anchor then pulled it back; ② during the undo window `keyup` still ran `scrollToVisible()` because "caret outside viewport", pushing the viewport away before it was pulled back. Fix: undo-landing transactions are exempt from `scrollTop` restoration (the content anchor owns the viewport), plus a 400ms undo scroll window in which keyup / click / typewriter centering stand down. Measured scrollTop writes went from "+3448 then −3448" to three zero-delta idempotent writes |
-
-**URL fallback contract** (so no request is ever sent twice): only "fetch models" keeps a fallback, and only on 404 does it retry `{base}/v1/models` once; chat / assistant / translation / test-connection report the 404 as-is and never resend.
-
-**Local runtime alignment**: llama.cpp uses upstream's default port **9931** (no longer colliding with LocalAI's 8080, which made endpoint-based provider inference ambiguous); local runtimes are always `authMode=none` (no wasted credential lookup).
-
-Verification: `tsc --noEmit` exit 0; **352 frontend files / 6389 cases pass** (1 pre-existing skip); `cargo test --lib` **275 passed / 0 failed** (3 ignored); the real-machine undo-jitter probe `scripts/v0154-probe-real-keys.mjs` (real WebView2 + real keydown/keyup chain + content-coordinate judging) shows undo content-coordinate reversals **1 → 0** and amplitude **149 blocks → 1 block**.
-
-Known trade-offs: ① provider coverage meets 95% for **individuals / small teams + local deployment**; enterprise does not — Azure OpenAI / AWS Bedrock / Vertex must use custom (the hard boundary of three protocols + a static base URL; Azure differs only in its per-tenant resource subdomain, and the configuration hint shows how to fill it); ② static model catalogs age, refresh them via "fetch models"; ③ instruction `{{document}}` uses the 20k-character truncated context, which fills the input on long documents (matching the send limit, so nothing over-sends).
-
-### v0.15.3 (2026-10-30)
-
-**Deeper AI configuration — a 50% wider settings dialog, a tree layout, tabbed model settings, three wire protocols and vendor plans.**
-
-| Request | Implementation |
-| --- | --- |
-| Widen the settings dialog by 50% | `SettingsDialog.css`: 520px → **780px**, with `max-width: calc(100vw - 32px)` keeping a 16px safety margin on small windows; measured **780px** on the real app |
-| Tree layout for AI | “Enable AI” is the master switch; when on, the tree nests **Model configuration → AI translation → AI instructions**. Turning the master switch off collapses the whole subtree; the translation sub-switch collapses only its own children. `SettingsDialog` no longer duplicates model fields — the translation node keeps language, tone, result mode, bubble color and custom prompt |
-| Tabs for model configuration | New `AiModelSettings`: left “Providers” (provider, API key, base URL, model, temperature, fetch models, test connection), right “Custom model API” (Provider ID, display name, base URL, protocol, API key, model catalog). Tabs expose `role=tab` and arrow-key navigation |
-| Context-window slider | After fetching/selecting a model that reports context metadata, a slider appears **defaulting to the maximum**; models at 1M+ gain a middle **600K** stop (others offer “app lower bound / model maximum”). Metadata comes only from what the endpoint really returns (OpenAI `/models` fields, or Ollama's native `/api/tags` `details.context_length`) — never guessed from model names |
-| Ollama by default + vendor plans | Fresh installs default to local `http://127.0.0.1:11434/v1` with `authMode=none` (no Authorization header). Added **Kimi Plan** (`api.kimi.com/coding`, Anthropic Messages), **Volcengine Coding Plan** (`/api/plan/v3`), **Zhipu GLM Coding Plan** (`/api/coding/paas/v4`) and **Alibaba Cloud Token Plan**; all four `/models` endpoints returned 401 when probed unauthenticated (path valid, auth required) |
-| Custom model API | Provider ID follows the DSH rule `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$` and doubles as the credential slot, so switching providers never reuses the wrong key. Protocols: OpenAI Chat Completions / OpenAI Responses / Anthropic Messages. Model catalog carries ID, name, context window and reasoning effort `off/low/medium/high/xhigh/max` (with `off` normalised to “send no reasoning parameter”) |
-| AI instruction library | The existing instruction editor is kept and moved to the last node of the AI tree, still backed by `settings.ai.instructions` |
-
-This release also closes a real 0.15.0 gap: `ai_chat`, `ai_assist_text` and `translate_text` used to accept protocol, reasoning effort and budget at the command boundary but still always spoke OpenAI Chat. They now share `AiRequest` with three-protocol HTTP/SSE; translation keeps `build_prompt`, `{{N}}` placeholder mask/unmask and its concurrency slots. Translation now runs on the **current AI profile**; legacy `translate` connection fields remain only for migration.
-
-Verification: `tsc --noEmit` exit 0; **347 frontend files / 6269 cases pass** (1 pre-existing skip); `cargo test` **270 passed / 0 failed** (3 ignored); `npx tauri build --no-bundle` produced the 0.15.3 exe; real-machine probe `scripts/v0153-probe-ai-settings.mjs` **10/10 PASS** (780px, tree order, Ollama default, fetching qwen3-vl:8b and 8b-instruct, 262K slider at maximum, connection test, master-switch collapse, three protocols, six reasoning levels).
-
-Known trade-offs: (1) vendor plan catalogs only list models with published catalog data, everything else comes from “fetch models”; (2) Anthropic has no standard `/models` endpoint, so models must be typed in when a vendor does not provide one; (3) `contextWindowTokens` is profile metadata (slider + budget validation) and the Rust request layer does not trim context based on it.
-
-### v0.15.2 (2026-10-28)
-
-**Polish release — slide animation when switching reading ↔ edit mode, plus a fix for “fold animation is too fast when collapsing”.**
-
-| Request | Feedback | Implementation |
-| --- | --- | --- |
-| Mode-switch slide | “Add a sliding effect when switching between reading and edit mode so the switch is less jarring. Reading → Edit: the edit panes slide in from the left; Edit → Reading: the document slides back from the right.” | New `modeSwitchSlide.css`: only the **incoming** surface animates, with a mirrored **380 ms** translation — entering edit mode the source pane *and* the preview pane together go `translateX(-100%) → 0` (slide in from the left); returning to reading the document goes `translateX(+100%) → 0` (slide in from the right). It only animates `transform` (never `width/height/scrollTop`), so the content-anchor scroll alignment fixed in v0.15.1 is untouched. The internal “preview open” width transition is suppressed for the animation window so the two don’t fight; a generation token keeps rapid toggling idempotent; `prefers-reduced-motion` disables the slide |
-| Fold animation too fast | “Heading folding still has a small flaw, same as the sidebar folder expand/collapse: **collapsing is too fast**, while the expanding duration is what I want.” | **Two independent causes.** ① **Primary**: the collapsed state declared `max-height: 0` — `none → 0` is not interpolable, so even listing it in `transition` does nothing, and since `max-height` caps `height` the `height: auto → 0` transition was clamped on the very first frame (measured collapse t90 = **2.2 ms** vs expand 260 ms) → **removed** `max-height`/`min-height` entirely; `height: 0 + overflow: hidden` is enough to collapse. ② **Secondary**: the expanded base rule used a `:not(.a):not(.b):not(.c):not(.d)` chain whose specificity is (0,5,0), beating the collapsed rule at (0,2,0), so `visibility` flipped immediately on collapse → changed to `:not(:where(...))` which drops it to (0,1,0). After the fix: collapse t90 **266.9 ms** ≈ expand **267.2 ms** (ratio **1.00**), `visibility` deferred to 447 ms, identical on the PM reading surface and the iframe preview |
-
-Verification: `tsc --noEmit` exit 0 (strict); **339 test files / 6199 cases all pass** (v0.15.1 baseline 6190, +9); real-machine probes: mode-switch slide **22/22 PASS**, fold timing **22/22 PASS** (including five counterfactuals that prove causality), double-Ctrl scroll drift still **0.00 px**; versions = **0.15.2** in all four files.
-
-Known trade-offs: (1) only the incoming surface animates — the two mode surfaces are mutually exclusive, the outgoing one is already invisible at commit time and mounting both would break anchor capture; (2) the internal preview width transition is briefly disabled during the slide (restored automatically); (3) the fold animation still needs `interpolate-size` and degrades to instant show/hide without it; (4) both animations are skipped under `prefers-reduced-motion` (functionality unaffected).
-
-#### v0.15.2 second-round rework (2026-10-29, repackaged under the same version number)
-
-**Bug-fix rework — two real defects reproduced on the packaged binary.**
-
-| Issue | Feedback | Root cause and fix |
-| --- | --- | --- |
-| Drift after editing when double-tapping Ctrl / document alignment | “After editing the document, the double-Ctrl drift and the document-alignment issues have come back.” | Split into **two** separate issues. ① **Drift**: the one-off displacement after an edit (measured −38.5 px) was disproved as a defect by a four-variant matrix — it is **correct re-alignment** (0.00 px when the edit is at the document end; then 20 rounds perfectly idempotent, unlike the historical monotonic accumulation). ② **Alignment** (real defect): entering edit mode from reading mode means the right iframe is still being written asynchronously (t=0 ms: **0** tagged anchors, `scrollHeight = 0`), and the mode-switch path had **zero delayed re-alignment** — `syncPreviewAfterToggleRef`'s retries only hang off the “preview toggle freeze window” `finalize`, which returns early on a mode change → after settling the two panes were still **5.1 source lines** apart; a manual scroll fixed it to 0.09. Fix in three layers: fixed timings `[0,160,480,1000,1600] ms` + `ResizeObserver` on `textarea.scrollHeight/clientWidth` (layout-driven, because `.source-editor`'s `padding-inline` contains `100%` and carries its own 0.42 s transition, so layout keeps changing after the 380 ms animation window) + **triggered the moment tagging completes** (fixed timings lose to scheduling jitter — two runs measured Δ89.81 and Δ0.29). Plus a readiness gate (“skip when untagged / not scrollable, retry in 60 ms”), generation-based invalidation, exit on user scroll (wheel/pointerdown/touchstart) and a 2500 ms window cap |
-| Cross-mode undo/redo “document jitter” | “Undoing or redoing through the cross-mode undo stack makes the document jitter.” | Root cause: undoing a **reading-mode item** from source mode — `HistoryEntry.beforeSelection` is `undefined` (PM items carry no selection), so `if (sel)` never held and **no scroll restore happened at all**; the shorter text shrank `scrollHeight` and the browser clamped `scrollTop` to the new max = **pinned to bottom** (before: 98 %; after: `top=21112/max=21113`, **1 px from bottom**, **57 of 61 sampled frames** at the bottom; switching back to reading gave `top=max`). And when `sel` exists it carries a **historical pixel** that points elsewhere once the text gets shorter. Fix: **anchor content, not pixels** — capture the viewport-center character anchor `{offset, viewportY}` before writing, remap it from the old text to the target text with the pure function `remapOffsetAcrossTextChange`, then restore over rAF/60/160 ms; pixels are a fast path only when the text length is unchanged, otherwise `none` (**never write 0**); this also removes the “clamp to bottom → pull back” round trip caused by the selection path and the scroll path overwriting each other (the selection path now only restores the caret) |
-
-Verification (everything re-run on the final exe): `tsc --noEmit` exit 0; **342 test files / 6260 cases all pass** (+61); real-machine probes — mode-switch drift **10/10** (0.00 px on both panes), post-edit drift **14/14**, drift matrix **5/5**, undo jitter **13/13** (viewport-center content identical before/after, zero at-bottom frames), async alignment **7/7** (three consecutive runs, Δ < 0.5 line).
-
-Known trade-offs: (1) this round **keeps the 0.15.2 version number** (as requested) — same filenames, different contents, use the SHA256 in `release/v0.15.2/RELEASE_NOTES.md`; (2) right-pane alignment is **eventual convergence** (geometry is not settled while async content renders — measured ~9 lines off at 160 ms after an edit, converging to < 0.5 line within 480 ms); (3) PM-side `beforeAnchor` is still unwired, so the **caret** is not restored after a reading-mode undo (content and scroll are preserved).
-
-#### v0.15.2 third-round rework (2026-10-29 evening, repackaged under the same version number)
-
-**Two more real defects fixed (both reported against a real document / real user action).**
-
-| Issue | Feedback | Root cause and fix |
-| --- | --- | --- |
-| Double-Ctrl mode switch does not align on `LightMD开发需求.md` | "Take this document as an example — double-Ctrl mode switching does not align the document." | **Two different rulers for cross-surface block positioning**: the reading surface's `collectPmBlockGeometry` counts `root.children` = **429 blocks**, while the other side (markdown top-level blocks / iframe `data-src-line` / source line axis) counts only real rendered blocks = **303**. The extra **126** are empty paragraphs the parser creates to restore blank source lines (between paragraphs separated by `\n\n\n` or around `---`, `gap=2` inserts one). The offset **accumulates block by block**, and the PM surface happened to have **no `sourceLine`** — so `finalizeIndexMatch`'s correction always passed through and `resolveBySourceLine` was never reachable → fallback to percentage. Measured: reading `scrollTop` 31330 → 21898 (**off by 9432 px**). Three-layer fix: (1) `schema` gains an `emptyLine` attr and `toDOM` emits `data-lmd-empty-line`/`data-lmd-pad`, `parser` marks all four blank-line insertion sites, `collectPmBlockGeometry` skips them by default → 429 becomes **303 === 303**; (2) new `src-line-tag.ts` uses the parser-time `blockSourceMap` to tag every top-level block with `data-src-line` (same name and meaning as the iframe surface), giving all three surfaces one shared coordinate system for the first time; (3) `collectPmBlockGeometry` reads it into `BlockGeometry.sourceLine`. After the fix: 31330 → **31330** (back to the exact original spot), viewport-top Δ **0.16/0.37/0.30** lines |
-| Right-click "Reveal in Folder" does nothing in the sidebar | "Files opened from a folder opened in the left sidebar — right-click 'Reveal in Folder' stopped working, it doesn't jump to the directory." | **The `/select,` argument to `explorer.exe` got wrapped by MSVCRT quoting**: the old code used `.arg(format!("/select,{}", path))`, and `Command::arg()` on Windows **quotes the whole argument whenever it contains a space** → explorer receives `"/select,C:\...\a.md"` (quotes swallow `/select,` too) → the whole string is treated as a path → **silent failure** (spawn returns Ok, no error shown, Explorer does nothing). **Only paths containing spaces are affected** (this repo's `D:\AI\markdown view` has a space, so it never worked there). Fix: new `explorer_select_arg()` returns `/select,"<path>"` (quotes wrap only the path) plus `.raw_arg()` (no automatic quoting) and a Rust regression test. No frontend change (probe confirmed `node.path` absolute, menu item present, zero error toasts, invoke returns Ok). Measured 5/5; key assertion: 0 new windows before the click → **exactly 1** new window after, with `sel=["中文 文件.md"]` |
-
-Verification (on this round's final exe): `tsc --noEmit` exit 0, `cargo check` exit 0, `cargo test` passes; **344 test files / 6279 cases all pass** (+80); real-machine probes — **user's actual document alignment 12/12**, cross-mode undo 13/13, post-edit drift 14/14, drift matrix 5/5, async alignment 7/7, mode-switch drift regression 10/10, reveal-in-folder 5/5.
-
-Additional trade-offs: (1) `data-src-line` / `data-lmd-empty-line` are **pure render attributes** never written back to Markdown (`\n\n\n` blank lines are still serialized through the `emptyLine` paragraphs — byte-identical round-trip is locked by tests); (2) the cross-surface priority remains `headingId` → `blockIndex` (with `sourceLine` correction) → `sourceLine` fallback — this round only added the **precondition** that the PM surface has `sourceLine`; the order is unchanged (an existing test locks `via === "index"`); (3) a few lines of difference at "viewport center" is a **measurement-definition difference** (left interpolates by logical lines, right by visual height, so a soft-wrapped long paragraph necessarily differs — measured 6.84 lines); the primary assertion is therefore "viewport **top** ≤ 3 lines"; (4) the `reveal_in_folder` fix covers Windows only (`raw_arg` is a Windows-only API).
-
----
-
-### v0.15.1 (2026-10-28)
-
-**Bug-fix release — all 13 issues reported on real machines after v0.15.0 shipped are fixed (two rounds of feedback). No new features, no data-format changes.**
-
-Round 1 fixed 7 issues (the undo item was actually **five stacked defects**: PM edits never reached the unified timeline at all — the adapter received an `EditorState` but serialized it as a doc, so it always produced an empty string; the timeline baseline was never created on first mount; eight source-mode edit paths still pushed onto the **retired** diff stack; the adapter baseline was not written back after undo/redo; and the boundary warning fired twice and misfired). Round 2 handled the 6 issues the user reported after re-testing.
-
-| Issue | Fix |
-| --- | --- |
-| Cross-mode undo “hits the boundary after a few steps, then undo/redo are dead” | The five defects above, fixed one by one. The context menu’s undo/redo enabled state now also reads the unified timeline |
-| Undo scrolls the document to the bottom | Replacing the whole doc shortens it, so the browser clamps `scrollTop` to the new max. Now anchored to **content, not pixels**: capture the viewport-centre block + ratio before undo, then recompute; re-checked at 0/60/160 ms; stops as soon as the user scrolls (input events, not `scrollTop` deltas, so browser clamping is not mistaken for user action) |
-| Caret jumps to the start of the document after undo | Entries lacked `beforeSelection`; and a controlled textarea resets its selection when React commits, possibly after our rAF. Capture the pre-edit context plus a selection-protection window applied in `useLayoutEffect` |
-| Heading folding had no animation | Terminal state changed from `display:none` to “height 0 + clipped + invisible” with `interpolate-size: allow-keywords` so `height:auto ↔ 0` interpolates; the triangle now uses a **fixed glyph + `transform` rotation** (the button element is reused so the transition can run); PM and iframe CSS are kept identical and locked by unit tests; engines without the feature fall back to instant show/hide |
-| Repeated double-Ctrl mode toggling drifted the scroll position | The content anchor was only captured for **Preview→Edit**; the reverse still used percentages, and the two layouts differ → cumulative drift every round. Now **bi-directional** content anchoring (the source side reconstructs block geometry from the measured line axis), with percentage only as fallback. Real-machine probe over 10 rounds: centre content identical 10/10, `scrollTop` constant, no accumulation |
-| Workspace search results did nothing when clicked | (1) The result `fileKey` is normalized (lower-case / forward slashes) while App compared it against the raw `tab.path` → never matched; (2) the hit file may **not be open**, and App only searched open tabs. Both sides now normalize through `pathCompareKey`; unopened files are opened by path with a visible failure toast |
-| Search box too small / jumps in size / buttons move | The results banner now uses an **always-mounted shell with height/opacity/transform transition** instead of conditional rendering; the options row changed from `flex-wrap: wrap` with per-button `margin-left:auto` to a two-part layout (compressible checkbox group + fixed action group), so both scope buttons stay put |
-| Lightbox missing / should be double-click | The gate was `editable === false`, which only reflects “read-only tab”, not the view mode — so the lightbox **never opened in Preview mode for normal documents**. It now gates on `viewMode === "preview"`. Entry is **double-click** on all three surfaces (Preview PM, edit-mode iframe preview, edit-mode image node); single-click semantics are unchanged (select + edge-drag resize). Also fixed the lightbox’s own double-click being re-captured by the collector (which made it flash back to fit) |
-
-**Round 2 (the 6 issues from the user’s re-test)**
-
-| Issue | Fix |
-| --- | --- |
-| Fold animation should be twice as slow | Collapse/expand 220 ms → **440 ms**, triangle rotation 180 ms → **360 ms** (same values on the PM reading surface and the iframe preview) |
-| Double-Ctrl still drifts slightly (edit pane first, then the reading pane follows) | Root cause was not “percentage vs anchor” but **the frame in which the anchor was captured**: `useLayoutEffect` runs after the DOM commit, where the outgoing pane’s `clientHeight/clientWidth` are already 0 → only a stale cache was available → each round used the previous round’s pre-correction geometry as its baseline. Anchors are now captured **during render** (outgoing pane still visible) in both directions, and the in-block ratio is normalised over a **continuous region** (block top → next block top) so the gaps between blocks (paragraph margins in the reading pane) are no longer lost. Real-machine probe: 12 fast rounds + 20 settled rounds → **0.00 px** drift on both panes |
-| Search box too long and too flat | Width no longer doubled: **620 × 38** (aspect 16.3:1 vs 27:1 before), with reworked radius/padding/font/shadow hierarchy; `max-width: 92vw` on narrow screens; both scope buttons still never move (measured: identical coordinates collapsed/expanded) |
-| Workspace search: only the first of 4 hits jumped / every hit jumped to the first / line numbers disagreed with the status bar | (1) The receiver only re-ran on `docKey` changes → when the target file was already open the effect never ran (“click does nothing”) → added a self-listened event plus an incrementing `seq`; (2) multiple hits on the same line were indistinguishable → each hit now carries `hitOffsets` + an in-line `hitIndex`, and jumps resolve by occurrence; (3) line/column now uses the **same PM logical-block coordinates as the status bar** (CRLF documents verified; `\r` is not counted as a column) |
-| Highlight every match, with a distinct colour for the current one | New `searchMatchesKey` (all ranges, capped at 2000 with an explicit “highlighting the first N only” badge) alongside the existing `searchHighlightKey` (current match) as two decoration layers; in the reading pane every match is highlighted as soon as results arrive, and the current one moves with ↑/↓ in an accent colour; the source pane gets an equivalent overlay |
-| Re-check the cross-mode undo stack | An independent audit of 38 cases found **2 more real defects**: (1) typing within 60 ms after an undo had the caret pulled back by the undo’s fallback timer (the next character landed in the wrong place); (2) source-channel external write-backs (translation apply / AI polish / AI replace-selection / AI insert-at-caret / AI continuation ghost) never entered the unified timeline → not undoable, and the next keystroke force-rebased and **silently truncated redo**. Both fixed (6 write-back sites now go through `recordDiscreteSourceEdit`, which also gained “undo back to the original selection start, redo to the end of the replacement”) |
-
-Verification: `tsc --noEmit` exit 0 (strict); **338 test files / 6190 cases all pass** (v0.15.0 baseline 6066 → v0.15.1 round 1: 6118 → now 6190); undo-related tests **10 files / 162 cases green** (including 50 new ones: 12 cross-mode + 38 audit) with **no existing assertion changed**; real-machine probes: mode-switch drift **10/10 PASS (0.00 px on both panes)**, search feature **44/44 PASS**; versions `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock` = **0.15.1**.
-
-Known trade-offs: (1) undo context restore keeps a ~250 ms selection-protection window (required against controlled-component selection resets; a real keystroke invalidates it immediately); (2) the fold animation needs `interpolate-size` (Chromium 129+; WebView2 155 here), otherwise it degrades to instant show/hide; (3) in the reading pane the caret is **not** restored to its pre-edit position after undo (PM timeline entries carry no position data — that needs adapter-side anchors and is out of scope here), though it never jumps back to the document start; (4) a **whole-document translation rewrite is deliberately not an undo step** (same v0.13.1 policy; use the “revert translation” bubble instead), whereas selection write-backs and AI write-backs now are undoable.
-
----
-
-### v0.15.0 (2026-10-26 ~ 10-27)
-
-**Experience unification + deep AI configuration + lightweight knowledge retrieval — one undo timeline across modes, heading folding, AI connection profiles with dual protocols, in-app PDF, workspace full-text search**
-
-The theme of this release is stitching together four places where "each piece worked but the combination felt wrong": **undo** is no longer split into two stacks by mode, **Preview ↔ Edit alignment** moves from scroll percentage to content anchors, **AI configuration** becomes independent connection profiles with OpenAI / Anthropic dual protocols instead of piggy-backing on the translation settings, and **PDF export** drops the dependency on a locally installed Edge / Chrome entirely. It also fills in two previously-missing capabilities — **workspace full-text search** (a minimal knowledge-base scope, read-only) and a **cross-editor compatibility notice for merged table cells** — and reworks the image lightbox while fixing duplicate workspace mounting.
-
-**New features**
-
-| Feature | Details |
-| --- | --- |
-| Unified cross-mode undo | One **logical timeline per document** (`services/documentHistory`); the source textarea and ProseMirror each commit through their own adapter into a single coordinator, so Preview, Edit and the right-hand pane share one undo stack — switching modes no longer creates empty steps or drops the stack. Cross-file replace records keep a byte-exact guard: if the target file was edited afterwards the record is discarded rather than overwriting your work |
-| Heading folding in reading areas | A fold button before headings collapses everything down to the next heading of the same or higher level. Purely a display layer (ProseMirror `Decoration` + iframe DOM injection sharing one state aligned by `headingId`); **never touches the doc, never writes Markdown, never enters undo history**, and cleans itself up when a heading is deleted or renamed |
-| Independent AI connection profiles | Settings → "AI Connections": any number of profiles (add / duplicate / rename / delete / reorder / set default), each with protocol, endpoint, model, context window, output budget, request policy, system prompt and its own key — fully decoupled from "AI Translation" |
-| Dual AI protocols | OpenAI Chat Completions (`POST {base}/chat/completions` + `Authorization`) and Anthropic Messages (`POST {base}/v1/messages` + `x-api-key` + `anthropic-version`, `system` top-level); URL joining handles bases ending in `/v1` or `/api/plan` |
-| AI request policy | Output-limit field is either `max_tokens` or `max_completion_tokens` (mutually exclusive); temperature and reasoning effort that are left blank are **not sent at all**; `stream_options.include_usage` can be toggled per endpoint capability |
-| Token budgets and real usage | Context window and max output fields validated so output < context; displays real input/output tokens when usage is reported, and "not reported" instead of a normalized 0 when it is not |
-| Custom System Prompt + instruction library | The system prompt is appended after built-in constraints (never overriding them, never placed in user messages); instructions can be added / edited / duplicated / reordered with `{{selection}}` and `{{document}}` variables, and built-in templates are read-only copies |
-| Ollama local preset | One click pre-fills `http://127.0.0.1:11434/v1` with `authMode=none`: no key field shown, no fake key written |
-| PDF export via in-app WebView2 | No more Edge / Chrome headless subprocess: a separate hidden WebView hosted by Tauri calls `PrintToPdf`, backed by a three-part readiness gate (NavigationCompleted + `fonts.ready` + a page-ready flag) and image-decode timeouts, while the editor stays untouched. Paper size A4/Letter/Legal, mm→inch margins, background printing and disabled default headers/footers all map onto `COREWEBVIEW2_PRINT_SETTINGS`; errors are layered as `PDF_NAV / RENDER / IO / TIMEOUT / UNSUPPORTED` |
-| Workspace full-text search | A new **Workspace** scope next to "Find in open files" scans the body text of every root open in this window (de-duplicated roots, deepest root wins); streaming progress with cancel, results grouped per file, click to jump. Skips `.git` / `node_modules` / hidden dirs / symlink cycles / binaries and counts files over 2 MiB as skipped; open files are re-validated against in-memory content; **read-only** — no workspace-wide replace, no index, no wiki-link / tag / frontmatter parsing |
-| Merged-cell compatibility notice | On the first merge, explains that GFM has no standard merged-cell syntax, that LightMD stores merges as `<td colspan/rowspan>` HTML, and that other editors may show raw tags or misalign; shown once and re-openable from the table menu. The notice never modifies the file and never creates an undo step |
-| Content-anchored Preview ↔ Edit alignment | Alignment uses a **content anchor** (top-level block at the viewport centre + ratio inside it) instead of scroll percentage; top/bottom edges have dedicated branches, long soft-wrapped lines use measured line axes, injected Mermaid/KaTeX nodes and trailing padding paragraphs are excluded, and folded blocks are skipped; when no mapping is possible it never falls back to 0 |
-
-**Fixes**
-
-| Issue | Fix |
-| --- | --- |
-| Image lightbox only gave a full-screen glance | Rebuilt as a viewport-covering lightbox: 25%–800% zoom (buttons / wheel / double-click toggles fit ↔ 100%), drag to pan when zoomed, `←`/`→` stepping (hidden for single images), `Home` reset, `Esc`/overlay/✕ to close while clicking the image itself does not close. The Preview ProseMirror view and the right-hand iframe each portal into their own `document.body`, independent across windows; closing restores the original scroll container and `overflow` |
-| "Open containing folder as workspace" re-mounted duplicates | Path comparison now goes through `utils/path.ts`'s `isSameOrInsidePath` (case, separator and trailing-slash normalisation; `/a/foo` no longer matches `/a/foobar`). When the file already sits inside an open root, the **deepest** containing root is used as the locate context and LightMD only expands + highlights — no extra folder, no duplicate `watchFolder`, no full-tree refresh. Equivalent spellings (`D:\proj\` vs `D:/proj`) no longer create a second root |
-
-Quality: `tsc --noEmit` exit 0 (strict); Rust `cargo test` green; version **0.15.0** in `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock`.
-
-Known trade-offs: ① workspace full-text search does **not** support regex in this first release (Rust regex and JS RegExp semantics differ — better to omit than silently change semantics), and there is no workspace-wide replace or index; ② undo keeps checkpoint semantics on full snapshots (oldest dropped when over budget, checkpoints retained), so in extreme large documents some early steps are not undoable; ③ heading fold state is session-only (keyed by `docKey + headingId`) and does not survive a restart; ④ lightbox zoom is not persisted; ⑤ when an AI endpoint does not report usage the UI says "not reported" — no token or cost estimation is performed.
-
-### v0.14.0 (2026-10-23 ~ 10-26)
-
-**Two modes instead of three, a complete search stack, a built-in update check, and real-machine defect convergence**
-
-This release collapses the three modes (Read / Edit / Split) into **two** — Edit is now the old split view, and the right-hand preview can slide out and back. Find & replace becomes a complete stack (whole word / case / selection scope / across files / undoable), and a "Check for updates" panel is built into Settings. The previously planned CodeMirror 6 migration was dropped after re-evaluation. Seven follow-up rounds then cleared the defects found during real-machine retesting; every batch was verified on the **packaged installer with real WebView2 mouse/keyboard gestures**.
-
-**New features**
-
-| Feature | Notes |
-| --- | --- |
-| Three modes merged into two | The title bar only offers Read / Edit. Clicking Edit gives the old split layout (source left, preview right). Double-`Ctrl` toggles Read↔Edit; double-`Shift` toggles the preview. The palette entry formerly called "Split mode" is now "Toggle preview pane (Edit mode)" |
-| Preview slides out and back | Hovering the right pane or divider reveals a vertical breathing label "Close preview"; clicking slides the right pane to the left of the syntax rail and lets the editor fill the width, leaving an 18px rail to bring it back. The toggle state is remembered; files over 5MB open with the preview closed |
-| Search options | Whole word (Unicode word boundaries) / match case / selection scope (captured when you tick the box, shifts with replacements, and never silently falls back to the whole document) / regex |
-| Find in all open files | A results strip lists "file name + matching line" with highlights and a total of "N matches (M files)"; clicking a row jumps to that file and position. With the strip open, "Replace all" replaces every listed file |
-| Undoable replace | Replacements enter the undo stack; a cross-file replace-all is **one whole-document step**, so `Ctrl+Z` / `Ctrl+Y` work after switching to the modified file (including the keyboard path in Read mode), guarded byte-for-byte so the record is dropped once you edit manually |
-| Check for updates | A "Software update" section at the end of Settings: queries the latest GitHub release, shows collapsible notes, a download progress bar, launches the installer, and links to the release page |
-| Table size persistence | Column widths and row heights survive save and reopen, stored in a side-channel HTML comment that other editors ignore; tables you never resized stay byte-identical |
-| Block-level split alignment | Split scrolling maps **top-level blocks** instead of percentages, so both panes land on the same block and reach the bottom together (mermaid documents included) |
-
-**Fixed**
-
-| Issue | Fix |
-| --- | --- |
-| The divider could only be dragged one way | The divider sits next to the preview iframe, which swallowed `mousemove`/`mouseup` once the pointer entered it. Pointer capture, temporary `pointer-events` suppression on iframes, and a deduplicated pointer/mouse dual channel |
-| The vertical "Close / Open preview" label was unclickable | It is a child of the divider and the drag's pointer capture redirected the `click`. Presses landing on the label are now passed through |
-| Reading progress lost on Read↔Edit switch and on close/reopen | Never write `0` while the container cannot scroll, and retry until it can; the right pane restores independently; four "clear progress on close" call sites were removed |
-| Reading focus shifted after closing the preview; repeated toggles drifted upward | The percentage `padding-inline` now transitions so `scrollHeight` never jumps; the linkage is frozen during the toggle and restored from a **viewport-center content anchor** (bottom stays bottom), with verification passes after closing |
-| Read ↔ split progress linkage lost | The freeze window gained a `viewMode` gate so it only starts on a real preview toggle, and alignment after unfreezing uses block anchors |
-| "Check for updates" misreported "cannot connect to GitHub" | Not a business-layer bug: `reqwest` trusted bundled roots only (no Windows certificate store) and had the system proxy disabled. Switched to `rustls-tls-native-roots` + `system-proxy`; network failures are now encoded separately so the UI shows "network unavailable" instead of falsely claiming "you are up to date" |
-| The search box broke after undoing a replacement | In Read mode both replace and undo only change `state.doc`, so no dependency changed and results froze. A `MutationObserver` with a doc-identity gate and a 150ms debounce now re-syncs, and deferred re-searches always use the latest closure |
-| Keyboard undo failed after switching to a cross-file-replaced document | Undo had two entry points and the keyboard one bypassed the cross-file record; focus also sat on the tab button. The PM keymap now delegates to the host when one exists, and the global handler routes by focus category, exclusively |
-| The "Recent" panel did not appear when clicking the clock | It only mounted when recent *files* existed, and it could be mounted outside the scroll viewport. A single `recentHasData` rule plus at most one reveal scroll once layout settles |
-| The folder pane showed only 7 rows | The default height is now **11 slots (10 file rows + 1 permanent blank slot)** measured from real row heights, and the "collapse a filled pane back to its natural content height" rule no longer shrinks the folder pane to 5–7 rows |
-| Favorites / Recent animation stuttered and the sidebar jittered | Scrollbar appearance changed the content width, two height animations were out of sync, and the reveal kept stealing scroll. `scrollbar-gutter: stable`, one shared height transition, and at most one correction after layout settles |
-| Title-bar menus were covered by the editor | A three-layer stacking-context failure; the title bar now creates its own layer (content containers deliberately get no `z-index`, which would trap inner fixed popovers) |
-| The preview toggle animation felt abrupt | 0.28s → 0.42s with a symmetric easing; the left pane's width is derived by flex (an inline `auto`↔`calc()` width cannot interpolate and jumped on the first frame); the divider width transitions too |
-| Panes of different length could not scroll together | Real line-axis measurement for soft-wrapped lines, a trailing anchor, the correct "line at max scroll", and filtering mermaid/katex injected nodes out of the anchor base |
-| Column widths / row heights were lost after reopening (regression) | The sizes were already written to markdown; the break was in the render layer — the NodeView constructor runs before ProseMirror inserts `tr/td`, so only the table's total width was applied; after rendering the node is unchanged, so `update()` is never called again. Now a microtask + `requestAnimationFrame` + `MutationObserver` fallback applies sizes as soon as the `<tr>` appears |
-
-Quality: `tsc --noEmit` exit 0 (strict); full suite **319 files / 5587 tests** passing; Rust `cargo test` 192 passed / 3 ignored; every batch verified on the **packaged installer with real mouse/keyboard gestures and CDP frame sampling** (111 checks in total); version **0.14.0** in `package.json` = `Cargo.toml` = `tauri.conf.json` = `Cargo.lock`.
-
-Known trade-offs: (1) cross-file undo is **one whole-document step** and is dropped once you edit that file manually (better to under-undo than overwrite your edits); (2) reading progress lives in session memory, so closed files are not restored after a restart; (3) the table-size comment is a LightMD extension that other editors ignore; (4) the selection-scope snapshot is fixed when you tick the box; (5) an existing user who manually resized the folder pane keeps that height; (6) during the preview transition the right pane is briefly around 17 frames taller than its box, but the scrollbar gutter is reserved so nothing shifts.
-
-### v0.13.2 (2026-10-17)
-
-**Block-level interaction plus image / table polish — 26 fixes from two rounds of real-device retesting** (base: 0.13.1)
-
-What these had in common: each piece worked alone but failed in combination — copying a single code block was fine, yet pasting it into another document did not render; the rendered layer could be viewed but not edited; per-document undo was correct but the order was not. Testing therefore moved down to the **real interaction chain** (real ProseMirror transactions, real mouse event sequences, real timers, real `localStorage`), with split-view sync, Mermaid top-half editing and cross-document code-block paste additionally verified in **real Chrome**.
-
-| # | Problem | Fix |
-| --- | --- | --- |
-| 1 | Code block "copy" still pasted as plain text in another document | The clipboard now receives a complete fenced block (fence length = longest backtick run + 1); in-app paste matches the private payload and restores a code block. Same-origin detection compares CRLF/CR-normalised text, so Windows line endings no longer fall back to literal paste |
-| 2 | `Ctrl+T` inside a list became a plain line break | Now "promote the current line to a task item": the whole item (second paragraph / nested sublist included) moves ahead of the list, and ordered lists **keep their original number** (`- [ ] 2. text`) |
-| 3 | Mermaid's top half (rendered area) was not clickable and did not sync | The rendered layer is now an editing entry: a click maps the vertical position to a source line and places the caret; edits re-render after a 120 ms throttle, and a temporarily invalid diagram keeps the last successful render |
-| 4 | With no images the "译" button did not close the gap; floating icons overlapped | The image-manager button is always mounted and merely fades / shrinks; slots are fixed at mode-switch 0 / image manager 1 / "译" 1 without images and 2 with, with a 0.22 s slide |
-| 5 | Undo / redo must be strictly per document (the Word-style cross-document order was rejected) | Removed the cross-document ledger and tab-switch routing; `Ctrl+Z` / `Ctrl+Y` act on the current document only, with history saved on switch-away and restored only when the content matches |
-| 6 | Closing the image manager threw React error #300 | All hooks moved above the early return, plus a real "open → close → reopen" regression test |
-| 7 | The outline did not follow scrolling and did not remember its position | The visible band widened from the top 20% of the screen to the whole viewport; new per-document outline scroll memory (400 ms debounce, 5 s heartbeat, flush on unload, LRU 60) restores it without fighting manual scrolling for 0.6 s |
-| 8 | Split view did not sync at all / both sides pushed each other to the bottom | Replaced with **two-way top-level block mapping**: source lines act as anchors in both directions, a 250 ms time-window direction lock ignores echo events, anchor coordinates fixed to `rect.top + scrollTop`, and the scrolling element is re-queried on every sync |
-| 9 | After pasting a table into a new document the caret could not reach below it | Documents ending in a table / code block / formula / Mermaid block get a filler paragraph (`addToHistory:false`); it is **never written to the `.md`**, while user-typed trailing blank lines still save |
-| 10 | Clicking an image opened the dialog, so it could not be selected or resized | New image NodeView: click selects (the reading-mode lightbox still works), the top-right handle opens the editor, six-direction dragging writes width only (min 24 px), one drag = one undo |
-| 11 | The image manager window could not be dragged and had no closing animation | The panel stays mounted while closing so the shell can play the exit animation; title-bar dragging uses `left/top` (leaving `transform` to the animation), stays on screen and resets on reopen |
-| 12 | The image-manager icon had no tooltip | `data-tip` plus a CSS `::after` tooltip: 120 ms fade, click-through, hidden while the icon is hidden |
-| 13 | The image manager animation felt rough; the backdrop dimmed and flickered | Aligned with the search box: 0.48 s in / 0.38 s out, pure `transform` scaling; **backdrop removed**, zero translation, scale origin at the icon centre, closing shrinks back |
-| 14 | The search box lost its "grows out of the button" animation | The anchor selector is narrowed to `[data-genie-anchor="search"]`, so the image-manager entry no longer hijacks it |
-| 15 | `Enter` in a table cell inserted a new cell to the right | New `tableEnter` at the head of the Enter chain: move to the cell below in the same column, appending a row at the bottom |
-| 16 | After merging cells and reopening, a row had an extra cell and the table structure broke | Parsed rows are trimmed using the same grid placement rules (trailing empty ordinary cells only); plain pipe tables keep a zero-diff round-trip |
-
-**Tests**: 10 new behaviour-level suites (per-document undo, Mermaid rendered-layer editing, trailing paragraph, image resizing, `Ctrl+T` promotion, image-manager slots and genie dialog, outline follow and scroll memory, two-way split mapping, table Enter, merged-cell reopen); full regression **299 files / 5113 cases** green, `tsc --noEmit` clean; split sync, Mermaid top-half editing, CRLF code-block paste, dialog motion, table Enter and merged structure all verified in real Chrome.
-
-### v0.13.1 (2026-10-16)
-
-**16 real-device reports — all fixed**
-
-| # | Problem | Fix |
-| --- | --- | --- |
-| 1 | Pasted blocks did not render immediately | `looksLikeMarkdown` became the single implementation: self-contained blocks (fence / `$$` / pipe table with separator row) parse on a single hit, everything else needs two or more signals; also fixed turndown's missing GFM table rule and the lost `language` |
-| 2 | Empty cells could not be drag-selected, so they could not be merged | The trailing-cell trim criterion changed from "is it a space" to "is the placed logical column out of range", keeping real spaces and trimming only markdown-it filler cells |
-| 3 | Backspace swallowed content across cells | `Backspace` / `Delete` at a cell content boundary are now swallowed (no transaction, no caret move), with `table_row` `isolating` as a second line of defence |
-| 4 | Alignment only applied to selected cells | Alignment is written through the logical grid: a range selection changes only those cells, no selection keeps whole-column semantics |
-| 5 | Dragging a column border selected text instead | The hotspot calls `preventDefault`, and arbitration uses the dominant axis (column hotspot + horizontal = width, row hotspot + vertical = height, otherwise range selection) |
-| 6 | Formula / Mermaid editors were oversized, did not close on outside clicks and jittered | One shared inline editor: single-line types shrink to content, multi-line types cap at 45vh, outside clicks exit immediately, and double-click no longer fails to leave edit mode |
-| 7 | The image-manager icon covered the "译" settings button | Floating-button slots re-laid out so mode switch / image manager / translate / gear / bubble never overlap |
-| 8 | Undo leaked across documents | Tab-switch transactions use `addToHistory:false` + `resetHistory:true`, and source-mode undo / redo stacks reset per document |
-| 9 | The image-manager "local file" badge did nothing | The badge is clickable and reveals the file in Explorer; remote / base64 sources stay non-clickable |
-| 10 | The image-manager dialog animation was crude | Custom enter / exit keyframes, the scrim moved to a pseudo-element, closing runs through a `closing` state |
-| 11 | Outline dragging greyed out and hid the title and drop target | Double fading replaced by a dashed outline, plus a `DragOverlay` ghost, drop indicator line, target-row highlight, and collapsed rows excluded from sorting |
-| 12 | The outline did not follow document scrolling | The active heading scrolls into view (quiet for 1.2 s after manual interaction, collapsed rows skipped, already-visible rows skipped, reduced-motion respected), with listeners attached through a callback ref |
-| 13 | Split view was rigidly bound | Right-to-left write-back removed, keeping left → right only; an explicit re-sync after content re-renders, plus top-level block anchoring |
-| 14 | Switching tabs falsely reported "saved in another window" | `save()` mixed state from three different moments, which under race could write **B's content into A's file**; the path is now captured once, re-checked after every `await`, and tabs are identified by path |
-| 15 | Two-digit ordered-list markers stacked vertically | Block markers now use `white-space: nowrap` |
-| 16 | The context menu lacked the clipboard quartet | Cut / copy / paste / paste as plain text added at the top of the reading and source menus (plain text does not parse Markdown), with menu height computed from the real item count |
-
-### v0.13.0 (2026-10-14 ~ 10-15, including three bug-fix rounds)
-
-**Editing catch-up and data safety — 16 additions plus 32 real-device fixes** (base: 0.12.3)
-
-Two user reports drove this release: "every click on a block activates it first, so I have to click again to edit", and "another program changed the md but auto-save wrote my stale content back". Both were closed out here.
-
-**New features**
-
-| # | Feature |
-| --- | --- |
-| 1 | **Click-to-edit blocks** — code blocks / formulas / Mermaid diagrams / table cells enter editing on a single click; leaf blocks with no caret target (divider, `[toc]`) keep whole-block selection |
-| 2 | **Always-available handle and menu** — hovering, placing the caret inside, or selecting a block shows the left `⋮⋮` handle and the top-right `⋮` menu; handles appear only on code blocks / Mermaid / formulas / tables / image paragraphs |
-| 3 | **Eight-entry block menu** — cut / copy / paste / delete block / format painter / select block / move up / move down, with automatic disabling for an empty clipboard and first / last blocks |
-| 4 | **Block copy / cut** — the clipboard receives Markdown source, rendered HTML and LightMD-private data; pasting back into reading mode restores the block structure, and one `Ctrl+Z` undoes it |
-| 5 | **Three-way auto-save check** — the disk is read before writing: equal to our last write saves normally, equal to the pending content skips, a third-party change aborts the write and warns; a failed read never writes |
-| 6 | **External-change policy** — three settings: notify only / choose (take latest, keep local, save as) / ask every time |
-| 7 | **Single files refresh too** — opening a file outside any workspace folder now watches its parent directory as a fallback (reference-counted) |
-| 8 | **Image left / centre / right alignment** — three buttons in the image dialog, stored as an `![alt\|center](src)` suffix and honoured by preview and every export format |
-| 9 | **Code block copy button** — one click copies the raw code (no line numbers, no language label) and the icon turns into ✓ for 1.5 s |
-| 10 | **`Ctrl+P` quick file switcher** — open tabs / recent / workspace groups with subsequence fuzzy matching and highlighted hits |
-| 11 | **Collapsible outline headings** — a ▾ toggle with a 420 ms animation, not persisted, and ignored while searching |
-| 12 | **`Ctrl+/` multi-line comment** — selected lines turn grey and struck through; with no selection the current block toggles; saved as `<!--text-->` and excluded from all six export formats |
-| 13 | **Block-level source markers** — lists / task lists / dividers / block formulas / `[toc]` / Mermaid show their source symbols while the caret is inside, absolutely positioned so text never shifts; ordered lists use the real number |
-| 14 | **Emoji short-code completion** — typing `:` plus letters opens about 1900 candidates (lazy-loaded); `Enter` inserts the short code, which is still what gets saved |
-| 15 | **Image manager panel** — one row per occurrence in document order, base64 / assets detection with two-way conversion, rename updating every reference, unreferenced cleanup through the Recycle Bin, current document only |
-| 16 | **Table cell merge / split** — drag a rectangle across cells; both colspan and rowspan supported, and plain pipe tables keep a byte-identical `md → doc → md` round-trip |
-
-**Three bug-fix rounds (32 items)**
-
-- **Block interaction**: handles sprouting on every paragraph, the block menu opening in the window corner, most menu entries doing nothing, copying a block pasting the whole document, formulas and Mermaid not entering edit mode on click and flickering — all fixed at the root (coordinate mapping, in-app clipboard fallback, NodeView `ignoreMutation`, per-block line slicing)
-- **Tables**: clicking a table selected the whole table, the merge button stayed permanently disabled, vertical range selection was impossible, two context menus overlapped, dragging a border selected text, Backspace ate content across cells, alignment ignored the selection, and **merging a header row made the whole table collapse into a paragraph on save** (header cell count must match the separator row)
-- **Data safety**: auto-save "seemed dead" (one-shot timer, permanent pause, reset on every render — replaced by a self-renewing loop that re-checks the disk and self-heals), and false "saved in another window" warnings with no external change (new disk baseline; reading the disk never advances it)
-- **Comments / Emoji**: comment bodies were rewritten on round-trip, comments containing `--` closed early, uncommenting in source mode ate characters; `3:1` / `12:30` triggered the emoji menu; accepting a candidate next to an inline atom rewrote that node
-- **Images**: alignment lost in exports, width mis-parsed when the alt text contained `|`, the manager icon not appearing, base64 and assets not recognised, wrong order and counts, duplicated rename suffixes, batch renames failing halfway
-- **Navigation and motion**: outline collapse had no animation, nested collapse levels overrode each other, the image dialog was clipped by an ancestor `overflow`, the search-box animation was anchored to the wrong button, and scrim animation caused backdrop flicker
-
-**Quality**: after three rounds, **277 files / 4714 front-end cases** pass and `tsc --noEmit` is clean; every conclusion was first reproduced with real `markdown-it` round-trips or a real `createEditor` with real mouse events, then locked with behaviour-level assertions.
-
-### v0.12.3 (2026-10-12)
-
-**Enter = line break — line-break counts now match across the three modes, and line spacing is back to default** (baseline 0.12.2)
-
-Two user reports: ① editing in reading mode and pressing Enter **once** produced an extra blank line after switching to edit/split mode; ② text edited in reading mode had **much looser line spacing** than other documents. Both have the same root cause: Enter in reading mode ran `baseKeymap.splitBlock` (a new paragraph), and Markdown paragraphs must be separated by a blank line.
-
-**Fixes**
-
-| Item                                                     | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Phantom blank line in source                             | Inside a **top-level paragraph**, Enter now inserts an **in-paragraph line break** (`hard_break`): one Enter = **one newline** in the source (two adjacent lines, no blank line), two Enters = **one blank line**, N Enters = N newlines — exactly as many line breaks as you see in reading mode. Scope is strictly limited to top-level paragraphs, so lists / task items / quotes / headings / tables / code blocks are unchanged (Enter inside a list still splits the item)                                                                                                                                                |
-| Line spacing was loose                                   | The old "new paragraph" behaviour also stacked the `.ProseMirror > p` 0.8em top/bottom margins — measured in headless Chrome the paragraph gap was **41px** against a **28.8px** line height. With an in-paragraph break the spacing returns to the line height (**29px** in the same probe ≈ 28.8px in the source editor), identical across all three modes                                                                                                                                                                                                                                                                    |
-| "New paragraph" keeps a one-key entry                    | `Shift+Enter` and `Enter` are **swapped**: inside a top-level paragraph `Shift+Enter` creates a new paragraph (a blank line in the source); lists / quotes / headings keep their original in-paragraph break behaviour. Pressing Enter at the start of a paragraph, or pressing Enter **twice**, also yields a new paragraph                                                                                                                                                                                                                                                                                                    |
-| In-paragraph break round-trip (data integrity)           | `hard_break` serialisation now covers the boundaries a two-space break **cannot** express (they lose the break or split the block on re-open): paragraph start, adjacent hard breaks, and table cells → they use `<br>`. **Continuation-line escaping** is restored as well: typing `---`/`===`/`- `/`# `/`> `/` ``` `/`1. ` after a break is no longer hijacked by block rules (previously the paragraph could be swallowed into a Setext heading and literal text lost forever)                                                                                                                                               |
-| No more `<br>` for a paragraph-end break (round 2)       | When you have just pressed Enter and not yet typed the next line, a trailing break in a **top-level paragraph** is now written as a two-space hard break — edit/split mode simply shows "one extra newline", with no `<br>` marker (the top-level paragraph also no longer appends its own terminating newline, which would turn `"A  \n"`+`"\n"` into two paragraphs). Trailing breaks inside list items / quotes **still use `<br>`**: those serialisers embed paragraph content into a `- ` / `> ` prefixed line, and an embedded newline splits the block (measured: the list got truncated and a stray paragraph appeared) |
-| Line-height setting applies to all three modes (round 2) | The edit-mode textarea's `line-height` used to be **hard-coded to 1.8**, so only the reading pane and the split preview followed the setting; the split iframe is a separate document and **does not inherit CSS variables from the parent**, so its `var(--editor-line-height, 1.8)` always fell back. The textarea now consumes the same variable, and **line height / paragraph spacing / content width** are injected into the iframe's own `:root`. Measured in headless Chrome with the line height set to 2.2: reading / edit / split all report **35.2px** (previously the editor and the split pane stayed at 28.8px)  |
-
-**Quality verification**: frontend **254 files / 4115 tests all pass** (baseline 253/4092); the new `v0123-enter-linebreak` suite (23 cases) drives a **real `createEditor` mount and the real keymap plugin chain** (`someProp("handleKeyDown")`, the same path a browser key event takes) plus real serialisation/re-open assertions — covering 1–4 Enters, trailing breaks (two-space at top level / `<br>` in lists and quotes) and adjacent break round-trips, dangerous continuation lines, marks across a break, list/quote regressions, and the line-height wiring; `tsc --noEmit` clean; `vite build` succeeds.
-
-**Upgrade notes**: overwrite-install, no breaking change. Documents that were already "paragraph-split" with Enter keep their content (their source already has blank lines); only new Enter presses follow the new semantics. To create a real paragraph (a blank line in the source) press `Shift+Enter`, or press Enter twice. **Cost of a paragraph-end break**: if you save/close right after pressing Enter, that trailing empty line does not survive a re-open (Markdown cannot express a paragraph-final hard break — CommonMark and other editors drop it too); press Enter twice or `Shift+Enter` instead if you want it persisted as a real paragraph.
-
-
-### v0.12.2 (2026-10-12)
-
-**Defect convergence — 9 fixes (1 P0 crash, 2 data-loss/corruption)** (baseline 0.12.1)
-
-Based on the [LightMD 0.12.1 assessment report](../_plan/lightmd-0.12.1-assessment-report.md), this release adds **no new features** — it only converges defects and consistency.
-
-**Fixes**
-
-| Priority               | Summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **P0 crash**           | **Documents containing emoji shortcodes could not be opened (blank screen)** — the old implementation registered a NodeView for `text` nodes and returned a `<span>`, but ProseMirror requires text nodes to render as DOM text nodes (`RangeError: Text must be rendered as a DOM text node`). Testing further showed a text-node NodeView is *also* unusable: it becomes a `CustomNodeViewDesc`, which does not implement `localPosFromDOM`, so `posAtDOM` degrades (all 15 offsets map to position 1 — clicking anywhere jumps to the paragraph start). Rewritten to use **Decorations**: the shortcode is collapsed with `font-size:0` and the glyph is drawn via `::before`, keeping DOM text length identical to the doc so position mapping stays correct. Also added a `createEditor` try/catch fallback and an app-level ErrorBoundary |
-| **Data loss**          | **Image `![alt\|300](src)` width silently erased** — `getRenderMarkdownIt` returned the *shared singleton* from `parser.ts`, and `imageSizePlugin` mutated `token.content` in place. After one preview render or export, PM parsing saw the stripped content, so `width` became `null`; editing that block then **permanently lost the width** on save. Now uses a dedicated instance, fully isolated from PM parsing                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| **Data corruption**    | **Continuation lines after an in-paragraph break hijacked by block constructs** — typing `---`/`===` after `Shift+Enter` **swallowed the paragraph into a Setext heading** and lost literal text; `- `/`+ `/`* `/`1. `/`# `/`> `/`~~~`/`[^1]:` split the paragraph into lists/headings/quotes. This release briefly added continuation-line escaping, but it was **reverted together with the Enter-semantics change** (the result did not meet expectations) — behaviour is back to what it was before v0.12.1. **As of v0.12.3 the escaping is restored together with Enter = in-paragraph break** (see the v0.12.3 section)                                                                                                                                                                                                                  |
-| Enter semantics        | **Enter on a cross-block selection no longer merges paragraphs** (added the missing empty-selection guard). Enter/Shift+Enter semantics are unchanged from before v0.12.1 — the v0.12.1 change was reverted in this release. **v0.12.3 re-introduces it in a more complete form**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Source noise           | **`$` and `==` now use real pairing detection** — `价格 $100` is no longer saved as `价格 \$100`, nor `a == b` as `a \=\= b`, while genuine formula/highlight pairs are still escaped (same rule as the previously fixed `~`/`^`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Anchor mismatch        | **Heading `id` is recomputed on rename** — new `heading-id-sync` plugin (appendTransaction, O(headings)) re-derives ids with the parser's own slugify + dedup rule, so `[toc]` and `#anchor` links no longer break                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Split geometry         | **Split pane was double-zoomed and clamped** — the iframe reused the `.ProseMirror` class and inherited both `zoom: var(--doc-zoom)` (multiplying with the inner body zoom: 200% rendered ~400%) and `max-width:860px; margin:0 auto` (overriding the inline width and centring it). Now explicitly reset; zoom and width are owned solely by the inner document                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Three-mode consistency | **Focus retention completed + progress fixed** — ① the split iframe previously took no part in typography anchor compensation (focus was lost on the right when adjusting line-height/paragraph-spacing/content-width), now wired to the same block-anchor mechanism; ② the status-bar reading percentage previously measured only the `display:none` reading container, so it always showed 100% in split mode — it now selects the real scroll container per mode                                                                                                                                                                                                                                                                                                                                                                             |
-| Export consistency     | **Export styling follows app settings** — HTML/PDF/PNG font size, line height, paragraph spacing, content width and font family now come from settings (previously hard-coded 16px/1.8/860px); also corrected the `includeCSS` comment/implementation mismatch and clarified the contract: `@page` and header/footer are structural and always injected; `includeCSS` controls content typography only                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| i18n                   | Added English for the table toolbar disabled hint and Mermaid empty/syntax-error hints (previously hard-coded Chinese)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-
-**Quality verification**: frontend **253 files / 4092 tests all pass** (`v0122-convergence` adds **behavioural** assertions for P1/P2/P5/P6/P7/P8/P9 — real `createEditor` mounts, real edit→save→reopen round-trips, real render pipeline — not pure functions or source-text regex; 2 legacy assertions adapted); `tsc --noEmit` clean.
-
-**Known scope**: P4 (`pairTabOut` winning Tab inside table cells) was believed to be desired behaviour at the time; it is now **confirmed to be a defect** — since v0.16.0, Tab inside a table cell always navigates to the next cell. DOCX/EPUB/LaTeX still have no style-customisation entry (PDF does); that is an unimplemented feature, not a defect.
-
-
-
-
-### v0.12.1 (2026-10-09, round 2 on 2026-10-10)
-
-**Heading-level badge / auto-pair rewritten / edit-mode scrollbar at the far right / folder animation 50% slower** (baseline 0.12.0)
-
-#### Round 2 (2026-10-10): 11 experience fixes
-
-**New capabilities**
-
-- **Two task-list icons** — square / circle checkboxes: pick one from the toolbar `☑` dropdown; in reading mode each task item shows a **light `::` handle** on the left that opens the same picker. A circle item is written as `* [ ] ` (still a standard task-list item, other editors are unaffected). The **format painter** also carries the style over (source mode rewrites the prefix, reading mode updates the node attribute)
-- **Live typography preview** — dragging font size / family / line height / paragraph spacing / content width in Settings updates the document **immediately** (a non-persisted preview store; nothing is written to localStorage and no cross-window broadcast is sent while dragging). Save commits; Cancel / `✕` / Esc restores instantly
-- **Frosted settings panel + focus preservation while dragging** — the panel background becomes translucent with a backdrop blur while you drag a typography slider: **85% transparent** (panel alpha 0.15) with sliders and text staying crisp. The **reading focus is preserved** by the same anchor mechanism used for window/sidebar resizing: the block anchor (reading mode), the textarea content anchor (edit / split left) and the split iframe anchor are measured *before* the CSS variables are written and compensated *immediately after*, inside one `useLayoutEffect`. Measured drift across the four sliders: ≤0.3px
-- **Back to reading from edit mode** — edit mode now also shows the floating **book** button (reading = quill, split/edit = book)
-
-**Fixes**
-
-- **Heading badge alignment / wrapping** — the badge is now centred on the heading line (`top:50%` + `translateY(-50%)`; it used to sit 7px too high) and can no longer break `H1` into two lines: `clamp(9px,0.42em,13px)` sizing, a roomy box and `white-space:nowrap` replace the old `min-width:1.7em` rule that could not fit a 600-weight `H1`
-- **Outline now follows the level** — the outline's heading de-duplication key includes `level` (it used to be `pos:text` only, so changing the level through the badge left `pos`/`text` unchanged and the outline never re-rendered)
-- **Images no longer vanish after switching documents** — the global document path is synced from `filePath` right before the content is parsed (once in the file-switch effect, once on first mount, plus a third safety net in the App tab switch): child effects run before parent effects, so the old code resolved image paths against the *previous* document's folder
-- **Task checkbox alignment** — the first paragraph inside a task item has its top margin zeroed (the paragraph-spacing rule used to push it 13–14px down) and the checkbox is drawn by hand and centred on the first line box (computed from line-height × font-size) instead of a hard-coded `margin-top:5px`
-- **Getting out of a code block** — (1) block selection now calls `view.focus()` (the `preventDefault` swallowed the browser's auto-focus, leaving `activeElement` on `BODY`, so no key ever reached the editor); (2) a new `ArrowRight` command exits to the next block when the whole block is selected or the caret is at the end of its content, creating a paragraph when the block is the last one
-- **Enter semantics restored** — the v0.12.1 change (Enter = in-paragraph break, Shift+Enter = new paragraph) was **reverted in 0.12.2**: `Enter` again creates a new paragraph and `Shift+Enter` inserts a hard line break; lists, quotes, headings and tables keep their original behaviour. The cross-block-selection guard from this release is kept. (**v0.12.3 restores the in-paragraph-break semantics, with the source/appearance issues fixed** — see the v0.12.3 section)
-- **Settings animations** — opening slides in from **off-screen above** (`translateY(calc(-50vh - 50%))`) and overshoots to +14px before settling (jelly bounce, 640 ms); closing presses down +14px ("wind-up") and then **purely translates** out of the viewport over 520 ms (`SETTINGS_CLOSE_MS` 180 → 540). Second-round revision per user feedback: **the panel itself no longer fades** (it used to move and fade out at the same time) — brightness is handled only by the scrim, which is now **delayed by 200 ms** so it fades after the panel has slid away
-- **Format painter icon** — redrawn as a recognisable little paint brush (handle + ferrule + tapered bristles)
-
-**Verification**: **252 files / 4065 tests** pass (new `v0121-round2-requests` with 45 contract + runtime cases — including the second-round animation-purity, transparency and focus-anchor wiring assertions — and `v0121-image-doc-switch` with 3 regression cases that provably fail without the fix; 3 older assertions updated); `tsc --noEmit` clean; `vite build` succeeds; on the packaged app driven through WebView2 CDP **20/20 checks PASS** (`scripts/real-machine-v0121-round2.mjs`): images still render (`naturalWidth=565`) after switching away and back, badge centre offset 0px with a single text line box, outline padding 12px → 40px, checkbox alignment off by 0.4px, handle → circle writes `* [ ]`, ArrowRight leaves the code block into a new paragraph, `Enter` produces `<br>` with no blank line in the source, the edit-mode book button returns to reading mode, open animation `-1252.8 → +14 → 0`, close animation `+14 → -1252.8`, dragging the font size 16px → 25px with `blur(12px)` and `alpha=0.15` (85% transparent), cancel rolls back to 16px, **panel opacity stays exactly 1 throughout (pure translation, no fade)**, and the anchored paragraph drifts by only 0 / 0 / +0.1 / -0.3px while dragging the four typography sliders
-
-**Heading-level badge / auto-pair rewritten / edit-mode scrollbar at the far right / folder animation 50% slower** (baseline 0.12.0)
-
-- **Heading-level badge (H1–H6)** — headings no longer show the `#` syntax marker; a clickable `H1`/`H2`… badge appears instead (absolutely positioned, still zero layout shift). Clicking it opens an **H1–H6** level menu (200 ms smooth expand animation, current level highlighted, equivalent `#` syntax shown, `prefers-reduced-motion` respected). Changing the level is a single transaction that keeps the heading text and anchor `id`; typing `#` characters still changes the level as before
-- **Auto-pair rewritten** — a single rule source (`core/autoPairRules.ts`, pure functions) plus a textarea planner now drive **all three modes** (reading / edit / split) identically: auto-close pairs, type-over an existing closer, surround a selection, delete a pair with Backspace, `Tab` to jump out, and close a pair after an IME composition commits. A pair insertion is **one edit = one undo**
-- **Pair scope settings** — three new switches (brackets / quotes / CJK punctuation) so quotes can be disabled while brackets stay on
-- **No more false completions** — mid-word (`abc|def`), right before an existing closer, orphan closers, English apostrophes (`don't`), escaped characters (`\(`), code blocks / inline code / math, and active IME composition are all left alone
-- **Edit-mode scrollbar at the far right** — the scrollable area is now the whole editing region (matching reading mode); the text column stays pixel-identical to the previous version
-- **Folder animation 50% slower again** — expand 0.675s → 1.013s, collapse 0.63s → 0.945s
-
-### v0.12.0 (2026-10-08)
-
-**Reading & editing experience — 11 requirements**
-
-- **Document zoom** — `Ctrl+wheel` or the bottom-right zoom ruler (appears on hover; push up to zoom in, pull down to zoom out; click a tick to jump, draggable) works in reading / edit / split modes, 50%–200%, persisted across restarts
-- **Format Painter (all three modes)** — via the new reading-mode context menu or the toolbar brush button: single-click entry applies once (Word default), **double-click entry stays active** for repeated application (status-bar hint with remaining count, auto-exit at zero, `Esc` to quit); overwrite-style apply (clears then applies, never stacks); works across modes
-- **Block selection & mouse drag** — in reading mode click a code block / Mermaid diagram / math block / table to select the whole block (`outline` border), `Delete` or right-click "Delete XX" to remove it; drag from the `⋮⋮` handle at the block's left edge to reorder blocks (insertion indicator line shown), one `Ctrl+Z` restores everything
-- **Placeholder ghost text** — clicking Bold/Heading with no selection inserts only the syntax markers (`****`, `# `); the placeholder word appears as grey ghost text and is replaced as soon as you type — never written to the file
-- **Viewport focus kept on resize** — collapsing the sidebar, dragging the window / split divider, or toggling the outline pane keeps the first visible paragraph at the same screen position (including the split-preview iframe)
-- **3-line focus window** — focus mode in edit / split modes highlights previous / current / next line
-- **No heading-marker jitter** — source markers (`#`, `>`, ```` ``` ````) are now absolutely positioned, so text never shifts horizontally
-- **"Open Files" creation time** — grey `YYYY-MM-DD HH:mm` on the right of each entry (temp files keep their timestamp across restarts)
-- **"About LightMD" in settings** — shows the app version and the GitHub link (opens in the system browser)
-- **Folder expand animation 50% slower** (0.45s → 0.675s)
-
-### v0.11.0 (2026-10-07)
-
-**Defect-convergence release — 42 fixes and additions**
-
-- **Data safety**: `Shift+Enter` inside code / math blocks no longer splits the block and rewrites content to disk; table "delete row" on the header row no longer loses data; Typora-style image sizing `![alt|300](src)` now works in split preview and all export formats
-- **Export fidelity**: exported HTML is truly self-contained (KaTeX fully inlined, mermaid side-loaded to `_assets/`) and works offline; PDF header/footer present on every page and no longer leaks temp paths; DOCX no longer silently drops task lists / definition lists / images / list numbering / formulas; PNG export embeds formula fonts correctly
-- **Reading experience**: image lightbox in reading mode (zoom / navigate / `Esc`); typography settings (content width / line height / paragraph spacing) now take effect; reading progress in the status bar; heading anchors work in reading mode; `[toc]` updates live; emoji short codes render as graphics
-- **Editing consistency**: command palette gains 7 missing format commands; `Ctrl+Shift+8/9/.` work in source mode; `Alt+↑/↓` is now a real block move (old semantics moved to `Alt+Shift+↑/↓`); `~`/`^` only escape when a pair can actually form
-
-### v0.10.0 (2026-10-07)
-
-**Unified rendering & export**
-
-- **Unified render pipeline** — split preview and all export formats share one markdown-it config: straight quotes are no longer rewritten to curly quotes; `javascript:` and other dangerous schemes are blocked in every export path (security fix)
-- **Formula & diagram fidelity in exports** — PNG / DOCX / ePub render KaTeX math (native MathML in ePub) and Mermaid diagrams as vector graphics; per-item progress during export
-- **Regex search & replace** — `.*` toggle for regex matching, `$1` / `$&` capture-group references, invalid regex reported inline
-- **Outline limit 100 → 1000**; PDF export hardened (longer virtual-time budget, clearer browser errors)
-
-### v0.9.5 (2026-10-02)
-
-**Correctness & performance wrap-up + six usability fixes** (baseline 0.9.4)
-
-- **Lossless content model for task items and footnotes** — nested lists / multiple paragraphs / code blocks inside a task item are no longer flattened; multi-paragraph footnotes keep their structure; both are directly editable
-- **Focus mode & Mermaid performance** — decoration set cached in plugin state (O(1) large-document check, local-only recalculation), so typing in 100k-character documents no longer stutters; Mermaid renders are cache-hit by content, so unrelated operations no longer trigger a full re-render
-- **Fixes**: the file tree now shows a file immediately after "Save As"; syntax highlighting switches instantly after saving a scratch file as `.py`; clicking links inside a document opens the target file / scrolls to the anchor / hands external links to the browser; pasted images in scratch files render after a restart; split preview no longer shows the previous document; the Favorites / Recent panels sit flush under "Open Files" while keeping their headers; startup restore no longer revives manually closed tabs and no longer toasts red errors for deleted files
-
-### v0.9.4 (2026-10-01)
-
-**Display & paste catch-up** (baseline 0.9.3)
-
-- **Inline syntax markers** — moving the caret into bold / italic / strikethrough / highlight / sub / sup / underline / inline code / link reveals the surrounding Markdown symbols, and hides when you leave
-- **Markdown-aware paste** — rich text is converted back to real structure; plain text with ≥2 Markdown traits is parsed as Markdown; inside code blocks / math everything stays literal (toggleable in settings)
-- **Undo history across modes** — no more empty undo steps, no more wrongly cleared history, and an explicit "undo boundary" notice in source mode
-- **Code block language dropdown & wrap toggle** — switch language from the block corner and re-highlight instantly; highlight languages 27 → 34
-
-### v0.9.3 (2026-10-01)
-
-**Input & formatting catch-up** (baseline 0.9.2)
-
-- **Underline** — `Ctrl+U` toggles for real in preview mode; source mode inserts `<u></u>`
-- **Six input rules (type-to-see)** — `$math$`, `$$`, `[text](url)`, `![alt|300](src)`, `[^1]` / `[^1]:`, `[toc]`, and two-line table syntax all convert as you type
-- **Minimal HTML whitelist** — `<u>` `<br>` `<sub>` `<sup>` `<mark>` become real formatting; other inline tags are stripped but keep their text; block-level HTML stays literal
-- **Image experience** — `![alt|300](src)` width syntax, alt/width fields in the image dialog, drop-point insertion
-- **`Ctrl+Shift+K`** inserts a link
-
-### v0.9.2 (2026-10-01)
-
-**P0 editing defects cleared + title bar & sidebar polish** (baseline 0.9.1)
-
-- **Format commands in preview mode were fakes** — the toolbar / palette inserted literal `****`, `## `; they now run the same real commands as the shortcuts
-- **Tab now works in code blocks, task lists and tables** — cell-by-cell navigation (last cell appends a row), 2-space indent in code blocks, task nesting
-- **`---` and triple-backtick fences inside list items / quotes no longer mis-convert** — conversion only triggers at the start of a top-level paragraph / heading
-- **Table context menu i18n + header rows can no longer be deleted**; IME composing Backspace no longer deletes paired symbols
-- **Paragraph-break setting** — GFM (soft break, default) vs CommonMark (two trailing spaces), honoured across preview and all exports; **"Recent" is collapsed by default**; the title-bar filename is now centred in the whole title bar
-
-### v0.9.0 (2026-09-30)
-
-**Peer multi-window + custom keyboard shortcuts** (baseline 0.8.5)
-
-**Multi-window**
-
-- **Peer windows (up to 8)** — `Ctrl+Shift+N` / the title-bar "Window" menu / the command palette create a window; each window owns its tab set, editor state, scroll progress and AI chat window, while theme, font, sidebar width, AI config, recent files and favourites sync live across all windows
-- **Open in a new window** — file-tree / sidebar context menu, tab "Move to New Window" (scratch tabs migrate with their content), `Ctrl+Alt+O`, and external double-click routing (current window / new window / ask, default current window)
-- **Title-bar "Window" menu** — dynamic window list with each window's tabs (unsaved dot), "New Window", "Close Window", "Merge into Main Window"
-- **Conflict detection** — opening a file already open with unsaved changes elsewhere offers read-only / force-edit / switch-to-that-window / cancel; read-only tabs show `[read-only]`
-- **External changes & deletion** — clean tabs reload automatically with a notice; dirty tabs are flagged and confirmed on save; deleting a file closes its tab
-- **Session restore** — windows, tabs, active tab and opened folders are restored precisely after a restart
-
-**Custom keyboard shortcuts**
-
-- **Settings → Editor → Customize Shortcuts** — 48 customizable commands grouped by File / Edit / Format / View / Tabs / Window / Insert, with search. Click an entry and press the new combination; `Esc` cancels and `Backspace` clears a single binding
-- **Conflict protection** — a conflict with another command or a reserved key reports "Already used by X" and is not written; letters/digits require `Ctrl` or `Alt` (`F1`~`F12` may be bound bare); system keys such as `Alt+F4` are accepted with a warning
-- **Restore** — per-entry ↺ restore (refused with the current owner if that default key is taken, which used to create a permanently unreachable duplicate) and "Restore All Defaults" with confirmation
-- **Immediate effect + cross-window sync** — shortcut labels in the command palette, context menu, title-bar window menu and toolbar tooltips follow your changes
-- **Reserved keys are not customizable** — `F11`, the file-tree keys, editor behaviour keys and clipboard shortcuts
-- **Companion features** — `Ctrl+Alt+←` / `Ctrl+Alt+→` sidebar & outline, `Ctrl+Shift+B` tab bar, `F11` full screen (also in the command palette), `Ctrl+Alt+T` table, `Ctrl+T` task list, `Ctrl+Shift+C` merge into main window
-- **Interaction changes** — the double-`Ctrl` / double-`Shift` threshold is now **220 ms** (was 300 ms); the file-tree "close temporary file" key is `Backspace` (was `Ctrl+2`); strikethrough in preview mode is now `Ctrl+Alt+S` (the old `Ctrl+Shift+S` is gone)
-
-**Code review fixes (round 6)**
-
-- Conflict messages no longer render stray braces (i18n placeholder syntax)
-- The shortcuts dialog now follows the active theme (it was unreadable in dark/night themes)
-- Restoring a single binding can no longer create a duplicate, unreachable shortcut
-- `Ctrl+Alt+←/→` and `Ctrl+Shift+B` now work while the editor has focus
-- Corrupted persisted shortcut tables are sanitized on both the migrate and merge paths
-- `AltGr` layouts no longer treat `AltGr+S` as `Ctrl+Alt+S`; non-Latin layouts keep `Ctrl+S` for save
-- `F11` uses the Tauri window API (the DOM Fullscreen API does not fullscreen the window under WebView2)
-- The editor context menu and command palette now relabel shortcuts immediately after a rebind
-
-### v0.8.5 (2026-09-26)
-
-**Safer deletion / UI motion polish** (baseline 0.8.4; 8 additions and fixes)
-
-**New Features**
-
-- **Recycle Bin deletion** — deleting files / folders from the file tree no longer removes them permanently; they are moved to the system Recycle Bin and can be restored anytime; the delete confirmation message was updated accordingly
-- **"Recent" now includes folders** — the Recent list shows recently opened files and folders side by side; clicking a folder entry opens it as a folder panel
-
-**UI Improvements**
-
-- **File icons** — Markdown files keep the 📝 icon; entries in the "Open Files" panel now use a hand-drawn open-book icon (blue for real files, yellow for unsaved scratch files) so the two kinds of entries are distinguishable at a glance
-- **File tree search box animation** — the search box slides in from the left (220ms) and collapses back to the left (180ms); clicks during the collapse are ignored. **Reworked in v0.16.0 (second round)**: it now uses a height + horizontal two-channel animation — the panel height animates 0fr↔1fr so the file list is pushed down / moves back up smoothly, while the search box itself slides in from the left and out to the left; the old width-only "wipe" animation is gone
-- **Sort dropdown animation** — the sort menu in folder headers now expands / collapses smoothly, with all three close paths (click outside / click an item / click the button again) running the collapse animation
-- **New-item dialog transition** — the New Folder / New File dialogs rise and settle with a slight scale; the dialog is fully opaque from the very first frame, so the background can never flicker through it
-- **Status-bar search panel open / close animation** — the search window grows smoothly out of the status-bar search button (it starts flush against the button, squashed and narrowed towards it, then expands into the middle of the screen); closing flattens it back into the same button. The direction follows the panel's current position, and it degrades to a plain show/hide when the system "reduce motion" preference is on
-
-**Interaction Changes**
-
-- **Global refresh button removed from the file-management toolbar** — refresh is now available via the right-click "Refresh" menu and the `Ctrl+R` shortcut; external changes still sync into the tree automatically, with `Ctrl+R` as a fallback
-- **"Recent" is now a pure history list** — closing a file or folder no longer removes its entry; an entry is only marked with ⚠ when the file was moved or deleted (including external changes) and is **never removed automatically**. Folders restored at startup now use a separate session snapshot, fully decoupled from the Recent history (older data migrates automatically)
-- **New-item dialog background flicker fixed** — the dialog's entrance is carried by `transform` alone (opaque from the first frame) and the overlay fade moved to its own pseudo-element layer, so the background no longer flickers through the dialog and the whole-screen brightness jump is gone
-
-### v0.8.4 (2026-09-24)
-
-**Sidebar file tree milestone: drag system / manual ordering / live refresh** (baseline 0.8.3; 11 additions and fixes)
-
-**New Features**
-
-- **File / folder drag-to-copy and move** — dragging onto a folder **copies**; hold `Shift` to **move** (tab paths follow automatically); works for folders too; moving **across drives** is supported (automatically performed as "copy to target + delete source"); dropping into its own subfolder is rejected with a notice
-- **Same-folder drag reordering** — drag items up/down within the same folder to set a manual display order that survives restart; "Opened Files" panel entries land in the source file's folder and participate in the same reordering
-- **Copy / cut in the node context menu** — new "Copy / Cut" items in the file tree context menu, working with the existing paste for cross-folder copy & move
-- **Empty-area context menu** — right-clicking the tree's empty area offers: New File / New Folder / Refresh / Paste
-- **Centered New File dialog** — type a name to create: name clashes are avoided automatically (numbered suffix), a missing extension gets `.md` appended; the parent folder expands and the new file opens right away
-- **6 sort modes in the folder header** — each folder header gains a sort button: name / modified time / created time × ascending / descending (6 modes), **remembered per folder** across restarts; switching to manual order shows a notice
-
-**Changes**
-
-- **Live file tree refresh** — external additions / deletions / renames / modifications (e.g. from Explorer) sync into the tree automatically (notify watcher); the header refresh button is removed, with right-click "Refresh" / toolbar button / `Ctrl+R` as fallbacks; explicit notices when the watcher is unavailable or a folder was deleted externally; right-clicking "Refresh" on a deep subfolder refreshes only its own subtree
-- **Verticalized expand/collapse animation** — child items now enter/exit top-down (vertical height animation) instead of sliding horizontally, matching the expansion direction
-- **Outline hover search** — hovering the outline panel reveals a search box for quick filtering and jumping to headings
-- **Stale hint in Recent** — when an open file is moved, its old-path entry in "Recent" shows a light-yellow ⚠ marker; favorites update their path in place and are unaffected
-
-**Legacy Fixes (S1 / S2 / S7)**
-
-- **S1 deep-file location lost folders** — opening a deeply nested file expanded ancestors by only writing the expanded set without loading intermediate levels, leaving them empty; now levels are loaded step by step
-- **S2 lagging expanded-paths ref** — expansion was synced to the ref only via `useEffect`, so an immediately following refresh missed the newly expanded folders; state and ref are now written in sync (also fixes new-folder / new-file / paste flows)
-- **S7 wrong refresh scope** — right-clicking "Refresh" on a deep subfolder refreshed the root; it now targets the clicked folder's own path and refreshes only its subtree
-
-**Other**
-
-- Version bumped in all four places: `package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock`
-
-### v0.8.3 (2026-09-22)
-
-**Interaction polish, bug fixes & small features** (baseline 0.8.2; 7 additions and fixes)
-
-**New features**
-
-- **Live cursor line/column in the status bar** — shows `Line N Col M`; when text is selected it appends `N selected` (and disappears again on deselect). Works in both reading mode (ProseMirror) and source mode (textarea)
-- **Window size memory** — a fresh install still starts maximized; after that, closing the app in a smaller window reopens it at the same size and position (multi-monitor positions included). Uses the official `tauri-plugin-window-state`, with the state flags narrowed to size / position / maximized only, so an accidental fullscreen never sticks
-- **Reading position remembered across sessions** — scroll to the middle of a document, close the app, reopen: the restored document is back at the same position. Other restored documents and unsaved (untitled) tabs are remembered too. Positions are keyed per tab and flushed on a 5-second heartbeat plus window close, adding zero cost to the scroll path
-
-**Changes**
-
-- **"Recent" list expanded to 66 entries + shows the opened date** — the UI used to show only the first 10; it now renders the full list with in-panel scrolling, newest on top, and drops the oldest once past 66. Hovering an entry shows the full path plus `Last opened: YYYY/MM/DD HH:mm`
-- **Startup restore activates the tab you actually left active** — the restore flow used to hardcode "activate the first real file", so leaving an **untitled** document active forced a switch to a real file on restart (users saw this as "restore doesn't work for untitled files"). It now resolves the last active tab (untitled by id, real files by path) and falls back to the old logic when no record exists
-
-**Fixes**
-
-- **Double highlight in the "Open Files" panel** — after clicking entry A in the panel and switching to B from the tab bar, A's leftover keyboard-selection background and B's active background both lit up (they shared the same colour). The keyboard selection now expires when the active entry changes (the "clicked it myself" case is preserved so `Delete`/`Ctrl+2` still targets A), and the keyboard indicator changed from a same-colour background to a **2px accent bar on the left** — no state combination can produce two highlighted rows again
-- **Status bar line number was always 1** — the old formula `doc.textBetween(0, pos).split("\n").length` never gets block separators from `textBetween`, so ordinary Markdown documents always reported line 1. Line numbers are now computed structurally (one line per block, one per hard break inside a block, one per table row) and no longer concatenate the text before the cursor
-
-**Performance**
-
-- **No more full-document serialization on every selection change** — each cursor move/keystroke used to run `doc.textContent`; it is now lazy and runs once inside the 300ms word-count debounce. Measured on an 18k-line (660k character) document: **0.778ms → 0.072ms** per selection change (~1/11)
-- **Lazy image loading** — image nodes emit `loading="lazy"` + `decoding="async"`, so large decodes no longer block compositor frames
-- **All scroll listeners are `passive`**
-- **Scroll performance evaluation (requirement 7)** — measured with real Chromium on an 18k-line / 9000 top-level-block document: the baseline scrolls at avg **16.67ms (60fps, zero long tasks)**, so the bottleneck is neither the Tauri/WebView2 layer nor "the whole DOM". The planned `content-visibility: auto` approach actually **slowed scrolling to avg 70.4ms (14fps, one ~70ms long task per frame)** — thousands of top-level blocks keep being lazily laid out while scrolling, and estimated intrinsic sizes diverging from real heights (scrollHeight inflated by 36%) triggers wide reflow. **The approach was rejected**; the data and reasoning live in the CSS comments so nobody re-adds it blindly
-
-### v0.8.2 (2026-09-21)
-
-**Sidebar open/close animations, ordering & follow-up fixes** (baseline 0.8.1; 3 animation improvements + 2 ordering changes + 9 fixes)
-
-**Animation**
-
-- **Opening slides in smoothly from left to right** — opening a folder panel, expanding a directory inside the tree, or opening a file entry now all slide in from the left while their height expands, gently pushing the content below downwards
-- **Closing is now strictly sequential** — slide out horizontally first, **pause a beat**, then collapse the height so the items/panels below glide upwards to fill the gap. This fixes the flaw where the slide-out and the fill-up appeared to happen at the same time (root cause: the closing snapshot was unmounted after only 360 ms while the full sequence needs 960 ms)
-- **Closing a middle item keeps it in place** — when a middle folder panel or file entry closes, its slide-out block stays at its original position and the content below moves up to fill the gap, instead of jumping to the end of the list
-- **New expand/collapse animation for tree nodes** — expanding a directory slides its children in from the left and expands the height; collapsing slides them out first and then collapses the height. The animation container is keyed by folder path, so parent re-renders cannot interrupt it
-
-**Ordering**
-
-- **Newest opened folder panel goes first** — a newly opened folder is inserted at the top (when the 5-folder limit is exceeded, the least recently opened one is dropped)
-- **"Open files" entries move to the top only when newly opened** — a newly opened file goes first; clicking to switch between already-open files no longer re-orders the list (only the active highlight changes)
-
-**Fixes**
-
-- **Clicking a subfolder froze the app** — root cause: the tree-node animation container called `setState` **during render**, so expanding a folder that contains subdirectories triggered a "render → setState → render" infinite loop; React then threw `Too many re-renders` and the whole sidebar was unmounted. State updates now happen inside effects. **This crash was also the root cause of "the sidebar sometimes cannot be dragged" and "images do not render for files opened through a folder"** (an unmounted sidebar cannot be dragged and its tree no longer responds)
-- **"New > New Folder" in the menu did nothing** — the old implementation used a native `prompt()` plus a save dialog: not an in-app dialog, and it could not choose a target path. It now opens the in-app **New Folder dialog** (centered; enter a name and either tick an open folder or type a custom path)
-- **Sidebar occasionally not draggable** — resolved by the crash fix above; the drag fallbacks (clearing listeners and the `section-dragging` flag when buttons are released or the window loses focus) remain in place
-- Fixed collapsed directories losing their cached children when a folder was reopened, which left the collapse animation with nothing to render
-- Fixed the "Open files" panel getting out of sync with the open tabs (count and active highlight)
-- Fixed the "Open files" panel header structure not matching the new styling
-- Fixed the closing folder snapshot being unmounted too early (360 ms → the full 960 ms sequence)
-- Version bumped in all three places: `package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`
-
-### v0.8.1 (2026-09-19)
-
-**Detail & interaction polish** (baseline 0.8.0; 6 improvements)
-
-- **Native title bar removed** — the window is now frameless; minimize / maximize / close moved next to the Settings button at the top right, styled as macOS traffic lights (yellow / green / red) with symbols appearing on hover
-- **Starts maximized** — opens maximized (taskbar kept); restore size is 1200×800
-- **Thinner sidebar scrollbars** — both side panels (file tree / outline) now use a uniform **2px** scrollbar: transparent when idle, softly visible on panel hover
-- **Default panel widths +0.5 cm** — sidebar 260 → 279px, outline 240 → 259px (custom widths are preserved)
-- **File properties use an in-app dialog** — no more native system popups, eliminating the alert sound; values such as paths are selectable
-- **Smooth re-centering when the AI entry is pinned** — with "Fixed" enabled the AI drawer takes up layout space, so the status bar buttons glide into a re-centered position without covering the word count
-
-### v0.8.0 (2026-09-18)
-
-**Deep interaction & editing-experience polish** (baseline 0.7.5; 16 requested items/fixes, plus pre-release review fixes and three rounds of follow-up feedback fixes)
-
-**New features**
-
-- **Untitled scratch tabs** — `Ctrl+N` or double-click the empty tab-bar area; nothing hits the disk until the first save, and unsaved scratch tabs survive a restart
-- **Tab bar upgrades** — overflow scroll buttons + smooth wheel scrolling, tab pinning with a pin icon, and a 9-item context menu (Rename / Pin / Print / Save As / Close Others / Close Others Except Pinned / Close to the Left / Close to the Right / Close Unmodified)
-- **File tree copy / cut / paste / drag** — via the context menu or `Ctrl+C` / `Ctrl+V`; drag onto a folder copies, `Shift`+drag moves and updates tab paths; clashing names get " - Copy"
-- **New folder dialog** — multiple target folders plus a custom path (takes priority), with a per-item failure report
-- **Open containing folder as workspace** — from the tab/file/recent-item context menu
-- **Redesigned sidebar layout** — section headers resize with conserved neighbouring heights and can be dragged to the bottom; floating scroll arrows; slimmer scrollbar
-- **Export ePub / LaTeX** — ePub splits chapters by heading and bundles images; LaTeX emits a compilable ctexart + XeLaTeX source
-
-**Fixes**
-
-- **Line-break fidelity (data correctness)** — multi-paragraph list items, nested lists and indented code blocks no longer merge or vanish across mode switches and saves; `Shift+Enter` inside table cells now serializes as `<br>` and no longer corrupts the table
-- **CJK punctuation pairing + paired deletion** — new `「」『』《》【】（）` pairs, `Backspace` deletes both halves and skips inline code / math, and typing a closer next to an existing one only moves the caret
-- **Typewriter mode centers immediately**; **mode-switch anchor** keeps the same editing position across preview/source/split
-- **Deleting a file closes its tabs** (recursive for parent folders); **tab hover close-button jitter** fixed
-- **Startup race** — scratch tabs no longer steal activation from the last opened file
-- **Shortcut scope fixes** — `Ctrl+C` / `Ctrl+V` only act inside the sidebar tree and no longer hijack text copying; version snapshot moved to `Ctrl+Alt+V` (the old `Ctrl+Shift+V` clashed with paste); `Shift`+dragging a file into its own folder no longer renames it
-- **Printing** — switches to preview mode and waits for render, so it no longer prints the previous tab or a truncated source view
-- **ePub** chapter XHTML is normalized (`<br>` / `<img>` / `<hr>` / `<input>` self-close correctly, so strict readers can open it)
-- Plus assorted polish: cut in the "Open Files" list, unsaved content preserved when switching files, sidebar toasts anchored next to the sidebar, and more
-
-### v0.7.5 (2026-09-13)
-
-**AI chat window and floating-bubble system** (baseline 0.7.4):
-
-**AI chat floating window (`Ctrl+K`)**
-- One window, three entry points: the "AI Chat" button in the status-bar AI drawer, `Ctrl+K` (`Cmd+K` on macOS), and the new "问" selection bubble; `ai.chat` is also registered in the command palette
-- Hand-rolled lightweight floating layer: drag by the title bar, resize from the bottom-right corner (min 360×280), `[—]` collapses to an input strip, `[×]`/`Esc` closes; closing clears the session (no chat persistence in this release)
-- Multi-turn chat: the last 3 turns are carried (older turns dropped, history always starts with a user message) and the document context is attached only to the current turn, so token cost does not grow linearly with turns
-- Context chip cycles through three scopes: `Selection 128 chars` / `Document 5,231 chars` / `No context`; a lost selection degrades to the document (shown explicitly), and documents over 20,000 chars are truncated with a marker
-- Six quick templates (Diagram / Formula / Summary / Title & tags / Rewrite all / Analyze) prefill the input box for editing before sending
-- Per-answer action bar: Insert at cursor / Replace selection (only when a selection was captured) / Replace document (rewrite template or right-click) / Copy / Regenerate
-- **What you insert is what you see**: ```mermaid fences and `$$` formulas produced by the model render immediately through the existing mermaid/math live-preview plugins — no extra rendering code
-- Safety chain: writes always use the **snapshot taken at send time** (never the live selection) to prevent misplacement; "Replace document" runs a DOC_CHANGED check and refuses when the document was edited during the chat; `Esc` restores the original text after a write
-- Window position/size memory: persisted on drag/resize end, restored on reopen, and falls back to centered when the display layout changes
-- Also fixes the silent-failure report (U1): the AI chat entry now shows a toast when `aiEnabled` is false
-
-**Per-bubble visibility + new "问" bubble**
-- The selection trigger row grew from [译][续][润][摘] to **[译][续][润][摘][问]**
-- The right-click menu no longer hides all AI bubbles at once; it hides only the one you clicked ("Hide \"润\" bubble"), and the row width is computed from the visible count so positioning never drifts
-- The status-bar AI gear panel gained four per-bubble checkboxes for individual restore, plus a master toggle that restores everything
-- Migration: `aiAssistBubbleHidden=true` now hides all four bubbles (each restorable individually); the legacy field is kept for rollback compatibility
-
-**"译" bubble color**
-- Both the settings page and the translate entry's quick-settings panel write the same field; empty means "follow theme", and clearing removes the CSS variable so the theme color returns
-- The floating-button refresh loop re-reads both translate and AI bubble colors, so changes apply instantly
-
-**Quality**: full frontend suite 2131+ tests across 110 files (serial mode), `cargo test` 74 passing, `tsc --noEmit` clean.
-
-#### v0.7.5 detail optimizations (same day)
-
-**1. Fixed the document jumping back to the top after pressing Esc**
-- Root cause: bubble Esc handling calls `stopPropagation()` in the window capture phase, so the editor DOM never sees the **capture-phase keydown** — but the keyup still reaches it. The scroll-follow logic then used the stale `savedScrollTop / savedCursorY` from the *previous* keystroke and restored `scrollTop` to an old value; when that previous keystroke happened near the top of the document, the view jumped back to the top. Whether it jumped depended on the gap between the last keystroke and the current scroll position, hence "sometimes".
-- Fix: new `ScrollKeyBaseline` (recorded on keydown, consumed on keyup) — **a keyup may only run scroll-follow when its matching keydown was seen**. The baseline is invalidated on editor blur; both ProseMirror (read mode) and textarea (source mode) typewriter scrolling are fixed.
-
-**2. Bubble colors now reach the status-bar AI buttons**
-- The four drawer buttons (continue / polish / summary / chat) inject `--ai-entry-color` from their own bubble color and highlight with it on hover and press; unset colors fall back to the theme accent, so the default look is unchanged.
-
-**3. Immediate feedback for AI continue**
-- Clicking continue now renders a grey placeholder ghost "续写中..." at the caret right away (with a breathing animation), replaced by the real text as soon as the first chunk arrives.
-- The placeholder cannot be accepted: Tab is consumed without inserting (the hint text can never be written into the document) and the "Tab to accept · Esc to discard" hint is hidden.
-- Read mode and source mode behave identically.
-
-**4. AI translation embedded in the chat window**
-- New "**AI Translate**" quick template: when the window was opened from a selection, clicking it translates that selection (target language comes from the translate settings; `auto` means zh↔en) and the result can be written back with "Replace selection".
-- Each answer gains a "译" button that translates it in place and toggles back to the original; while translated, "Insert at cursor / Replace selection / Copy" act on the translation, giving a full in-window flow: selection → 问 → AI Translate → Replace selection.
-- Answers over 4000 chars show a notice instead of failing silently; "译" is disabled during streaming so it cannot preempt the shared task slot.
-
-**5. Chat window drag limit removed**
-- Dragging is no longer constrained to the viewport — the window can be moved anywhere (off-screen, second monitor). Only size is clamped (min 360×280, max the viewport).
-- The position memory keeps a safety net: on the **next open**, a remembered rect that lies entirely outside the viewport (new monitor / smaller resolution) falls back to centered.
-
-**Quality**: full frontend suite **2159 tests across 111 files**, `tsc --noEmit` clean, `cargo test` 74 passing.
-
-### v0.7.4 (2026-09-13)
-
-**Selection AI bubbles and assistant enhancements**:
-- Three AI bubble buttons ([续][润][摘]) next to the "译" trigger, floating as one row above the selection
-- AI summary became a Word-comment-style floating window: draggable, resizable from the bottom-right, auto-growing with content (up to the status bar), with a dashed connector anchored to the selection
-- A "译" button in the summary window header translates the window content in place and toggles back to the original
-- AI bubbles are filtered by owning document, so switching tabs no longer mixes content; unsaved (path-less) files discard stale bubbles on switch
-- Status-bar AI gear panel (bubble switch / delay / three per-task colors) and "Pin AI entry"
-
-### v0.7.3 (2026-09-12)
-
-**Experience and stability fixes**:
-- Silent failures converted to toasts (disabled AI entries, full-document translation conflicts, non-translatable selections)
-- New temperature setting forwarded to the provider (fixes `400 invalid temperature` on kimi and similar)
-- Full-document translation runs 3-way concurrent with targeted cancellation and current-segment progress
-- Fixed misplaced translation write-back by using the selection snapshot taken at task start instead of the live selection
-- Fixed missing continuation ghost in source mode: a textarea overlay preview with `Tab` to accept / `Esc` to discard
-- Fixed `http://` endpoint warning logic and a dead error-classification branch
-
-### v0.7.2 (2026-09-10)
-
-**AI model configuration overhaul**:
-- **22 provider presets** — Added Kimi Code, Tencent Hunyuan, iFlytek Spark, StepFun, Baidu ERNIE, 01.AI, Baichuan, SenseTime SenseNova, and Ant Ling Studio; refreshed all model catalogs to vendors' current lineups (Sep 2026); MiniMax switched to the China endpoint `api.minimax.cn`
-- **Per-provider API key storage** — Each provider gets its own Credential Manager entry; keys no longer overwrite each other when switching providers (legacy global key auto-migrates)
-- **Dynamic model list fetching** — New "Fetch models" button pulls the vendor's live model list (`GET /models`), with automatic fallback to the static preset list on failure
-- **Model candidate panel fix** — Fixed the datalist filtering bug where only one of the fetched models was selectable: a full candidate panel now shows all fetched models for one-click selection
-
-### v0.7.1 (2026-09-08)
-
-**AI assistant experience polish**:
-- The floating selection button row grew to **[译][续][润][摘]**: continue writing (streaming grey-italic ghost preview, `Tab` to accept / `Esc` to discard), polish (one-click replace of the selection from the result bubble), and summarize (150–300 characters, with a dashed connector anchored to the selection)
-- The translation-bubble delay setting now actually applies (default 500 ms, adjustable 0–2000 ms): the bubble used to be made visible during drag-selection, which defeated the delay; visibility is now driven only by the delayed `mouseup` timer
-- AI bubble token usage changed from a single combined number to separate **↑ input / ↓ output** counters (system prompt + input text vs. model output), making the breakdown obvious
-- Hardened the streaming continuation ghost pipeline (chunks append live at the caret, with de-duplication so hint text can never linger)
-
-### v0.7.0 (2026-09-07)
-
-**The AI assistant system arrives (first 0.7.x release)**:
-- **AI continue / polish / summarize** assistant tasks, triggered from the floating selection bubbles with streaming output and cancel (`Esc`), sharing the single provider configuration, the single task slot, and the error-code protocol with AI translation
-- Floating "译" trigger plus **a row of AI bubbles**, with a right-click menu to hide/restore them; the floating buttons support a **delay before appearing**, adjustable via a slider in the "译" entry panel
-- New **AI entry drawer** in the status bar (continue / polish / summarize) with corrected expand/collapse behavior: it stays open when the pointer leaves and only closes on an outside click or when the AI task finishes
-- Global **AI master switch** (`aiEnabled`) linked to the translate sub-switch: turning the master switch off also turns translation off, while turning it back on does not force translation on
-- Fixed: switching between open files **no longer resets your reading position** (tracked per path, up to 60 entries); reopening a file still starts from the top
-- Fixed: trailing empty paragraphs at the end of a document were lost on round-trip (the serializer now keeps trailing blank lines and the parser rebuilds empty paragraphs)
-
-### v0.6.6 (2026-09-01)
-
-**Four experience fixes**:
-- **Empty-document newlines preserved** — repeated Enter newlines are no longer lost after switching tabs, reopening, or saving (serializer keeps trailing newlines + parser rebuilds empty paragraphs)
-- **Slash `/` panel works in Read mode** — the ProseMirror plugin activates the same menu as Source mode
-- **Delete no longer closes files** — a focus guard prevents the "close temporary file" shortcut from firing while editing
-- **Inline base64 images collapsed** — Edit/Split mode shows a short marker `![alt](image-1.png)` instead of huge base64 blobs, dramatically reducing screen usage; the file on disk still stores full base64 and restores it before save/preview/translation, so content never changes
-
-**Quality**: 1880/1880 frontend tests pass, `tsc --noEmit` clean.
-
-### v0.6.5 (2026-08-29)
-
-**P0 critical fix (full translation only translated the tail segment)**: placeholders for links/inline code/images must be extracted BEFORE the request is built and sent as `{{N}}`. Previously tokens were generated only after the LLM reply arrived, so any segment containing those elements failed validation and kept its original text. Now those segments translate correctly and links/code/images are restored verbatim.
-
-### v0.6.4 (2026-08-29)
-
-- Failed translation segments are shown as a red bubble at the top of the document (auto-hide 5s); the status bar only shows progress and then "Translation completed ✓", reset on document switch
-- Pure-image blocks skip translation; inline image alt text & URL are fully protected by placeholders
-
-### v0.6.3 (2026-08-29)
-
-**Data-safety & robustness hardening** (per code review):
-- **P0**: full-translation tab-switch abort actually enforced; undo snapshot cleaned across tabs/files bound to document context; write-back aborts if the document was edited meanwhile (DOC_CHANGED)
-- **P1**: frontmatter misdetection fixed, long-block split boundaries improved, rate-limit exponential backoff with retry, error-code passthrough
-- **P2**: image/link syntax removal, error-code wiring, dead-code cleanup
-- **Security**: warning for non-localhost / non-HTTPS translate endpoints, credential hardening, boundary checks
-
-### v0.6.2 (2026-08-27)
-
-**Translation efficiency + uninstall cleanup**:
-- Pure-symbol / pure-URL / pure-email segments no longer generate translation requests, cutting wasted tokens
-- Uninstalling now clears the translate API key (Windows Credential Manager) and enables-state; translation is off by default for new installs
-
-### v0.6.1 (2026-08-26)
-
-**Full-document translation + UX polish**:
-- **Full translation** — floating button / `Shift+F6` / command palette; auto-splits paragraphs and translates serially, skipping code fences, formulas, frontmatter; tolerant of segment failures
-- **Undo translation** — click the "Undo translation" bubble to restore the original text (bound to document context)
-- **Translated content is not auto-saved** — waits for your confirm or further editing
-- Mode-switch button (pen / book icons); fixed long-press Ctrl accidentally triggering mode switch
-
-### v0.6.0 (2026-08-23)
-
-**AI Translation (core new feature)**:
-- **Selected / Full translation** — context menu, translate button, command palette; defaults to full translation when nothing is selected
-- **Result mode** — direct replace or bilingual side-by-side
-- **Translate bubble** — streaming results with i18n error codes
-- **Settings** — "AI Translation" group (provider presets / API Key / baseUrl / model / source language / tone / result mode / prompt) plus connection test
-- **API Key stored in Windows Credential Manager**
-- **Backend** — Rust translate command (single-task model, streaming channel, error-code protocol)
-
-### v0.5.0 (2026-08-23)
-
-**5 new features**:
-- **Auto-Pair Completion** — typing `(` `[` `{` `"` `'` `` ` `` `*` auto-closes the pair and places the cursor inside; works in preview & source modes, toggleable in settings (default on)
-- **Smart URL Paste** — pasting a bare URL inserts `[link](URL)` with link styling; with text selected, pasting a URL turns the selection into a hyperlink; skipped inside code blocks
-- **Live Math Preview** — block `$$...$$` formulas show an editing area on top and a KaTeX-rendered preview below, updating as you type
-- **Silent Language Detection** — code blocks without a language tag are auto-detected (heuristic scoring, 16 languages including Python/JavaScript/TypeScript/Rust/Go), used only for highlighting, never written back to the document
-- **Open File Location** — right-click a tab, a file in the tree, or a recent-file entry to reveal it in the system file manager
-
-**Fixes & optimizations**:
-- Fixed table column borders being unresponsive to dragging in preview mode: dragging any inner border keeps the total table width unchanged while adjacent columns adjust complementarily; unified hit detection and enabled dragging the first column's left edge (no dead zone)
-- Removed file-association registration for script files (.bat/.cmd/.vbs) from the installer (returns default open behavior to users), and cleans up registry leftovers on uninstall/upgrade via NSIS hooks
-- TableCellView ignores attributes mutations to avoid cell re-render flicker while dragging
-
-**Quality**: 1552/1552 tests pass (75 test files), `tsc --noEmit` with zero errors.
-
-### v0.4.5 (2026-07-16)
-
-**Table column resize improvements**:
-- Dragging an inner column border resizes the two adjacent columns while keeping the total table width unchanged
-- Dragging the outermost border changes the total table width
-- Cell left edge (8px) also triggers the resize hotspot; fixed unresponsive drag and table collapse issues
-
-**Search fixes**:
-- Fixed search highlight mismatch in non-Markdown code/text files across read/edit/split modes (newline normalization `\r\n` → `\n`)
-
-**UI fixes & optimizations**:
-- Outline panel auto-closes when switching from a Markdown file to a non-Markdown file
-- Optimized sidebar "Opened Files" / "Documents" section display logic
-- Closed folders/files are no longer restored on next startup
-- Idle-state logo animation performance: opacity-only animation (compositor layer, CPU≈0), auto-pauses on window blur, respects `prefers-reduced-motion`
-
-### v0.4.0 ~ v0.4.4 (2026-07-12 ~ 2026-07-15)
-
-- **v0.4.0**: Multi-folder sidebar, code file syntax highlighting (PrismJS), draggable splitters (sidebar width & split ratio), version snapshots (auto-record up to 5 versions with diff & restore)
-- **v0.4.1**: Sidebar section minimize/maximize/close buttons with height resizing; snapshot dialog maximize/restore, scroll sync
-- **v0.4.2**: Search & replace for non-Markdown files; content preservation across mode switches; adjacent-column-only table resize; various sidebar fixes
-- **v0.4.3**: Global file search in sidebar; per-folder independent browse sections; camera icon for snapshots entry
-- **v0.4.4**: Table collapse fix (`table.width = cellWidthSum`); search highlight offset fix
-
-## 🤝 Contributing
-
-Issues and Pull Requests are welcome!
-
-## 📄 License
-
-[MIT License](LICENSE) © LightMD
-
----
-
-<p align="center">
-  Made with ❤️ for Markdown enthusiasts
-</p>
+Released under the [MIT License](./LICENSE).
